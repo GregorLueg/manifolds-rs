@@ -266,3 +266,107 @@ where
         shape: sparse_data.shape(),
     }
 }
+
+///////////
+// Tests //
+///////////
+
+#[cfg(test)]
+mod test_data_struct {
+    use super::*;
+
+    #[test]
+    fn test_sparse_graph_to_edge_list() {
+        let graph = SparseGraph {
+            row_indices: vec![0, 0, 1, 2],
+            col_indices: vec![1, 2, 2, 0],
+            values: vec![1.0, 2.0, 3.0, 4.0],
+            n_vertices: 3,
+        };
+
+        let edges = graph.to_edge_list();
+        assert_eq!(edges.len(), 4);
+        assert_eq!(edges[0], (0, 1, 1.0));
+        assert_eq!(edges[1], (0, 2, 2.0));
+        assert_eq!(edges[2], (1, 2, 3.0));
+        assert_eq!(edges[3], (2, 0, 4.0));
+    }
+
+    #[test]
+    fn test_compressed_sparse_format() {
+        let csc = CompressedSparseFormat::Csc;
+        let csr = CompressedSparseFormat::Csr;
+
+        assert!(csc.is_csc());
+        assert!(!csc.is_csr());
+        assert!(csr.is_csr());
+        assert!(!csr.is_csc());
+    }
+
+    #[test]
+    fn test_csr_to_csc_conversion() {
+        // Create a simple 3x3 CSR matrix:
+        // [1.0  0   2.0]
+        // [0    3.0 0  ]
+        // [4.0  0   5.0]
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let indices = vec![0, 2, 1, 0, 2]; // column indices
+        let indptr = vec![0, 2, 3, 5]; // row pointers
+
+        let csr = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
+        let csc = csr.transform();
+
+        assert!(csc.cs_type.is_csc());
+        assert_eq!(csc.shape(), (3, 3));
+        assert_eq!(csc.get_nnz(), 5);
+
+        // Check CSC structure
+        // Column 0: rows 0, 2 -> values 1.0, 4.0
+        // Column 1: row 1 -> value 3.0
+        // Column 2: rows 0, 2 -> values 2.0, 5.0
+        assert_eq!(csc.indptr, vec![0, 2, 3, 5]);
+    }
+
+    #[test]
+    fn test_csc_to_csr_conversion() {
+        // Create a simple 3x3 CSC matrix
+        let data = vec![1.0, 4.0, 3.0, 2.0, 5.0];
+        let indices = vec![0, 2, 1, 0, 2]; // row indices
+        let indptr = vec![0, 2, 3, 5]; // column pointers
+
+        let csc = CompressedSparseData::new_csc(&data, &indices, &indptr, (3, 3));
+        let csr = csc.transform();
+
+        assert!(csr.cs_type.is_csr());
+        assert_eq!(csr.shape(), (3, 3));
+        assert_eq!(csr.get_nnz(), 5);
+    }
+
+    #[test]
+    fn test_transform_roundtrip() {
+        let data = vec![1.0, 2.0, 3.0];
+        let indices = vec![0, 1, 2];
+        let indptr = vec![0, 1, 2, 3];
+
+        let csr = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
+        let csc = csr.transform();
+        let csr_again = csc.transform();
+
+        assert!(csr_again.cs_type.is_csr());
+        assert_eq!(csr_again.get_nnz(), csr.get_nnz());
+        assert_eq!(csr_again.shape(), csr.shape());
+    }
+
+    #[test]
+    fn test_empty_sparse_matrix() {
+        let data: Vec<f64> = vec![];
+        let indices: Vec<usize> = vec![];
+        let indptr = vec![0, 0, 0];
+
+        let csr = CompressedSparseData::new_csr(&data, &indices, &indptr, (2, 2));
+        assert_eq!(csr.get_nnz(), 0);
+
+        let csc = csr.transform();
+        assert_eq!(csc.get_nnz(), 0);
+    }
+}

@@ -589,6 +589,7 @@ name = "manifold-rs"
 version = "0.1.0"
 dependencies = [
  "ann-search-rs",
+ "approx",
  "faer",
  "num-traits",
  "rand 0.9.2",

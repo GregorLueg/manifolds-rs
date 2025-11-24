@@ -211,3 +211,164 @@ where
 
     (largest_evals, transposed)
 }
+
+///////////
+// Tests //
+///////////
+
+#[cfg(test)]
+mod test_utils_math {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_dot_product() {
+        let a = vec![1.0, 2.0, 3.0];
+        let b = vec![4.0, 5.0, 6.0];
+
+        let result = dot(&a, &b);
+        // 1*4 + 2*5 + 3*6 = 32
+        assert_relative_eq!(result, 32.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_dot_product_zero() {
+        let a = vec![1.0, 2.0, 3.0];
+        let b = vec![0.0, 0.0, 0.0];
+
+        let result = dot(&a, &b);
+        assert_relative_eq!(result, 0.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_norm() {
+        let v = vec![3.0, 4.0];
+        let result = norm(&v);
+        assert_relative_eq!(result, 5.0, epsilon = 1e-6); // sqrt(9 + 16) = 5
+    }
+
+    #[test]
+    fn test_normalise() {
+        let mut v = vec![3.0, 4.0];
+        normalise(&mut v);
+
+        assert_relative_eq!(v[0], 0.6, epsilon = 1e-6);
+        assert_relative_eq!(v[1], 0.8, epsilon = 1e-6);
+
+        // Check that norm is now 1
+        let new_norm = norm(&v);
+        assert_relative_eq!(new_norm, 1.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_tridiag_eig_simple() {
+        // Simple 2x2 tridiagonal matrix
+        // [2  1]
+        // [1  2]
+        let alpha = vec![2.0, 2.0];
+        let beta = vec![1.0];
+
+        let (evals, _evecs) = tridiag_eig(&alpha, &beta);
+
+        assert_eq!(evals.len(), 2);
+
+        // Eigenvalues should be 1 and 3
+        let mut sorted_evals = evals.clone();
+        sorted_evals.sort_by(|a: &f64, b: &f64| a.partial_cmp(b).unwrap());
+
+        assert_relative_eq!(sorted_evals[0], 1.0, epsilon = 1e-5);
+        assert_relative_eq!(sorted_evals[1], 3.0, epsilon = 1e-5);
+    }
+
+    #[test]
+    fn test_compute_largest_eigenpairs_identity() {
+        // Identity matrix has all eigenvalues = 1
+        // But Lanczos is designed for graph Laplacians
+        // For a proper test, use a small graph Laplacian instead
+
+        // Simple path graph: 0-1-2
+        // Adjacency matrix has 1s on off-diagonals
+        let n = 3;
+        let data = vec![2.0, -1.0, -1.0, 2.0, -1.0, -1.0, 2.0];
+        let indices = vec![0, 1, 0, 1, 2, 1, 2];
+        let indptr = vec![0, 2, 5, 7];
+
+        let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
+
+        let (evals, evecs) = compute_largest_eigenpairs_lanczos(&matrix, 2, 42);
+
+        assert_eq!(evals.len(), 2);
+        assert_eq!(evecs.len(), n);
+        assert_eq!(evecs[0].len(), 2);
+
+        // For this Laplacian, largest eigenvalues should be positive
+        for eval in evals {
+            assert!(eval > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_compute_largest_eigenpairs_diagonal() {
+        // Diagonal matrix with values [5, 4, 3, 2, 1]
+        let n = 5;
+        let data = vec![5.0, 4.0, 3.0, 2.0, 1.0];
+        let indices = vec![0, 1, 2, 3, 4];
+        let indptr = vec![0, 1, 2, 3, 4, 5];
+
+        let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
+
+        let (evals, evecs) = compute_largest_eigenpairs_lanczos(&matrix, 3, 42);
+
+        assert_eq!(evals.len(), 3);
+        assert_eq!(evecs.len(), n);
+
+        // Largest eigenvalues should be approximately 5, 4, 3
+        let mut sorted_evals = evals.clone();
+        sorted_evals.sort_by(|a, b| b.partial_cmp(a).unwrap());
+
+        assert_relative_eq!(sorted_evals[0], 5.0, epsilon = 0.1);
+        assert_relative_eq!(sorted_evals[1], 4.0, epsilon = 0.1);
+        assert_relative_eq!(sorted_evals[2], 3.0, epsilon = 0.1);
+    }
+
+    #[test]
+    fn test_lanczos_reproducibility() {
+        // Use a proper sparse matrix, not identity
+        let n = 10;
+
+        // Create a tridiagonal matrix (more realistic for Lanczos)
+        let mut data = Vec::new();
+        let mut indices = Vec::new();
+        let mut indptr = vec![0];
+
+        for i in 0..n {
+            if i > 0 {
+                data.push(-1.0);
+                indices.push(i - 1);
+            }
+            data.push(2.0);
+            indices.push(i);
+            if i < n - 1 {
+                data.push(-1.0);
+                indices.push(i + 1);
+            }
+            indptr.push(data.len());
+        }
+
+        let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
+
+        let (evals1, evecs1) = compute_largest_eigenpairs_lanczos(&matrix, 3, 42);
+        let (evals2, evecs2) = compute_largest_eigenpairs_lanczos(&matrix, 3, 42);
+
+        assert_eq!(evals1, evals2);
+        assert_eq!(evecs1, evecs2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_dot_product_different_lengths() {
+        let a = vec![1.0, 2.0];
+        let b = vec![1.0, 2.0, 3.0];
+        let _ = dot(&a, &b);
+    }
+}

@@ -274,3 +274,180 @@ where
 
     adj
 }
+
+///////////
+// Tests //
+///////////
+
+#[cfg(test)]
+mod test_data_gen {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_smooth_knn_dist_basic() {
+        // Simple test with 3 points, k=2
+        let dist = vec![
+            vec![0.0, 1.0, 2.0],
+            vec![0.0, 1.5, 3.0],
+            vec![0.0, 0.5, 1.5],
+        ];
+
+        let (sigmas, rhos) = smooth_knn_dist(&dist, 2, 1.0, 1e-5, 64);
+
+        assert_eq!(sigmas.len(), 3);
+        assert_eq!(rhos.len(), 3);
+
+        // Rhos should be approximately the distance to the first neighbour
+        assert_relative_eq!(rhos[0], 1.0, epsilon = 1e-4);
+        assert_relative_eq!(rhos[1], 1.5, epsilon = 1e-4);
+        assert_relative_eq!(rhos[2], 0.5, epsilon = 1e-4);
+
+        // Sigmas should be positive
+        for sigma in sigmas.iter() {
+            assert!(*sigma > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_smooth_knn_dist_zero_local_connectivity() {
+        let dist = vec![vec![0.0, 1.0, 2.0], vec![0.0, 1.0, 2.0]];
+
+        let (sigmas, rhos) = smooth_knn_dist(&dist, 2, 0.0, 1e-5, 64);
+
+        // With zero local connectivity, rhos should all be zero
+        assert!(rhos.iter().all(|&r| r == 0.0));
+        assert_eq!(sigmas.len(), 2);
+    }
+
+    #[test]
+    fn test_knn_to_coo_basic() {
+        let knn_indices = vec![vec![1, 2], vec![0, 2], vec![0, 1]];
+        let knn_dists = vec![vec![1.0, 2.0], vec![1.0, 1.5], vec![2.0, 1.5]];
+        let sigmas = vec![1.0, 1.0, 1.0];
+        let rhos = vec![0.0, 0.0, 0.0];
+
+        let graph = knn_to_coo(&knn_indices, &knn_dists, &sigmas, &rhos);
+
+        assert_eq!(graph.n_vertices, 3);
+        assert_eq!(graph.row_indices.len(), 6); // 3 points × 2 neighbours
+        assert_eq!(graph.col_indices.len(), 6);
+        assert_eq!(graph.values.len(), 6);
+
+        // All weights should be between 0 and 1
+        for &w in &graph.values {
+            assert!((0.0..=1.0).contains(&w));
+        }
+    }
+
+    #[test]
+    fn test_knn_to_coo_self_loop_excluded() {
+        // Include self in neighbours
+        let knn_indices = vec![vec![0, 1], vec![1, 0]];
+        let knn_dists = vec![vec![0.0, 1.0], vec![0.0, 1.0]];
+        let sigmas = vec![1.0, 1.0];
+        let rhos = vec![0.0, 0.0];
+
+        let graph = knn_to_coo(&knn_indices, &knn_dists, &sigmas, &rhos);
+
+        // Self-loops should be excluded
+        assert_eq!(graph.values.len(), 2); // Only 2 edges, not 4
+        assert!(graph
+            .row_indices
+            .iter()
+            .zip(&graph.col_indices)
+            .all(|(&i, &j)| i != j));
+    }
+
+    #[test]
+    fn test_symmetrise_graph_full_union() {
+        let graph = SparseGraph {
+            row_indices: vec![0, 1],
+            col_indices: vec![1, 0],
+            values: vec![0.8, 0.6],
+            n_vertices: 2,
+        };
+
+        let sym_graph = symmetrise_graph(graph, 0.5);
+
+        assert_eq!(sym_graph.n_vertices, 2);
+
+        // With mix_weight = 0.5:
+        // union = 0.8 + 0.6 - 0.8*0.6 = 0.92
+        // w_sym = 0.5 * union + 0.5 * w_ij
+        // For 0->1: 0.5 * 0.92 + 0.5 * 0.8 = 0.86
+        // For 1->0: 0.5 * 0.92 + 0.5 * 0.6 = 0.76
+
+        let edges = sym_graph.to_edge_list();
+        assert_eq!(edges.len(), 2);
+
+        let edge_01 = edges.iter().find(|&&(i, j, _)| i == 0 && j == 1).unwrap();
+        let edge_10 = edges.iter().find(|&&(i, j, _)| i == 1 && j == 0).unwrap();
+
+        assert_relative_eq!(edge_01.2, 0.86, epsilon = 1e-6);
+        assert_relative_eq!(edge_10.2, 0.76, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_symmetrise_graph_directed() {
+        let graph = SparseGraph {
+            row_indices: vec![0, 1],
+            col_indices: vec![1, 0],
+            values: vec![0.8, 0.6],
+            n_vertices: 2,
+        };
+
+        // With mix_weight = 1.0, we get full fuzzy union
+        // union = 0.8 + 0.6 - 0.8*0.6 = 0.92
+        // w_sym = 1.0 * union + 0.0 * w_ij = 0.92 for both edges
+        let sym_graph = symmetrise_graph(graph.clone(), 1.0);
+
+        let edges = sym_graph.to_edge_list();
+        assert_eq!(edges.len(), 2);
+
+        let union = 0.8 + 0.6 - 0.8 * 0.6;
+
+        for (_, _, w) in edges {
+            assert_relative_eq!(w, union, epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_coo_to_adjacency_list() {
+        let graph = SparseGraph {
+            row_indices: vec![0, 0, 1, 2],
+            col_indices: vec![1, 2, 2, 0],
+            values: vec![0.5, 0.3, 0.8, 0.9],
+            n_vertices: 3,
+        };
+
+        let adj = coo_to_adjacency_list(&graph);
+
+        assert_eq!(adj.len(), 3);
+        assert_eq!(adj[0].len(), 2); // vertex 0 has 2 neighbours
+        assert_eq!(adj[1].len(), 1); // vertex 1 has 1 neighbour
+        assert_eq!(adj[2].len(), 1); // vertex 2 has 1 neighbour
+
+        assert!(adj[0].contains(&(1, 0.5)));
+        assert!(adj[0].contains(&(2, 0.3)));
+        assert!(adj[1].contains(&(2, 0.8)));
+        assert!(adj[2].contains(&(0, 0.9)));
+    }
+
+    #[test]
+    fn test_coo_to_adjacency_list_empty() {
+        let graph: SparseGraph<f64> = SparseGraph {
+            row_indices: vec![],
+            col_indices: vec![],
+            values: vec![],
+            n_vertices: 3,
+        };
+
+        let adj = coo_to_adjacency_list(&graph);
+
+        assert_eq!(adj.len(), 3);
+        assert!(adj[0].is_empty());
+        assert!(adj[1].is_empty());
+        assert!(adj[2].is_empty());
+    }
+}

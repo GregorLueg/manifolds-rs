@@ -180,3 +180,157 @@ where
 
     embedding
 }
+
+#[cfg(test)]
+mod test_init {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_graph_to_normalised_laplacian_simple() {
+        // Simple graph: 0 <-> 1 with equal weights
+        let graph = SparseGraph {
+            row_indices: vec![0, 1],
+            col_indices: vec![1, 0],
+            values: vec![1.0, 1.0],
+            n_vertices: 2,
+        };
+
+        let laplacian = graph_to_normalised_laplacian(&graph);
+
+        assert_eq!(laplacian.shape(), (2, 2));
+        assert!(laplacian.cs_type.is_csr());
+
+        // Check structure: should have diagonal entries (1.0) and off-diagonal (-1.0)
+        assert_eq!(laplacian.get_nnz(), 4); // 2 diagonal + 2 off-diagonal
+    }
+
+    #[test]
+    fn test_graph_to_normalised_laplacian_isolated_vertex() {
+        // Graph with isolated vertex
+        let graph = SparseGraph {
+            row_indices: vec![0],
+            col_indices: vec![1],
+            values: vec![1.0],
+            n_vertices: 3,
+        };
+
+        let laplacian = graph_to_normalised_laplacian(&graph);
+
+        assert_eq!(laplacian.shape(), (3, 3));
+        // Should handle isolated vertex (vertex 2) gracefully
+    }
+
+    #[test]
+    fn test_spectral_layout_basic() {
+        // Create a simple connected graph
+        let graph = SparseGraph {
+            row_indices: vec![0, 0, 1, 1, 2, 2],
+            col_indices: vec![1, 2, 0, 2, 0, 1],
+            values: vec![1.0, 0.5, 1.0, 1.0, 0.5, 1.0],
+            n_vertices: 3,
+        };
+
+        let embedding = spectral_layout(&graph, 2, 42);
+
+        assert_eq!(embedding.len(), 3); // 3 vertices
+        assert_eq!(embedding[0].len(), 2); // 2 dimensions
+
+        // Check that values are scaled to [-10, 10] range
+        for point in &embedding {
+            for &coord in point {
+                assert!((-10.0..=10.0).contains(&coord));
+            }
+        }
+
+        // Check that embedding is centred (mean ≈ 0)
+        for dim in 0..2 {
+            let mean: f64 = embedding.iter().map(|p| p[dim]).sum::<f64>() / 3.0;
+            assert_relative_eq!(mean, 0.0, epsilon = 1e-6);
+        }
+    }
+
+    #[test]
+    fn test_spectral_layout_reproducibility() {
+        let graph = SparseGraph {
+            row_indices: vec![0, 1, 2],
+            col_indices: vec![1, 2, 0],
+            values: vec![1.0, 1.0, 1.0],
+            n_vertices: 3,
+        };
+
+        let embd1 = spectral_layout(&graph, 2, 42);
+        let embd2 = spectral_layout(&graph, 2, 42);
+
+        assert_eq!(embd1, embd2);
+    }
+
+    #[test]
+    fn test_spectral_layout_higher_dimensions() {
+        let graph = SparseGraph {
+            row_indices: vec![0, 1, 2, 3],
+            col_indices: vec![1, 2, 3, 0],
+            values: vec![1.0; 4],
+            n_vertices: 4,
+        };
+
+        let embedding = spectral_layout(&graph, 3, 42);
+
+        assert_eq!(embedding.len(), 4);
+        assert_eq!(embedding[0].len(), 3);
+    }
+
+    #[test]
+    fn test_random_layout_basic() {
+        let embedding = random_layout::<f64>(10, 2, 42);
+
+        assert_eq!(embedding.len(), 10);
+        assert_eq!(embedding[0].len(), 2);
+
+        // Check range [-10, 10]
+        for point in &embedding {
+            for &coord in point {
+                assert!((-10.0..=10.0).contains(&coord));
+            }
+        }
+    }
+
+    #[test]
+    fn test_random_layout_reproducibility() {
+        let embd1 = random_layout::<f64>(10, 2, 42);
+        let embd2 = random_layout::<f64>(10, 2, 42);
+
+        assert_eq!(embd1, embd2);
+    }
+
+    #[test]
+    fn test_random_layout_different_seeds() {
+        let embd1 = random_layout::<f64>(10, 2, 42);
+        let embd2 = random_layout::<f64>(10, 2, 999);
+
+        assert_ne!(embd1, embd2);
+    }
+
+    #[test]
+    fn test_random_layout_dimensions() {
+        let embedding = random_layout::<f32>(5, 3, 42);
+
+        assert_eq!(embedding.len(), 5);
+        assert_eq!(embedding[0].len(), 3);
+    }
+
+    #[test]
+    fn test_spectral_layout_single_vertex() {
+        let graph: SparseGraph<f32> = SparseGraph {
+            row_indices: vec![],
+            col_indices: vec![],
+            values: vec![],
+            n_vertices: 1,
+        };
+
+        let embedding = spectral_layout(&graph, 2, 42);
+
+        assert_eq!(embedding.len(), 1);
+        assert_eq!(embedding[0].len(), 2);
+    }
+}

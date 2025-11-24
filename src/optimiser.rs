@@ -340,7 +340,7 @@ pub fn optimise_embedding<T>(
         .collect::<Vec<T>>();
 
     // main loop
-    let mut epoch_next_sample = epochs_per_sample.clone();
+    let mut epoch_next_sample = vec![0.0; edges.len()];
     for epoch in 0..params.n_epochs {
         let lr = alpha_schedule[epoch];
 
@@ -363,5 +363,256 @@ pub fn optimise_embedding<T>(
                 apply_repulsive_force(embd, i, k, params.a, params.b, lr);
             }
         }
+    }
+}
+
+///////////
+// Tests //
+///////////
+
+#[cfg(test)]
+mod test_optimiser {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_optim_params_default_2d() {
+        let params = OptimParams::<f64>::default_2d();
+
+        assert_relative_eq!(params.a, 1.929, epsilon = 1e-6);
+        assert_relative_eq!(params.b, 0.7915, epsilon = 1e-6);
+        assert_eq!(params.lr, 1.0);
+        assert_eq!(params.n_epochs, 500);
+        assert_eq!(params.neg_sample_rate, 5);
+        assert_relative_eq!(params.min_dist, 0.1, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_optim_params_from_min_dist_spread() {
+        let params = OptimParams::<f64>::from_min_dist_spread(0.1, 1.0, 1.0, 500, 5);
+
+        assert!(params.a > 0.0);
+        assert!(params.b > 0.0);
+        assert_eq!(params.lr, 1.0);
+        assert_eq!(params.n_epochs, 500);
+        assert_eq!(params.neg_sample_rate, 5);
+        assert_relative_eq!(params.min_dist, 0.1, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_fit_params_constraints() {
+        let (a, b) = OptimParams::<f64>::fit_params(0.1, 1.0, None, None);
+
+        // Parameters should be within reasonable bounds
+        assert!((0.001..=10.0).contains(&a));
+        assert!((0.1..=2.0).contains(&b));
+    }
+
+    #[test]
+    fn test_fit_params_curve_properties() {
+        let min_dist = 0.1;
+        let spread = 1.0;
+        let (a, b) = OptimParams::<f64>::fit_params(min_dist, spread, None, None);
+
+        // Test that curve satisfies approximate requirements
+        // f(min_dist) should be high (close to 1.0)
+        let pred_min = 1.0 / (1.0 + a * min_dist.powf(2.0 * b));
+        assert!(
+            pred_min > 0.7,
+            "f(min_dist) = {:.3} should be > 0.7",
+            pred_min
+        );
+
+        // f(3*spread) should be low (close to 0.0)
+        let pred_spread = 1.0 / (1.0 + a * (3.0 * spread).powf(2.0 * b));
+        assert!(
+            pred_spread < 0.3,
+            "f(3*spread) = {:.3} should be < 0.3",
+            pred_spread
+        );
+
+        // Verify the curve is monotonically decreasing between these points
+        let mid_point = 1.5 * spread;
+        let pred_mid = 1.0 / (1.0 + a * mid_point.powf(2.0 * b));
+        assert!(
+            pred_min > pred_mid && pred_mid > pred_spread,
+            "Curve should be monotonically decreasing"
+        );
+    }
+
+    #[test]
+    fn test_squared_dist_basic() {
+        let a = vec![0.0, 0.0];
+        let b = vec![3.0, 4.0];
+
+        let dist = squared_dist(&a, &b);
+        assert_relative_eq!(dist, 25.0, epsilon = 1e-6); // 3² + 4² = 25
+    }
+
+    #[test]
+    fn test_squared_dist_identical_points() {
+        let a = vec![1.0, 2.0, 3.0];
+        let b = vec![1.0, 2.0, 3.0];
+
+        let dist = squared_dist(&a, &b);
+        assert_relative_eq!(dist, 0.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_apply_attractive_force() {
+        let mut embd = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+
+        let i = 0;
+        let j = 1;
+        let weight = 1.0;
+        let a = 1.0;
+        let b = 1.0;
+        let lr = 0.1;
+
+        apply_attractive_force(&mut embd, i, j, weight, a, b, lr);
+
+        // Point i should move towards j (x increases)
+        assert!(embd[0][0] > 0.0);
+        // Point j should move away from i (x decreases)
+        assert!(embd[1][0] < 1.0);
+    }
+
+    #[test]
+    fn test_apply_attractive_force_zero_distance() {
+        let mut embd = vec![vec![0.0, 0.0], vec![0.0, 0.0]];
+
+        let i = 0;
+        let j = 1;
+
+        // Should not crash with points at same location
+        apply_attractive_force(&mut embd, i, j, 1.0, 1.0, 1.0, 0.1);
+
+        // Points should remain unchanged
+        assert_eq!(embd[0], vec![0.0, 0.0]);
+        assert_eq!(embd[1], vec![0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_apply_repulsive_force() {
+        let mut embd = vec![vec![0.0, 0.0], vec![0.5, 0.0]];
+
+        let i = 0;
+        let j = 1;
+        let a = 1.0;
+        let b = 1.0;
+        let lr = 0.1;
+
+        let initial_pos = embd[0].clone();
+        apply_repulsive_force(&mut embd, i, j, a, b, lr);
+
+        assert!(
+            embd[0][0] > initial_pos[0],
+            "Point moved from {} to {}",
+            initial_pos[0],
+            embd[0][0]
+        );
+    }
+
+    #[test]
+    fn test_optimise_embedding_basic() {
+        // Simple graph with 3 connected vertices
+        let graph = vec![
+            vec![(1, 1.0), (2, 0.5)],
+            vec![(0, 1.0), (2, 1.0)],
+            vec![(0, 0.5), (1, 1.0)],
+        ];
+
+        let mut embd = vec![vec![0.0, 0.0], vec![5.0, 0.0], vec![0.0, 5.0]];
+        let initial_embd = embd.clone();
+
+        // Use default params which have n_epochs = 500
+        let params = OptimParams::default_2d();
+
+        optimise_embedding(&mut embd, &graph, &params, 42);
+
+        // Check that points moved (due to negative sampling at minimum)
+        let total_movement: f64 = embd
+            .iter()
+            .zip(initial_embd.iter())
+            .map(|(new, old)| {
+                new.iter()
+                    .zip(old.iter())
+                    .map(|(&n, &o)| (n - o).abs())
+                    .sum::<f64>()
+            })
+            .sum();
+
+        assert!(total_movement > 0.01, "Total movement: {}", total_movement);
+
+        // All coordinates should still be finite
+        for point in &embd {
+            for &coord in point {
+                assert!(coord.is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn test_optimise_embedding_empty_graph() {
+        let graph: Vec<Vec<(usize, f64)>> = vec![vec![], vec![], vec![]];
+        let mut embd = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
+
+        let params = OptimParams::default_2d();
+
+        optimise_embedding(&mut embd, &graph, &params, 42);
+
+        // With no edges, only negative sampling occurs, so embedding should change
+        // but we can't predict exact values
+        for point in &embd {
+            for &coord in point {
+                assert!(coord.is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn test_optimise_embedding_reproducibility() {
+        let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
+        let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+        let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+
+        let params = OptimParams {
+            a: 1.0,
+            b: 1.0,
+            lr: 0.5,
+            n_epochs: 10,
+            neg_sample_rate: 2,
+            min_dist: 0.1,
+        };
+
+        optimise_embedding(&mut embd1, &graph, &params, 42);
+        optimise_embedding(&mut embd2, &graph, &params, 42);
+
+        assert_eq!(embd1, embd2);
+    }
+
+    #[test]
+    fn test_optimise_embedding_convergence() {
+        // Two strongly connected points should end up closer
+        let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
+        let mut embd = vec![vec![0.0, 0.0], vec![10.0, 0.0]];
+
+        let initial_dist = squared_dist(&embd[0], &embd[1]).sqrt();
+
+        let params = OptimParams {
+            a: 1.0,
+            b: 1.0,
+            lr: 1.0,
+            n_epochs: 100,
+            neg_sample_rate: 2,
+            min_dist: 0.1,
+        };
+
+        optimise_embedding(&mut embd, &graph, &params, 42);
+
+        let final_dist = squared_dist(&embd[0], &embd[1]).sqrt();
+
+        // Distance should decrease
+        assert!(final_dist < initial_dist);
     }
 }
