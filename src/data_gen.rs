@@ -176,7 +176,7 @@ where
 /// - `mix_weight = 1.0`: Use only outgoing edges (directed)
 /// - `mix_weight = 0.5`: Full fuzzy union (standard UMAP, symmetric)
 /// - `mix_weight = 0.0`: Use only incoming edges (transpose)
-pub fn symmetrize_graph<T>(graph: SparseGraph<T>, mix_weight: T) -> SparseGraph<T>
+pub fn symmetrise_graph<T>(graph: SparseGraph<T>, mix_weight: T) -> SparseGraph<T>
 where
     T: Float + Send + Sync,
 {

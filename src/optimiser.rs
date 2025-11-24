@@ -146,6 +146,16 @@ where
     }
 }
 
+impl<T> Default for OptimParams<T>
+where
+    T: Float + FromPrimitive,
+{
+    /// Returns sensible defaults for the optimiser (assuming 2D)
+    fn default() -> Self {
+        OptimParams::default_2d()
+    }
+}
+
 /// Compute squared Eucliden distance between two points
 ///
 /// ### Params
@@ -253,11 +263,12 @@ where
 
     // Add small constant to avoid division by zero (like UMAP Python does)
     let dist_sq_safe = dist_sq + T::from(0.001).unwrap();
+    let two = T::from(2.0).unwrap();
 
     let dist_pow = if b == T::one() {
         dist_sq_safe
     } else {
-        dist_sq_safe.powf(b)
+        dist_sq_safe.powf(two * b)
     };
 
     let denom = T::one() + a * dist_pow;

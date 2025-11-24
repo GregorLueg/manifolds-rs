@@ -1,0 +1,194 @@
+#![allow(clippy::needless_range_loop)] // I like loops ... !
+
+pub mod data_gen;
+pub mod data_struct;
+pub mod init;
+pub mod macros;
+pub mod nearest_neighbours;
+pub mod optimiser;
+pub mod utils_math;
+
+use ann_search_rs::hnsw::{HnswIndex, HnswState};
+use ann_search_rs::nndescent::{NNDescent, UpdateNeighbours};
+use faer::MatRef;
+use num_traits::{Float, FromPrimitive};
+use std::default::Default;
+use std::marker::{Send, Sync};
+
+use crate::data_gen::*;
+use crate::init::*;
+use crate::nearest_neighbours::*;
+use crate::optimiser::*;
+
+////////////
+// Params //
+////////////
+
+/// UMAP algorithm parameters
+///
+/// Controls the fuzzy simplicial set construction and graph symmetrisation.
+///
+/// ### Fields
+///
+/// * `bandwidth` - Convergence tolerance for smooth kNN distance binary search
+///   (typically 1e-5). Controls how precisely sigma values are computed.
+/// * `local_connectivity` - Number of nearest neighbours assumed to be at
+///   distance zero (typically 1.0). Allows for local manifold structure by
+///   treating the nearest neighbour(s) as having maximal membership strength.
+/// * `mix_weight` - Balance between fuzzy union and directed graph during
+///   symmetrisation (typically 0.5). Values: 0.0 = use only incoming edges,
+///   0.5 = full fuzzy union (standard UMAP), 1.0 = use only outgoing edges.
+#[derive(Clone, Debug)]
+pub struct UmapParams<T> {
+    pub bandwidth: T,
+    pub local_connectivity: T,
+    pub mix_weight: T,
+}
+
+impl<T> Default for UmapParams<T>
+where
+    T: Float,
+{
+    /// Returns sensible defaults for UMAP
+    ///
+    /// ### Returns
+    ///
+    /// * `bandwidth = 1e-5` - Tight convergence for sigma computation
+    /// * `local_connectivity = 1.0` - Treat nearest neighbour as connected
+    /// * `mix_weight = 0.5` - Standard symmetric fuzzy union
+    fn default() -> Self {
+        Self {
+            local_connectivity: T::from(1.0).unwrap(),
+            bandwidth: T::from(1e-5).unwrap(),
+            mix_weight: T::from(0.5).unwrap(),
+        }
+    }
+}
+
+/// Run UMAP dimensionality reduction
+///
+/// Uniform Manifold Approximation and Projection (UMAP) is a manifold learning
+/// technique for dimensionality reduction. This implementation follows the
+/// standard UMAP algorithm:
+///
+/// 1. Find k-nearest neighbours using approximate nearest neighbour search
+/// 2. Construct fuzzy simplicial set via smooth kNN distances
+/// 3. Symmetrise the graph using fuzzy set union
+/// 4. Initialise embedding via spectral decomposition
+/// 5. Optimise embedding using stochastic gradient descent
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `n_dim` - Target dimensionality (typically 2 or 3)
+/// * `k` - Number of nearest neighbours (typically 15-50)
+/// * `ann_type` - Approximate nearest neighbour method: `"annoy"`, `"hnsw"`, or
+///   `"nndescent"`
+/// * `umap_params` - UMAP-specific parameters (bandwidth, local_connectivity,
+///   mix_weight)
+/// * `nn_params` - Optional parameters for nearest neighbour search (uses
+///   defaults if None)
+/// * `optim_params` - Optional optimisation parameters (uses defaults if None)
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - Print progress information
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
+/// `n_dim` and inner vectors have length `n_samples`. Each outer element
+/// represents one embedding dimension.
+///
+/// ### Example
+///
+/// ```ignore
+/// use faer::Mat;
+/// let data = Mat::from_fn(1000, 128, |_, _| rand::random::<f32>());
+/// let embedding = umap(
+///     data.as_ref(),
+///     2,              // 2D embedding
+///     15,             // 15 nearest neighbours
+///     "hnsw".into(),  // HNSW index
+///     &UmapParams::default(),
+///     None,           // default NN params
+///     None,           // default optim params
+///     42,             // seed
+///     true,           // verbose
+/// );
+/// // embedding[0] contains x-coordinates for all points
+/// // embedding[1] contains y-coordinates for all points
+/// ```
+#[allow(clippy::too_many_arguments)]
+pub fn umap<T>(
+    data: MatRef<T>,
+    n_dim: usize,
+    k: usize,
+    ann_type: String,
+    umap_params: &UmapParams<T>,
+    nn_params: Option<NearestNeighbourParams<T>>,
+    optim_params: Option<OptimParams<T>>,
+    seed: usize,
+    verbose: bool,
+) -> Vec<Vec<T>>
+where
+    T: Float + FromPrimitive + Send + Sync + Default,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: UpdateNeighbours<T>,
+{
+    let nn_params = nn_params.unwrap_or_default();
+    let optim_params = optim_params.unwrap_or_default();
+
+    if verbose {
+        println!("Running approximate nearest neighbour search...");
+    }
+
+    let (knn_indices, knn_dist) = run_ann_search(data, k, ann_type, &nn_params, seed, verbose);
+
+    if verbose {
+        println!("Constructing fuzzy simplicial set...");
+    }
+
+    let (sigma, rho) = smooth_knn_dist(
+        &knn_dist,
+        k,
+        umap_params.local_connectivity,
+        umap_params.bandwidth,
+        64,
+    );
+
+    let graph = knn_to_coo(&knn_indices, &knn_dist, &sigma, &rho);
+
+    let graph = symmetrise_graph(graph, umap_params.mix_weight);
+
+    let graph_adj = coo_to_adjacency_list(&graph);
+
+    if verbose {
+        println!("Initialising embedding via spectral layout...");
+    }
+
+    let mut embd = spectral_layout(&graph, n_dim, seed as u64);
+
+    if verbose {
+        println!(
+            "Optimising embedding via SGD ({} epochs)...",
+            optim_params.n_epochs
+        );
+    }
+
+    optimise_embedding(&mut embd, &graph_adj, &optim_params, seed as u64);
+
+    if verbose {
+        println!("UMAP complete!");
+    }
+
+    // transpose: from [n_samples][n_dim] to [n_dim][n_samples]
+    let n_samples = embd.len();
+    let mut transposed = vec![vec![T::zero(); n_samples]; n_dim];
+
+    for sample_idx in 0..n_samples {
+        for dim_idx in 0..n_dim {
+            transposed[dim_idx][sample_idx] = embd[sample_idx][dim_idx];
+        }
+    }
+
+    transposed
+}
