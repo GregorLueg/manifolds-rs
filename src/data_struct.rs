@@ -1,0 +1,268 @@
+use num_traits::Float;
+use std::ops::{Add, Mul};
+
+/////////////////////
+// Data structures //
+/////////////////////
+
+/// Sparse graph in COO (Coordinate) format - tensor-friendly
+///
+/// ### Fields
+///
+/// * `row_indices` - Row index
+/// * `col_indices` - Column index
+/// * `values` - The value stored here
+/// * `n_vertices` - The number of vertices in the graph
+#[derive(Clone)]
+pub struct SparseGraph<T> {
+    pub row_indices: Vec<usize>,
+    pub col_indices: Vec<usize>,
+    pub values: Vec<T>,
+    pub n_vertices: usize,
+}
+
+impl<T> SparseGraph<T>
+where
+    T: Float,
+{
+    /// Generate an edge list from the COO
+    pub fn to_edge_list(&self) -> Vec<(usize, usize, T)> {
+        self.row_indices
+            .iter()
+            .zip(&self.col_indices)
+            .zip(&self.values)
+            .map(|((&r, &c), &v)| (r, c, v))
+            .collect()
+    }
+}
+
+/// Type to describe the CompressedSparseFormat
+#[derive(Debug, Clone)]
+pub enum CompressedSparseFormat {
+    /// CSC-formatted data
+    Csc,
+    /// CSR-formatted data
+    Csr,
+}
+
+impl CompressedSparseFormat {
+    /// Returns boolean if it's CSC
+    pub fn is_csc(&self) -> bool {
+        matches!(self, CompressedSparseFormat::Csc)
+    }
+    /// Returns boolean if it's CSR
+    pub fn is_csr(&self) -> bool {
+        matches!(self, CompressedSparseFormat::Csr)
+    }
+}
+
+/// Structure to store compressed sparse data of either type
+///
+/// Ported over from the bixverse code; removed the second data structure here.
+///
+/// ### Fields
+///
+/// * `data` - The values
+/// * `indices` - The indices of the values
+/// * `indptr` - The index pointers
+/// * `cs_type` - Is the data stored in `Csr` or `Csc`.
+/// * `shape` - The shape of the underlying matrix
+#[derive(Debug, Clone)]
+pub struct CompressedSparseData<T>
+where
+    T: Clone + Default,
+{
+    pub data: Vec<T>,
+    pub indices: Vec<usize>,
+    pub indptr: Vec<usize>,
+    pub cs_type: CompressedSparseFormat,
+    pub shape: (usize, usize),
+}
+
+impl<T> CompressedSparseData<T>
+where
+    T: Clone + Default + Into<f64> + Sync + Add + PartialEq + Mul,
+{
+    /// Generate a nes CSC version of the matrix
+    ///
+    /// ### Params
+    ///
+    /// * `data` - The underlying data
+    /// * `indices` - The index positions (in this case row indices)
+    /// * `indptr` - The index pointer (in this case the column index pointers)
+    /// * `data2` - An optional second layer
+    #[allow(dead_code)]
+    pub fn new_csc(data: &[T], indices: &[usize], indptr: &[usize], shape: (usize, usize)) -> Self {
+        Self {
+            data: data.to_vec(),
+            indices: indices.to_vec(),
+            indptr: indptr.to_vec(),
+            cs_type: CompressedSparseFormat::Csc,
+            shape,
+        }
+    }
+
+    /// Generate a nes CSR version of the matrix
+    ///
+    /// ### Params
+    ///
+    /// * `data` - The underlying data
+    /// * `indices` - The index positions (in this case row indices)
+    /// * `indptr` - The index pointer (in this case the column index pointers)
+    /// * `data2` - An optional second layer
+    pub fn new_csr(data: &[T], indices: &[usize], indptr: &[usize], shape: (usize, usize)) -> Self {
+        Self {
+            data: data.to_vec(),
+            indices: indices.to_vec(),
+            indptr: indptr.to_vec(), // Fixed: was using indices instead of indptr
+            cs_type: CompressedSparseFormat::Csr,
+            shape,
+        }
+    }
+
+    /// Transform from CSC to CSR or vice versa
+    ///
+    /// ### Returns
+    ///
+    /// The transformed/transposed version
+    pub fn transform(&self) -> Self {
+        match self.cs_type {
+            CompressedSparseFormat::Csc => csc_to_csr(self),
+            CompressedSparseFormat::Csr => csr_to_csc(self),
+        }
+    }
+
+    /// Returns the shape of the matrix
+    ///
+    /// ### Returns
+    ///
+    /// A tuple of `(nrow, ncol)`
+    pub fn shape(&self) -> (usize, usize) {
+        self.shape
+    }
+
+    /// Returns the NNZ
+    ///
+    /// ### Returns
+    ///
+    /// The number of NNZ
+    pub fn get_nnz(&self) -> usize {
+        self.data.len()
+    }
+}
+
+/// Transforms a CompressedSparseData that is CSC to CSR
+///
+/// ### Params
+///
+/// * `sparse_data` - The CompressedSparseData you want to transform
+///
+/// ### Returns
+///
+///
+pub fn csc_to_csr<T>(sparse_data: &CompressedSparseData<T>) -> CompressedSparseData<T>
+where
+    T: Clone + Default + Into<f64> + Sync + Add + PartialEq + Mul,
+{
+    // early return if already in the desired format
+    if sparse_data.cs_type.is_csr() {
+        return sparse_data.clone();
+    }
+
+    let (nrow, _) = sparse_data.shape();
+    let nnz = sparse_data.get_nnz();
+    let mut row_ptr = vec![0; nrow + 1];
+
+    for &r in &sparse_data.indices {
+        row_ptr[r + 1] += 1;
+    }
+
+    for i in 0..nrow {
+        row_ptr[i + 1] += row_ptr[i];
+    }
+
+    let mut csr_data = vec![T::default(); nnz];
+    let mut csr_col_ind = vec![0; nnz];
+    let mut next = row_ptr[..nrow].to_vec();
+
+    for col in 0..(sparse_data.indptr.len() - 1) {
+        for idx in sparse_data.indptr[col]..sparse_data.indptr[col + 1] {
+            let row = sparse_data.indices[idx];
+            let pos = next[row];
+
+            csr_data[pos] = sparse_data.data[idx].clone();
+            csr_col_ind[pos] = col;
+
+            next[row] += 1;
+        }
+    }
+
+    CompressedSparseData {
+        data: csr_data,
+        indices: csr_col_ind,
+        indptr: row_ptr,
+        cs_type: CompressedSparseFormat::Csr,
+        shape: sparse_data.shape(),
+    }
+}
+
+/// Transform CSR stored data into CSC stored data
+///
+/// This version does a full memory copy of the data.
+///
+/// ### Params
+///
+/// * `sparse_data` - The CompressedSparseData you want to transform. Needs
+///   to be in CSR format.
+///
+/// ### Returns
+///
+/// The data in CSC format, i.e., `CompressedSparseData`
+pub fn csr_to_csc<T>(sparse_data: &CompressedSparseData<T>) -> CompressedSparseData<T>
+where
+    T: Clone + Default + Into<f64> + Sync + Add + PartialEq + Mul,
+{
+    // early return if already in the desired format
+    if sparse_data.cs_type.is_csc() {
+        return sparse_data.clone();
+    }
+
+    let nnz = sparse_data.get_nnz();
+    let (_, ncol) = sparse_data.shape();
+    let mut col_ptr = vec![0; ncol + 1];
+
+    // Count occurrences per column
+    for &c in &sparse_data.indices {
+        col_ptr[c + 1] += 1;
+    }
+
+    // Cumulative sum to get column pointers
+    for i in 0..ncol {
+        col_ptr[i + 1] += col_ptr[i];
+    }
+
+    let mut csc_data = vec![T::default(); nnz];
+    let mut csc_row_ind = vec![0; nnz];
+    let mut next = col_ptr[..ncol].to_vec();
+
+    // Iterate through rows and place data in CSC format
+    for row in 0..(sparse_data.indptr.len() - 1) {
+        for idx in sparse_data.indptr[row]..sparse_data.indptr[row + 1] {
+            let col = sparse_data.indices[idx];
+            let pos = next[col];
+
+            csc_data[pos] = sparse_data.data[idx].clone();
+            csc_row_ind[pos] = row;
+
+            next[col] += 1;
+        }
+    }
+
+    CompressedSparseData {
+        data: csc_data,
+        indices: csc_row_ind,
+        indptr: col_ptr,
+        cs_type: CompressedSparseFormat::Csc,
+        shape: sparse_data.shape(),
+    }
+}
