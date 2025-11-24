@@ -182,26 +182,26 @@ where
 
 /// Apply attractive force gradient for a connected edge
 ///
-/// Pulls points i and j together based on their edge weight. Uses the gradient
-/// of the negative log-probability under UMAP's curve:
-/// `phi(d) = 1/(1 + a * d^(2b))`
+/// Pulls points `i` and `j` together based on their edge weight.
 ///
-/// The gradient is: `derivate(-log(phi)) = 2ab * d^(2b-1) / (1 + a * d^(2b))`
+/// The gradient is derived from the UMAP curve: `phi(d) = (1 + a d^{2b})^{-1}`
 ///
 /// ### Params
 ///
 /// * `embd` - Current embedding coordinates (modified in place)
 /// * `i` - Source vertex index
 /// * `j` - Target vertex index
-/// * `weight` - Edge weight (membership strength)
+/// * `weight` - Edge weight (membership strength in high-dim graph)
 /// * `a` - Curve parameter controlling spread
 /// * `b` - Curve parameter controlling tail behaviour
 /// * `lr` - Step size for gradient update
 ///
 /// ### Notes
 ///
-/// Updates both points symmetrically: i moves towards j, j moves away from i.
-/// Skips update if points are essentially at the same location (dist² < 1e-8).
+/// * Updates both points symmetrically: `i` moves towards `j`, and `j` moves
+///   towards `i`.
+/// * Skips update if points are essentially at the same location (dist_square
+///   < 1e-8) to avoid numerical instability.
 #[inline]
 fn apply_attractive_force<T>(embd: &mut [Vec<T>], i: usize, j: usize, weight: T, a: T, b: T, lr: T)
 where
@@ -214,13 +214,13 @@ where
     }
 
     let dist = dist_sq.sqrt();
-
-    // gradient in UMAP: derivate of -log(phi) with phi 1/(1 + a * d^(2b))
-    // = 2ab * d^(2b - 1) / (1 + a*d^(2b) )
     let two_b = T::from(2.0).unwrap() * b;
     let dist_pow = dist.powf(two_b - T::one());
-    let grad_coeff = lr * weight * T::from(2.0).unwrap() * a * b * dist_pow
-        / (dist * (T::one() + a * dist.powf(two_b)));
+
+    // Use 2 instead of 4 because we update both points and process both (i,j) and (j,i)
+    let two = T::from(2.0).unwrap();
+    let grad_coeff =
+        lr * weight * two * a * b * dist_pow / (dist * (T::one() + a * dist.powf(two_b)));
 
     let n_dim = embd[i].len();
     for d in 0..n_dim {
@@ -234,52 +234,48 @@ where
 
 /// Apply repulsive force gradient via negative sampling
 ///
-/// Pushes point i away from randomly sampled point j. Uses the gradient of
-/// the log-probability that i and j are NOT connected under UMAP's curve. This
-/// function will be used with the negative samples.
-///
-/// The gradient is: `derivate(-log(phi)) = 2ab * d^(2b-1) / (1 + a * d^(2b))`
+/// Pushes point `i` away from randomly sampled point `j` (which is assumed to
+/// be unconnected).
 ///
 /// ### Params
 ///
-/// * `embedding` - Current embedding coordinates (modified in place)
+/// * `embd` - Current embedding coordinates (modified in place)
 /// * `i` - Source vertex index
 /// * `j` - Randomly sampled vertex index (negative sample)
 /// * `a` - Curve parameter controlling spread
 /// * `b` - Curve parameter controlling tail behaviour
-/// * `learning_rate` - Step size for gradient update
+/// * `lr` - Step size for gradient update
 ///
 /// ### Notes
 ///
-/// Only updates point i (not j), as this is an asymmetric negative sampling
-/// step. Skips update if denominator becomes too small (< 1e-8) to avoid
-/// numerical issues
+/// * Only updates point `i` (not `j`), as this is an asymmetric negative
+///   sampling step.
+/// * Adds a small epsilon (0.001) to the distance to prevent division by zero.
+/// * **Clips gradients** to the range [-4.0, 4.0] to prevent the "exploding
+///   gradient" problem when points are very close to one another.
 #[inline]
 fn apply_repulsive_force<T>(embd: &mut [Vec<T>], i: usize, j: usize, a: T, b: T, lr: T)
 where
     T: Float,
 {
     let dist_sq = squared_dist(&embd[i], &embd[j]);
-
-    // Add small constant to avoid division by zero (like UMAP Python does)
     let dist_sq_safe = dist_sq + T::from(0.001).unwrap();
-    let two = T::from(2.0).unwrap();
 
-    let dist_pow = if b == T::one() {
-        dist_sq_safe
-    } else {
-        dist_sq_safe.powf(two * b)
-    };
+    let four = T::from(4.0).unwrap();
+    let denom = T::one() + a * dist_sq_safe.sqrt().powf(T::from(2.0).unwrap() * b);
+    let mut grad_coeff = lr * four * b / (dist_sq_safe * denom);
 
-    let denom = T::one() + a * dist_pow;
-
-    // Gradient: 2b / (d^2 * (1 + a*d^(2b)))
-    let grad_coeff = lr * T::from(2.0).unwrap() * b / (dist_sq_safe * denom);
+    let clip_val = T::from(4.0).unwrap();
+    if grad_coeff > clip_val {
+        grad_coeff = clip_val;
+    } else if grad_coeff < -clip_val {
+        grad_coeff = -clip_val;
+    }
 
     let n_dim = embd[i].len();
     for d in 0..n_dim {
         let delta = embd[i][d] - embd[j][d];
-        embd[i][d] = embd[i][d] - grad_coeff * delta;
+        embd[i][d] = embd[i][d] + grad_coeff * delta;
     }
 }
 
@@ -324,7 +320,7 @@ pub fn optimise_embedding<T>(
         .map(|(_, _, w)| {
             let norm = (*w / max_weight).to_f64().unwrap();
             if norm > 0.0 {
-                params.n_epochs as f64 / norm
+                1.0 / norm
             } else {
                 f64::INFINITY
             }
@@ -506,8 +502,8 @@ mod test_optimiser {
         apply_repulsive_force(&mut embd, i, j, a, b, lr);
 
         assert!(
-            embd[0][0] > initial_pos[0],
-            "Point moved from {} to {}",
+            embd[0][0] < initial_pos[0],
+            "Point should move away from j: moved from {} to {}",
             initial_pos[0],
             embd[0][0]
         );
