@@ -1,0 +1,10 @@
+[package]
+name = "manifold-rs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ann-search-rs = "0.1.2"
+num-traits = "0.2.19"
+rayon = "1.11.0"
+rustc-hash = "2.1.1"
