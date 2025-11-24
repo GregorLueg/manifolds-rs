@@ -1,4 +1,4 @@
-# manifold-rs
+# manifolds-rs
 
 High-performance manifold learning and dimensionality reduction algorithms 
 implemented in Rust.
@@ -9,11 +9,13 @@ Rust implementation of UMAP (Uniform Manifold Approximation and Projection), a
 manifold learning technique for dimensionality reduction. UMAP is a commonly 
 used method for visualising high-dimensional biological data, but not without
 [controversy](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1011288).
-This package implements a fast UMAP version in Rust.
+This package implements a fast UMAP version in Rust. In the future other
+versions might be implemented (for example parametric UMAP).
 
 ## Features
 
-- **UMAP algorithm**: Complete implementation of the UMAP dimensionality reduction algorithm
+- **UMAP algorithm**: Complete implementation of the UMAP dimensionality 
+reduction algorithm
 - **Multiple ANN backends**: 
   - Annoy (Approximate Nearest Neighbours Oh Yeah)
   - HNSW (Hierarchical Navigable Small World)
@@ -21,9 +23,12 @@ This package implements a fast UMAP version in Rust.
 - **Distance metrics**:
   - Euclidean
   - Cosine
-- **Spectral initialisation**: Graph Laplacian eigenvector-based initialisation using Lanczos iteration
-- **Customisable parameters**: Full control over fuzzy simplicial set construction, graph symmetrisation, and optimisation
-- **High performance**: Parallel processing with Rayon, efficient sparse matrix operations, and optimised SGD
+- **Spectral initialisation**: Graph Laplacian eigenvector-based initialisation 
+using Lanczos iteration
+- **Customisable parameters**: Full control over fuzzy simplicial set 
+construction, graph symmetrisation, and optimisation
+- **High performance**: Parallel processing with Rayon, efficient sparse matrix
+operations, and optimised SGD
 
 ## Installation
 

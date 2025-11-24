@@ -1,5 +1,5 @@
 [package]
-name = "manifold-rs"
+name = "manifolds-rs"
 version = "0.1.0"
 edition = "2021"
 authors = ["Gregor Lueg <gregorlueg@me.com>"]
@@ -8,7 +8,7 @@ repository = "https://github.com/GregorLueg/manifold-rs"
 description = "Embedding methods implemented into Rust, starting with UMAP."
 
 [lib]
-name = "manifold_rs"
+name = "manifolds_rs"
 path = "src/lib.rs"
 
 [dependencies]
