@@ -192,3 +192,205 @@ where
 
     transposed
 }
+
+///////////
+// Tests //
+///////////
+
+#[cfg(test)]
+mod test_umap {
+    use super::*;
+    use faer::Mat;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+
+    #[test]
+    fn test_umap_separates_clusters() {
+        let mut rng = StdRng::seed_from_u64(12345);
+
+        // Create two well-separated clusters in high-dimensional space
+        let n_per_cluster = 50;
+        let n_dim_input = 10;
+
+        let mut data_vec = Vec::with_capacity(n_per_cluster * 2 * n_dim_input);
+
+        // Cluster 1: centred at origin
+        for _ in 0..n_per_cluster {
+            for _ in 0..n_dim_input {
+                data_vec.push(rng.random::<f32>() * 0.5);
+            }
+        }
+
+        // Cluster 2: centred at (10, 10, 10, ...)
+        for _ in 0..n_per_cluster {
+            for _ in 0..n_dim_input {
+                data_vec.push(10.0 + rng.random::<f32>() * 0.5);
+            }
+        }
+
+        let data = Mat::from_fn(n_per_cluster * 2, n_dim_input, |i, j| {
+            data_vec[i * n_dim_input + j]
+        });
+
+        let embedding = umap(
+            data.as_ref(),
+            2,
+            15,
+            "hnsw".into(),
+            &UmapParams::default(),
+            None,
+            None,
+            42,
+            false,
+        );
+
+        // Check embedding has correct shape
+        assert_eq!(embedding.len(), 2);
+        assert_eq!(embedding[0].len(), n_per_cluster * 2);
+
+        // Compute centroids of the two clusters in embedding space
+        let mut centroid1 = [0.0f32; 2];
+        let mut centroid2 = [0.0f32; 2];
+
+        for i in 0..n_per_cluster {
+            centroid1[0] += embedding[0][i];
+            centroid1[1] += embedding[1][i];
+        }
+        for i in n_per_cluster..(n_per_cluster * 2) {
+            centroid2[0] += embedding[0][i];
+            centroid2[1] += embedding[1][i];
+        }
+
+        centroid1[0] /= n_per_cluster as f32;
+        centroid1[1] /= n_per_cluster as f32;
+        centroid2[0] /= n_per_cluster as f32;
+        centroid2[1] /= n_per_cluster as f32;
+
+        // Distance between cluster centroids
+        let centroid_dist =
+            ((centroid1[0] - centroid2[0]).powi(2) + (centroid1[1] - centroid2[1]).powi(2)).sqrt();
+
+        assert!(
+            centroid_dist > 2.0,
+            "Clusters should be separated (distance: {:.2})",
+            centroid_dist
+        );
+
+        // Check spread
+        let mean_x: f32 = embedding[0].iter().sum::<f32>() / embedding[0].len() as f32;
+        let mean_y: f32 = embedding[1].iter().sum::<f32>() / embedding[1].len() as f32;
+
+        let var_x: f32 = embedding[0]
+            .iter()
+            .map(|&x| (x - mean_x).powi(2))
+            .sum::<f32>()
+            / embedding[0].len() as f32;
+        let var_y: f32 = embedding[1]
+            .iter()
+            .map(|&y| (y - mean_y).powi(2))
+            .sum::<f32>()
+            / embedding[1].len() as f32;
+
+        assert!(
+            var_x > 0.5 && var_y > 0.5,
+            "Embedding should have spread (var_x: {:.2}, var_y: {:.2})",
+            var_x,
+            var_y
+        );
+    }
+
+    #[test]
+    fn test_umap_separates_clusters_different_seed() {
+        let mut rng = StdRng::seed_from_u64(42);
+
+        // Create two well-separated clusters in high-dimensional space
+        let n_per_cluster = 50;
+        let n_dim_input = 10;
+
+        let mut data_vec = Vec::with_capacity(n_per_cluster * 2 * n_dim_input);
+
+        // Cluster 1: centred at origin
+        for _ in 0..n_per_cluster {
+            for _ in 0..n_dim_input {
+                data_vec.push(rng.random::<f32>() * 0.5);
+            }
+        }
+
+        // Cluster 2: centred at (10, 10, 10, ...)
+        for _ in 0..n_per_cluster {
+            for _ in 0..n_dim_input {
+                data_vec.push(10.0 + rng.random::<f32>() * 0.5);
+            }
+        }
+
+        let data = Mat::from_fn(n_per_cluster * 2, n_dim_input, |i, j| {
+            data_vec[i * n_dim_input + j]
+        });
+
+        let embedding = umap(
+            data.as_ref(),
+            2,
+            15,
+            "hnsw".into(),
+            &UmapParams::default(),
+            None,
+            None,
+            42,
+            false,
+        );
+
+        // Check embedding has correct shape
+        assert_eq!(embedding.len(), 2);
+        assert_eq!(embedding[0].len(), n_per_cluster * 2);
+
+        // Compute centroids of the two clusters in embedding space
+        let mut centroid1 = [0.0f32; 2];
+        let mut centroid2 = [0.0f32; 2];
+
+        for i in 0..n_per_cluster {
+            centroid1[0] += embedding[0][i];
+            centroid1[1] += embedding[1][i];
+        }
+        for i in n_per_cluster..(n_per_cluster * 2) {
+            centroid2[0] += embedding[0][i];
+            centroid2[1] += embedding[1][i];
+        }
+
+        centroid1[0] /= n_per_cluster as f32;
+        centroid1[1] /= n_per_cluster as f32;
+        centroid2[0] /= n_per_cluster as f32;
+        centroid2[1] /= n_per_cluster as f32;
+
+        // Distance between cluster centroids
+        let centroid_dist =
+            ((centroid1[0] - centroid2[0]).powi(2) + (centroid1[1] - centroid2[1]).powi(2)).sqrt();
+
+        assert!(
+            centroid_dist > 2.0,
+            "Clusters should be separated (distance: {:.2})",
+            centroid_dist
+        );
+
+        // Check spread
+        let mean_x: f32 = embedding[0].iter().sum::<f32>() / embedding[0].len() as f32;
+        let mean_y: f32 = embedding[1].iter().sum::<f32>() / embedding[1].len() as f32;
+
+        let var_x: f32 = embedding[0]
+            .iter()
+            .map(|&x| (x - mean_x).powi(2))
+            .sum::<f32>()
+            / embedding[0].len() as f32;
+        let var_y: f32 = embedding[1]
+            .iter()
+            .map(|&y| (y - mean_y).powi(2))
+            .sum::<f32>()
+            / embedding[1].len() as f32;
+
+        assert!(
+            var_x > 0.5 && var_y > 0.5,
+            "Embedding should have spread (var_x: {:.2}, var_y: {:.2})",
+            var_x,
+            var_y
+        );
+    }
+}
