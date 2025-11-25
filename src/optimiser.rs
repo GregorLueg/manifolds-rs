@@ -398,23 +398,13 @@ fn apply_repulsive_force_flat<T: Float>(
 // Main functions //
 ////////////////////
 
-/// Optimise embedding using parallel Adam optimiser
+/// Optimise embedding using Adam matching uwot/UMAP behaviour
 ///
-/// Iteratively applies attractive forces (from connected edges) and repulsive
-/// forces (via negative sampling) to optimise the low-dimensional embedding.
-/// Uses Adam optimisation with parallel processing for speed.
-///
-/// ### Params
-///
-/// * `embd` - Initial embedding coordinates (modified in place)
-/// * `graph` - Adjacency list representation of the high-dimensional graph
-/// * `params` - Optimisation parameters (a, b, learning rate, epochs, etc.)
-/// * `seed` - Random seed for negative sampling
-/// * `verbose` - Controls verbosity of the function
-///
-/// ### Notes
-///
-/// Processes edges in random order each epoch.
+/// KEY DIFFERENCES from your version:
+/// 1. Edges sampled based on epochs_per_sample (not all edges every epoch)
+/// 2. NO gradient normalisation by edge count
+/// 3. Negative sampling tracked per edge
+/// 4. Bias correction applied to moments before computing update
 pub fn optimise_embedding_adam<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
@@ -427,129 +417,175 @@ pub fn optimise_embedding_adam<T>(
     let n = embd.len();
     let n_dim = embd[0].len();
 
-    // flatten embedding for cache locality
+    // Flatten embedding for cache locality
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
     for point in embd.iter() {
         embd_flat.extend_from_slice(point);
     }
 
-    // precompute constants
     let consts = OptimConstants::new(params.a, params.b);
 
-    // adam state as flat arrays
+    // Build edge list with weights
+    let mut edges: Vec<(usize, usize, T)> = Vec::new();
+    for (i, neighbours) in graph.iter().enumerate() {
+        for &(j, w) in neighbours {
+            edges.push((i, j, w));
+        }
+    }
+
+    if edges.is_empty() {
+        return;
+    }
+
+    // Find max weight for normalisation
+    let max_weight =
+        edges
+            .iter()
+            .map(|(_, _, w)| *w)
+            .fold(T::zero(), |acc, w| if w > acc { w } else { acc });
+
+    // CRITICAL: epochs_per_sample determines sampling frequency
+    // Higher weight edges are sampled more frequently
+    let epochs_per_sample: Vec<T> = edges
+        .iter()
+        .map(|(_, _, w)| {
+            let norm = *w / max_weight;
+            if norm > T::zero() {
+                T::one() / norm
+            } else {
+                T::from(1e8).unwrap()
+            }
+        })
+        .collect();
+
+    // Track when each edge should be sampled next
+    let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
+
+    // Track negative sampling per edge
+    let epochs_per_neg_sample: Vec<T> = epochs_per_sample
+        .iter()
+        .map(|eps| *eps / T::from(params.neg_sample_rate).unwrap())
+        .collect();
+    let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
+
+    // Learning rate schedule
+    let n_epochs_f = T::from(params.n_epochs).unwrap();
+    let lr_schedule: Vec<T> = (0..params.n_epochs)
+        .map(|e| params.lr * (T::one() - T::from(e).unwrap() / n_epochs_f))
+        .collect();
+
+    // Adam state - NO normalisation by edge count
     let mut m: Vec<T> = vec![T::zero(); n * n_dim];
     let mut v: Vec<T> = vec![T::zero(); n * n_dim];
 
-    // precompute learning rate schedule
-    let n_epochs_f = params.n_epochs as f64;
-    let lr_schedule: Vec<T> = (0..params.n_epochs)
-        .map(|e| params.lr * T::from_f64(1.0 - e as f64 / n_epochs_f).unwrap())
+    // RNG per vertex
+    let mut rng_states: Vec<StdRng> = (0..n)
+        .map(|i| StdRng::seed_from_u64(seed + i as u64))
         .collect();
 
-    // gradient buffer (reused each epoch)
-    let mut gradients: Vec<T> = vec![T::zero(); n * n_dim];
-
+    // Main optimisation loop
     for epoch in 0..params.n_epochs {
-        let t = T::from(epoch + 1).unwrap();
         let lr = lr_schedule[epoch];
+        let epoch_t = T::from(epoch).unwrap();
+        let t = T::from(epoch + 1).unwrap();
 
-        // zero gradients
-        gradients.fill(T::zero());
+        // Accumulate gradients (NOT normalised by edge count!)
+        let mut gradients: Vec<T> = vec![T::zero(); n * n_dim];
 
-        // compute gradients in parallel
-        let grad_chunks: Vec<Vec<T>> = (0..n)
-            .into_par_iter()
-            .map(|i| {
-                let mut local_grad = vec![T::zero(); n_dim];
-                let mut rng = StdRng::seed_from_u64(seed + epoch as u64 * n as u64 + i as u64);
+        // CRITICAL: Only process edges whose epoch_of_next_sample has arrived
+        for (edge_idx, &(i, j, _weight)) in edges.iter().enumerate() {
+            if epoch_of_next_sample[edge_idx] > epoch_t {
+                continue;
+            }
 
-                if graph[i].is_empty() {
-                    return local_grad;
-                }
+            let base_i = i * n_dim;
+            let base_j = j * n_dim;
 
-                let base_i = i * n_dim;
+            // Compute squared distance
+            let mut dist_sq = T::zero();
+            for d in 0..n_dim {
+                let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
+                dist_sq = dist_sq + diff * diff;
+            }
 
-                for &(j, w) in &graph[i] {
-                    // attractive gradient <- in lined now
-                    let base_j = j * n_dim;
-                    let mut dist_sq = T::zero();
-                    for d in 0..n_dim {
-                        let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
-                        dist_sq = dist_sq + diff * diff;
-                    }
+            // Attractive force gradient (matches Python exactly)
+            if dist_sq >= T::from(1e-8).unwrap() {
+                let dist_sq_b = dist_sq.powf(consts.b);
+                let denom = T::one() + consts.a * dist_sq_b;
+                let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
 
-                    if dist_sq >= T::from(1e-8).unwrap() {
-                        let dist_sq_b = dist_sq.powf(consts.b);
-                        let denom = T::one() + consts.a * dist_sq_b;
-                        let grad_coeff = w * consts.two_a_b * dist_sq_b / (dist_sq * denom);
-
-                        for d in 0..n_dim {
-                            let delta = embd_flat[base_j + d] - embd_flat[base_i + d];
-                            local_grad[d] = local_grad[d] + grad_coeff * delta;
-                        }
-                    }
-
-                    // negative sampling
-                    for _ in 0..params.neg_sample_rate {
-                        let k = rng.random_range(0..n);
-                        if k == i {
-                            continue;
-                        }
-
-                        // also inlined now directly...
-                        let base_k = k * n_dim;
-                        let mut dist_sq = T::zero();
-                        for d in 0..n_dim {
-                            let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
-                            dist_sq = dist_sq + diff * diff;
-                        }
-
-                        let dist_sq_safe = dist_sq + consts.eps;
-                        let dist_sq_b = dist_sq_safe.powf(consts.b);
-                        let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
-                        let grad_coeff = (consts.two_b / denom)
-                            .max(-consts.clip_val)
-                            .min(consts.clip_val);
-
-                        for d in 0..n_dim {
-                            let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
-                            local_grad[d] = local_grad[d] + grad_coeff * delta;
-                        }
-                    }
-                }
-
-                // normalise by edge count
-                let n_edges = T::from(graph[i].len()).unwrap();
                 for d in 0..n_dim {
-                    local_grad[d] = local_grad[d] / n_edges;
+                    let delta = embd_flat[base_j + d] - embd_flat[base_i + d];
+                    let grad = grad_coeff * delta;
+
+                    // Accumulate gradients for both vertices
+                    gradients[base_i + d] = gradients[base_i + d] + grad;
+                    gradients[base_j + d] = gradients[base_j + d] - grad;
+                }
+            }
+
+            // Update when this edge should be sampled next
+            epoch_of_next_sample[edge_idx] =
+                epoch_of_next_sample[edge_idx] + epochs_per_sample[edge_idx];
+
+            // Negative sampling - calculate how many to do now
+            let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
+                / epochs_per_neg_sample[edge_idx])
+                .floor()
+                .to_usize()
+                .unwrap_or(0);
+
+            for _ in 0..n_neg_samples {
+                let k = rng_states[i].random_range(0..n);
+
+                if k == i {
+                    continue;
                 }
 
-                local_grad
-            })
-            .collect();
+                let base_k = k * n_dim;
 
-        // copy parallel results into flat gradient array
-        for (i, local_grad) in grad_chunks.into_iter().enumerate() {
-            let base = i * n_dim;
-            gradients[base..(n_dim + base)].copy_from_slice(&local_grad[..n_dim]);
+                // Compute squared distance to negative sample
+                let mut dist_sq = T::zero();
+                for d in 0..n_dim {
+                    let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
+                    dist_sq = dist_sq + diff * diff;
+                }
+
+                // Repulsive force
+                let dist_sq_safe = dist_sq + consts.eps;
+                let dist_sq_b = dist_sq_safe.powf(consts.b);
+                let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
+                let grad_coeff = (consts.two_b / denom)
+                    .max(-consts.clip_val)
+                    .min(consts.clip_val);
+
+                for d in 0..n_dim {
+                    let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
+                    gradients[base_i + d] = gradients[base_i + d] + grad_coeff * delta;
+                }
+            }
+
+            // Update negative sampling tracker
+            epoch_of_next_neg_sample[edge_idx] = epoch_of_next_neg_sample[edge_idx]
+                + T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
         }
 
-        // adam update
+        // Adam update with bias correction
         let bias_correction1 = T::one() - params.beta1.powf(t);
         let bias_correction2 = T::one() - params.beta2.powf(t);
 
         for idx in 0..(n * n_dim) {
             let g = gradients[idx];
 
-            // update moments
+            // Update moments
             m[idx] = params.beta1 * m[idx] + (T::one() - params.beta1) * g;
             v[idx] = params.beta2 * v[idx] + (T::one() - params.beta2) * g * g;
 
-            // bias-corrected moments
+            // Bias-corrected moments
             let m_hat = m[idx] / bias_correction1;
             let v_hat = v[idx] / bias_correction2;
 
-            // update embedding
+            // Update embedding
             embd_flat[idx] = embd_flat[idx] + lr * m_hat / (v_hat.sqrt() + params.eps);
         }
 
@@ -558,6 +594,7 @@ pub fn optimise_embedding_adam<T>(
         }
     }
 
+    // Unflatten
     for (i, point) in embd.iter_mut().enumerate() {
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
