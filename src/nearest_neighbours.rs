@@ -25,15 +25,18 @@ pub enum AnnSearch {
 ///
 /// **Annoy**-specific parameter**:
 ///
-/// * `n_trees` - Number of trees to use to build the index.
-/// * `search_budget` - Search budget per tree during querying of the index.
+/// * `n_trees` - Number of trees to use to build the index. Defaults to `50`
+///   like the `uwot` package.
+/// * `search_budget` - Multiplier. The algorithm will set the search budget to
+///   `search_budget * k * n_trees`
 ///
 /// **HNSW**-specific parameter:
 ///
-/// * `m` - Number of bidirectional connections per layer.
+/// * `m` - Number of bidirectional connections per layer. Defaults to 16 based
+///   on uwot R package.
 /// * `ef_construction` - Size of candidate list during construction.
-/// * `ef_search` - Size of candidate list during search (higher = better
-///   recall, slower)
+/// * `ef_search` - Multipler. Size of candidate list during search (higher =
+///   better recall, slower). The total search will be `ef_search * k`.
 ///
 /// **NNDescent**-specific parameter
 ///
@@ -66,11 +69,11 @@ where
     fn default() -> Self {
         Self {
             dist_metric: "cosine".to_string(),
-            n_trees: 100,
-            search_budget: 100,
-            m: 32,
-            ef_construction: 100,
-            ef_search: 100,
+            n_trees: 50,
+            search_budget: 2,
+            m: 16,
+            ef_construction: 200,
+            ef_search: 2,
             max_iter: 25,
             delta: T::from(0.001).unwrap(),
             rho: T::from(1.0).unwrap(),
@@ -135,7 +138,7 @@ where
                 &index,
                 &params_nn.dist_metric,
                 k + 1,
-                params_nn.search_budget,
+                params_nn.search_budget * k * params_nn.n_trees,
                 true,
                 verbose,
             )
@@ -150,7 +153,7 @@ where
                 verbose,
             );
 
-            query_hnsw_index(data, &index, k + 1, params_nn.ef_search, true, verbose)
+            query_hnsw_index(data, &index, k + 1, params_nn.ef_search * k, true, verbose)
         }
         AnnSearch::NNDescent => generate_knn_nndescent_with_dist(
             data,
