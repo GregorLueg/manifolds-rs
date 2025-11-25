@@ -432,7 +432,6 @@ fn apply_repulsive_force_flat<T: Float>(
 ///
 /// * `embd` - Initial embedding coordinates (modified in place)
 /// * `graph` - Adjacency list representation of the high-dimensional graph
-/// * `gamma` - Gamma parameter. Regulates the repulsion between points.
 /// * `params` - Optimisation parameters
 /// * `seed` - Random seed for negative sampling
 /// * `verbose` - Controls verbosity of the function
@@ -557,9 +556,8 @@ pub fn optimise_embedding_sgd<T>(
     }
 }
 
-/// Optimise embedding using Adam matching uwot/UMAP behaviour
+/// Optimise embedding using Adam
 ///
-/// KEY DIFFERENCES from your version:
 /// 1. Edges sampled based on epochs_per_sample (not all edges every epoch)
 /// 2. NO gradient normalisation by edge count
 /// 3. Negative sampling tracked per edge
@@ -576,7 +574,6 @@ pub fn optimise_embedding_adam<T>(
     let n = embd.len();
     let n_dim = embd[0].len();
 
-    // Flatten embedding
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
     for point in embd.iter() {
         embd_flat.extend_from_slice(point);
@@ -584,7 +581,6 @@ pub fn optimise_embedding_adam<T>(
 
     let consts = OptimConstants::new(params.a, params.b, params.gamma);
 
-    // Build edge list
     let mut edges: Vec<(usize, usize, T)> = Vec::new();
     for (i, neighbours) in graph.iter().enumerate() {
         for &(j, w) in neighbours {
@@ -622,29 +618,25 @@ pub fn optimise_embedding_adam<T>(
         .collect();
     let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
 
-    // Learning rate schedule
     let n_epochs_f = T::from(params.n_epochs).unwrap();
     let lr_schedule: Vec<T> = (0..params.n_epochs)
         .map(|e| params.lr * (T::one() - T::from(e).unwrap() / n_epochs_f))
         .collect();
 
-    // Adam state - PER COORDINATE (not per vertex!)
     let mut m: Vec<T> = vec![T::zero(); n * n_dim];
     let mut v: Vec<T> = vec![T::zero(); n * n_dim];
-
-    // Track timestep per coordinate (for bias correction)
-    let mut timesteps: Vec<usize> = vec![0; n * n_dim];
 
     let mut rng_states: Vec<StdRng> = (0..n)
         .map(|i| StdRng::seed_from_u64(seed + i as u64))
         .collect();
 
-    // Main optimization loop
+    // Global timestep for bias correction
+    let mut global_timestep = 0;
+
     for epoch in 0..params.n_epochs {
         let lr = lr_schedule[epoch];
         let epoch_t = T::from(epoch).unwrap();
 
-        // Process edges one at a time (matching uwot's EdgeWorker behavior)
         for (edge_idx, &(i, j, _weight)) in edges.iter().enumerate() {
             if epoch_of_next_sample[edge_idx] > epoch_t {
                 continue;
@@ -653,7 +645,6 @@ pub fn optimise_embedding_adam<T>(
             let base_i = i * n_dim;
             let base_j = j * n_dim;
 
-            // Compute attractive gradient for this edge only
             let mut dist_sq = T::zero();
             for d in 0..n_dim {
                 let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
@@ -661,39 +652,35 @@ pub fn optimise_embedding_adam<T>(
             }
 
             if dist_sq >= T::from(1e-8).unwrap() {
+                global_timestep += 1;
+                let t = T::from(global_timestep).unwrap();
+
+                // Pre-compute bias correction factors once
+                let bias_corr_m = T::one() / (T::one() - params.beta1.powf(t));
+                let bias_corr_v = T::one() / (T::one() - params.beta2.powf(t));
+
                 let dist_sq_b = dist_sq.powf(consts.b);
                 let denom = T::one() + consts.a * dist_sq_b;
                 let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
 
-                // Update vertices i and j with Adam immediately
                 for d in 0..n_dim {
                     let delta = embd_flat[base_j + d] - embd_flat[base_i + d];
                     let grad = grad_coeff * delta;
 
-                    // Update vertex i
+                    // Update i
                     let idx_i = base_i + d;
-                    timesteps[idx_i] += 1;
-                    let t = T::from(timesteps[idx_i]).unwrap();
-
                     m[idx_i] = params.beta1 * m[idx_i] + (T::one() - params.beta1) * grad;
                     v[idx_i] = params.beta2 * v[idx_i] + (T::one() - params.beta2) * grad * grad;
-
-                    let m_hat = m[idx_i] / (T::one() - params.beta1.powf(t));
-                    let v_hat = v[idx_i] / (T::one() - params.beta2.powf(t));
-
+                    let m_hat = m[idx_i] * bias_corr_m;
+                    let v_hat = v[idx_i] * bias_corr_v;
                     embd_flat[idx_i] = embd_flat[idx_i] + lr * m_hat / (v_hat.sqrt() + params.eps);
 
-                    // Update vertex j (symmetric)
+                    // Update j
                     let idx_j = base_j + d;
-                    timesteps[idx_j] += 1;
-                    let t_j = T::from(timesteps[idx_j]).unwrap();
-
                     m[idx_j] = params.beta1 * m[idx_j] - (T::one() - params.beta1) * grad;
                     v[idx_j] = params.beta2 * v[idx_j] + (T::one() - params.beta2) * grad * grad;
-
-                    let m_hat_j = m[idx_j] / (T::one() - params.beta1.powf(t_j));
-                    let v_hat_j = v[idx_j] / (T::one() - params.beta2.powf(t_j));
-
+                    let m_hat_j = m[idx_j] * bias_corr_m;
+                    let v_hat_j = v[idx_j] * bias_corr_v;
                     embd_flat[idx_j] =
                         embd_flat[idx_j] + lr * m_hat_j / (v_hat_j.sqrt() + params.eps);
                 }
@@ -702,7 +689,6 @@ pub fn optimise_embedding_adam<T>(
             epoch_of_next_sample[edge_idx] =
                 epoch_of_next_sample[edge_idx] + epochs_per_sample[edge_idx];
 
-            // Negative sampling
             let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
                 / epochs_per_neg_sample[edge_idx])
                 .floor()
@@ -714,6 +700,11 @@ pub fn optimise_embedding_adam<T>(
                 if k == i {
                     continue;
                 }
+
+                global_timestep += 1;
+                let t = T::from(global_timestep).unwrap();
+                let bias_corr_m = T::one() / (T::one() - params.beta1.powf(t));
+                let bias_corr_v = T::one() / (T::one() - params.beta2.powf(t));
 
                 let base_k = k * n_dim;
 
@@ -730,21 +721,15 @@ pub fn optimise_embedding_adam<T>(
                     .max(-consts.clip_val)
                     .min(consts.clip_val);
 
-                // Update vertex i with Adam immediately (only i, not k)
                 for d in 0..n_dim {
                     let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
                     let grad = grad_coeff * delta;
 
                     let idx = base_i + d;
-                    timesteps[idx] += 1;
-                    let t = T::from(timesteps[idx]).unwrap();
-
                     m[idx] = params.beta1 * m[idx] + (T::one() - params.beta1) * grad;
                     v[idx] = params.beta2 * v[idx] + (T::one() - params.beta2) * grad * grad;
-
-                    let m_hat = m[idx] / (T::one() - params.beta1.powf(t));
-                    let v_hat = v[idx] / (T::one() - params.beta2.powf(t));
-
+                    let m_hat = m[idx] * bias_corr_m;
+                    let v_hat = v[idx] * bias_corr_v;
                     embd_flat[idx] = embd_flat[idx] + lr * m_hat / (v_hat.sqrt() + params.eps);
                 }
             }
@@ -758,7 +743,6 @@ pub fn optimise_embedding_adam<T>(
         }
     }
 
-    // Unflatten
     for (i, point) in embd.iter_mut().enumerate() {
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
