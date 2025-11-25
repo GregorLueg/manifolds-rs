@@ -200,6 +200,7 @@ pub enum Optimiser {
 /// * `a` - The a parameter.
 /// * `b` - The b parameter.
 /// * `two_b` - b multiplied with 2.
+/// * `four_b` - b multiplied with 4.
 /// * `two_a_b` - The product of `2 * a * b`.
 /// * `clip_val` - The clipping value, i.e., `4.0`.
 /// * `eps` - The epsilon value
@@ -207,6 +208,7 @@ struct OptimConstants<T> {
     a: T,
     b: T,
     two_b: T,
+    four_b: T,
     two_a_b: T,
     clip_val: T,
     eps: T,
@@ -227,10 +229,12 @@ impl<T: Float + FromPrimitive> OptimConstants<T> {
     /// Self with all pre-calculated values.
     fn new(a: T, b: T) -> Self {
         let two = T::from_f64(2.0).unwrap();
+        let four = T::from_f64(4.0).unwrap();
         Self {
             a,
             b,
             two_b: two * b,
+            four_b: four * b,
             two_a_b: two * a * b,
             clip_val: T::from_f64(4.0).unwrap(),
             eps: T::from_f64(0.001).unwrap(),
@@ -378,7 +382,7 @@ fn apply_repulsive_force_flat<T: Float>(
     let dist_sq_b = dist_sq_safe.powf(consts.b);
     let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
 
-    let grad_coeff = (lr * consts.two_b / denom)
+    let grad_coeff = (lr * consts.four_b / denom)
         .max(-consts.clip_val)
         .min(consts.clip_val);
 
