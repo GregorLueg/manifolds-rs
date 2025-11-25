@@ -564,11 +564,7 @@ pub fn optimise_embedding_adam<T>(
     }
 }
 
-/// Optimise embedding using parallel vanilla SGD
-///
-/// Uses the same parallel gradient computation as Adam but applies simple
-/// SGD updates without momentum. Useful for comparing optimisation algorithms
-/// on equal footing (both parallelised).
+/// Optimise embedding using SGD
 ///
 /// ### Params
 ///
@@ -589,16 +585,13 @@ pub fn optimise_embedding_sgd<T>(
     let n = embd.len();
     let n_dim = embd[0].len();
 
-    // flatten embedding for cache locality
+    // Flatten embedding for cache locality
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
     for point in embd.iter() {
         embd_flat.extend_from_slice(point);
     }
 
-    // precompute constants
-    let consts = OptimConstants::new(params.a, params.b);
-
-    // build edge list
+    // Build edge list with weights
     let mut edges: Vec<(usize, usize, T)> = Vec::new();
     for (i, neighbours) in graph.iter().enumerate() {
         for &(j, w) in neighbours {
@@ -610,56 +603,155 @@ pub fn optimise_embedding_sgd<T>(
         return;
     }
 
-    // find max weight for epoch sampling
+    // Find max weight for normalisation
     let max_weight =
         edges
             .iter()
             .map(|(_, _, w)| *w)
             .fold(T::zero(), |acc, w| if w > acc { w } else { acc });
 
-    // epochs per sample (higher weight = more frequent updates)
-    let epochs_per_sample: Vec<f64> = edges
+    // DIFFERENCE 1: epochs_per_sample determines sampling frequency (higher weight = more frequent)
+    // Python: edges with stronger weights get sampled more often
+    let epochs_per_sample: Vec<T> = edges
         .iter()
         .map(|(_, _, w)| {
-            let norm = (*w / max_weight).to_f64().unwrap();
-            if norm > 0.0 {
-                1.0 / norm
+            let norm = (*w / max_weight);
+            if norm > T::zero() {
+                T::one() / norm
             } else {
-                f64::INFINITY
+                T::from(1e8).unwrap() // effectively infinite
             }
         })
         .collect();
 
-    // precompute learning rate schedule
-    let n_epochs_f = params.n_epochs as f64;
+    // DIFFERENCE 2: Track when each edge should be sampled next
+    let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
+
+    // DIFFERENCE 3: Track negative sampling per edge independently
+    let epochs_per_neg_sample: Vec<T> = epochs_per_sample
+        .iter()
+        .map(|eps| *eps / T::from(params.neg_sample_rate).unwrap())
+        .collect();
+    let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
+
+    // Learning rate schedule
+    let n_epochs_f = T::from(params.n_epochs).unwrap();
     let lr_schedule: Vec<T> = (0..params.n_epochs)
-        .map(|e| params.lr * T::from_f64(1.0 - e as f64 / n_epochs_f).unwrap())
+        .map(|e| params.lr * (T::one() - T::from(e).unwrap() / n_epochs_f))
         .collect();
 
-    let mut rng = StdRng::seed_from_u64(seed);
-    let mut epoch_next_sample = vec![0.0f64; edges.len()];
+    // RNG state per vertex (Python uses rng_state_per_sample indexed by head vertex)
+    let mut rng_states: Vec<StdRng> = (0..n)
+        .map(|i| StdRng::seed_from_u64(seed + i as u64))
+        .collect();
 
-    // main loop
+    // Main optimisation loop
     for epoch in 0..params.n_epochs {
         let lr = lr_schedule[epoch];
-        let epoch_f = epoch as f64;
+        let epoch_t = T::from(epoch).unwrap();
 
-        for (edge_idx, &(i, j, w)) in edges.iter().enumerate() {
-            if epoch_next_sample[edge_idx] > epoch_f {
+        // DIFFERENCE 4: Only process edges whose epoch_of_next_sample has arrived
+        for (edge_idx, &(i, j, _weight)) in edges.iter().enumerate() {
+            if epoch_of_next_sample[edge_idx] > epoch_t {
                 continue;
             }
-            epoch_next_sample[edge_idx] += epochs_per_sample[edge_idx];
 
-            // attractive force
-            apply_attractive_force_flat(&mut embd_flat, i, j, n_dim, w, &consts, lr);
+            let base_i = i * n_dim;
+            let base_j = j * n_dim;
 
-            // negative sampling
-            for _ in 0..params.neg_sample_rate {
-                let k = rng.random_range(0..n);
-                if k != i {
-                    apply_repulsive_force_flat(&mut embd_flat, i, k, n_dim, &consts, lr);
+            // Compute squared distance
+            let mut dist_sq = T::zero();
+            for d in 0..n_dim {
+                let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
+                dist_sq = dist_sq + diff * diff;
+            }
+
+            // DIFFERENCE 5: Attractive force gradient formula matches Python exactly
+            // Python: grad_coeff = -2.0 * a * b * pow(dist_squared, b - 1.0) / (a * pow(dist_squared, b) + 1.0)
+            // Note: dist_sq is already d², so dist_sq^b = d^(2b)
+            let grad_coeff = if dist_sq > T::zero() {
+                let dist_sq_b = dist_sq.powf(params.b);
+                let numerator = -params.a
+                    * params.b
+                    * T::from(2.0).unwrap()
+                    * dist_sq.powf(params.b - T::one());
+                let denominator = params.a * dist_sq_b + T::one();
+                numerator / denominator
+            } else {
+                T::zero()
+            };
+
+            // Apply attractive force (NO gamma here, unlike your original)
+            for d in 0..n_dim {
+                // Python: grad_d = clip(grad_coeff * (current[d] - other[d]))
+                let grad_d = (grad_coeff * (embd_flat[base_i + d] - embd_flat[base_j + d]))
+                    .max(T::from(-4.0).unwrap())
+                    .min(T::from(4.0).unwrap());
+
+                embd_flat[base_i + d] = embd_flat[base_i + d] + grad_d * lr;
+                // Python also updates the tail (move_other=True default in most cases)
+                embd_flat[base_j + d] = embd_flat[base_j + d] - grad_d * lr;
+            }
+
+            // Update when this edge should be sampled next
+            epoch_of_next_sample[edge_idx] =
+                epoch_of_next_sample[edge_idx] + epochs_per_sample[edge_idx];
+
+            // DIFFERENCE 6: Negative sampling - calculate how many to do now
+            let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
+                / epochs_per_neg_sample[edge_idx])
+                .floor()
+                .to_usize()
+                .unwrap_or(0);
+
+            for _ in 0..n_neg_samples {
+                let k = rng_states[i].random_range(0..n);
+
+                if k == i {
+                    continue;
+                }
+
+                let base_k = k * n_dim;
+
+                // Compute squared distance to negative sample
+                let mut dist_sq = T::zero();
+                for d in 0..n_dim {
+                    let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
+                    dist_sq = dist_sq + diff * diff;
+                }
+
+                // DIFFERENCE 7: Repulsive force includes gamma factor (you were missing this!)
+                // Python: grad_coeff = 2.0 * gamma * b / ((0.001 + dist_squared) * (a * pow(dist_squared, b) + 1))
+                let grad_coeff = if dist_sq > T::zero() {
+                    let dist_sq_b = dist_sq.powf(params.b);
+                    let gamma = T::one(); // typically 1.0, but should be a parameter
+                    let numerator = T::from(2.0).unwrap() * gamma * params.b;
+                    let denominator =
+                        (T::from(0.001).unwrap() + dist_sq) * (params.a * dist_sq_b + T::one());
+                    numerator / denominator
+                } else if j == k {
+                    continue;
+                } else {
+                    T::zero()
+                };
+
+                // Apply repulsive force (only to i, not k)
+                for d in 0..n_dim {
+                    let grad_d = if grad_coeff > T::zero() {
+                        (grad_coeff * (embd_flat[base_i + d] - embd_flat[base_k + d]))
+                            .max(T::from(-4.0).unwrap())
+                            .min(T::from(4.0).unwrap())
+                    } else {
+                        T::zero()
+                    };
+
+                    embd_flat[base_i + d] = embd_flat[base_i + d] + grad_d * lr;
                 }
             }
+
+            // Update negative sampling tracker
+            epoch_of_next_neg_sample[edge_idx] = epoch_of_next_neg_sample[edge_idx]
+                + T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
         }
 
         if verbose && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
@@ -667,6 +759,7 @@ pub fn optimise_embedding_sgd<T>(
         }
     }
 
+    // Unflatten embedding
     for (i, point) in embd.iter_mut().enumerate() {
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
