@@ -630,8 +630,20 @@ pub fn optimise_embedding_adam<T>(
         .map(|i| StdRng::seed_from_u64(seed + i as u64))
         .collect();
 
-    // Global timestep for bias correction
+    // Pre-compute bias correction lookup table (first 10000 timesteps)
+    let max_lookup = 10000;
+    let mut bias_corr_m_lookup: Vec<T> = Vec::with_capacity(max_lookup);
+    let mut bias_corr_v_lookup: Vec<T> = Vec::with_capacity(max_lookup);
+
+    for t in 1..=max_lookup {
+        let t_f = T::from(t).unwrap();
+        bias_corr_m_lookup.push(T::one() / (T::one() - params.beta1.powf(t_f)));
+        bias_corr_v_lookup.push(T::one() / (T::one() - params.beta2.powf(t_f)));
+    }
+
     let mut global_timestep = 0;
+    let one_minus_beta1 = T::one() - params.beta1;
+    let one_minus_beta2 = T::one() - params.beta2;
 
     for epoch in 0..params.n_epochs {
         let lr = lr_schedule[epoch];
@@ -653,11 +665,16 @@ pub fn optimise_embedding_adam<T>(
 
             if dist_sq >= T::from(1e-8).unwrap() {
                 global_timestep += 1;
-                let t = T::from(global_timestep).unwrap();
 
-                // Pre-compute bias correction factors once
-                let bias_corr_m = T::one() / (T::one() - params.beta1.powf(t));
-                let bias_corr_v = T::one() / (T::one() - params.beta2.powf(t));
+                // Use lookup table or default to 1.0 for large timesteps
+                let (bias_corr_m, bias_corr_v) = if global_timestep < max_lookup {
+                    (
+                        bias_corr_m_lookup[global_timestep - 1],
+                        bias_corr_v_lookup[global_timestep - 1],
+                    )
+                } else {
+                    (T::one(), T::one())
+                };
 
                 let dist_sq_b = dist_sq.powf(consts.b);
                 let denom = T::one() + consts.a * dist_sq_b;
@@ -669,20 +686,19 @@ pub fn optimise_embedding_adam<T>(
 
                     // Update i
                     let idx_i = base_i + d;
-                    m[idx_i] = params.beta1 * m[idx_i] + (T::one() - params.beta1) * grad;
-                    v[idx_i] = params.beta2 * v[idx_i] + (T::one() - params.beta2) * grad * grad;
-                    let m_hat = m[idx_i] * bias_corr_m;
-                    let v_hat = v[idx_i] * bias_corr_v;
-                    embd_flat[idx_i] = embd_flat[idx_i] + lr * m_hat / (v_hat.sqrt() + params.eps);
+                    m[idx_i] = params.beta1 * m[idx_i] + one_minus_beta1 * grad;
+                    v[idx_i] = params.beta2 * v[idx_i] + one_minus_beta2 * grad * grad;
+                    embd_flat[idx_i] = embd_flat[idx_i]
+                        + lr * (m[idx_i] * bias_corr_m)
+                            / ((v[idx_i] * bias_corr_v).sqrt() + params.eps);
 
                     // Update j
                     let idx_j = base_j + d;
-                    m[idx_j] = params.beta1 * m[idx_j] - (T::one() - params.beta1) * grad;
-                    v[idx_j] = params.beta2 * v[idx_j] + (T::one() - params.beta2) * grad * grad;
-                    let m_hat_j = m[idx_j] * bias_corr_m;
-                    let v_hat_j = v[idx_j] * bias_corr_v;
-                    embd_flat[idx_j] =
-                        embd_flat[idx_j] + lr * m_hat_j / (v_hat_j.sqrt() + params.eps);
+                    m[idx_j] = params.beta1 * m[idx_j] - one_minus_beta1 * grad;
+                    v[idx_j] = params.beta2 * v[idx_j] + one_minus_beta2 * grad * grad;
+                    embd_flat[idx_j] = embd_flat[idx_j]
+                        + lr * (m[idx_j] * bias_corr_m)
+                            / ((v[idx_j] * bias_corr_v).sqrt() + params.eps);
                 }
             }
 
@@ -702,9 +718,14 @@ pub fn optimise_embedding_adam<T>(
                 }
 
                 global_timestep += 1;
-                let t = T::from(global_timestep).unwrap();
-                let bias_corr_m = T::one() / (T::one() - params.beta1.powf(t));
-                let bias_corr_v = T::one() / (T::one() - params.beta2.powf(t));
+                let (bias_corr_m, bias_corr_v) = if global_timestep < max_lookup {
+                    (
+                        bias_corr_m_lookup[global_timestep - 1],
+                        bias_corr_v_lookup[global_timestep - 1],
+                    )
+                } else {
+                    (T::one(), T::one())
+                };
 
                 let base_k = k * n_dim;
 
@@ -726,11 +747,11 @@ pub fn optimise_embedding_adam<T>(
                     let grad = grad_coeff * delta;
 
                     let idx = base_i + d;
-                    m[idx] = params.beta1 * m[idx] + (T::one() - params.beta1) * grad;
-                    v[idx] = params.beta2 * v[idx] + (T::one() - params.beta2) * grad * grad;
-                    let m_hat = m[idx] * bias_corr_m;
-                    let v_hat = v[idx] * bias_corr_v;
-                    embd_flat[idx] = embd_flat[idx] + lr * m_hat / (v_hat.sqrt() + params.eps);
+                    m[idx] = params.beta1 * m[idx] + one_minus_beta1 * grad;
+                    v[idx] = params.beta2 * v[idx] + one_minus_beta2 * grad * grad;
+                    embd_flat[idx] = embd_flat[idx]
+                        + lr * (m[idx] * bias_corr_m)
+                            / ((v[idx] * bias_corr_v).sqrt() + params.eps);
                 }
             }
 
