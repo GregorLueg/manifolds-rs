@@ -770,6 +770,233 @@ pub fn optimise_embedding_adam<T>(
     }
 }
 
+pub fn optimise_embedding_adam_parallel<T>(
+    embd: &mut [Vec<T>],
+    graph: &[Vec<(usize, T)>],
+    params: &OptimParams<T>,
+    seed: u64,
+    verbose: bool,
+) where
+    T: Float + FromPrimitive + Send + Sync,
+{
+    let n = embd.len();
+    let n_dim = embd[0].len();
+
+    let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
+    for point in embd.iter() {
+        embd_flat.extend_from_slice(point);
+    }
+
+    let consts = OptimConstants::new(params.a, params.b, params.gamma);
+
+    let mut edges: Vec<(usize, usize, T)> = Vec::new();
+    for (i, neighbours) in graph.iter().enumerate() {
+        for &(j, w) in neighbours {
+            edges.push((i, j, w));
+        }
+    }
+
+    if edges.is_empty() {
+        return;
+    }
+
+    let max_weight =
+        edges
+            .iter()
+            .map(|(_, _, w)| *w)
+            .fold(T::zero(), |acc, w| if w > acc { w } else { acc });
+
+    let epochs_per_sample: Vec<T> = edges
+        .iter()
+        .map(|(_, _, w)| {
+            let norm = *w / max_weight;
+            if norm > T::zero() {
+                T::one() / norm
+            } else {
+                T::from(1e8).unwrap()
+            }
+        })
+        .collect();
+
+    let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
+
+    let epochs_per_neg_sample: Vec<T> = epochs_per_sample
+        .iter()
+        .map(|eps| *eps / T::from(params.neg_sample_rate).unwrap())
+        .collect();
+    let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
+
+    let n_epochs_f = T::from(params.n_epochs).unwrap();
+    let lr_schedule: Vec<T> = (0..params.n_epochs)
+        .map(|e| params.lr * (T::one() - T::from(e).unwrap() / n_epochs_f))
+        .collect();
+
+    let mut m: Vec<T> = vec![T::zero(); n * n_dim];
+    let mut v: Vec<T> = vec![T::zero(); n * n_dim];
+
+    // Build BIDIRECTIONAL node-to-edges mapping
+    let mut node_edges: Vec<Vec<(usize, bool)>> = vec![Vec::new(); n];
+    for (edge_idx, &(i, j, _)) in edges.iter().enumerate() {
+        node_edges[i].push((edge_idx, true)); // head
+        node_edges[j].push((edge_idx, false)); // tail
+    }
+
+    // Pre-compute bias corrections
+    let bias_corrections: Vec<(T, T)> = (0..params.n_epochs)
+        .map(|epoch| {
+            let t = T::from(epoch + 1).unwrap();
+            let bc1 = T::one() - params.beta1.powf(t);
+            let bc2 = T::one() - params.beta2.powf(t);
+            (bc1, bc2)
+        })
+        .collect();
+
+    let one_minus_beta1 = T::one() - params.beta1;
+    let one_minus_beta2 = T::one() - params.beta2;
+
+    for epoch in 0..params.n_epochs {
+        let lr = lr_schedule[epoch];
+        let epoch_t = T::from(epoch).unwrap();
+        let (bias_correction1, bias_correction2) = bias_corrections[epoch];
+
+        // Parallel gradient accumulation
+        let updates: Vec<(usize, Vec<T>)> = (0..n)
+            .into_par_iter()
+            .filter_map(|node_i| {
+                let mut rng = StdRng::seed_from_u64(
+                    seed.wrapping_mul(6364136223846793005)
+                        .wrapping_add(node_i as u64)
+                        .wrapping_add((epoch as u64) << 32),
+                );
+
+                let base_i = node_i * n_dim;
+                let mut node_gradients = vec![T::zero(); n_dim];
+                let mut has_updates = false;
+
+                for &(edge_idx, is_head) in &node_edges[node_i] {
+                    if epoch_of_next_sample[edge_idx] > epoch_t {
+                        continue;
+                    }
+
+                    has_updates = true;
+                    let (i, j, _) = edges[edge_idx];
+
+                    let (other_node, sign) = if is_head {
+                        (j, T::one())
+                    } else {
+                        (i, -T::one())
+                    };
+
+                    let base_other = other_node * n_dim;
+
+                    let mut dist_sq = T::zero();
+                    for d in 0..n_dim {
+                        let diff = embd_flat[base_i + d] - embd_flat[base_other + d];
+                        dist_sq = dist_sq + diff * diff;
+                    }
+
+                    if dist_sq >= T::from(1e-8).unwrap() {
+                        let dist_sq_b = dist_sq.powf(consts.b);
+                        let denom = T::one() + consts.a * dist_sq_b;
+                        let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
+
+                        for d in 0..n_dim {
+                            let delta = embd_flat[base_other + d] - embd_flat[base_i + d];
+                            node_gradients[d] = node_gradients[d] + sign * grad_coeff * delta;
+                        }
+                    }
+
+                    // Negative sampling only for head
+                    if is_head {
+                        let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
+                            / epochs_per_neg_sample[edge_idx])
+                            .floor()
+                            .to_usize()
+                            .unwrap_or(0);
+
+                        for _ in 0..n_neg_samples {
+                            let k = rng.random_range(0..n);
+                            if k == node_i {
+                                continue;
+                            }
+
+                            let base_k = k * n_dim;
+
+                            let mut dist_sq = T::zero();
+                            for d in 0..n_dim {
+                                let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
+                                dist_sq = dist_sq + diff * diff;
+                            }
+
+                            let dist_sq_safe = dist_sq + consts.eps;
+                            let dist_sq_b = dist_sq_safe.powf(consts.b);
+                            let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
+                            let grad_coeff = (consts.two_gamma_b / denom)
+                                .max(-consts.clip_val)
+                                .min(consts.clip_val);
+
+                            for d in 0..n_dim {
+                                let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
+                                node_gradients[d] = node_gradients[d] + grad_coeff * delta;
+                            }
+                        }
+                    }
+                }
+
+                if has_updates {
+                    Some((node_i, node_gradients))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Apply updates
+        for (node_i, node_gradients) in updates {
+            let base_i = node_i * n_dim;
+
+            for d in 0..n_dim {
+                let idx = base_i + d;
+                let g = node_gradients[d];
+
+                m[idx] = params.beta1 * m[idx] + one_minus_beta1 * g;
+                v[idx] = params.beta2 * v[idx] + one_minus_beta2 * g * g;
+
+                let m_hat = m[idx] / bias_correction1;
+                let v_hat = v[idx] / bias_correction2;
+
+                embd_flat[idx] = embd_flat[idx] + lr * m_hat / (v_hat.sqrt() + params.eps);
+            }
+        }
+
+        // Update schedules (only process head edges)
+        for (edge_idx, &(i, _, _)) in edges.iter().enumerate() {
+            if epoch_of_next_sample[edge_idx] <= epoch_t {
+                epoch_of_next_sample[edge_idx] =
+                    epoch_of_next_sample[edge_idx] + epochs_per_sample[edge_idx];
+
+                let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
+                    / epochs_per_neg_sample[edge_idx])
+                    .floor()
+                    .to_usize()
+                    .unwrap_or(0);
+
+                epoch_of_next_neg_sample[edge_idx] = epoch_of_next_neg_sample[edge_idx]
+                    + T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
+            }
+        }
+
+        if verbose && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
+            println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
+        }
+    }
+
+    for (i, point) in embd.iter_mut().enumerate() {
+        let base = i * n_dim;
+        point.copy_from_slice(&embd_flat[base..base + n_dim]);
+    }
+}
+
 ///////////
 // Tests //
 ///////////
