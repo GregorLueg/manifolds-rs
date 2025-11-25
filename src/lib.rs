@@ -182,10 +182,10 @@ where
 
     match optimiser {
         Optimiser::Adam => {
-            optimise_embedding_adam(&mut embd, &graph_adj, &optim_params, seed as u64)
+            optimise_embedding_adam(&mut embd, &graph_adj, &optim_params, seed as u64, verbose)
         }
         Optimiser::Sgd => {
-            optimise_embedding_sgd(&mut embd, &graph_adj, &optim_params, seed as u64);
+            optimise_embedding_sgd(&mut embd, &graph_adj, &optim_params, seed as u64, verbose);
         }
     }
 

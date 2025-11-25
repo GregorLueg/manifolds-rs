@@ -364,6 +364,7 @@ where
 /// * `graph` - Adjacency list representation of the high-dimensional graph
 /// * `params` - Optimisation parameters (a, b, learning rate, epochs, etc.)
 /// * `seed` - Random seed for negative sampling
+/// * `verbose` - Controls verbosity of the function
 ///
 /// ### Notes
 ///
@@ -373,6 +374,7 @@ pub fn optimise_embedding_adam<T>(
     graph: &[Vec<(usize, T)>],
     params: &OptimParams<T>,
     seed: u64,
+    verbose: bool,
 ) where
     T: Float + FromPrimitive + Send + Sync,
 {
@@ -460,6 +462,11 @@ pub fn optimise_embedding_adam<T>(
                 embd_write[i][d] = embd_write[i][d] + lr * m_hat / (v_hat.sqrt() + params.eps);
             }
         }
+
+        // print progress every 100 epochs
+        if verbose & ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
+            println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
+        }
     }
 }
 
@@ -475,6 +482,7 @@ pub fn optimise_embedding_adam<T>(
 /// * `graph` - Adjacency list representation of the high-dimensional graph
 /// * `params` - Optimisation parameters
 /// * `seed` - Random seed for negative sampling
+/// * `verbose` - Controls verbosity of the function
 ///
 /// ### Notes
 ///
@@ -485,6 +493,7 @@ pub fn optimise_embedding_sgd<T>(
     graph: &[Vec<(usize, T)>],
     params: &OptimParams<T>,
     seed: u64,
+    verbose: bool,
 ) where
     T: Float + FromPrimitive + Send + Sync,
 {
@@ -554,6 +563,11 @@ pub fn optimise_embedding_sgd<T>(
                 // Simple SGD: x += lr * grad
                 embd_write[i][d] = embd_write[i][d] + lr * gradients[i][d];
             }
+        }
+
+        // print progress every 100 epochs
+        if verbose & ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
+            println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
 }
@@ -666,7 +680,7 @@ mod test_optimiser {
         // Use default params which have n_epochs = 500
         let params = OptimParams::default_2d();
 
-        optimise_embedding_adam(&mut embd, &graph, &params, 42);
+        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
 
         // Check that points moved
         let total_movement: f64 = embd
@@ -697,7 +711,7 @@ mod test_optimiser {
 
         let params = OptimParams::default_2d();
 
-        optimise_embedding_adam(&mut embd, &graph, &params, 42);
+        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
 
         // With no edges, only negative sampling occurs, so embedding should change
         for point in &embd {
@@ -725,8 +739,8 @@ mod test_optimiser {
             eps: 1e-7,
         };
 
-        optimise_embedding_adam(&mut embd1, &graph, &params, 42);
-        optimise_embedding_adam(&mut embd2, &graph, &params, 42);
+        optimise_embedding_adam(&mut embd1, &graph, &params, 42, false);
+        optimise_embedding_adam(&mut embd2, &graph, &params, 42, false);
 
         assert_eq!(embd1, embd2);
     }
@@ -751,7 +765,7 @@ mod test_optimiser {
             eps: 1e-7,
         };
 
-        optimise_embedding_adam(&mut embd, &graph, &params, 42);
+        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
 
         let final_dist = squared_dist(&embd[0], &embd[1]).sqrt();
 
@@ -784,11 +798,11 @@ mod test_optimiser {
 
         // Test SGD
         let mut embd_sgd = initial_embd.clone();
-        optimise_embedding_sgd(&mut embd_sgd, &graph, &params, 42);
+        optimise_embedding_sgd(&mut embd_sgd, &graph, &params, 42, false);
 
         // Test Adam
         let mut embd_adam = initial_embd.clone();
-        optimise_embedding_adam(&mut embd_adam, &graph, &params, 42);
+        optimise_embedding_adam(&mut embd_adam, &graph, &params, 42, false);
 
         // Both should move points significantly from initial positions
         let movement_sgd: f64 = embd_sgd
@@ -842,8 +856,8 @@ mod test_optimiser {
             eps: 1e-7,
         };
 
-        optimise_embedding_sgd(&mut embd1, &graph, &params, 42);
-        optimise_embedding_sgd(&mut embd2, &graph, &params, 42);
+        optimise_embedding_sgd(&mut embd1, &graph, &params, 42, false);
+        optimise_embedding_sgd(&mut embd2, &graph, &params, 42, false);
 
         // Parallel SGD should be reproducible with same seed
         assert_eq!(embd1, embd2);
