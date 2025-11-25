@@ -359,7 +359,7 @@ fn apply_attractive_force_flat<T: Float>(
 
     for d in 0..n_dim {
         let grad_d = (grad_coeff * (embd[base_i + d] - embd[base_j + d]))
-            .max(consts.clip_val)
+            .max(-consts.clip_val)
             .min(consts.clip_val);
 
         embd[base_i + d] = embd[base_i + d] + grad_d * lr;
@@ -412,8 +412,8 @@ fn apply_repulsive_force_flat<T: Float>(
     for d in 0..n_dim {
         let grad_d = if grad_coeff > T::zero() {
             (grad_coeff * (embd[base_i + d] - embd[base_k + d]))
-                .max(T::from(-4.0).unwrap())
-                .min(T::from(4.0).unwrap())
+                .max(T::from(-consts.clip_val).unwrap())
+                .min(T::from(consts.clip_val).unwrap())
         } else {
             T::zero()
         };
@@ -533,7 +533,7 @@ pub fn optimise_embedding_sgd<T>(
             for _ in 0..n_neg_samples {
                 let k = rng_states[i].random_range(0..n);
 
-                if k == i | k && i | k == j {
+                if k == i || k == j {
                     continue;
                 }
 

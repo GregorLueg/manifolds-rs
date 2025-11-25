@@ -184,7 +184,7 @@ where
         println!(
             "Finalised graph generation in {:.2?} with {} edges.",
             end_graph_gen,
-            graph_adj.len().separate_with_underscores()
+            graph.col_indices.len().separate_with_underscores()
         );
         println!("Initialising embedding via spectral layout...");
     }
