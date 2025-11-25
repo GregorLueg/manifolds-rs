@@ -164,6 +164,8 @@ where
 
     let graph = symmetrise_graph(graph, umap_params.mix_weight);
 
+    let graph = filter_weak_edges(graph, optim_params.n_epochs);
+
     let graph_adj = coo_to_adjacency_list(&graph);
 
     if verbose {
@@ -174,7 +176,11 @@ where
 
     if verbose {
         println!(
-            "Optimising embedding via SGD ({} epochs)...",
+            "Optimising embedding via {} ({} epochs)...",
+            match optimiser {
+                Optimiser::Adam => "Adam",
+                Optimiser::Sgd => "SGD",
+            },
             optim_params.n_epochs
         );
     }

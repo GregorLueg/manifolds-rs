@@ -275,6 +275,57 @@ where
     adj
 }
 
+/// Filter out edges that are too weak to be sampled during optimization
+///
+/// Removes edges where weight < max_weight / n_epochs, matching uwot's
+/// preprocessing step. These weak edges would never be sampled during
+/// optimization and can cause fragmentation.
+///
+/// ### Params
+///
+/// * `graph` - Input graph in COO format
+/// * `n_epochs` - Optimization parameters (uses n_epochs for threshold)
+///
+/// ### Returns
+///
+/// Filtered graph with weak edges removed
+pub fn filter_weak_edges<T>(graph: SparseGraph<T>, n_epochs: usize) -> SparseGraph<T>
+where
+    T: Float + Send + Sync,
+{
+    let max_weight = graph
+        .values
+        .iter()
+        .copied()
+        .fold(T::zero(), |acc, w| if w > acc { w } else { acc });
+
+    let threshold = max_weight / T::from(n_epochs).unwrap();
+
+    let mut filtered_rows = Vec::new();
+    let mut filtered_cols = Vec::new();
+    let mut filtered_vals = Vec::new();
+
+    for ((&i, &j), &w) in graph
+        .row_indices
+        .iter()
+        .zip(&graph.col_indices)
+        .zip(&graph.values)
+    {
+        if w >= threshold {
+            filtered_rows.push(i);
+            filtered_cols.push(j);
+            filtered_vals.push(w);
+        }
+    }
+
+    SparseGraph {
+        row_indices: filtered_rows,
+        col_indices: filtered_cols,
+        values: filtered_vals,
+        n_vertices: graph.n_vertices,
+    }
+}
+
 ///////////
 // Tests //
 ///////////
