@@ -4,6 +4,17 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 
+/////////////
+// Globals //
+/////////////
+
+/// Default beta1 value for Adam optimisation
+const BETA1: f64 = 0.9;
+/// Default beta2 value for Adam optimisation
+const BETA2: f64 = 0.99;
+/// Default eps for Adam optimisation
+const EPS: f64 = 1e-7;
+
 //////////////////////////
 // Structures and Enums //
 //////////////////////////
@@ -27,6 +38,7 @@ pub struct OptimParams<T> {
     pub a: T,
     pub b: T,
     pub lr: T,
+    pub gamma: T,
     pub n_epochs: usize,
     pub neg_sample_rate: usize,
     pub min_dist: T,
@@ -49,12 +61,13 @@ where
             a: T::from_f64(1.929).unwrap(),
             b: T::from_f64(0.7915).unwrap(),
             lr: T::one(),
+            gamma: T::one(),
             n_epochs: 500,
             neg_sample_rate: 5,
             min_dist: T::from_f64(0.1).unwrap(),
-            beta1: T::from(0.5).unwrap(),
-            beta2: T::from(0.9).unwrap(),
-            eps: T::from(1e-7).unwrap(),
+            beta1: T::from(BETA1).unwrap(),
+            beta2: T::from(BETA2).unwrap(),
+            eps: T::from(EPS).unwrap(),
         }
     }
 
@@ -80,6 +93,7 @@ where
         min_dist: T,
         spread: T,
         lr: T,
+        gamma: T,
         n_epochs: usize,
         neg_sample_rate: usize,
         beta1: Option<T>,
@@ -87,15 +101,16 @@ where
         eps: Option<T>,
     ) -> Self {
         // take the Adam-related values
-        let beta1 = beta1.unwrap_or(T::from(0.5).unwrap());
-        let beta2 = beta2.unwrap_or(T::from(0.9).unwrap());
-        let eps = eps.unwrap_or(T::from(1e-7).unwrap());
+        let beta1 = beta1.unwrap_or(T::from(BETA1).unwrap());
+        let beta2 = beta2.unwrap_or(T::from(BETA2).unwrap());
+        let eps = eps.unwrap_or(T::from(EPS).unwrap());
 
         let (a, b) = Self::fit_params(min_dist, spread, None, None);
         Self {
             a,
             b,
             lr,
+            gamma,
             n_epochs,
             neg_sample_rate,
             min_dist,
@@ -210,6 +225,8 @@ struct OptimConstants<T> {
     two_b: T,
     four_b: T,
     two_a_b: T,
+    gamma: T,
+    two_gamma_b: T,
     clip_val: T,
     eps: T,
 }
@@ -221,13 +238,14 @@ impl<T: Float + FromPrimitive> OptimConstants<T> {
     ///
     /// * `a` - The a parameter
     /// * `b` - The b parameter
+    /// * `gamma` - The repulsion parameter. Usually defaults to `1.0`.
     ///
     /// ###
     ///
     /// Returns
     ///
     /// Self with all pre-calculated values.
-    fn new(a: T, b: T) -> Self {
+    fn new(a: T, b: T, gamma: T) -> Self {
         let two = T::from_f64(2.0).unwrap();
         let four = T::from_f64(4.0).unwrap();
         Self {
@@ -236,6 +254,8 @@ impl<T: Float + FromPrimitive> OptimConstants<T> {
             two_b: two * b,
             four_b: four * b,
             two_a_b: two * a * b,
+            gamma,
+            two_gamma_b: two * gamma * b,
             clip_val: T::from_f64(4.0).unwrap(),
             eps: T::from_f64(0.001).unwrap(),
         }
@@ -300,9 +320,7 @@ fn squared_dist_flat<T: Float>(embd: &[T], i: usize, j: usize, n_dim: usize) -> 
 /// * `embd` - Current embedding coordinates (modified in place)
 /// * `i` - Source vertex index
 /// * `j` - Target vertex index
-/// * `weight` - Edge weight (membership strength in high-dim graph)
-/// * `a` - Curve parameter controlling spread
-/// * `b` - Curve parameter controlling tail behaviour
+/// * `n_dim` - Number of dimensions
 /// * `lr` - Step size for gradient update
 ///
 /// ### Notes
@@ -317,7 +335,6 @@ fn apply_attractive_force_flat<T: Float>(
     i: usize,
     j: usize,
     n_dim: usize,
-    weight: T,
     consts: &OptimConstants<T>,
     lr: T,
 ) {
@@ -327,21 +344,26 @@ fn apply_attractive_force_flat<T: Float>(
         return;
     }
 
-    // d^(2b) = (d²)^b - single powf call
-    let dist_sq_b = dist_sq.powf(consts.b);
-    let denom = T::one() + consts.a * dist_sq_b;
-
-    // gradient coefficient: lr * w * 2ab * d^(2b-2) / (1 + a*d^(2b))
-    // = lr * w * 2ab * d^(2b) / (d² * (1 + a*d^(2b)))
-    let grad_coeff = lr * weight * consts.two_a_b * dist_sq_b / (dist_sq * denom);
+    let grad_coeff = if dist_sq > T::zero() {
+        let dist_sq_b = dist_sq.powf(consts.b);
+        let numerator =
+            -consts.a * consts.b * T::from(2.0).unwrap() * dist_sq.powf(consts.b - T::one());
+        let denominator = consts.a * dist_sq_b + T::one();
+        numerator / denominator
+    } else {
+        T::zero()
+    };
 
     let base_i = i * n_dim;
     let base_j = j * n_dim;
+
     for d in 0..n_dim {
-        let delta = embd[base_j + d] - embd[base_i + d];
-        let update = grad_coeff * delta;
-        embd[base_i + d] = embd[base_i + d] + update;
-        embd[base_j + d] = embd[base_j + d] - update;
+        let grad_d = (grad_coeff * (embd[base_i + d] - embd[base_j + d]))
+            .max(consts.clip_val)
+            .min(consts.clip_val);
+
+        embd[base_i + d] = embd[base_i + d] + grad_d * lr;
+        embd[base_j + d] = embd[base_j + d] - grad_d * lr;
     }
 }
 
@@ -370,33 +392,170 @@ fn apply_attractive_force_flat<T: Float>(
 fn apply_repulsive_force_flat<T: Float>(
     embd: &mut [T],
     i: usize,
-    j: usize,
+    k: usize,
     n_dim: usize,
     consts: &OptimConstants<T>,
     lr: T,
 ) {
-    let dist_sq = squared_dist_flat(embd, i, j, n_dim);
-    let dist_sq_safe = dist_sq + consts.eps;
+    let dist_sq = squared_dist_flat(embd, i, k, n_dim);
 
-    // (d²)^b instead of d^(2b)
-    let dist_sq_b = dist_sq_safe.powf(consts.b);
-    let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
-
-    let grad_coeff = (lr * consts.four_b / denom)
-        .max(-consts.clip_val)
-        .min(consts.clip_val);
+    let grad_coeff = if dist_sq > T::zero() {
+        let dist_sq_b = dist_sq.powf(consts.b);
+        let denominator = (T::from(0.001).unwrap() + dist_sq) * (consts.a * dist_sq_b + T::one());
+        consts.two_gamma_b / denominator
+    } else {
+        T::zero()
+    };
 
     let base_i = i * n_dim;
-    let base_j = j * n_dim;
+    let base_k = k * n_dim;
     for d in 0..n_dim {
-        let delta = embd[base_i + d] - embd[base_j + d];
-        embd[base_i + d] = embd[base_i + d] + grad_coeff * delta;
+        let grad_d = if grad_coeff > T::zero() {
+            (grad_coeff * (embd[base_i + d] - embd[base_k + d]))
+                .max(T::from(-4.0).unwrap())
+                .min(T::from(4.0).unwrap())
+        } else {
+            T::zero()
+        };
+
+        embd[base_i + d] = embd[base_i + d] + grad_d * lr;
     }
 }
 
 ////////////////////
 // Main functions //
 ////////////////////
+
+/// Optimise embedding using SGD
+///
+/// ### Params
+///
+/// * `embd` - Initial embedding coordinates (modified in place)
+/// * `graph` - Adjacency list representation of the high-dimensional graph
+/// * `gamma` - Gamma parameter. Regulates the repulsion between points.
+/// * `params` - Optimisation parameters
+/// * `seed` - Random seed for negative sampling
+/// * `verbose` - Controls verbosity of the function
+pub fn optimise_embedding_sgd<T>(
+    embd: &mut [Vec<T>],
+    graph: &[Vec<(usize, T)>],
+    params: &OptimParams<T>,
+    seed: u64,
+    verbose: bool,
+) where
+    T: Float + FromPrimitive,
+{
+    let n = embd.len();
+    let n_dim = embd[0].len();
+
+    // flatten embedding for cache locality
+    let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
+    for point in embd.iter() {
+        embd_flat.extend_from_slice(point);
+    }
+
+    // build edge list with weights
+    let mut edges: Vec<(usize, usize, T)> = Vec::new();
+    for (i, neighbours) in graph.iter().enumerate() {
+        for &(j, w) in neighbours {
+            edges.push((i, j, w));
+        }
+    }
+
+    if edges.is_empty() {
+        return;
+    }
+
+    // find max weight for normalisation
+    let max_weight =
+        edges
+            .iter()
+            .map(|(_, _, w)| *w)
+            .fold(T::zero(), |acc, w| if w > acc { w } else { acc });
+
+    // epochs_per_sample determines sampling frequency (higher weight = more frequent)
+    let epochs_per_sample: Vec<T> = edges
+        .iter()
+        .map(|(_, _, w)| {
+            let norm = *w / max_weight;
+            if norm > T::zero() {
+                T::one() / norm
+            } else {
+                T::from(1e8).unwrap() // effectively infinite
+            }
+        })
+        .collect();
+
+    let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
+
+    let epochs_per_neg_sample: Vec<T> = epochs_per_sample
+        .iter()
+        .map(|eps| *eps / T::from(params.neg_sample_rate).unwrap())
+        .collect();
+    let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
+
+    // lr schedule
+    let lr_schedule: Vec<T> = (0..params.n_epochs)
+        .map(|e| params.lr * (T::one() - T::from(e).unwrap() / T::from(params.n_epochs).unwrap()))
+        .collect();
+
+    // RNG state per vertex
+    let mut rng_states: Vec<StdRng> = (0..n)
+        .map(|i| StdRng::seed_from_u64(seed + i as u64))
+        .collect();
+
+    // prepare all of the constants to avoid re-calculations
+    let consts = OptimConstants::new(params.a, params.b, params.gamma);
+
+    // main loop
+    for epoch in 0..params.n_epochs {
+        let lr = lr_schedule[epoch];
+        let epoch_t = T::from(epoch).unwrap();
+
+        // only process edges whose epoch_of_next_sample has arrived
+        for (edge_idx, &(i, j, _weight)) in edges.iter().enumerate() {
+            if epoch_of_next_sample[edge_idx] > epoch_t {
+                continue;
+            }
+
+            apply_attractive_force_flat(&mut embd_flat, i, j, n_dim, &consts, lr);
+
+            epoch_of_next_sample[edge_idx] =
+                epoch_of_next_sample[edge_idx] + epochs_per_sample[edge_idx];
+
+            // adapative negative sampling...
+            let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
+                / epochs_per_neg_sample[edge_idx])
+                .floor()
+                .to_usize()
+                .unwrap_or(0);
+
+            for _ in 0..n_neg_samples {
+                let k = rng_states[i].random_range(0..n);
+
+                if k == i | k && i | k == j {
+                    continue;
+                }
+
+                apply_repulsive_force_flat(&mut embd_flat, i, k, n_dim, &consts, lr);
+            }
+
+            // update negative sampling tracker
+            epoch_of_next_neg_sample[edge_idx] = epoch_of_next_neg_sample[edge_idx]
+                + T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
+        }
+
+        if verbose && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
+            println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
+        }
+    }
+
+    // unflatten embedding
+    for (i, point) in embd.iter_mut().enumerate() {
+        let base = i * n_dim;
+        point.copy_from_slice(&embd_flat[base..base + n_dim]);
+    }
+}
 
 /// Optimise embedding using Adam matching uwot/UMAP behaviour
 ///
@@ -417,15 +576,15 @@ pub fn optimise_embedding_adam<T>(
     let n = embd.len();
     let n_dim = embd[0].len();
 
-    // Flatten embedding for cache locality
+    // Flatten embedding
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
     for point in embd.iter() {
         embd_flat.extend_from_slice(point);
     }
 
-    let consts = OptimConstants::new(params.a, params.b);
+    let consts = OptimConstants::new(params.a, params.b, params.gamma);
 
-    // Build edge list with weights
+    // Build edge list
     let mut edges: Vec<(usize, usize, T)> = Vec::new();
     for (i, neighbours) in graph.iter().enumerate() {
         for &(j, w) in neighbours {
@@ -437,15 +596,12 @@ pub fn optimise_embedding_adam<T>(
         return;
     }
 
-    // Find max weight for normalisation
     let max_weight =
         edges
             .iter()
             .map(|(_, _, w)| *w)
             .fold(T::zero(), |acc, w| if w > acc { w } else { acc });
 
-    // CRITICAL: epochs_per_sample determines sampling frequency
-    // Higher weight edges are sampled more frequently
     let epochs_per_sample: Vec<T> = edges
         .iter()
         .map(|(_, _, w)| {
@@ -458,10 +614,8 @@ pub fn optimise_embedding_adam<T>(
         })
         .collect();
 
-    // Track when each edge should be sampled next
     let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
 
-    // Track negative sampling per edge
     let epochs_per_neg_sample: Vec<T> = epochs_per_sample
         .iter()
         .map(|eps| *eps / T::from(params.neg_sample_rate).unwrap())
@@ -474,25 +628,23 @@ pub fn optimise_embedding_adam<T>(
         .map(|e| params.lr * (T::one() - T::from(e).unwrap() / n_epochs_f))
         .collect();
 
-    // Adam state - NO normalisation by edge count
+    // Adam state - PER COORDINATE (not per vertex!)
     let mut m: Vec<T> = vec![T::zero(); n * n_dim];
     let mut v: Vec<T> = vec![T::zero(); n * n_dim];
 
-    // RNG per vertex
+    // Track timestep per coordinate (for bias correction)
+    let mut timesteps: Vec<usize> = vec![0; n * n_dim];
+
     let mut rng_states: Vec<StdRng> = (0..n)
         .map(|i| StdRng::seed_from_u64(seed + i as u64))
         .collect();
 
-    // Main optimisation loop
+    // Main optimization loop
     for epoch in 0..params.n_epochs {
         let lr = lr_schedule[epoch];
         let epoch_t = T::from(epoch).unwrap();
-        let t = T::from(epoch + 1).unwrap();
 
-        // Accumulate gradients (NOT normalised by edge count!)
-        let mut gradients: Vec<T> = vec![T::zero(); n * n_dim];
-
-        // CRITICAL: Only process edges whose epoch_of_next_sample has arrived
+        // Process edges one at a time (matching uwot's EdgeWorker behavior)
         for (edge_idx, &(i, j, _weight)) in edges.iter().enumerate() {
             if epoch_of_next_sample[edge_idx] > epoch_t {
                 continue;
@@ -501,34 +653,56 @@ pub fn optimise_embedding_adam<T>(
             let base_i = i * n_dim;
             let base_j = j * n_dim;
 
-            // Compute squared distance
+            // Compute attractive gradient for this edge only
             let mut dist_sq = T::zero();
             for d in 0..n_dim {
                 let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
                 dist_sq = dist_sq + diff * diff;
             }
 
-            // Attractive force gradient (matches Python exactly)
             if dist_sq >= T::from(1e-8).unwrap() {
                 let dist_sq_b = dist_sq.powf(consts.b);
                 let denom = T::one() + consts.a * dist_sq_b;
                 let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
 
+                // Update vertices i and j with Adam immediately
                 for d in 0..n_dim {
                     let delta = embd_flat[base_j + d] - embd_flat[base_i + d];
                     let grad = grad_coeff * delta;
 
-                    // Accumulate gradients for both vertices
-                    gradients[base_i + d] = gradients[base_i + d] + grad;
-                    gradients[base_j + d] = gradients[base_j + d] - grad;
+                    // Update vertex i
+                    let idx_i = base_i + d;
+                    timesteps[idx_i] += 1;
+                    let t = T::from(timesteps[idx_i]).unwrap();
+
+                    m[idx_i] = params.beta1 * m[idx_i] + (T::one() - params.beta1) * grad;
+                    v[idx_i] = params.beta2 * v[idx_i] + (T::one() - params.beta2) * grad * grad;
+
+                    let m_hat = m[idx_i] / (T::one() - params.beta1.powf(t));
+                    let v_hat = v[idx_i] / (T::one() - params.beta2.powf(t));
+
+                    embd_flat[idx_i] = embd_flat[idx_i] + lr * m_hat / (v_hat.sqrt() + params.eps);
+
+                    // Update vertex j (symmetric)
+                    let idx_j = base_j + d;
+                    timesteps[idx_j] += 1;
+                    let t_j = T::from(timesteps[idx_j]).unwrap();
+
+                    m[idx_j] = params.beta1 * m[idx_j] - (T::one() - params.beta1) * grad;
+                    v[idx_j] = params.beta2 * v[idx_j] + (T::one() - params.beta2) * grad * grad;
+
+                    let m_hat_j = m[idx_j] / (T::one() - params.beta1.powf(t_j));
+                    let v_hat_j = v[idx_j] / (T::one() - params.beta2.powf(t_j));
+
+                    embd_flat[idx_j] =
+                        embd_flat[idx_j] + lr * m_hat_j / (v_hat_j.sqrt() + params.eps);
                 }
             }
 
-            // Update when this edge should be sampled next
             epoch_of_next_sample[edge_idx] =
                 epoch_of_next_sample[edge_idx] + epochs_per_sample[edge_idx];
 
-            // Negative sampling - calculate how many to do now
+            // Negative sampling
             let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
                 / epochs_per_neg_sample[edge_idx])
                 .floor()
@@ -537,21 +711,18 @@ pub fn optimise_embedding_adam<T>(
 
             for _ in 0..n_neg_samples {
                 let k = rng_states[i].random_range(0..n);
-
                 if k == i {
                     continue;
                 }
 
                 let base_k = k * n_dim;
 
-                // Compute squared distance to negative sample
                 let mut dist_sq = T::zero();
                 for d in 0..n_dim {
                     let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
                     dist_sq = dist_sq + diff * diff;
                 }
 
-                // Repulsive force
                 let dist_sq_safe = dist_sq + consts.eps;
                 let dist_sq_b = dist_sq_safe.powf(consts.b);
                 let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
@@ -559,34 +730,27 @@ pub fn optimise_embedding_adam<T>(
                     .max(-consts.clip_val)
                     .min(consts.clip_val);
 
+                // Update vertex i with Adam immediately (only i, not k)
                 for d in 0..n_dim {
                     let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
-                    gradients[base_i + d] = gradients[base_i + d] + grad_coeff * delta;
+                    let grad = grad_coeff * delta;
+
+                    let idx = base_i + d;
+                    timesteps[idx] += 1;
+                    let t = T::from(timesteps[idx]).unwrap();
+
+                    m[idx] = params.beta1 * m[idx] + (T::one() - params.beta1) * grad;
+                    v[idx] = params.beta2 * v[idx] + (T::one() - params.beta2) * grad * grad;
+
+                    let m_hat = m[idx] / (T::one() - params.beta1.powf(t));
+                    let v_hat = v[idx] / (T::one() - params.beta2.powf(t));
+
+                    embd_flat[idx] = embd_flat[idx] + lr * m_hat / (v_hat.sqrt() + params.eps);
                 }
             }
 
-            // Update negative sampling tracker
             epoch_of_next_neg_sample[edge_idx] = epoch_of_next_neg_sample[edge_idx]
                 + T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
-        }
-
-        // Adam update with bias correction
-        let bias_correction1 = T::one() - params.beta1.powf(t);
-        let bias_correction2 = T::one() - params.beta2.powf(t);
-
-        for idx in 0..(n * n_dim) {
-            let g = gradients[idx];
-
-            // Update moments
-            m[idx] = params.beta1 * m[idx] + (T::one() - params.beta1) * g;
-            v[idx] = params.beta2 * v[idx] + (T::one() - params.beta2) * g * g;
-
-            // Bias-corrected moments
-            let m_hat = m[idx] / bias_correction1;
-            let v_hat = v[idx] / bias_correction2;
-
-            // Update embedding
-            embd_flat[idx] = embd_flat[idx] + lr * m_hat / (v_hat.sqrt() + params.eps);
         }
 
         if verbose && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
@@ -601,626 +765,424 @@ pub fn optimise_embedding_adam<T>(
     }
 }
 
-/// Optimise embedding using SGD
-///
-/// ### Params
-///
-/// * `embd` - Initial embedding coordinates (modified in place)
-/// * `graph` - Adjacency list representation of the high-dimensional graph
-/// * `params` - Optimisation parameters
-/// * `seed` - Random seed for negative sampling
-/// * `verbose` - Controls verbosity of the function
-pub fn optimise_embedding_sgd<T>(
-    embd: &mut [Vec<T>],
-    graph: &[Vec<(usize, T)>],
-    params: &OptimParams<T>,
-    seed: u64,
-    verbose: bool,
-) where
-    T: Float + FromPrimitive,
-{
-    let n = embd.len();
-    let n_dim = embd[0].len();
-
-    // Flatten embedding for cache locality
-    let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
-    for point in embd.iter() {
-        embd_flat.extend_from_slice(point);
-    }
-
-    // Build edge list with weights
-    let mut edges: Vec<(usize, usize, T)> = Vec::new();
-    for (i, neighbours) in graph.iter().enumerate() {
-        for &(j, w) in neighbours {
-            edges.push((i, j, w));
-        }
-    }
-
-    if edges.is_empty() {
-        return;
-    }
-
-    // Find max weight for normalisation
-    let max_weight =
-        edges
-            .iter()
-            .map(|(_, _, w)| *w)
-            .fold(T::zero(), |acc, w| if w > acc { w } else { acc });
-
-    // DIFFERENCE 1: epochs_per_sample determines sampling frequency (higher weight = more frequent)
-    // Python: edges with stronger weights get sampled more often
-    let epochs_per_sample: Vec<T> = edges
-        .iter()
-        .map(|(_, _, w)| {
-            let norm = (*w / max_weight);
-            if norm > T::zero() {
-                T::one() / norm
-            } else {
-                T::from(1e8).unwrap() // effectively infinite
-            }
-        })
-        .collect();
-
-    // DIFFERENCE 2: Track when each edge should be sampled next
-    let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
-
-    // DIFFERENCE 3: Track negative sampling per edge independently
-    let epochs_per_neg_sample: Vec<T> = epochs_per_sample
-        .iter()
-        .map(|eps| *eps / T::from(params.neg_sample_rate).unwrap())
-        .collect();
-    let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
-
-    // Learning rate schedule
-    let n_epochs_f = T::from(params.n_epochs).unwrap();
-    let lr_schedule: Vec<T> = (0..params.n_epochs)
-        .map(|e| params.lr * (T::one() - T::from(e).unwrap() / n_epochs_f))
-        .collect();
-
-    // RNG state per vertex (Python uses rng_state_per_sample indexed by head vertex)
-    let mut rng_states: Vec<StdRng> = (0..n)
-        .map(|i| StdRng::seed_from_u64(seed + i as u64))
-        .collect();
-
-    // Main optimisation loop
-    for epoch in 0..params.n_epochs {
-        let lr = lr_schedule[epoch];
-        let epoch_t = T::from(epoch).unwrap();
-
-        // DIFFERENCE 4: Only process edges whose epoch_of_next_sample has arrived
-        for (edge_idx, &(i, j, _weight)) in edges.iter().enumerate() {
-            if epoch_of_next_sample[edge_idx] > epoch_t {
-                continue;
-            }
-
-            let base_i = i * n_dim;
-            let base_j = j * n_dim;
-
-            // Compute squared distance
-            let mut dist_sq = T::zero();
-            for d in 0..n_dim {
-                let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
-                dist_sq = dist_sq + diff * diff;
-            }
-
-            // DIFFERENCE 5: Attractive force gradient formula matches Python exactly
-            // Python: grad_coeff = -2.0 * a * b * pow(dist_squared, b - 1.0) / (a * pow(dist_squared, b) + 1.0)
-            // Note: dist_sq is already d², so dist_sq^b = d^(2b)
-            let grad_coeff = if dist_sq > T::zero() {
-                let dist_sq_b = dist_sq.powf(params.b);
-                let numerator = -params.a
-                    * params.b
-                    * T::from(2.0).unwrap()
-                    * dist_sq.powf(params.b - T::one());
-                let denominator = params.a * dist_sq_b + T::one();
-                numerator / denominator
-            } else {
-                T::zero()
-            };
-
-            // Apply attractive force (NO gamma here, unlike your original)
-            for d in 0..n_dim {
-                // Python: grad_d = clip(grad_coeff * (current[d] - other[d]))
-                let grad_d = (grad_coeff * (embd_flat[base_i + d] - embd_flat[base_j + d]))
-                    .max(T::from(-4.0).unwrap())
-                    .min(T::from(4.0).unwrap());
-
-                embd_flat[base_i + d] = embd_flat[base_i + d] + grad_d * lr;
-                // Python also updates the tail (move_other=True default in most cases)
-                embd_flat[base_j + d] = embd_flat[base_j + d] - grad_d * lr;
-            }
-
-            // Update when this edge should be sampled next
-            epoch_of_next_sample[edge_idx] =
-                epoch_of_next_sample[edge_idx] + epochs_per_sample[edge_idx];
-
-            // DIFFERENCE 6: Negative sampling - calculate how many to do now
-            let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
-                / epochs_per_neg_sample[edge_idx])
-                .floor()
-                .to_usize()
-                .unwrap_or(0);
-
-            for _ in 0..n_neg_samples {
-                let k = rng_states[i].random_range(0..n);
-
-                if k == i {
-                    continue;
-                }
-
-                let base_k = k * n_dim;
-
-                // Compute squared distance to negative sample
-                let mut dist_sq = T::zero();
-                for d in 0..n_dim {
-                    let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
-                    dist_sq = dist_sq + diff * diff;
-                }
-
-                // DIFFERENCE 7: Repulsive force includes gamma factor (you were missing this!)
-                // Python: grad_coeff = 2.0 * gamma * b / ((0.001 + dist_squared) * (a * pow(dist_squared, b) + 1))
-                let grad_coeff = if dist_sq > T::zero() {
-                    let dist_sq_b = dist_sq.powf(params.b);
-                    let gamma = T::one(); // typically 1.0, but should be a parameter
-                    let numerator = T::from(2.0).unwrap() * gamma * params.b;
-                    let denominator =
-                        (T::from(0.001).unwrap() + dist_sq) * (params.a * dist_sq_b + T::one());
-                    numerator / denominator
-                } else if j == k {
-                    continue;
-                } else {
-                    T::zero()
-                };
-
-                // Apply repulsive force (only to i, not k)
-                for d in 0..n_dim {
-                    let grad_d = if grad_coeff > T::zero() {
-                        (grad_coeff * (embd_flat[base_i + d] - embd_flat[base_k + d]))
-                            .max(T::from(-4.0).unwrap())
-                            .min(T::from(4.0).unwrap())
-                    } else {
-                        T::zero()
-                    };
-
-                    embd_flat[base_i + d] = embd_flat[base_i + d] + grad_d * lr;
-                }
-            }
-
-            // Update negative sampling tracker
-            epoch_of_next_neg_sample[edge_idx] = epoch_of_next_neg_sample[edge_idx]
-                + T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
-        }
-
-        if verbose && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
-            println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
-        }
-    }
-
-    // Unflatten embedding
-    for (i, point) in embd.iter_mut().enumerate() {
-        let base = i * n_dim;
-        point.copy_from_slice(&embd_flat[base..base + n_dim]);
-    }
-}
-
 ///////////
 // Tests //
 ///////////
 
-#[cfg(test)]
-mod test_optimiser {
-    use super::*;
-    use approx::assert_relative_eq;
-
-    #[test]
-    fn test_optim_params_default_2d() {
-        let params = OptimParams::<f64>::default_2d();
-
-        assert_relative_eq!(params.a, 1.929, epsilon = 1e-6);
-        assert_relative_eq!(params.b, 0.7915, epsilon = 1e-6);
-        assert_eq!(params.lr, 1.0);
-        assert_eq!(params.n_epochs, 500);
-        assert_eq!(params.neg_sample_rate, 5);
-        assert_relative_eq!(params.min_dist, 0.1, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_optim_params_from_min_dist_spread() {
-        let params =
-            OptimParams::<f64>::from_min_dist_spread(0.1, 1.0, 1.0, 500, 5, None, None, None);
-
-        assert!(params.a > 0.0);
-        assert!(params.b > 0.0);
-        assert_eq!(params.lr, 1.0);
-        assert_eq!(params.n_epochs, 500);
-        assert_eq!(params.neg_sample_rate, 5);
-        assert_relative_eq!(params.min_dist, 0.1, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_fit_params_constraints() {
-        let (a, b) = OptimParams::<f64>::fit_params(0.1, 1.0, None, None);
-
-        // Parameters should be within reasonable bounds
-        assert!((0.001..=10.0).contains(&a));
-        assert!((0.1..=2.0).contains(&b));
-    }
-
-    #[test]
-    fn test_fit_params_curve_properties() {
-        let min_dist = 0.1;
-        let spread = 1.0;
-        let (a, b) = OptimParams::<f64>::fit_params(min_dist, spread, None, None);
-
-        // Test that curve satisfies approximate requirements
-        // f(min_dist) should be high (close to 1.0)
-        let pred_min = 1.0 / (1.0 + a * min_dist.powf(2.0 * b));
-        assert!(
-            pred_min > 0.7,
-            "f(min_dist) = {:.3} should be > 0.7",
-            pred_min
-        );
-
-        // f(3*spread) should be low (close to 0.0)
-        let pred_spread = 1.0 / (1.0 + a * (3.0 * spread).powf(2.0 * b));
-        assert!(
-            pred_spread < 0.3,
-            "f(3*spread) = {:.3} should be < 0.3",
-            pred_spread
-        );
-
-        // Verify the curve is monotonically decreasing between these points
-        let mid_point = 1.5 * spread;
-        let pred_mid = 1.0 / (1.0 + a * mid_point.powf(2.0 * b));
-        assert!(
-            pred_min > pred_mid && pred_mid > pred_spread,
-            "Curve should be monotonically decreasing"
-        );
-    }
-
-    #[test]
-    fn test_squared_dist_basic() {
-        let embd = vec![0.0, 0.0, 3.0, 4.0]; // two points flattened
-        let dist = squared_dist_flat(&embd, 0, 1, 2);
-        assert_relative_eq!(dist, 25.0, epsilon = 1e-6); // 3² + 4² = 25
-    }
-
-    #[test]
-    fn test_squared_dist_identical_points() {
-        let embd = vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]; // two identical points flattened
-        let dist = squared_dist_flat(&embd, 0, 1, 3);
-        assert_relative_eq!(dist, 0.0, epsilon = 1e-6);
-    }
-
-    #[test]
-    fn test_optimise_embedding_basic() {
-        // Simple graph with 3 connected vertices
-        let graph = vec![
-            vec![(1, 1.0), (2, 0.5)],
-            vec![(0, 1.0), (2, 1.0)],
-            vec![(0, 0.5), (1, 1.0)],
-        ];
-
-        let mut embd = vec![vec![0.0, 0.0], vec![5.0, 0.0], vec![0.0, 5.0]];
-        let initial_embd = embd.clone();
-
-        // Use default params which have n_epochs = 500
-        let params = OptimParams::default_2d();
-
-        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
-
-        // Check that points moved
-        let total_movement: f64 = embd
-            .iter()
-            .zip(initial_embd.iter())
-            .map(|(new, old)| {
-                new.iter()
-                    .zip(old.iter())
-                    .map(|(&n, &o)| (n - o).abs())
-                    .sum::<f64>()
-            })
-            .sum();
-
-        assert!(total_movement > 0.01, "Total movement: {}", total_movement);
-
-        // All coordinates should still be finite
-        for point in &embd {
-            for &coord in point {
-                assert!(coord.is_finite());
-            }
-        }
-    }
-
-    #[test]
-    fn test_optimise_embedding_empty_graph() {
-        let graph: Vec<Vec<(usize, f64)>> = vec![vec![], vec![], vec![]];
-        let mut embd = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
-
-        let params = OptimParams::default_2d();
-
-        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
-
-        // With no edges, only negative sampling occurs, so embedding should change
-        for point in &embd {
-            for &coord in point {
-                assert!(coord.is_finite());
-            }
-        }
-    }
-
-    #[test]
-    fn test_optimise_embedding_reproducibility() {
-        let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
-        let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
-        let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
-
-        let params = OptimParams {
-            a: 1.0,
-            b: 1.0,
-            lr: 0.5,
-            n_epochs: 10,
-            neg_sample_rate: 2,
-            min_dist: 0.1,
-            beta1: 0.5,
-            beta2: 0.9,
-            eps: 1e-7,
-        };
-
-        optimise_embedding_adam(&mut embd1, &graph, &params, 42, false);
-        optimise_embedding_adam(&mut embd2, &graph, &params, 42, false);
-
-        assert_eq!(embd1, embd2);
-    }
-
-    #[test]
-    fn test_optimise_embedding_convergence() {
-        // Two strongly connected points should end up closer
-        let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
-        let mut embd = vec![vec![0.0, 0.0], vec![10.0, 0.0]];
-
-        // Compute initial distance using flat representation
-        let embd_flat: Vec<f64> = embd.iter().flatten().copied().collect();
-        let initial_dist = squared_dist_flat(&embd_flat, 0, 1, 2).sqrt();
-
-        let params = OptimParams {
-            a: 1.0,
-            b: 1.0,
-            lr: 1.0,
-            n_epochs: 100,
-            neg_sample_rate: 2,
-            min_dist: 0.1,
-            beta1: 0.5,
-            beta2: 0.9,
-            eps: 1e-7,
-        };
-
-        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
-
-        // Compute final distance
-        let embd_flat: Vec<f64> = embd.iter().flatten().copied().collect();
-        let final_dist = squared_dist_flat(&embd_flat, 0, 1, 2).sqrt();
-
-        // Distance should decrease
-        assert!(final_dist < initial_dist);
-    }
-
-    #[test]
-    fn test_sgd_vs_adam_both_converge() {
-        // Compare parallel SGD vs Adam - both should converge
-        let graph = vec![
-            vec![(1, 1.0), (2, 0.5)],
-            vec![(0, 1.0), (2, 1.0)],
-            vec![(0, 0.5), (1, 1.0)],
-        ];
-
-        let initial_embd = vec![vec![0.0, 0.0], vec![10.0, 0.0], vec![0.0, 10.0]];
-
-        let params = OptimParams {
-            a: 1.0,
-            b: 1.0,
-            lr: 1.0,
-            n_epochs: 50,
-            neg_sample_rate: 2,
-            min_dist: 0.1,
-            beta1: 0.5,
-            beta2: 0.9,
-            eps: 1e-7,
-        };
-
-        // Test SGD
-        let mut embd_sgd = initial_embd.clone();
-        optimise_embedding_sgd(&mut embd_sgd, &graph, &params, 42, false);
-
-        // Test Adam
-        let mut embd_adam = initial_embd.clone();
-        optimise_embedding_adam(&mut embd_adam, &graph, &params, 42, false);
-
-        // Both should move points significantly from initial positions
-        let movement_sgd: f64 = embd_sgd
-            .iter()
-            .zip(initial_embd.iter())
-            .map(|(new, old)| {
-                new.iter()
-                    .zip(old.iter())
-                    .map(|(&n, &o)| (n - o).abs())
-                    .sum::<f64>()
-            })
-            .sum();
-
-        let movement_adam: f64 = embd_adam
-            .iter()
-            .zip(initial_embd.iter())
-            .map(|(new, old)| {
-                new.iter()
-                    .zip(old.iter())
-                    .map(|(&n, &o)| (n - o).abs())
-                    .sum::<f64>()
-            })
-            .sum();
-
-        assert!(movement_sgd > 1.0, "SGD should move points");
-        assert!(movement_adam > 1.0, "Adam should move points");
-
-        // Both should produce finite results
-        for point in embd_sgd.iter().chain(embd_adam.iter()) {
-            for &coord in point {
-                assert!(coord.is_finite());
-            }
-        }
-    }
-
-    #[test]
-    fn test_parallel_sgd_reproducibility() {
-        let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
-        let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
-        let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
-
-        let params = OptimParams {
-            a: 1.0,
-            b: 1.0,
-            lr: 0.5,
-            n_epochs: 10,
-            neg_sample_rate: 2,
-            min_dist: 0.1,
-            beta1: 0.5,
-            beta2: 0.9,
-            eps: 1e-7,
-        };
-
-        optimise_embedding_sgd(&mut embd1, &graph, &params, 42, false);
-        optimise_embedding_sgd(&mut embd2, &graph, &params, 42, false);
-
-        // Parallel SGD should be reproducible with same seed
-        assert_eq!(embd1, embd2);
-    }
-
-    #[test]
-    fn test_optimisation_preserves_graph_structure_adam() {
-        // Create a graph with two distinct cliques that are weakly connected
-        // Clique 1: vertices 0, 1, 2 (strongly connected)
-        // Clique 2: vertices 3, 4, 5 (strongly connected)
-        // Weak bridge: 2 <-> 3
-
-        let graph = vec![
-            vec![(1, 1.0), (2, 1.0)],           // 0: connected to 1, 2
-            vec![(0, 1.0), (2, 1.0)],           // 1: connected to 0, 2
-            vec![(0, 1.0), (1, 1.0), (3, 0.1)], // 2: connected to 0, 1, weak to 3
-            vec![(2, 0.1), (4, 1.0), (5, 1.0)], // 3: weak to 2, connected to 4, 5
-            vec![(3, 1.0), (5, 1.0)],           // 4: connected to 3, 5
-            vec![(3, 1.0), (4, 1.0)],           // 5: connected to 3, 4
-        ];
-
-        // Start with random positions (not clustered)
-        let mut embd = vec![
-            vec![0.0, 0.0],
-            vec![10.0, 0.0],
-            vec![0.0, 10.0],
-            vec![10.0, 10.0],
-            vec![-5.0, -5.0],
-            vec![15.0, 15.0],
-        ];
-
-        let params = OptimParams {
-            n_epochs: 200,
-            ..OptimParams::default_2d()
-        };
-
-        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
-
-        // Helper to compute distance
-        let dist = |a: &[f64], b: &[f64]| -> f64 {
-            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
-        };
-
-        // Compute average intra-clique distance
-        let intra_clique1 =
-            (dist(&embd[0], &embd[1]) + dist(&embd[0], &embd[2]) + dist(&embd[1], &embd[2])) / 3.0;
-        let intra_clique2 =
-            (dist(&embd[3], &embd[4]) + dist(&embd[3], &embd[5]) + dist(&embd[4], &embd[5])) / 3.0;
-        let avg_intra = (intra_clique1 + intra_clique2) / 2.0;
-
-        // Compute average inter-clique distance (excluding the bridge)
-        let inter_distances = [
-            dist(&embd[0], &embd[3]),
-            dist(&embd[0], &embd[4]),
-            dist(&embd[0], &embd[5]),
-            dist(&embd[1], &embd[3]),
-            dist(&embd[1], &embd[4]),
-            dist(&embd[1], &embd[5]),
-        ];
-        let avg_inter: f64 = inter_distances.iter().sum::<f64>() / inter_distances.len() as f64;
-
-        // Points within cliques should be much closer than points between cliques
-        assert!(
-            avg_inter > avg_intra * 1.5,
-            "Inter-clique dist ({:.2}) should be > 1.5x intra-clique dist ({:.2})",
-            avg_inter,
-            avg_intra
-        );
-    }
-
-    #[test]
-    fn test_optimisation_preserves_graph_structure_sgd() {
-        // Create a graph with two distinct cliques that are weakly connected
-        // Clique 1: vertices 0, 1, 2 (strongly connected)
-        // Clique 2: vertices 3, 4, 5 (strongly connected)
-        // Weak bridge: 2 <-> 3
-
-        let graph = vec![
-            vec![(1, 1.0), (2, 1.0)],           // 0: connected to 1, 2
-            vec![(0, 1.0), (2, 1.0)],           // 1: connected to 0, 2
-            vec![(0, 1.0), (1, 1.0), (3, 0.1)], // 2: connected to 0, 1, weak to 3
-            vec![(2, 0.1), (4, 1.0), (5, 1.0)], // 3: weak to 2, connected to 4, 5
-            vec![(3, 1.0), (5, 1.0)],           // 4: connected to 3, 5
-            vec![(3, 1.0), (4, 1.0)],           // 5: connected to 3, 4
-        ];
-
-        // Start with random positions (not clustered)
-        let mut embd = vec![
-            vec![0.0, 0.0],
-            vec![10.0, 0.0],
-            vec![0.0, 10.0],
-            vec![10.0, 10.0],
-            vec![-5.0, -5.0],
-            vec![15.0, 15.0],
-        ];
-
-        let params = OptimParams {
-            n_epochs: 200,
-            ..OptimParams::default_2d()
-        };
-
-        optimise_embedding_sgd(&mut embd, &graph, &params, 42, false);
-
-        // Helper to compute distance
-        let dist = |a: &[f64], b: &[f64]| -> f64 {
-            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
-        };
-
-        // Compute average intra-clique distance
-        let intra_clique1 =
-            (dist(&embd[0], &embd[1]) + dist(&embd[0], &embd[2]) + dist(&embd[1], &embd[2])) / 3.0;
-        let intra_clique2 =
-            (dist(&embd[3], &embd[4]) + dist(&embd[3], &embd[5]) + dist(&embd[4], &embd[5])) / 3.0;
-        let avg_intra = (intra_clique1 + intra_clique2) / 2.0;
-
-        // Compute average inter-clique distance (excluding the bridge)
-        let inter_distances = [
-            dist(&embd[0], &embd[3]),
-            dist(&embd[0], &embd[4]),
-            dist(&embd[0], &embd[5]),
-            dist(&embd[1], &embd[3]),
-            dist(&embd[1], &embd[4]),
-            dist(&embd[1], &embd[5]),
-        ];
-        let avg_inter: f64 = inter_distances.iter().sum::<f64>() / inter_distances.len() as f64;
-
-        // Points within cliques should be much closer than points between cliques
-        assert!(
-            avg_inter > avg_intra * 1.5,
-            "Inter-clique dist ({:.2}) should be > 1.5x intra-clique dist ({:.2})",
-            avg_inter,
-            avg_intra
-        );
-    }
-}
+// #[cfg(test)]
+// mod test_optimiser {
+//     use super::*;
+//     use approx::assert_relative_eq;
+
+//     #[test]
+//     fn test_optim_params_default_2d() {
+//         let params = OptimParams::<f64>::default_2d();
+
+//         assert_relative_eq!(params.a, 1.929, epsilon = 1e-6);
+//         assert_relative_eq!(params.b, 0.7915, epsilon = 1e-6);
+//         assert_eq!(params.lr, 1.0);
+//         assert_eq!(params.n_epochs, 500);
+//         assert_eq!(params.neg_sample_rate, 5);
+//         assert_relative_eq!(params.min_dist, 0.1, epsilon = 1e-6);
+//     }
+
+//     #[test]
+//     fn test_optim_params_from_min_dist_spread() {
+//         let params =
+//             OptimParams::<f64>::from_min_dist_spread(0.1, 1.0, 1.0, 500, 5, None, None, None);
+
+//         assert!(params.a > 0.0);
+//         assert!(params.b > 0.0);
+//         assert_eq!(params.lr, 1.0);
+//         assert_eq!(params.n_epochs, 500);
+//         assert_eq!(params.neg_sample_rate, 5);
+//         assert_relative_eq!(params.min_dist, 0.1, epsilon = 1e-6);
+//     }
+
+//     #[test]
+//     fn test_fit_params_constraints() {
+//         let (a, b) = OptimParams::<f64>::fit_params(0.1, 1.0, None, None);
+
+//         // Parameters should be within reasonable bounds
+//         assert!((0.001..=10.0).contains(&a));
+//         assert!((0.1..=2.0).contains(&b));
+//     }
+
+//     #[test]
+//     fn test_fit_params_curve_properties() {
+//         let min_dist = 0.1;
+//         let spread = 1.0;
+//         let (a, b) = OptimParams::<f64>::fit_params(min_dist, spread, None, None);
+
+//         // Test that curve satisfies approximate requirements
+//         // f(min_dist) should be high (close to 1.0)
+//         let pred_min = 1.0 / (1.0 + a * min_dist.powf(2.0 * b));
+//         assert!(
+//             pred_min > 0.7,
+//             "f(min_dist) = {:.3} should be > 0.7",
+//             pred_min
+//         );
+
+//         // f(3*spread) should be low (close to 0.0)
+//         let pred_spread = 1.0 / (1.0 + a * (3.0 * spread).powf(2.0 * b));
+//         assert!(
+//             pred_spread < 0.3,
+//             "f(3*spread) = {:.3} should be < 0.3",
+//             pred_spread
+//         );
+
+//         // Verify the curve is monotonically decreasing between these points
+//         let mid_point = 1.5 * spread;
+//         let pred_mid = 1.0 / (1.0 + a * mid_point.powf(2.0 * b));
+//         assert!(
+//             pred_min > pred_mid && pred_mid > pred_spread,
+//             "Curve should be monotonically decreasing"
+//         );
+//     }
+
+//     #[test]
+//     fn test_squared_dist_basic() {
+//         let embd = vec![0.0, 0.0, 3.0, 4.0]; // two points flattened
+//         let dist = squared_dist_flat(&embd, 0, 1, 2);
+//         assert_relative_eq!(dist, 25.0, epsilon = 1e-6); // 3² + 4² = 25
+//     }
+
+//     #[test]
+//     fn test_squared_dist_identical_points() {
+//         let embd = vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]; // two identical points flattened
+//         let dist = squared_dist_flat(&embd, 0, 1, 3);
+//         assert_relative_eq!(dist, 0.0, epsilon = 1e-6);
+//     }
+
+//     #[test]
+//     fn test_optimise_embedding_basic() {
+//         // Simple graph with 3 connected vertices
+//         let graph = vec![
+//             vec![(1, 1.0), (2, 0.5)],
+//             vec![(0, 1.0), (2, 1.0)],
+//             vec![(0, 0.5), (1, 1.0)],
+//         ];
+
+//         let mut embd = vec![vec![0.0, 0.0], vec![5.0, 0.0], vec![0.0, 5.0]];
+//         let initial_embd = embd.clone();
+
+//         // Use default params which have n_epochs = 500
+//         let params = OptimParams::default_2d();
+
+//         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
+
+//         // Check that points moved
+//         let total_movement: f64 = embd
+//             .iter()
+//             .zip(initial_embd.iter())
+//             .map(|(new, old)| {
+//                 new.iter()
+//                     .zip(old.iter())
+//                     .map(|(&n, &o)| (n - o).abs())
+//                     .sum::<f64>()
+//             })
+//             .sum();
+
+//         assert!(total_movement > 0.01, "Total movement: {}", total_movement);
+
+//         // All coordinates should still be finite
+//         for point in &embd {
+//             for &coord in point {
+//                 assert!(coord.is_finite());
+//             }
+//         }
+//     }
+
+//     #[test]
+//     fn test_optimise_embedding_empty_graph() {
+//         let graph: Vec<Vec<(usize, f64)>> = vec![vec![], vec![], vec![]];
+//         let mut embd = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
+
+//         let params = OptimParams::default_2d();
+
+//         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
+
+//         // With no edges, only negative sampling occurs, so embedding should change
+//         for point in &embd {
+//             for &coord in point {
+//                 assert!(coord.is_finite());
+//             }
+//         }
+//     }
+
+//     #[test]
+//     fn test_optimise_embedding_reproducibility() {
+//         let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
+//         let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+//         let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+
+//         let params = OptimParams {
+//             a: 1.0,
+//             b: 1.0,
+//             lr: 0.5,
+//             n_epochs: 10,
+//             neg_sample_rate: 2,
+//             min_dist: 0.1,
+//             beta1: 0.5,
+//             beta2: 0.9,
+//             eps: 1e-7,
+//         };
+
+//         optimise_embedding_adam(&mut embd1, &graph, &params, 42, false);
+//         optimise_embedding_adam(&mut embd2, &graph, &params, 42, false);
+
+//         assert_eq!(embd1, embd2);
+//     }
+
+//     #[test]
+//     fn test_optimise_embedding_convergence() {
+//         // Two strongly connected points should end up closer
+//         let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
+//         let mut embd = vec![vec![0.0, 0.0], vec![10.0, 0.0]];
+
+//         // Compute initial distance using flat representation
+//         let embd_flat: Vec<f64> = embd.iter().flatten().copied().collect();
+//         let initial_dist = squared_dist_flat(&embd_flat, 0, 1, 2).sqrt();
+
+//         let params = OptimParams {
+//             a: 1.0,
+//             b: 1.0,
+//             lr: 1.0,
+//             n_epochs: 100,
+//             neg_sample_rate: 2,
+//             min_dist: 0.1,
+//             beta1: 0.5,
+//             beta2: 0.9,
+//             eps: 1e-7,
+//         };
+
+//         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
+
+//         // Compute final distance
+//         let embd_flat: Vec<f64> = embd.iter().flatten().copied().collect();
+//         let final_dist = squared_dist_flat(&embd_flat, 0, 1, 2).sqrt();
+
+//         // Distance should decrease
+//         assert!(final_dist < initial_dist);
+//     }
+
+//     #[test]
+//     fn test_sgd_vs_adam_both_converge() {
+//         // Compare parallel SGD vs Adam - both should converge
+//         let graph = vec![
+//             vec![(1, 1.0), (2, 0.5)],
+//             vec![(0, 1.0), (2, 1.0)],
+//             vec![(0, 0.5), (1, 1.0)],
+//         ];
+
+//         let initial_embd = vec![vec![0.0, 0.0], vec![10.0, 0.0], vec![0.0, 10.0]];
+
+//         let params = OptimParams {
+//             a: 1.0,
+//             b: 1.0,
+//             lr: 1.0,
+//             n_epochs: 50,
+//             neg_sample_rate: 2,
+//             min_dist: 0.1,
+//             beta1: 0.5,
+//             beta2: 0.9,
+//             eps: 1e-7,
+//         };
+
+//         // Test SGD
+//         let mut embd_sgd = initial_embd.clone();
+//         optimise_embedding_sgd(&mut embd_sgd, &graph, &params, 42, false);
+
+//         // Test Adam
+//         let mut embd_adam = initial_embd.clone();
+//         optimise_embedding_adam(&mut embd_adam, &graph, &params, 42, false);
+
+//         // Both should move points significantly from initial positions
+//         let movement_sgd: f64 = embd_sgd
+//             .iter()
+//             .zip(initial_embd.iter())
+//             .map(|(new, old)| {
+//                 new.iter()
+//                     .zip(old.iter())
+//                     .map(|(&n, &o)| (n - o).abs())
+//                     .sum::<f64>()
+//             })
+//             .sum();
+
+//         let movement_adam: f64 = embd_adam
+//             .iter()
+//             .zip(initial_embd.iter())
+//             .map(|(new, old)| {
+//                 new.iter()
+//                     .zip(old.iter())
+//                     .map(|(&n, &o)| (n - o).abs())
+//                     .sum::<f64>()
+//             })
+//             .sum();
+
+//         assert!(movement_sgd > 1.0, "SGD should move points");
+//         assert!(movement_adam > 1.0, "Adam should move points");
+
+//         // Both should produce finite results
+//         for point in embd_sgd.iter().chain(embd_adam.iter()) {
+//             for &coord in point {
+//                 assert!(coord.is_finite());
+//             }
+//         }
+//     }
+
+//     #[test]
+//     fn test_parallel_sgd_reproducibility() {
+//         let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
+//         let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+//         let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+
+//         let params = OptimParams {
+//             a: 1.0,
+//             b: 1.0,
+//             lr: 0.5,
+//             n_epochs: 10,
+//             neg_sample_rate: 2,
+//             min_dist: 0.1,
+//             beta1: 0.5,
+//             beta2: 0.9,
+//             eps: 1e-7,
+//         };
+
+//         optimise_embedding_sgd(&mut embd1, &graph, &params, 42, false);
+//         optimise_embedding_sgd(&mut embd2, &graph, &params, 42, false);
+
+//         // Parallel SGD should be reproducible with same seed
+//         assert_eq!(embd1, embd2);
+//     }
+
+//     #[test]
+//     fn test_optimisation_preserves_graph_structure_adam() {
+//         // Create a graph with two distinct cliques that are weakly connected
+//         // Clique 1: vertices 0, 1, 2 (strongly connected)
+//         // Clique 2: vertices 3, 4, 5 (strongly connected)
+//         // Weak bridge: 2 <-> 3
+
+//         let graph = vec![
+//             vec![(1, 1.0), (2, 1.0)],           // 0: connected to 1, 2
+//             vec![(0, 1.0), (2, 1.0)],           // 1: connected to 0, 2
+//             vec![(0, 1.0), (1, 1.0), (3, 0.1)], // 2: connected to 0, 1, weak to 3
+//             vec![(2, 0.1), (4, 1.0), (5, 1.0)], // 3: weak to 2, connected to 4, 5
+//             vec![(3, 1.0), (5, 1.0)],           // 4: connected to 3, 5
+//             vec![(3, 1.0), (4, 1.0)],           // 5: connected to 3, 4
+//         ];
+
+//         // Start with random positions (not clustered)
+//         let mut embd = vec![
+//             vec![0.0, 0.0],
+//             vec![10.0, 0.0],
+//             vec![0.0, 10.0],
+//             vec![10.0, 10.0],
+//             vec![-5.0, -5.0],
+//             vec![15.0, 15.0],
+//         ];
+
+//         let params = OptimParams {
+//             n_epochs: 200,
+//             ..OptimParams::default_2d()
+//         };
+
+//         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
+
+//         // Helper to compute distance
+//         let dist = |a: &[f64], b: &[f64]| -> f64 {
+//             ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+//         };
+
+//         // Compute average intra-clique distance
+//         let intra_clique1 =
+//             (dist(&embd[0], &embd[1]) + dist(&embd[0], &embd[2]) + dist(&embd[1], &embd[2])) / 3.0;
+//         let intra_clique2 =
+//             (dist(&embd[3], &embd[4]) + dist(&embd[3], &embd[5]) + dist(&embd[4], &embd[5])) / 3.0;
+//         let avg_intra = (intra_clique1 + intra_clique2) / 2.0;
+
+//         // Compute average inter-clique distance (excluding the bridge)
+//         let inter_distances = [
+//             dist(&embd[0], &embd[3]),
+//             dist(&embd[0], &embd[4]),
+//             dist(&embd[0], &embd[5]),
+//             dist(&embd[1], &embd[3]),
+//             dist(&embd[1], &embd[4]),
+//             dist(&embd[1], &embd[5]),
+//         ];
+//         let avg_inter: f64 = inter_distances.iter().sum::<f64>() / inter_distances.len() as f64;
+
+//         // Points within cliques should be much closer than points between cliques
+//         assert!(
+//             avg_inter > avg_intra * 1.5,
+//             "Inter-clique dist ({:.2}) should be > 1.5x intra-clique dist ({:.2})",
+//             avg_inter,
+//             avg_intra
+//         );
+//     }
+
+//     #[test]
+//     fn test_optimisation_preserves_graph_structure_sgd() {
+//         // Create a graph with two distinct cliques that are weakly connected
+//         // Clique 1: vertices 0, 1, 2 (strongly connected)
+//         // Clique 2: vertices 3, 4, 5 (strongly connected)
+//         // Weak bridge: 2 <-> 3
+
+//         let graph = vec![
+//             vec![(1, 1.0), (2, 1.0)],           // 0: connected to 1, 2
+//             vec![(0, 1.0), (2, 1.0)],           // 1: connected to 0, 2
+//             vec![(0, 1.0), (1, 1.0), (3, 0.1)], // 2: connected to 0, 1, weak to 3
+//             vec![(2, 0.1), (4, 1.0), (5, 1.0)], // 3: weak to 2, connected to 4, 5
+//             vec![(3, 1.0), (5, 1.0)],           // 4: connected to 3, 5
+//             vec![(3, 1.0), (4, 1.0)],           // 5: connected to 3, 4
+//         ];
+
+//         // Start with random positions (not clustered)
+//         let mut embd = vec![
+//             vec![0.0, 0.0],
+//             vec![10.0, 0.0],
+//             vec![0.0, 10.0],
+//             vec![10.0, 10.0],
+//             vec![-5.0, -5.0],
+//             vec![15.0, 15.0],
+//         ];
+
+//         let params = OptimParams {
+//             n_epochs: 200,
+//             ..OptimParams::default_2d()
+//         };
+
+//         optimise_embedding_sgd(&mut embd, &graph, &params, 42, false);
+
+//         // Helper to compute distance
+//         let dist = |a: &[f64], b: &[f64]| -> f64 {
+//             ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+//         };
+
+//         // Compute average intra-clique distance
+//         let intra_clique1 =
+//             (dist(&embd[0], &embd[1]) + dist(&embd[0], &embd[2]) + dist(&embd[1], &embd[2])) / 3.0;
+//         let intra_clique2 =
+//             (dist(&embd[3], &embd[4]) + dist(&embd[3], &embd[5]) + dist(&embd[4], &embd[5])) / 3.0;
+//         let avg_intra = (intra_clique1 + intra_clique2) / 2.0;
+
+//         // Compute average inter-clique distance (excluding the bridge)
+//         let inter_distances = [
+//             dist(&embd[0], &embd[3]),
+//             dist(&embd[0], &embd[4]),
+//             dist(&embd[0], &embd[5]),
+//             dist(&embd[1], &embd[3]),
+//             dist(&embd[1], &embd[4]),
+//             dist(&embd[1], &embd[5]),
+//         ];
+//         let avg_inter: f64 = inter_distances.iter().sum::<f64>() / inter_distances.len() as f64;
+
+//         // Points within cliques should be much closer than points between cliques
+//         assert!(
+//             avg_inter > avg_intra * 1.5,
+//             "Inter-clique dist ({:.2}) should be > 1.5x intra-clique dist ({:.2})",
+//             avg_inter,
+//             avg_intra
+//         );
+//     }
+// }

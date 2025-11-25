@@ -14,6 +14,8 @@ use faer::MatRef;
 use num_traits::{Float, FromPrimitive};
 use std::default::Default;
 use std::marker::{Send, Sync};
+use std::time::Instant;
+use thousands::*;
 
 use crate::data_gen::*;
 use crate::init::*;
@@ -143,14 +145,22 @@ where
     let optimiser = parse_optimiser(&optimiser).unwrap_or_default();
 
     if verbose {
-        println!("Running approximate nearest neighbour search...");
+        println!(
+            "Running approximate nearest neighbour search using {}...",
+            ann_type
+        );
     }
 
-    let (knn_indices, knn_dist) = run_ann_search(data, k, ann_type, &nn_params, seed, verbose);
+    let start_knn = Instant::now();
+    let (knn_indices, knn_dist) = run_ann_search(data, k, ann_type, &nn_params, seed);
+    let end_knn = start_knn.elapsed();
 
     if verbose {
+        println!("kNN search done in: {:.2?}.", end_knn);
         println!("Constructing fuzzy simplicial set...");
     }
+
+    let start_graph_gen = Instant::now();
 
     let (sigma, rho) = smooth_knn_dist(
         &knn_dist,
@@ -168,9 +178,18 @@ where
 
     let graph_adj = coo_to_adjacency_list(&graph);
 
+    let end_graph_gen = start_graph_gen.elapsed();
+
     if verbose {
+        println!(
+            "Finalised graph generation in {:.2?} with {} edges.",
+            end_graph_gen,
+            graph_adj.len().separate_with_underscores()
+        );
         println!("Initialising embedding via spectral layout...");
     }
+
+    let start_layout = Instant::now();
 
     let mut embd = spectral_layout(&graph, n_dim, seed as u64);
 
@@ -194,7 +213,13 @@ where
         }
     }
 
+    let end_layout = start_layout.elapsed();
+
     if verbose {
+        println!(
+            "Initialised and optimised embedding in: {:.2?}.",
+            end_layout
+        );
         println!("UMAP complete!");
     }
 

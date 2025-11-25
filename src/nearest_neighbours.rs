@@ -120,7 +120,6 @@ pub fn run_ann_search<T>(
     ann_type: String,
     params_nn: &NearestNeighbourParams<T>,
     seed: usize,
-    verbose: bool,
 ) -> (Vec<Vec<usize>>, Vec<Vec<T>>)
 where
     T: Float + FromPrimitive + ToPrimitive + Send + Sync + Default,
@@ -140,7 +139,7 @@ where
                 k + 1,
                 params_nn.search_budget * k * params_nn.n_trees,
                 true,
-                verbose,
+                false,
             )
         }
         AnnSearch::Hnsw => {
@@ -150,10 +149,10 @@ where
                 params_nn.ef_construction,
                 &params_nn.dist_metric,
                 seed,
-                verbose,
+                false,
             );
 
-            query_hnsw_index(data, &index, k + 1, params_nn.ef_search * k, true, verbose)
+            query_hnsw_index(data, &index, k + 1, params_nn.ef_search * k, true, false)
         }
         AnnSearch::NNDescent => generate_knn_nndescent_with_dist(
             data,
@@ -163,7 +162,7 @@ where
             params_nn.delta,
             params_nn.rho,
             seed,
-            verbose,
+            false,
             true,
         ),
     };
