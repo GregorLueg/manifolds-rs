@@ -106,7 +106,7 @@ where
 ///
 /// (eigenvalues, eigenvectors) where eigenvectors[i][j] is element j of
 /// eigenvector i
-pub fn compute_largest_eigenpairs_lanczos<T>(
+pub fn compute_smallest_eigenpairs_lanczos<T>(
     matrix: &CompressedSparseData<T>,
     n_components: usize,
     seed: u64,
@@ -178,10 +178,10 @@ where
     let (evals, evecs) = tridiag_eig(&alpha[..n_iter], &beta[..n_iter - 1]);
 
     let mut indices: Vec<usize> = (0..evals.len()).collect();
-    indices.sort_by(|&i, &j| evals[j].partial_cmp(&evals[i]).unwrap());
+    indices.sort_by(|&i, &j| evals[i].partial_cmp(&evals[j]).unwrap());
 
-    let mut largest_evals: Vec<f32> = Vec::with_capacity(n_components);
-    let mut largest_evecs: Vec<Vec<f32>> = Vec::with_capacity(n_components);
+    let mut smallest_evals: Vec<f32> = Vec::with_capacity(n_components);
+    let mut smallest_evecs: Vec<Vec<f32>> = Vec::with_capacity(n_components);
 
     for &idx in indices.iter().take(n_components) {
         // Transform eigenvector back to original space: v_original = V * v_tridiag
@@ -198,18 +198,18 @@ where
             *x /= norm;
         }
 
-        largest_evals.push(evals[idx].to_f64().unwrap() as f32);
-        largest_evecs.push(evec.iter().map(|&x| x as f32).collect());
+        smallest_evals.push(evals[idx].to_f64().unwrap() as f32);
+        smallest_evecs.push(evec.iter().map(|&x| x as f32).collect());
     }
 
     let mut transposed = vec![vec![0.0f32; n_components]; n];
     for comp_idx in 0..n_components {
         for point_idx in 0..n {
-            transposed[point_idx][comp_idx] = largest_evecs[comp_idx][point_idx];
+            transposed[point_idx][comp_idx] = smallest_evecs[comp_idx][point_idx];
         }
     }
 
-    (largest_evals, transposed)
+    (smallest_evals, transposed)
 }
 
 ///////////
@@ -295,7 +295,7 @@ mod test_utils_math {
 
         let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
 
-        let (evals, evecs) = compute_largest_eigenpairs_lanczos(&matrix, 2, 42);
+        let (evals, evecs) = compute_smallest_eigenpairs_lanczos(&matrix, 2, 42);
 
         assert_eq!(evals.len(), 2);
         assert_eq!(evecs.len(), n);
@@ -317,7 +317,7 @@ mod test_utils_math {
 
         let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
 
-        let (evals, evecs) = compute_largest_eigenpairs_lanczos(&matrix, 3, 42);
+        let (evals, evecs) = compute_smallest_eigenpairs_lanczos(&matrix, 3, 42);
 
         assert_eq!(evals.len(), 3);
         assert_eq!(evecs.len(), n);
@@ -357,8 +357,8 @@ mod test_utils_math {
 
         let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
 
-        let (evals1, evecs1) = compute_largest_eigenpairs_lanczos(&matrix, 3, 42);
-        let (evals2, evecs2) = compute_largest_eigenpairs_lanczos(&matrix, 3, 42);
+        let (evals1, evecs1) = compute_smallest_eigenpairs_lanczos(&matrix, 3, 42);
+        let (evals2, evecs2) = compute_smallest_eigenpairs_lanczos(&matrix, 3, 42);
 
         assert_eq!(evals1, evals2);
         assert_eq!(evecs1, evecs2);

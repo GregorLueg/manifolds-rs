@@ -103,7 +103,7 @@ where
 
     // compute smallest eigenvectors (skip first which is constant)
     let n_eigs = (n_comp + 1).min(n);
-    let (_, evecs) = compute_largest_eigenpairs_lanczos(&laplacian, n_eigs, seed);
+    let (_, evecs) = compute_smallest_eigenpairs_lanczos(&laplacian, n_eigs, seed);
 
     let mut embedding = vec![vec![T::zero(); n_comp]; n];
 
