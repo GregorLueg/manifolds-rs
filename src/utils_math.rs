@@ -94,7 +94,10 @@ where
     (evals, evecs)
 }
 
-/// Compute largest eigenvalues and eigenvectors using Lanczos
+/// Compute smallest eigenvalues and eigenvectors using Lanczos
+///
+/// This function returns the smallest eigenvalues, specifically designed
+/// for spectral initialisations.
 ///
 /// ### Params
 ///

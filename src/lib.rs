@@ -36,8 +36,7 @@ use crate::optimiser::*;
 ///   distance zero (typically 1.0). Allows for local manifold structure by
 ///   treating the nearest neighbour(s) as having maximal membership strength.
 /// * `mix_weight` - Balance between fuzzy union and directed graph during
-///   symmetrisation (typically 0.5). Values: 0.0 = use only incoming edges,
-///   0.5 = full fuzzy union (standard UMAP), 1.0 = use only outgoing edges.
+///   symmetrisation (typically 1.0).
 #[derive(Clone, Debug)]
 pub struct UmapParams<T> {
     pub bandwidth: T,
@@ -55,12 +54,12 @@ where
     ///
     /// * `bandwidth = 1e-5` - Tight convergence for sigma computation
     /// * `local_connectivity = 1.0` - Treat nearest neighbour as connected
-    /// * `mix_weight = 0.5` - Standard symmetric fuzzy union
+    /// * `mix_weight = 1.0` - Standard symmetric fuzzy union
     fn default() -> Self {
         Self {
             local_connectivity: T::from(1.0).unwrap(),
             bandwidth: T::from(1e-5).unwrap(),
-            mix_weight: T::from(0.5).unwrap(),
+            mix_weight: T::from(1.0).unwrap(),
         }
     }
 }
