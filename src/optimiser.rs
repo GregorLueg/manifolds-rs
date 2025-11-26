@@ -204,6 +204,8 @@ pub enum Optimiser {
     /// Adam
     #[default]
     Adam,
+    /// Parallel version of Adam
+    AdamParallel,
     /// Stochastic gradient descent
     Sgd,
 }
@@ -270,7 +272,8 @@ impl<T: Float + FromPrimitive> OptimConstants<T> {
 ///
 /// ### Params
 ///
-/// * `s` - String defining the optimiser. Choice of `"adam"` or `"sgd"`.
+/// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`
+///   or `"sgd"`.
 ///
 /// ### Return
 ///
@@ -279,6 +282,7 @@ pub fn parse_optimiser(s: &str) -> Option<Optimiser> {
     match s.to_lowercase().as_str() {
         "adam" => Some(Optimiser::Adam),
         "sgd" => Some(Optimiser::Sgd),
+        "adam_parallel" => Some(Optimiser::AdamParallel),
         _ => None,
     }
 }
@@ -426,15 +430,40 @@ fn apply_repulsive_force_flat<T: Float>(
 // Main functions //
 ////////////////////
 
-/// Optimise embedding using SGD
+/// Optimise UMAP embedding using Stochastic Gradient Descent (SGD)
+///
+/// Implements the standard UMAP optimization procedure using SGD with:
+/// - Adaptive edge sampling based on edge weights (higher weights sampled more
+///   frequently)
+/// - Negative sampling for repulsive forces
+/// - Linear learning rate decay schedule
+/// - Per-vertex RNG state for reproducible negative sampling
+///
+/// ### Algorithm
+///
+/// For each epoch:
+///
+/// 1. Process edges whose `epoch_of_next_sample` has arrived
+/// 2. Apply attractive force between connected vertices
+/// 3. Perform negative sampling: randomly select vertices and apply repulsive forces
+/// 4. Update sampling schedules
 ///
 /// ### Params
 ///
-/// * `embd` - Initial embedding coordinates (modified in place)
-/// * `graph` - Adjacency list representation of the high-dimensional graph
-/// * `params` - Optimisation parameters
-/// * `seed` - Random seed for negative sampling
-/// * `verbose` - Controls verbosity of the function
+/// * `embd` - Initial embedding coordinates (modified in place), shape
+///   [n_vertices][n_dim]
+/// * `graph` - Adjacency list where graph[i] contains (neighbour_idx, weight)
+///   pairs
+/// * `params` - Optimisation parameters (n_epochs, lr, a, b, gamma,
+///   neg_sample_rate)
+/// * `seed` - Random seed for negative sampling reproducibility
+/// * `verbose` - Controls verbosity
+///
+/// # Notes
+///
+/// - Embedding is flattened internally for cache locality
+/// - Edge weights are normalised to determine sampling frequency
+/// - Higher edge weights result in more frequent sampling
 pub fn optimise_embedding_sgd<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
@@ -556,12 +585,44 @@ pub fn optimise_embedding_sgd<T>(
     }
 }
 
-/// Optimise embedding using Adam
+/// Optimise UMAP embedding using Adam optimiser (sequential version)
 ///
-/// 1. Edges sampled based on epochs_per_sample (not all edges every epoch)
-/// 2. NO gradient normalisation by edge count
-/// 3. Negative sampling tracked per edge
-/// 4. Bias correction applied to moments before computing update
+/// Implements UMAP optimization using the Adam adaptive learning rate
+/// algorithm:
+/// - Adaptive edge sampling based on edge weights
+/// - First and second moment estimation (momentum and RMSprop)
+/// - Bias correction for moment estimates
+/// - Per-gradient-step timestep counter for correct bias correction
+/// - Negative sampling for repulsive forces
+///
+/// ### Algorithm
+///
+/// For each epoch:
+///
+/// 1. Process edges whose `epoch_of_next_sample` has arrived
+/// 2. Compute attractive gradient and apply Adam update to both endpoints
+/// 3. Perform negative sampling and apply repulsive Adam updates
+/// 4. Bias correction applied before each parameter update
+///
+/// ### Params
+///
+/// * `embd` - Initial embedding coordinates (modified in place), shape
+///   [n_vertices][n_dim]
+/// * `graph` - Adjacency list where graph[i] contains (neighbour_idx, weight)
+///   pairs
+/// * `params` - Optimisation parameters including Adam hyperparameters (beta1,
+///   beta2, eps)
+/// * `seed` - Random seed for negative sampling
+/// * `verbose` - If true, prints progress every 100 epochs
+///
+/// # Implementation Notes
+///
+/// - Uses per-gradient-step timestep counter (`global_timestep`) for bias
+///   correction
+/// - Pre-computes bias corrections for first 10,000 timesteps (lookup table)
+/// - Each edge processed increments the timestep counter
+/// - Updates are applied immediately (not batched)
+/// - Linear learning rate decay schedule
 pub fn optimise_embedding_adam<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
@@ -770,6 +831,47 @@ pub fn optimise_embedding_adam<T>(
     }
 }
 
+/// Optimise UMAP embedding using Adam optimiser (parallel node-based version)
+///
+/// **WARNING**: This implementation differs from sequential Adam in
+/// optimisation dynamics:
+///
+/// - Accumulates all gradients per node per epoch, then takes one Adam step
+/// - More similar to mini-batch gradient descent than standard Adam
+/// - May produce different convergence behaviour compared to sequential version
+///
+/// It is recommended to run this version with more epochs, i.e., at least 500.
+///
+/// ### Algorithm
+///
+/// For each epoch:
+///
+/// 1. **Parallel**: For each node, accumulate gradients from all incident edges
+/// 2. **Sequential**: Apply accumulated gradients using Adam updates
+/// 3. Update sampling schedules
+///
+/// ### Key Differences from sequential Version
+///
+/// - **Timestep semantics**: One timestep per node per epoch (not per gradient)
+/// - **Update frequency**: One Adam step per node per epoch (not per edge)
+/// - **Gradient accumulation**: Gradients from all edges summed before update
+///
+/// ### Params
+///
+/// * `embd` - Initial embedding coordinates (modified in place)
+/// * `graph` - Adjacency list representation
+/// * `params` - Optimisation parameters with Adam hyperparameters
+/// * `seed` - Random seed for negative sampling
+/// * `verbose` - Progress reporting
+///
+/// ### Implementation Notes
+///
+/// - Uses Rayon for parallelisation across nodes
+/// - Builds bidirectional node-to-edges mapping for efficient parallel
+///   processing
+/// - RNG state per node per epoch (different seeding strategy than sequential)
+/// - Bias correction applied per epoch (not per gradient as in sequential
+///   version)
 pub fn optimise_embedding_adam_parallel<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
@@ -782,6 +884,7 @@ pub fn optimise_embedding_adam_parallel<T>(
     let n = embd.len();
     let n_dim = embd[0].len();
 
+    // Flatten embedding
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
     for point in embd.iter() {
         embd_flat.extend_from_slice(point);
@@ -789,6 +892,7 @@ pub fn optimise_embedding_adam_parallel<T>(
 
     let consts = OptimConstants::new(params.a, params.b, params.gamma);
 
+    // Build edge list
     let mut edges: Vec<(usize, usize, T)> = Vec::new();
     for (i, neighbours) in graph.iter().enumerate() {
         for &(j, w) in neighbours {
@@ -800,6 +904,7 @@ pub fn optimise_embedding_adam_parallel<T>(
         return;
     }
 
+    // Normalise weights
     let max_weight =
         edges
             .iter()
@@ -826,22 +931,28 @@ pub fn optimise_embedding_adam_parallel<T>(
         .collect();
     let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
 
+    // Linear learning rate decay
     let n_epochs_f = T::from(params.n_epochs).unwrap();
     let lr_schedule: Vec<T> = (0..params.n_epochs)
         .map(|e| params.lr * (T::one() - T::from(e).unwrap() / n_epochs_f))
         .collect();
 
+    // Adam state
     let mut m: Vec<T> = vec![T::zero(); n * n_dim];
     let mut v: Vec<T> = vec![T::zero(); n * n_dim];
 
-    // Build BIDIRECTIONAL node-to-edges mapping
+    // Build bidirectional node-to-edges mapping
+    // node_edges[i] = [(edge_idx, is_head), ...]
+    // is_head=true means node i is the source (head) of the edge
     let mut node_edges: Vec<Vec<(usize, bool)>> = vec![Vec::new(); n];
     for (edge_idx, &(i, j, _)) in edges.iter().enumerate() {
-        node_edges[i].push((edge_idx, true)); // head
-        node_edges[j].push((edge_idx, false)); // tail
+        node_edges[i].push((edge_idx, true)); // i is head
+        node_edges[j].push((edge_idx, false)); // j is tail
     }
 
-    // Pre-compute bias corrections
+    // Pre-compute bias corrections per epoch
+    // WARNING: This is per-epoch bias correction, not per-gradient-step!
+    // This differs from standard Adam and may affect convergence
     let bias_corrections: Vec<(T, T)> = (0..params.n_epochs)
         .map(|epoch| {
             let t = T::from(epoch + 1).unwrap();
@@ -854,15 +965,17 @@ pub fn optimise_embedding_adam_parallel<T>(
     let one_minus_beta1 = T::one() - params.beta1;
     let one_minus_beta2 = T::one() - params.beta2;
 
+    // Main optimisation loop
     for epoch in 0..params.n_epochs {
         let lr = lr_schedule[epoch];
         let epoch_t = T::from(epoch).unwrap();
         let (bias_correction1, bias_correction2) = bias_corrections[epoch];
 
-        // Parallel gradient accumulation
+        // Parallel gradient accumulation phase
         let updates: Vec<(usize, Vec<T>)> = (0..n)
             .into_par_iter()
             .filter_map(|node_i| {
+                // Create per-node RNG with epoch-dependent seed
                 let mut rng = StdRng::seed_from_u64(
                     seed.wrapping_mul(6364136223846793005)
                         .wrapping_add(node_i as u64)
@@ -873,6 +986,7 @@ pub fn optimise_embedding_adam_parallel<T>(
                 let mut node_gradients = vec![T::zero(); n_dim];
                 let mut has_updates = false;
 
+                // Process all edges incident to this node
                 for &(edge_idx, is_head) in &node_edges[node_i] {
                     if epoch_of_next_sample[edge_idx] > epoch_t {
                         continue;
@@ -881,20 +995,23 @@ pub fn optimise_embedding_adam_parallel<T>(
                     has_updates = true;
                     let (i, j, _) = edges[edge_idx];
 
+                    // Determine other endpoint and gradient sign
                     let (other_node, sign) = if is_head {
-                        (j, T::one())
+                        (j, T::one()) // Gradient points towards j
                     } else {
-                        (i, -T::one())
+                        (i, -T::one()) // Gradient points away from i
                     };
 
                     let base_other = other_node * n_dim;
 
+                    // Compute distance
                     let mut dist_sq = T::zero();
                     for d in 0..n_dim {
                         let diff = embd_flat[base_i + d] - embd_flat[base_other + d];
                         dist_sq = dist_sq + diff * diff;
                     }
 
+                    // Accumulate attractive gradient
                     if dist_sq >= T::from(1e-8).unwrap() {
                         let dist_sq_b = dist_sq.powf(consts.b);
                         let denom = T::one() + consts.a * dist_sq_b;
@@ -906,7 +1023,7 @@ pub fn optimise_embedding_adam_parallel<T>(
                         }
                     }
 
-                    // Negative sampling only for head
+                    // Negative sampling (only for head nodes to avoid duplication)
                     if is_head {
                         let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
                             / epochs_per_neg_sample[edge_idx])
@@ -922,12 +1039,14 @@ pub fn optimise_embedding_adam_parallel<T>(
 
                             let base_k = k * n_dim;
 
+                            // Compute distance to negative sample
                             let mut dist_sq = T::zero();
                             for d in 0..n_dim {
                                 let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
                                 dist_sq = dist_sq + diff * diff;
                             }
 
+                            // Accumulate repulsive gradient with clipping
                             let dist_sq_safe = dist_sq + consts.eps;
                             let dist_sq_b = dist_sq_safe.powf(consts.b);
                             let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
@@ -951,7 +1070,7 @@ pub fn optimise_embedding_adam_parallel<T>(
             })
             .collect();
 
-        // Apply updates
+        // Sequential update application phase
         for (node_i, node_gradients) in updates {
             let base_i = node_i * n_dim;
 
@@ -959,9 +1078,11 @@ pub fn optimise_embedding_adam_parallel<T>(
                 let idx = base_i + d;
                 let g = node_gradients[d];
 
+                // Update Adam moments
                 m[idx] = params.beta1 * m[idx] + one_minus_beta1 * g;
                 v[idx] = params.beta2 * v[idx] + one_minus_beta2 * g * g;
 
+                // Apply bias-corrected Adam update
                 let m_hat = m[idx] / bias_correction1;
                 let v_hat = v[idx] / bias_correction2;
 
@@ -969,7 +1090,7 @@ pub fn optimise_embedding_adam_parallel<T>(
             }
         }
 
-        // Update schedules (only process head edges)
+        // Update sampling schedules (only for head edges to avoid duplication)
         for (edge_idx, &(i, _, _)) in edges.iter().enumerate() {
             if epoch_of_next_sample[edge_idx] <= epoch_t {
                 epoch_of_next_sample[edge_idx] =
@@ -991,6 +1112,7 @@ pub fn optimise_embedding_adam_parallel<T>(
         }
     }
 
+    // Unflatten embedding
     for (i, point) in embd.iter_mut().enumerate() {
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);

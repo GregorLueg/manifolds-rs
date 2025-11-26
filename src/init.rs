@@ -14,7 +14,9 @@ use crate::utils_math::*;
 /////////////
 
 /// Different initialisation methods for the UMAP
+#[derive(Default, Clone, Debug)]
 pub enum UmapInit {
+    #[default]
     /// Spectral initialisation
     SpectralInit,
     /// Random initialisation
@@ -185,6 +187,16 @@ where
         }
     }
 
+    let mut rng = StdRng::seed_from_u64(seed + 9999); // Different seed for noise
+    let noise_std = T::from_f64(0.0001).unwrap();
+
+    for i in 0..n {
+        for j in 0..n_comp {
+            let noise = T::from_f64(rng.sample::<f64, _>(StandardNormal)).unwrap() * noise_std;
+            embedding[i][j] = embedding[i][j] + noise;
+        }
+    }
+
     embedding
 }
 
@@ -329,7 +341,7 @@ where
 /// * **Spectral**: Uses graph Laplacian eigenvectors, scaled to [-10, 10]
 /// * **PCA**: Projects onto principal components, scaled to `std_dev = 1e-4`
 /// * **Random**: Gaussian random values in [-10, 10] range
-pub fn initialize_embedding<T>(
+pub fn initialise_embedding<T>(
     init_method: &UmapInit,
     n_comp: usize,
     seed: u64,
@@ -579,7 +591,7 @@ mod test_init {
         };
         let data = faer::mat![[1.0, 2.0], [3.0, 4.0],];
 
-        let embedding = initialize_embedding(&UmapInit::SpectralInit, 2, 42, &graph, data.as_ref());
+        let embedding = initialise_embedding(&UmapInit::SpectralInit, 2, 42, &graph, data.as_ref());
 
         assert_eq!(embedding.len(), 2);
         assert_eq!(embedding[0].len(), 2);
@@ -595,7 +607,7 @@ mod test_init {
         };
         let data = faer::mat![[1.0, 2.0], [3.0, 4.0], [5.0, 6.0],];
 
-        let embedding = initialize_embedding(&UmapInit::RandomInit, 2, 42, &graph, data.as_ref());
+        let embedding = initialise_embedding(&UmapInit::RandomInit, 2, 42, &graph, data.as_ref());
 
         assert_eq!(embedding.len(), 3);
         assert_eq!(embedding[0].len(), 2);
@@ -611,7 +623,7 @@ mod test_init {
         };
         let data = faer::mat![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0],];
 
-        let embedding = initialize_embedding(
+        let embedding = initialise_embedding(
             &UmapInit::PcaInit { randomised: false },
             2,
             42,
