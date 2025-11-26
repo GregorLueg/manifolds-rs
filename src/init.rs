@@ -130,7 +130,7 @@ where
 /// ### Notes
 ///
 /// Uses the smallest non-trivial eigenvectors (skipping the constant
-/// eigenvector). The result is centred and scaled to [-10, 10] range.
+/// eigenvector). The result is centred and scaled to [-1, 1] range.
 pub fn spectral_layout<T>(graph: &SparseGraph<T>, n_comp: usize, seed: u64) -> Vec<Vec<T>>
 where
     T: Float + FromPrimitive + Send + Sync,
@@ -157,7 +157,7 @@ where
             // fallback to random if not enough eigenvectors
             let mut rng = StdRng::seed_from_u64(seed + comp_idx as u64);
             for i in 0..n {
-                embedding[i][comp_idx] = T::from_f64(rng.random_range(-10.0..10.0)).unwrap();
+                embedding[i][comp_idx] = T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
             }
         }
     }
@@ -180,7 +180,7 @@ where
             .fold(T::zero(), |acc, x| if x > acc { x } else { acc });
 
         if max_val > T::from_f64(1e-8).unwrap() {
-            let scale = T::from_f64(10.0).unwrap() / max_val;
+            let scale = T::from_f64(1.0).unwrap() / max_val;
             for i in 0..n {
                 embedding[i][comp] = embedding[i][comp] * scale;
             }
@@ -223,7 +223,7 @@ where
 
     for i in 0..n_samples {
         for j in 0..n_comp {
-            embedding[i][j] = T::from_f64(rng.random_range(-10.0..10.0)).unwrap();
+            embedding[i][j] = T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
         }
     }
 
@@ -445,7 +445,7 @@ mod test_init {
         // Check that values are approximately in [-10, 10] range (allowing for noise)
         for point in &embedding {
             for &coord in point {
-                assert!((-10.01..=10.01).contains(&coord));
+                assert!((-1.01..=1.01).contains(&coord));
             }
         }
 
@@ -496,7 +496,7 @@ mod test_init {
         // Check range [-10, 10]
         for point in &embedding {
             for &coord in point {
-                assert!((-10.0..=10.0).contains(&coord));
+                assert!((-1.0..=1.0).contains(&coord));
             }
         }
     }
