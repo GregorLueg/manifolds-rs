@@ -189,18 +189,10 @@ where
 
     let graph = symmetrise_graph(graph, umap_params.mix_weight);
 
-    let graph = filter_weak_edges(graph, optim_params.n_epochs);
-
-    let graph_adj = coo_to_adjacency_list(&graph);
-
     let end_graph_gen = start_graph_gen.elapsed();
 
     if verbose {
-        println!(
-            "Finalised graph generation in {:.2?} with {} edges.",
-            end_graph_gen,
-            graph.col_indices.len().separate_with_underscores()
-        );
+        println!("Finalised graph generation in {:.2?}.", end_graph_gen);
         println!(
             "Initialising embedding via {} layout...",
             match init_type {
@@ -216,15 +208,19 @@ where
 
     let mut embd = initialise_embedding(&init_type, n_dim, seed as u64, &graph, data);
 
+    let graph = filter_weak_edges(graph, optim_params.n_epochs);
+    let graph_adj = coo_to_adjacency_list(&graph);
+
     if verbose {
         println!(
-            "Optimising embedding via {} ({} epochs)...",
+            "Optimising embedding via {} ({} epochs) on {} edges...",
             match optimiser {
                 Optimiser::Adam => "Adam",
                 Optimiser::Sgd => "SGD",
                 Optimiser::AdamParallel => "Adam (multi-threaded)",
             },
-            optim_params.n_epochs
+            optim_params.n_epochs,
+            graph.col_indices.len().separate_with_underscores()
         );
     }
 
