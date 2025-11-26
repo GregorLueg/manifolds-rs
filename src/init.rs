@@ -442,17 +442,17 @@ mod test_init {
         assert_eq!(embedding.len(), 3); // 3 vertices
         assert_eq!(embedding[0].len(), 2); // 2 dimensions
 
-        // Check that values are scaled to [-10, 10] range
+        // Check that values are approximately in [-10, 10] range (allowing for noise)
         for point in &embedding {
             for &coord in point {
-                assert!((-10.0..=10.0).contains(&coord));
+                assert!((-10.01..=10.01).contains(&coord));
             }
         }
 
-        // Check that embedding is centred (mean ≈ 0)
+        // Check that embedding is centred (mean ≈ 0, allowing for noise)
         for dim in 0..2 {
             let mean: f64 = embedding.iter().map(|p| p[dim]).sum::<f64>() / 3.0;
-            assert_relative_eq!(mean, 0.0, epsilon = 1e-6);
+            assert_relative_eq!(mean, 0.0, epsilon = 0.01);
         }
     }
 

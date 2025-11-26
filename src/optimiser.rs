@@ -225,10 +225,7 @@ pub enum Optimiser {
 struct OptimConstants<T> {
     a: T,
     b: T,
-    two_b: T,
-    four_b: T,
     two_a_b: T,
-    gamma: T,
     two_gamma_b: T,
     clip_val: T,
     eps: T,
@@ -250,14 +247,10 @@ impl<T: Float + FromPrimitive> OptimConstants<T> {
     /// Self with all pre-calculated values.
     fn new(a: T, b: T, gamma: T) -> Self {
         let two = T::from_f64(2.0).unwrap();
-        let four = T::from_f64(4.0).unwrap();
         Self {
             a,
             b,
-            two_b: two * b,
-            four_b: four * b,
             two_a_b: two * a * b,
-            gamma,
             two_gamma_b: two * gamma * b,
             clip_val: T::from_f64(4.0).unwrap(),
             eps: T::from_f64(0.001).unwrap(),
@@ -446,7 +439,8 @@ fn apply_repulsive_force_flat<T: Float>(
 ///
 /// 1. Process edges whose `epoch_of_next_sample` has arrived
 /// 2. Apply attractive force between connected vertices
-/// 3. Perform negative sampling: randomly select vertices and apply repulsive forces
+/// 3. Perform negative sampling: randomly select vertices and apply repulsive
+///    forces
 /// 4. Update sampling schedules
 ///
 /// ### Params
@@ -686,7 +680,7 @@ pub fn optimise_embedding_adam<T>(
         .map(|i| StdRng::seed_from_u64(seed + i as u64))
         .collect();
 
-    // Pre-compute bias corrections
+    // pre-compute bias corrections
     let max_lookup = 10000;
     let mut bias_corr_m_lookup: Vec<T> = Vec::with_capacity(max_lookup);
     let mut bias_corr_v_lookup: Vec<T> = Vec::with_capacity(max_lookup);
@@ -731,7 +725,7 @@ pub fn optimise_embedding_adam<T>(
                     (T::one(), T::one())
                 };
 
-                // Attractive gradient: -2ab * d^(2b) / (d^2 * (1 + a*d^(2b)))
+                // attractive gradient: -2ab * d^(2b) / (d^2 * (1 + a*d^(2b)))
                 let dist_sq_b = dist_sq.powf(consts.b);
                 let denom = T::one() + consts.a * dist_sq_b;
                 let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
@@ -788,8 +782,7 @@ pub fn optimise_embedding_adam<T>(
                     dist_sq += diff * diff;
                 }
 
-                // Repulsive gradient: 2*gamma*b / ((0.001 + d^2) * (1 + a*d^(2b)))
-                // CRITICAL: Use two_gamma_b, not two_b!
+                // Repulsive gradient: 2 * gamma * b / ((0.001 + d^2) * (1 + a*d^(2b)))
                 let dist_sq_safe = dist_sq + consts.eps;
                 let dist_sq_b = dist_sq_safe.powf(consts.b);
                 let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
@@ -850,7 +843,6 @@ pub fn optimise_embedding_adam<T>(
 ///
 /// # Implementation Notes
 ///
-/// - **CRITICAL FIX**: Removed incorrect sign=-1 for tail nodes
 /// - Uses `two_gamma_b` for repulsive gradients (matches uwot)
 /// - Bias correction matches uwot's per-epoch approach
 /// - Builds bidirectional node-to-edges mapping for efficient parallelization
@@ -918,14 +910,14 @@ pub fn optimise_embedding_adam_parallel<T>(
     let mut m: Vec<T> = vec![T::zero(); n * n_dim];
     let mut v: Vec<T> = vec![T::zero(); n * n_dim];
 
-    // Build bidirectional node-to-edges mapping
+    // build bidirectional node-to-edges mapping
     let mut node_edges: Vec<Vec<(usize, bool)>> = vec![Vec::new(); n];
     for (edge_idx, &(i, j, _)) in edges.iter().enumerate() {
         node_edges[i].push((edge_idx, true)); // i is head
         node_edges[j].push((edge_idx, false)); // j is tail
     }
 
-    // Pre-compute per-epoch bias correction (matching uwot's Adam::epoch_end)
+    // pre-compute per-epoch bias correction (matching uwot's Adam::epoch_end)
     // beta1t and beta2t track beta1^epoch and beta2^epoch
     let bias_corrections: Vec<(T, T)> = (0..params.n_epochs)
         .map(|epoch| {
@@ -950,7 +942,7 @@ pub fn optimise_embedding_adam_parallel<T>(
         let epoch_t = T::from(epoch).unwrap();
         let (ad_scale, epsc) = bias_corrections[epoch];
 
-        // Parallel gradient accumulation
+        // parallel gradient accumulation
         let updates: Vec<(usize, Vec<T>)> = (0..n)
             .into_par_iter()
             .filter_map(|node_i| {
@@ -972,8 +964,6 @@ pub fn optimise_embedding_adam_parallel<T>(
                     has_updates = true;
                     let (i, j, _) = edges[edge_idx];
 
-                    // CRITICAL FIX: No sign multiplier needed!
-                    // delta = other - self naturally gives correct direction
                     let other_node = if is_head { j } else { i };
                     let base_other = other_node * n_dim;
 
@@ -994,7 +984,7 @@ pub fn optimise_embedding_adam_parallel<T>(
                         }
                     }
 
-                    // Negative sampling only for head nodes
+                    // negative sampling only for head nodes
                     if is_head {
                         let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
                             / epochs_per_neg_sample[edge_idx])
@@ -1016,7 +1006,7 @@ pub fn optimise_embedding_adam_parallel<T>(
                                 dist_sq += diff * diff;
                             }
 
-                            // Repulsive: 2*gamma*b / ((0.001 + d^2) * (1 + a*d^(2b)))
+                            // repulsive: 2*gamma*b / ((0.001 + d^2) * (1 + a*d^(2b)))
                             let dist_sq_safe = dist_sq + consts.eps;
                             let dist_sq_b = dist_sq_safe.powf(consts.b);
                             let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
@@ -1040,7 +1030,7 @@ pub fn optimise_embedding_adam_parallel<T>(
             })
             .collect();
 
-        // Sequential update application
+        // sequential update application
         for (node_i, node_gradients) in updates {
             let base_i = node_i * n_dim;
 
@@ -1048,19 +1038,19 @@ pub fn optimise_embedding_adam_parallel<T>(
                 let idx = base_i + d;
                 let g = node_gradients[d];
 
-                // Update moments (using in-place trick from uwot)
+                // update moments (using in-place trick from uwot)
                 let m_old = m[idx];
                 m[idx] += one_minus_beta1 * (g - m_old);
 
                 let v_old = v[idx];
                 v[idx] += one_minus_beta2 * (g * g - v_old);
 
-                // Apply update with per-epoch bias correction
+                // apply update with per-epoch bias correction
                 embd_flat[idx] += lr * ad_scale * m[idx] / (v[idx].sqrt() + epsc);
             }
         }
 
-        // Update sampling schedules
+        // update sampling schedules
         for (edge_idx, &_) in edges.iter().enumerate() {
             if epoch_of_next_sample[edge_idx] <= epoch_t {
                 epoch_of_next_sample[edge_idx] += epochs_per_sample[edge_idx];
@@ -1091,420 +1081,560 @@ pub fn optimise_embedding_adam_parallel<T>(
 // Tests //
 ///////////
 
-// #[cfg(test)]
-// mod test_optimiser {
-//     use super::*;
-//     use approx::assert_relative_eq;
-
-//     #[test]
-//     fn test_optim_params_default_2d() {
-//         let params = OptimParams::<f64>::default_2d();
-
-//         assert_relative_eq!(params.a, 1.929, epsilon = 1e-6);
-//         assert_relative_eq!(params.b, 0.7915, epsilon = 1e-6);
-//         assert_eq!(params.lr, 1.0);
-//         assert_eq!(params.n_epochs, 500);
-//         assert_eq!(params.neg_sample_rate, 5);
-//         assert_relative_eq!(params.min_dist, 0.1, epsilon = 1e-6);
-//     }
-
-//     #[test]
-//     fn test_optim_params_from_min_dist_spread() {
-//         let params =
-//             OptimParams::<f64>::from_min_dist_spread(0.1, 1.0, 1.0, 500, 5, None, None, None);
-
-//         assert!(params.a > 0.0);
-//         assert!(params.b > 0.0);
-//         assert_eq!(params.lr, 1.0);
-//         assert_eq!(params.n_epochs, 500);
-//         assert_eq!(params.neg_sample_rate, 5);
-//         assert_relative_eq!(params.min_dist, 0.1, epsilon = 1e-6);
-//     }
-
-//     #[test]
-//     fn test_fit_params_constraints() {
-//         let (a, b) = OptimParams::<f64>::fit_params(0.1, 1.0, None, None);
-
-//         // Parameters should be within reasonable bounds
-//         assert!((0.001..=10.0).contains(&a));
-//         assert!((0.1..=2.0).contains(&b));
-//     }
-
-//     #[test]
-//     fn test_fit_params_curve_properties() {
-//         let min_dist = 0.1;
-//         let spread = 1.0;
-//         let (a, b) = OptimParams::<f64>::fit_params(min_dist, spread, None, None);
-
-//         // Test that curve satisfies approximate requirements
-//         // f(min_dist) should be high (close to 1.0)
-//         let pred_min = 1.0 / (1.0 + a * min_dist.powf(2.0 * b));
-//         assert!(
-//             pred_min > 0.7,
-//             "f(min_dist) = {:.3} should be > 0.7",
-//             pred_min
-//         );
-
-//         // f(3*spread) should be low (close to 0.0)
-//         let pred_spread = 1.0 / (1.0 + a * (3.0 * spread).powf(2.0 * b));
-//         assert!(
-//             pred_spread < 0.3,
-//             "f(3*spread) = {:.3} should be < 0.3",
-//             pred_spread
-//         );
-
-//         // Verify the curve is monotonically decreasing between these points
-//         let mid_point = 1.5 * spread;
-//         let pred_mid = 1.0 / (1.0 + a * mid_point.powf(2.0 * b));
-//         assert!(
-//             pred_min > pred_mid && pred_mid > pred_spread,
-//             "Curve should be monotonically decreasing"
-//         );
-//     }
-
-//     #[test]
-//     fn test_squared_dist_basic() {
-//         let embd = vec![0.0, 0.0, 3.0, 4.0]; // two points flattened
-//         let dist = squared_dist_flat(&embd, 0, 1, 2);
-//         assert_relative_eq!(dist, 25.0, epsilon = 1e-6); // 3² + 4² = 25
-//     }
-
-//     #[test]
-//     fn test_squared_dist_identical_points() {
-//         let embd = vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0]; // two identical points flattened
-//         let dist = squared_dist_flat(&embd, 0, 1, 3);
-//         assert_relative_eq!(dist, 0.0, epsilon = 1e-6);
-//     }
-
-//     #[test]
-//     fn test_optimise_embedding_basic() {
-//         // Simple graph with 3 connected vertices
-//         let graph = vec![
-//             vec![(1, 1.0), (2, 0.5)],
-//             vec![(0, 1.0), (2, 1.0)],
-//             vec![(0, 0.5), (1, 1.0)],
-//         ];
-
-//         let mut embd = vec![vec![0.0, 0.0], vec![5.0, 0.0], vec![0.0, 5.0]];
-//         let initial_embd = embd.clone();
-
-//         // Use default params which have n_epochs = 500
-//         let params = OptimParams::default_2d();
-
-//         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
-
-//         // Check that points moved
-//         let total_movement: f64 = embd
-//             .iter()
-//             .zip(initial_embd.iter())
-//             .map(|(new, old)| {
-//                 new.iter()
-//                     .zip(old.iter())
-//                     .map(|(&n, &o)| (n - o).abs())
-//                     .sum::<f64>()
-//             })
-//             .sum();
-
-//         assert!(total_movement > 0.01, "Total movement: {}", total_movement);
-
-//         // All coordinates should still be finite
-//         for point in &embd {
-//             for &coord in point {
-//                 assert!(coord.is_finite());
-//             }
-//         }
-//     }
-
-//     #[test]
-//     fn test_optimise_embedding_empty_graph() {
-//         let graph: Vec<Vec<(usize, f64)>> = vec![vec![], vec![], vec![]];
-//         let mut embd = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
-
-//         let params = OptimParams::default_2d();
-
-//         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
-
-//         // With no edges, only negative sampling occurs, so embedding should change
-//         for point in &embd {
-//             for &coord in point {
-//                 assert!(coord.is_finite());
-//             }
-//         }
-//     }
-
-//     #[test]
-//     fn test_optimise_embedding_reproducibility() {
-//         let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
-//         let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
-//         let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
-
-//         let params = OptimParams {
-//             a: 1.0,
-//             b: 1.0,
-//             lr: 0.5,
-//             n_epochs: 10,
-//             neg_sample_rate: 2,
-//             min_dist: 0.1,
-//             beta1: 0.5,
-//             beta2: 0.9,
-//             eps: 1e-7,
-//         };
-
-//         optimise_embedding_adam(&mut embd1, &graph, &params, 42, false);
-//         optimise_embedding_adam(&mut embd2, &graph, &params, 42, false);
-
-//         assert_eq!(embd1, embd2);
-//     }
-
-//     #[test]
-//     fn test_optimise_embedding_convergence() {
-//         // Two strongly connected points should end up closer
-//         let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
-//         let mut embd = vec![vec![0.0, 0.0], vec![10.0, 0.0]];
-
-//         // Compute initial distance using flat representation
-//         let embd_flat: Vec<f64> = embd.iter().flatten().copied().collect();
-//         let initial_dist = squared_dist_flat(&embd_flat, 0, 1, 2).sqrt();
-
-//         let params = OptimParams {
-//             a: 1.0,
-//             b: 1.0,
-//             lr: 1.0,
-//             n_epochs: 100,
-//             neg_sample_rate: 2,
-//             min_dist: 0.1,
-//             beta1: 0.5,
-//             beta2: 0.9,
-//             eps: 1e-7,
-//         };
-
-//         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
-
-//         // Compute final distance
-//         let embd_flat: Vec<f64> = embd.iter().flatten().copied().collect();
-//         let final_dist = squared_dist_flat(&embd_flat, 0, 1, 2).sqrt();
-
-//         // Distance should decrease
-//         assert!(final_dist < initial_dist);
-//     }
-
-//     #[test]
-//     fn test_sgd_vs_adam_both_converge() {
-//         // Compare parallel SGD vs Adam - both should converge
-//         let graph = vec![
-//             vec![(1, 1.0), (2, 0.5)],
-//             vec![(0, 1.0), (2, 1.0)],
-//             vec![(0, 0.5), (1, 1.0)],
-//         ];
-
-//         let initial_embd = vec![vec![0.0, 0.0], vec![10.0, 0.0], vec![0.0, 10.0]];
-
-//         let params = OptimParams {
-//             a: 1.0,
-//             b: 1.0,
-//             lr: 1.0,
-//             n_epochs: 50,
-//             neg_sample_rate: 2,
-//             min_dist: 0.1,
-//             beta1: 0.5,
-//             beta2: 0.9,
-//             eps: 1e-7,
-//         };
-
-//         // Test SGD
-//         let mut embd_sgd = initial_embd.clone();
-//         optimise_embedding_sgd(&mut embd_sgd, &graph, &params, 42, false);
-
-//         // Test Adam
-//         let mut embd_adam = initial_embd.clone();
-//         optimise_embedding_adam(&mut embd_adam, &graph, &params, 42, false);
-
-//         // Both should move points significantly from initial positions
-//         let movement_sgd: f64 = embd_sgd
-//             .iter()
-//             .zip(initial_embd.iter())
-//             .map(|(new, old)| {
-//                 new.iter()
-//                     .zip(old.iter())
-//                     .map(|(&n, &o)| (n - o).abs())
-//                     .sum::<f64>()
-//             })
-//             .sum();
-
-//         let movement_adam: f64 = embd_adam
-//             .iter()
-//             .zip(initial_embd.iter())
-//             .map(|(new, old)| {
-//                 new.iter()
-//                     .zip(old.iter())
-//                     .map(|(&n, &o)| (n - o).abs())
-//                     .sum::<f64>()
-//             })
-//             .sum();
-
-//         assert!(movement_sgd > 1.0, "SGD should move points");
-//         assert!(movement_adam > 1.0, "Adam should move points");
-
-//         // Both should produce finite results
-//         for point in embd_sgd.iter().chain(embd_adam.iter()) {
-//             for &coord in point {
-//                 assert!(coord.is_finite());
-//             }
-//         }
-//     }
-
-//     #[test]
-//     fn test_parallel_sgd_reproducibility() {
-//         let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
-//         let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
-//         let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
-
-//         let params = OptimParams {
-//             a: 1.0,
-//             b: 1.0,
-//             lr: 0.5,
-//             n_epochs: 10,
-//             neg_sample_rate: 2,
-//             min_dist: 0.1,
-//             beta1: 0.5,
-//             beta2: 0.9,
-//             eps: 1e-7,
-//         };
-
-//         optimise_embedding_sgd(&mut embd1, &graph, &params, 42, false);
-//         optimise_embedding_sgd(&mut embd2, &graph, &params, 42, false);
-
-//         // Parallel SGD should be reproducible with same seed
-//         assert_eq!(embd1, embd2);
-//     }
-
-//     #[test]
-//     fn test_optimisation_preserves_graph_structure_adam() {
-//         // Create a graph with two distinct cliques that are weakly connected
-//         // Clique 1: vertices 0, 1, 2 (strongly connected)
-//         // Clique 2: vertices 3, 4, 5 (strongly connected)
-//         // Weak bridge: 2 <-> 3
-
-//         let graph = vec![
-//             vec![(1, 1.0), (2, 1.0)],           // 0: connected to 1, 2
-//             vec![(0, 1.0), (2, 1.0)],           // 1: connected to 0, 2
-//             vec![(0, 1.0), (1, 1.0), (3, 0.1)], // 2: connected to 0, 1, weak to 3
-//             vec![(2, 0.1), (4, 1.0), (5, 1.0)], // 3: weak to 2, connected to 4, 5
-//             vec![(3, 1.0), (5, 1.0)],           // 4: connected to 3, 5
-//             vec![(3, 1.0), (4, 1.0)],           // 5: connected to 3, 4
-//         ];
-
-//         // Start with random positions (not clustered)
-//         let mut embd = vec![
-//             vec![0.0, 0.0],
-//             vec![10.0, 0.0],
-//             vec![0.0, 10.0],
-//             vec![10.0, 10.0],
-//             vec![-5.0, -5.0],
-//             vec![15.0, 15.0],
-//         ];
-
-//         let params = OptimParams {
-//             n_epochs: 200,
-//             ..OptimParams::default_2d()
-//         };
-
-//         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
-
-//         // Helper to compute distance
-//         let dist = |a: &[f64], b: &[f64]| -> f64 {
-//             ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
-//         };
-
-//         // Compute average intra-clique distance
-//         let intra_clique1 =
-//             (dist(&embd[0], &embd[1]) + dist(&embd[0], &embd[2]) + dist(&embd[1], &embd[2])) / 3.0;
-//         let intra_clique2 =
-//             (dist(&embd[3], &embd[4]) + dist(&embd[3], &embd[5]) + dist(&embd[4], &embd[5])) / 3.0;
-//         let avg_intra = (intra_clique1 + intra_clique2) / 2.0;
-
-//         // Compute average inter-clique distance (excluding the bridge)
-//         let inter_distances = [
-//             dist(&embd[0], &embd[3]),
-//             dist(&embd[0], &embd[4]),
-//             dist(&embd[0], &embd[5]),
-//             dist(&embd[1], &embd[3]),
-//             dist(&embd[1], &embd[4]),
-//             dist(&embd[1], &embd[5]),
-//         ];
-//         let avg_inter: f64 = inter_distances.iter().sum::<f64>() / inter_distances.len() as f64;
-
-//         // Points within cliques should be much closer than points between cliques
-//         assert!(
-//             avg_inter > avg_intra * 1.5,
-//             "Inter-clique dist ({:.2}) should be > 1.5x intra-clique dist ({:.2})",
-//             avg_inter,
-//             avg_intra
-//         );
-//     }
-
-//     #[test]
-//     fn test_optimisation_preserves_graph_structure_sgd() {
-//         // Create a graph with two distinct cliques that are weakly connected
-//         // Clique 1: vertices 0, 1, 2 (strongly connected)
-//         // Clique 2: vertices 3, 4, 5 (strongly connected)
-//         // Weak bridge: 2 <-> 3
-
-//         let graph = vec![
-//             vec![(1, 1.0), (2, 1.0)],           // 0: connected to 1, 2
-//             vec![(0, 1.0), (2, 1.0)],           // 1: connected to 0, 2
-//             vec![(0, 1.0), (1, 1.0), (3, 0.1)], // 2: connected to 0, 1, weak to 3
-//             vec![(2, 0.1), (4, 1.0), (5, 1.0)], // 3: weak to 2, connected to 4, 5
-//             vec![(3, 1.0), (5, 1.0)],           // 4: connected to 3, 5
-//             vec![(3, 1.0), (4, 1.0)],           // 5: connected to 3, 4
-//         ];
-
-//         // Start with random positions (not clustered)
-//         let mut embd = vec![
-//             vec![0.0, 0.0],
-//             vec![10.0, 0.0],
-//             vec![0.0, 10.0],
-//             vec![10.0, 10.0],
-//             vec![-5.0, -5.0],
-//             vec![15.0, 15.0],
-//         ];
-
-//         let params = OptimParams {
-//             n_epochs: 200,
-//             ..OptimParams::default_2d()
-//         };
-
-//         optimise_embedding_sgd(&mut embd, &graph, &params, 42, false);
-
-//         // Helper to compute distance
-//         let dist = |a: &[f64], b: &[f64]| -> f64 {
-//             ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
-//         };
-
-//         // Compute average intra-clique distance
-//         let intra_clique1 =
-//             (dist(&embd[0], &embd[1]) + dist(&embd[0], &embd[2]) + dist(&embd[1], &embd[2])) / 3.0;
-//         let intra_clique2 =
-//             (dist(&embd[3], &embd[4]) + dist(&embd[3], &embd[5]) + dist(&embd[4], &embd[5])) / 3.0;
-//         let avg_intra = (intra_clique1 + intra_clique2) / 2.0;
-
-//         // Compute average inter-clique distance (excluding the bridge)
-//         let inter_distances = [
-//             dist(&embd[0], &embd[3]),
-//             dist(&embd[0], &embd[4]),
-//             dist(&embd[0], &embd[5]),
-//             dist(&embd[1], &embd[3]),
-//             dist(&embd[1], &embd[4]),
-//             dist(&embd[1], &embd[5]),
-//         ];
-//         let avg_inter: f64 = inter_distances.iter().sum::<f64>() / inter_distances.len() as f64;
-
-//         // Points within cliques should be much closer than points between cliques
-//         assert!(
-//             avg_inter > avg_intra * 1.5,
-//             "Inter-clique dist ({:.2}) should be > 1.5x intra-clique dist ({:.2})",
-//             avg_inter,
-//             avg_intra
-//         );
-//     }
-// }
+#[cfg(test)]
+mod test_optimiser {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    #[test]
+    fn test_optim_params_default_2d() {
+        let params = OptimParams::<f64>::default_2d();
+
+        assert_relative_eq!(params.a, 1.929, epsilon = 1e-6);
+        assert_relative_eq!(params.b, 0.7915, epsilon = 1e-6);
+        assert_eq!(params.lr, 1.0);
+        assert_eq!(params.gamma, 1.0);
+        assert_eq!(params.n_epochs, 500);
+        assert_eq!(params.neg_sample_rate, 5);
+        assert_relative_eq!(params.min_dist, 0.1, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_optim_params_from_min_dist_spread() {
+        let params =
+            OptimParams::<f64>::from_min_dist_spread(0.1, 1.0, 1.0, 1.0, 500, 5, None, None, None);
+
+        assert!(params.a > 0.0);
+        assert!(params.b > 0.0);
+        assert_eq!(params.lr, 1.0);
+        assert_eq!(params.gamma, 1.0);
+        assert_eq!(params.n_epochs, 500);
+        assert_eq!(params.neg_sample_rate, 5);
+        assert_relative_eq!(params.min_dist, 0.1, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_fit_params_constraints() {
+        let (a, b) = OptimParams::<f64>::fit_params(0.1, 1.0, None, None);
+
+        assert!((0.001..=10.0).contains(&a));
+        assert!((0.1..=2.0).contains(&b));
+    }
+
+    #[test]
+    fn test_fit_params_curve_properties() {
+        let min_dist = 0.1;
+        let spread = 1.0;
+        let (a, b) = OptimParams::<f64>::fit_params(min_dist, spread, None, None);
+
+        let pred_min = 1.0 / (1.0 + a * min_dist.powf(2.0 * b));
+        assert!(
+            pred_min > 0.7,
+            "f(min_dist) = {:.3} should be > 0.7",
+            pred_min
+        );
+
+        let pred_spread = 1.0 / (1.0 + a * (3.0 * spread).powf(2.0 * b));
+        assert!(
+            pred_spread < 0.3,
+            "f(3*spread) = {:.3} should be < 0.3",
+            pred_spread
+        );
+
+        let mid_point = 1.5 * spread;
+        let pred_mid = 1.0 / (1.0 + a * mid_point.powf(2.0 * b));
+        assert!(pred_min > pred_mid && pred_mid > pred_spread);
+    }
+
+    #[test]
+    fn test_squared_dist_basic() {
+        let embd = vec![0.0, 0.0, 3.0, 4.0];
+        let dist = squared_dist_flat(&embd, 0, 1, 2);
+        assert_relative_eq!(dist, 25.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_squared_dist_identical_points() {
+        let embd = vec![1.0, 2.0, 3.0, 1.0, 2.0, 3.0];
+        let dist = squared_dist_flat(&embd, 0, 1, 3);
+        assert_relative_eq!(dist, 0.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_optimise_embedding_adam_basic() {
+        let graph = vec![
+            vec![(1, 1.0), (2, 0.5)],
+            vec![(0, 1.0), (2, 1.0)],
+            vec![(0, 0.5), (1, 1.0)],
+        ];
+
+        let mut embd = vec![vec![0.0, 0.0], vec![5.0, 0.0], vec![0.0, 5.0]];
+        let initial_embd = embd.clone();
+
+        let params = OptimParams::default_2d();
+        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
+
+        let total_movement: f64 = embd
+            .iter()
+            .zip(initial_embd.iter())
+            .map(|(new, old)| {
+                new.iter()
+                    .zip(old.iter())
+                    .map(|(&n, &o)| (n - o).abs())
+                    .sum::<f64>()
+            })
+            .sum();
+
+        assert!(total_movement > 0.01);
+
+        for point in &embd {
+            for &coord in point {
+                assert!(coord.is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn test_optimise_embedding_adam_parallel_basic() {
+        let graph = vec![
+            vec![(1, 1.0), (2, 0.5)],
+            vec![(0, 1.0), (2, 1.0)],
+            vec![(0, 0.5), (1, 1.0)],
+        ];
+
+        let mut embd = vec![vec![0.0, 0.0], vec![5.0, 0.0], vec![0.0, 5.0]];
+        let initial_embd = embd.clone();
+
+        let params = OptimParams::default_2d();
+        optimise_embedding_adam_parallel(&mut embd, &graph, &params, 42, false);
+
+        let total_movement: f64 = embd
+            .iter()
+            .zip(initial_embd.iter())
+            .map(|(new, old)| {
+                new.iter()
+                    .zip(old.iter())
+                    .map(|(&n, &o)| (n - o).abs())
+                    .sum::<f64>()
+            })
+            .sum();
+
+        assert!(total_movement > 0.01);
+
+        for point in &embd {
+            for &coord in point {
+                assert!(coord.is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn test_optimise_embedding_empty_graph() {
+        let graph: Vec<Vec<(usize, f64)>> = vec![vec![], vec![], vec![]];
+        let mut embd = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
+
+        let params = OptimParams::default_2d();
+        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
+
+        for point in &embd {
+            for &coord in point {
+                assert!(coord.is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn test_optimise_embedding_adam_reproducibility() {
+        let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
+        let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+        let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+
+        let params = OptimParams {
+            a: 1.0,
+            b: 1.0,
+            lr: 0.5,
+            gamma: 1.0,
+            n_epochs: 10,
+            neg_sample_rate: 2,
+            min_dist: 0.1,
+            beta1: 0.5,
+            beta2: 0.9,
+            eps: 1e-7,
+        };
+
+        optimise_embedding_adam(&mut embd1, &graph, &params, 42, false);
+        optimise_embedding_adam(&mut embd2, &graph, &params, 42, false);
+
+        assert_eq!(embd1, embd2);
+    }
+
+    #[test]
+    fn test_optimise_embedding_adam_parallel_reproducibility() {
+        let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
+        let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+        let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+
+        let params = OptimParams {
+            a: 1.0,
+            b: 1.0,
+            lr: 0.5,
+            gamma: 1.0,
+            n_epochs: 10,
+            neg_sample_rate: 2,
+            min_dist: 0.1,
+            beta1: 0.5,
+            beta2: 0.9,
+            eps: 1e-7,
+        };
+
+        optimise_embedding_adam_parallel(&mut embd1, &graph, &params, 42, false);
+        optimise_embedding_adam_parallel(&mut embd2, &graph, &params, 42, false);
+
+        assert_eq!(embd1, embd2);
+    }
+
+    #[test]
+    fn test_optimise_embedding_convergence() {
+        let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
+        let mut embd = vec![vec![0.0, 0.0], vec![10.0, 0.0]];
+
+        let embd_flat: Vec<f64> = embd.iter().flatten().copied().collect();
+        let initial_dist = squared_dist_flat(&embd_flat, 0, 1, 2).sqrt();
+
+        let params = OptimParams {
+            a: 1.0,
+            b: 1.0,
+            lr: 1.0,
+            gamma: 1.0,
+            n_epochs: 100,
+            neg_sample_rate: 2,
+            min_dist: 0.1,
+            beta1: 0.5,
+            beta2: 0.9,
+            eps: 1e-7,
+        };
+
+        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
+
+        let embd_flat: Vec<f64> = embd.iter().flatten().copied().collect();
+        let final_dist = squared_dist_flat(&embd_flat, 0, 1, 2).sqrt();
+
+        assert!(final_dist < initial_dist);
+    }
+
+    #[test]
+    fn test_sgd_vs_adam_both_converge() {
+        let graph = vec![
+            vec![(1, 1.0), (2, 0.5)],
+            vec![(0, 1.0), (2, 1.0)],
+            vec![(0, 0.5), (1, 1.0)],
+        ];
+
+        let initial_embd = vec![vec![0.0, 0.0], vec![10.0, 0.0], vec![0.0, 10.0]];
+
+        let params = OptimParams {
+            a: 1.0,
+            b: 1.0,
+            lr: 1.0,
+            gamma: 1.0,
+            n_epochs: 50,
+            neg_sample_rate: 2,
+            min_dist: 0.1,
+            beta1: 0.5,
+            beta2: 0.9,
+            eps: 1e-7,
+        };
+
+        let mut embd_sgd = initial_embd.clone();
+        optimise_embedding_sgd(&mut embd_sgd, &graph, &params, 42, false);
+
+        let mut embd_adam = initial_embd.clone();
+        optimise_embedding_adam(&mut embd_adam, &graph, &params, 42, false);
+
+        let movement_sgd: f64 = embd_sgd
+            .iter()
+            .zip(initial_embd.iter())
+            .map(|(new, old)| {
+                new.iter()
+                    .zip(old.iter())
+                    .map(|(&n, &o)| (n - o).abs())
+                    .sum::<f64>()
+            })
+            .sum();
+
+        let movement_adam: f64 = embd_adam
+            .iter()
+            .zip(initial_embd.iter())
+            .map(|(new, old)| {
+                new.iter()
+                    .zip(old.iter())
+                    .map(|(&n, &o)| (n - o).abs())
+                    .sum::<f64>()
+            })
+            .sum();
+
+        assert!(movement_sgd > 1.0);
+        assert!(movement_adam > 1.0);
+
+        for point in embd_sgd.iter().chain(embd_adam.iter()) {
+            for &coord in point {
+                assert!(coord.is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn test_sgd_adam_adam_parallel_all_converge() {
+        let graph = vec![
+            vec![(1, 1.0), (2, 0.5)],
+            vec![(0, 1.0), (2, 1.0)],
+            vec![(0, 0.5), (1, 1.0)],
+        ];
+
+        let initial_embd = vec![vec![0.0, 0.0], vec![10.0, 0.0], vec![0.0, 10.0]];
+
+        let params = OptimParams {
+            a: 1.0,
+            b: 1.0,
+            lr: 1.0,
+            gamma: 1.0,
+            n_epochs: 50,
+            neg_sample_rate: 2,
+            min_dist: 0.1,
+            beta1: 0.5,
+            beta2: 0.9,
+            eps: 1e-7,
+        };
+
+        let mut embd_sgd = initial_embd.clone();
+        optimise_embedding_sgd(&mut embd_sgd, &graph, &params, 42, false);
+
+        let mut embd_adam = initial_embd.clone();
+        optimise_embedding_adam(&mut embd_adam, &graph, &params, 42, false);
+
+        let mut embd_adam_par = initial_embd.clone();
+        optimise_embedding_adam_parallel(&mut embd_adam_par, &graph, &params, 42, false);
+
+        let movement_sgd: f64 = embd_sgd
+            .iter()
+            .zip(initial_embd.iter())
+            .flat_map(|(new, old)| new.iter().zip(old.iter()).map(|(&n, &o)| (n - o).abs()))
+            .sum();
+
+        let movement_adam: f64 = embd_adam
+            .iter()
+            .zip(initial_embd.iter())
+            .flat_map(|(new, old)| new.iter().zip(old.iter()).map(|(&n, &o)| (n - o).abs()))
+            .sum();
+
+        let movement_adam_par: f64 = embd_adam_par
+            .iter()
+            .zip(initial_embd.iter())
+            .flat_map(|(new, old)| new.iter().zip(old.iter()).map(|(&n, &o)| (n - o).abs()))
+            .sum();
+
+        assert!(movement_sgd > 1.0);
+        assert!(movement_adam > 1.0);
+        assert!(movement_adam_par > 1.0);
+
+        for point in embd_sgd
+            .iter()
+            .chain(embd_adam.iter())
+            .chain(embd_adam_par.iter())
+        {
+            for &coord in point {
+                assert!(coord.is_finite());
+            }
+        }
+    }
+
+    #[test]
+    fn test_sgd_reproducibility() {
+        let graph = vec![vec![(1, 1.0)], vec![(0, 1.0)]];
+        let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+        let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+
+        let params = OptimParams {
+            a: 1.0,
+            b: 1.0,
+            lr: 0.5,
+            gamma: 1.0,
+            n_epochs: 10,
+            neg_sample_rate: 2,
+            min_dist: 0.1,
+            beta1: 0.5,
+            beta2: 0.9,
+            eps: 1e-7,
+        };
+
+        optimise_embedding_sgd(&mut embd1, &graph, &params, 42, false);
+        optimise_embedding_sgd(&mut embd2, &graph, &params, 42, false);
+
+        assert_eq!(embd1, embd2);
+    }
+
+    #[test]
+    fn test_optimisation_preserves_graph_structure_adam() {
+        let graph = vec![
+            vec![(1, 1.0), (2, 1.0)],
+            vec![(0, 1.0), (2, 1.0)],
+            vec![(0, 1.0), (1, 1.0), (3, 0.1)],
+            vec![(2, 0.1), (4, 1.0), (5, 1.0)],
+            vec![(3, 1.0), (5, 1.0)],
+            vec![(3, 1.0), (4, 1.0)],
+        ];
+
+        let mut embd = vec![
+            vec![0.0, 0.0],
+            vec![10.0, 0.0],
+            vec![0.0, 10.0],
+            vec![10.0, 10.0],
+            vec![-5.0, -5.0],
+            vec![15.0, 15.0],
+        ];
+
+        let params = OptimParams {
+            n_epochs: 200,
+            ..OptimParams::default_2d()
+        };
+
+        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
+
+        let dist = |a: &[f64], b: &[f64]| -> f64 {
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+        };
+
+        let intra_clique1 =
+            (dist(&embd[0], &embd[1]) + dist(&embd[0], &embd[2]) + dist(&embd[1], &embd[2])) / 3.0;
+        let intra_clique2 =
+            (dist(&embd[3], &embd[4]) + dist(&embd[3], &embd[5]) + dist(&embd[4], &embd[5])) / 3.0;
+        let avg_intra = (intra_clique1 + intra_clique2) / 2.0;
+
+        let inter_distances = [
+            dist(&embd[0], &embd[3]),
+            dist(&embd[0], &embd[4]),
+            dist(&embd[0], &embd[5]),
+            dist(&embd[1], &embd[3]),
+            dist(&embd[1], &embd[4]),
+            dist(&embd[1], &embd[5]),
+        ];
+        let avg_inter: f64 = inter_distances.iter().sum::<f64>() / inter_distances.len() as f64;
+
+        assert!(
+            avg_inter > avg_intra * 1.5,
+            "Inter-clique dist ({:.2}) should be > 1.5x intra-clique dist ({:.2})",
+            avg_inter,
+            avg_intra
+        );
+    }
+
+    #[test]
+    fn test_optimisation_preserves_graph_structure_adam_parallel() {
+        let graph = vec![
+            vec![(1, 1.0), (2, 1.0)],
+            vec![(0, 1.0), (2, 1.0)],
+            vec![(0, 1.0), (1, 1.0), (3, 0.1)],
+            vec![(2, 0.1), (4, 1.0), (5, 1.0)],
+            vec![(3, 1.0), (5, 1.0)],
+            vec![(3, 1.0), (4, 1.0)],
+        ];
+
+        let mut embd = vec![
+            vec![0.0, 0.0],
+            vec![10.0, 0.0],
+            vec![0.0, 10.0],
+            vec![10.0, 10.0],
+            vec![-5.0, -5.0],
+            vec![15.0, 15.0],
+        ];
+
+        let params = OptimParams {
+            n_epochs: 200,
+            ..OptimParams::default_2d()
+        };
+
+        optimise_embedding_adam_parallel(&mut embd, &graph, &params, 42, false);
+
+        let dist = |a: &[f64], b: &[f64]| -> f64 {
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+        };
+
+        let intra_clique1 =
+            (dist(&embd[0], &embd[1]) + dist(&embd[0], &embd[2]) + dist(&embd[1], &embd[2])) / 3.0;
+        let intra_clique2 =
+            (dist(&embd[3], &embd[4]) + dist(&embd[3], &embd[5]) + dist(&embd[4], &embd[5])) / 3.0;
+        let avg_intra = (intra_clique1 + intra_clique2) / 2.0;
+
+        let inter_distances = [
+            dist(&embd[0], &embd[3]),
+            dist(&embd[0], &embd[4]),
+            dist(&embd[0], &embd[5]),
+            dist(&embd[1], &embd[3]),
+            dist(&embd[1], &embd[4]),
+            dist(&embd[1], &embd[5]),
+        ];
+        let avg_inter: f64 = inter_distances.iter().sum::<f64>() / inter_distances.len() as f64;
+
+        assert!(
+            avg_inter > avg_intra * 1.5,
+            "Inter-clique dist ({:.2}) should be > 1.5x intra-clique dist ({:.2})",
+            avg_inter,
+            avg_intra
+        );
+    }
+
+    #[test]
+    fn test_optimisation_preserves_graph_structure_sgd() {
+        let graph = vec![
+            vec![(1, 1.0), (2, 1.0)],
+            vec![(0, 1.0), (2, 1.0)],
+            vec![(0, 1.0), (1, 1.0), (3, 0.1)],
+            vec![(2, 0.1), (4, 1.0), (5, 1.0)],
+            vec![(3, 1.0), (5, 1.0)],
+            vec![(3, 1.0), (4, 1.0)],
+        ];
+
+        let mut embd = vec![
+            vec![0.0, 0.0],
+            vec![10.0, 0.0],
+            vec![0.0, 10.0],
+            vec![10.0, 10.0],
+            vec![-5.0, -5.0],
+            vec![15.0, 15.0],
+        ];
+
+        let params = OptimParams {
+            n_epochs: 200,
+            ..OptimParams::default_2d()
+        };
+
+        optimise_embedding_sgd(&mut embd, &graph, &params, 42, false);
+
+        let dist = |a: &[f64], b: &[f64]| -> f64 {
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+        };
+
+        let intra_clique1 =
+            (dist(&embd[0], &embd[1]) + dist(&embd[0], &embd[2]) + dist(&embd[1], &embd[2])) / 3.0;
+        let intra_clique2 =
+            (dist(&embd[3], &embd[4]) + dist(&embd[3], &embd[5]) + dist(&embd[4], &embd[5])) / 3.0;
+        let avg_intra = (intra_clique1 + intra_clique2) / 2.0;
+
+        let inter_distances = [
+            dist(&embd[0], &embd[3]),
+            dist(&embd[0], &embd[4]),
+            dist(&embd[0], &embd[5]),
+            dist(&embd[1], &embd[3]),
+            dist(&embd[1], &embd[4]),
+            dist(&embd[1], &embd[5]),
+        ];
+        let avg_inter: f64 = inter_distances.iter().sum::<f64>() / inter_distances.len() as f64;
+
+        assert!(
+            avg_inter > avg_intra * 1.5,
+            "Inter-clique dist ({:.2}) should be > 1.5x intra-clique dist ({:.2})",
+            avg_inter,
+            avg_intra
+        );
+    }
+}

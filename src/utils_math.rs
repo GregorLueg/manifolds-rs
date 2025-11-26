@@ -283,7 +283,7 @@ where
     let mut smallest_evecs: Vec<Vec<f32>> = Vec::with_capacity(n_components);
 
     for &idx in indices.iter().take(n_components) {
-        // Transform eigenvector back to original space: v_original = V * v_tridiag
+        // transform eigenvector back to original space: v_original = V * v_tridiag
         let mut evec = vec![0.0; n];
         for i in 0..n {
             for j in 0..n_iter {
@@ -291,7 +291,7 @@ where
             }
         }
 
-        // Normalise the transformed eigenvector... Really should do this...
+        // normalise the transformed eigenvector... Really should do this...
         let norm: f64 = evec.iter().map(|x| x * x).sum::<f64>().sqrt();
         for x in &mut evec {
             *x /= norm;
@@ -407,7 +407,7 @@ mod test_utils_math {
     }
 
     #[test]
-    fn test_compute_largest_eigenpairs_diagonal() {
+    fn test_compute_smallest_eigenpairs_diagonal() {
         // Diagonal matrix with values [5, 4, 3, 2, 1]
         let n = 5;
         let data = vec![5.0, 4.0, 3.0, 2.0, 1.0];
@@ -421,13 +421,13 @@ mod test_utils_math {
         assert_eq!(evals.len(), 3);
         assert_eq!(evecs.len(), n);
 
-        // Largest eigenvalues should be approximately 5, 4, 3
+        // smallest eigenvalues should be approximately 1, 2, 3
         let mut sorted_evals = evals.clone();
         sorted_evals.sort_by(|a, b| b.partial_cmp(a).unwrap());
 
-        assert_relative_eq!(sorted_evals[0], 5.0, epsilon = 0.1);
-        assert_relative_eq!(sorted_evals[1], 4.0, epsilon = 0.1);
-        assert_relative_eq!(sorted_evals[2], 3.0, epsilon = 0.1);
+        assert_relative_eq!(sorted_evals[0], 3.0, epsilon = 0.1);
+        assert_relative_eq!(sorted_evals[1], 2.0, epsilon = 0.1);
+        assert_relative_eq!(sorted_evals[2], 1.0, epsilon = 0.1);
     }
 
     #[test]

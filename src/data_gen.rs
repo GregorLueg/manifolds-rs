@@ -342,11 +342,7 @@ mod test_data_gen {
     #[test]
     fn test_smooth_knn_dist_basic() {
         // Simple test with 3 points, k=2
-        let dist = vec![
-            vec![0.0, 1.0, 2.0],
-            vec![0.0, 1.5, 3.0],
-            vec![0.0, 0.5, 1.5],
-        ];
+        let dist = vec![vec![1.0, 2.0], vec![1.5, 3.0], vec![0.5, 1.5]];
 
         let (sigmas, rhos) = smooth_knn_dist(&dist, 2, 1.0, 1e-5, 64);
 

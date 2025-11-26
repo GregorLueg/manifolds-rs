@@ -115,15 +115,15 @@ where
 /// let data = Mat::from_fn(1000, 128, |_, _| rand::random::<f32>());
 /// let embedding = umap(
 ///     data.as_ref(),
-///     2,              // 2D embedding
-///     15,             // 15 nearest neighbours
-///     "adam".into()   // ADAM optimiser
-///     "hnsw".into(),  // HNSW index
-///     &UmapParams::default(),
-///     None,           // default NN params
-///     None,           // default optim params
-///     42,             // seed
-///     true,           // verbose
+///     2,                          // 2D embedding
+///     15,                         // 15 nearest neighbours
+///     "adam".into()               // ADAM optimiser
+///     "annoy".into(),             // Annoy-based kNN search
+///     &UmapParams::default(),     // default parameters for UMAP
+///     None,                       // default NN params
+///     None,                       // default optim params
+///     42,                         // seed
+///     true,                       // verbose
 /// );
 /// // embedding[0] contains x-coordinates for all points
 /// // embedding[1] contains y-coordinates for all points
@@ -156,6 +156,10 @@ where
     let init_type = parse_initilisation(&initialisation, randomised).unwrap_or_default();
 
     if verbose {
+        println!(
+            "Running umap with alpha: {:.4?} and beta: {:.4?}",
+            optim_params.a, optim_params.b
+        );
         println!(
             "Running approximate nearest neighbour search using {}...",
             ann_type
@@ -197,7 +201,15 @@ where
             end_graph_gen,
             graph.col_indices.len().separate_with_underscores()
         );
-        println!("Initialising embedding via spectral layout...");
+        println!(
+            "Initialising embedding via {} layout...",
+            match init_type {
+                #[allow(unused)]
+                UmapInit::PcaInit { randomised } => "pca",
+                UmapInit::RandomInit => "random",
+                UmapInit::SpectralInit => "spectral",
+            }
+        );
     }
 
     let start_layout = Instant::now();
@@ -257,340 +269,437 @@ where
     transposed
 }
 
-// ///////////
-// // Tests //
-// ///////////
+///////////
+// Tests //
+///////////
 
-// #[cfg(test)]
-// mod test_umap {
-//     use super::*;
-//     use faer::Mat;
-//     use rand::rngs::StdRng;
-//     use rand::{Rng, SeedableRng};
+#[cfg(test)]
+mod test_umap {
+    use super::*;
+    use faer::Mat;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
 
-//     fn create_data(n_per_cluster: usize, n_dim_input: usize, seed: u64) -> Mat<f32> {
-//         let mut rng = StdRng::seed_from_u64(seed);
+    fn create_data(n_per_cluster: usize, n_dim_input: usize, seed: usize) -> Mat<f32> {
+        let mut rng = StdRng::seed_from_u64(seed as u64);
 
-//         // create two well-separated clusters in high-dimensional space
+        // create two well-separated clusters in high-dimensional space
 
-//         let mut data_vec = Vec::with_capacity(n_per_cluster * 2 * n_dim_input);
+        let mut data_vec = Vec::with_capacity(n_per_cluster * 2 * n_dim_input);
 
-//         // Cluster 1: centred at origin
-//         for _ in 0..n_per_cluster {
-//             for _ in 0..n_dim_input {
-//                 data_vec.push(rng.random::<f32>() * 0.5);
-//             }
-//         }
+        // Cluster 1: centred at origin
+        for _ in 0..n_per_cluster {
+            for _ in 0..n_dim_input {
+                data_vec.push(rng.random::<f32>() * 0.5);
+            }
+        }
 
-//         // Cluster 2: centred at (10, 10, 10, ...)
-//         for _ in 0..n_per_cluster {
-//             for _ in 0..n_dim_input {
-//                 data_vec.push(10.0 + rng.random::<f32>() * 0.5);
-//             }
-//         }
+        // Cluster 2: centred at (10, 10, 10, ...)
+        for _ in 0..n_per_cluster {
+            for _ in 0..n_dim_input {
+                data_vec.push(10.0 + rng.random::<f32>() * 0.5);
+            }
+        }
 
-//         Mat::from_fn(n_per_cluster * 2, n_dim_input, |i, j| {
-//             data_vec[i * n_dim_input + j]
-//         })
-//     }
+        Mat::from_fn(n_per_cluster * 2, n_dim_input, |i, j| {
+            data_vec[i * n_dim_input + j]
+        })
+    }
 
-//     #[test]
-//     fn test_umap_separates_clusters_sgd() {
-//         let n_per_cluster = 50;
-//         let n_dim_input = 10;
+    #[test]
+    fn test_umap_separates_clusters_sgd_v1() {
+        // seed for this setup
+        let seed: usize = 123;
 
-//         let data = create_data(n_per_cluster, n_dim_input, 12456);
+        let n_per_cluster = 150;
+        let n_dim_input = 10;
 
-//         let embedding = umap(
-//             data.as_ref(),
-//             2,
-//             15,
-//             "sgd".into(),
-//             "hnsw".into(),
-//             &UmapParams::default(),
-//             None,
-//             None,
-//             42,
-//             false,
-//         );
+        let data = create_data(n_per_cluster, n_dim_input, seed);
 
-//         // Check embedding has correct shape
-//         assert_eq!(embedding.len(), 2);
-//         assert_eq!(embedding[0].len(), n_per_cluster * 2);
+        let embedding = umap(
+            data.as_ref(),
+            2,
+            15,
+            "sgd".into(),
+            "annoy".into(),
+            "pca".into(),
+            &UmapParams::default(),
+            None,
+            None,
+            false,
+            seed,
+            false,
+        );
 
-//         // Compute centroids of the two clusters in embedding space
-//         let mut centroid1 = [0.0f32; 2];
-//         let mut centroid2 = [0.0f32; 2];
+        // Check embedding has correct shape
+        assert_eq!(embedding.len(), 2);
+        assert_eq!(embedding[0].len(), n_per_cluster * 2);
 
-//         for i in 0..n_per_cluster {
-//             centroid1[0] += embedding[0][i];
-//             centroid1[1] += embedding[1][i];
-//         }
-//         for i in n_per_cluster..(n_per_cluster * 2) {
-//             centroid2[0] += embedding[0][i];
-//             centroid2[1] += embedding[1][i];
-//         }
+        // Compute centroids of the two clusters in embedding space
+        let mut centroid1 = [0.0f32; 2];
+        let mut centroid2 = [0.0f32; 2];
 
-//         centroid1[0] /= n_per_cluster as f32;
-//         centroid1[1] /= n_per_cluster as f32;
-//         centroid2[0] /= n_per_cluster as f32;
-//         centroid2[1] /= n_per_cluster as f32;
+        for i in 0..n_per_cluster {
+            centroid1[0] += embedding[0][i];
+            centroid1[1] += embedding[1][i];
+        }
+        for i in n_per_cluster..(n_per_cluster * 2) {
+            centroid2[0] += embedding[0][i];
+            centroid2[1] += embedding[1][i];
+        }
 
-//         // Distance between cluster centroids
-//         let centroid_dist =
-//             ((centroid1[0] - centroid2[0]).powi(2) + (centroid1[1] - centroid2[1]).powi(2)).sqrt();
+        centroid1[0] /= n_per_cluster as f32;
+        centroid1[1] /= n_per_cluster as f32;
+        centroid2[0] /= n_per_cluster as f32;
+        centroid2[1] /= n_per_cluster as f32;
 
-//         assert!(
-//             centroid_dist > 2.0,
-//             "Clusters should be separated (distance: {:.2})",
-//             centroid_dist
-//         );
+        // Distance between cluster centroids
+        let centroid_dist =
+            ((centroid1[0] - centroid2[0]).powi(2) + (centroid1[1] - centroid2[1]).powi(2)).sqrt();
 
-//         // Check spread
-//         let mean_x: f32 = embedding[0].iter().sum::<f32>() / embedding[0].len() as f32;
-//         let mean_y: f32 = embedding[1].iter().sum::<f32>() / embedding[1].len() as f32;
+        assert!(
+            centroid_dist > 2.0,
+            "Clusters should be separated (distance: {:.2})",
+            centroid_dist
+        );
 
-//         let var_x: f32 = embedding[0]
-//             .iter()
-//             .map(|&x| (x - mean_x).powi(2))
-//             .sum::<f32>()
-//             / embedding[0].len() as f32;
-//         let var_y: f32 = embedding[1]
-//             .iter()
-//             .map(|&y| (y - mean_y).powi(2))
-//             .sum::<f32>()
-//             / embedding[1].len() as f32;
+        // Check spread
+        let mean_x: f32 = embedding[0].iter().sum::<f32>() / embedding[0].len() as f32;
+        let mean_y: f32 = embedding[1].iter().sum::<f32>() / embedding[1].len() as f32;
 
-//         assert!(
-//             var_x > 0.5 && var_y > 0.5,
-//             "Embedding should have spread (var_x: {:.2}, var_y: {:.2})",
-//             var_x,
-//             var_y
-//         );
-//     }
+        let var_x: f32 = embedding[0]
+            .iter()
+            .map(|&x| (x - mean_x).powi(2))
+            .sum::<f32>()
+            / embedding[0].len() as f32;
+        let var_y: f32 = embedding[1]
+            .iter()
+            .map(|&y| (y - mean_y).powi(2))
+            .sum::<f32>()
+            / embedding[1].len() as f32;
 
-//     #[test]
-//     fn test_umap_separates_clusters_different_seed_sgd() {
-//         let n_per_cluster = 50;
-//         let n_dim_input = 10;
+        assert!(
+            var_x > 0.5 && var_y > 0.5,
+            "Embedding should have spread (var_x: {:.2}, var_y: {:.2})",
+            var_x,
+            var_y
+        );
+    }
 
-//         let data = create_data(n_per_cluster, n_dim_input, 42);
+    #[test]
+    fn test_umap_separates_clusters_different_seed_init_sgd() {
+        // seed for this setup
+        let seed: usize = 456;
 
-//         let embedding = umap(
-//             data.as_ref(),
-//             2,
-//             15,
-//             "sgd".into(),
-//             "hnsw".into(),
-//             &UmapParams::default(),
-//             None,
-//             None,
-//             42,
-//             false,
-//         );
+        let n_per_cluster = 250;
+        let n_dim_input = 10;
 
-//         // Check embedding has correct shape
-//         assert_eq!(embedding.len(), 2);
-//         assert_eq!(embedding[0].len(), n_per_cluster * 2);
+        let data = create_data(n_per_cluster, n_dim_input, seed);
 
-//         // Compute centroids of the two clusters in embedding space
-//         let mut centroid1 = [0.0f32; 2];
-//         let mut centroid2 = [0.0f32; 2];
+        let embedding = umap(
+            data.as_ref(),
+            2,
+            15,
+            "sgd".into(),
+            "annoy".into(),
+            "spectral".into(),
+            &UmapParams::default(),
+            None,
+            None,
+            false,
+            seed,
+            false,
+        );
 
-//         for i in 0..n_per_cluster {
-//             centroid1[0] += embedding[0][i];
-//             centroid1[1] += embedding[1][i];
-//         }
-//         for i in n_per_cluster..(n_per_cluster * 2) {
-//             centroid2[0] += embedding[0][i];
-//             centroid2[1] += embedding[1][i];
-//         }
+        // Check embedding has correct shape
+        assert_eq!(embedding.len(), 2);
+        assert_eq!(embedding[0].len(), n_per_cluster * 2);
 
-//         centroid1[0] /= n_per_cluster as f32;
-//         centroid1[1] /= n_per_cluster as f32;
-//         centroid2[0] /= n_per_cluster as f32;
-//         centroid2[1] /= n_per_cluster as f32;
+        // Compute centroids of the two clusters in embedding space
+        let mut centroid1 = [0.0f32; 2];
+        let mut centroid2 = [0.0f32; 2];
 
-//         // Distance between cluster centroids
-//         let centroid_dist =
-//             ((centroid1[0] - centroid2[0]).powi(2) + (centroid1[1] - centroid2[1]).powi(2)).sqrt();
+        for i in 0..n_per_cluster {
+            centroid1[0] += embedding[0][i];
+            centroid1[1] += embedding[1][i];
+        }
+        for i in n_per_cluster..(n_per_cluster * 2) {
+            centroid2[0] += embedding[0][i];
+            centroid2[1] += embedding[1][i];
+        }
 
-//         assert!(
-//             centroid_dist > 2.0,
-//             "Clusters should be separated (distance: {:.2})",
-//             centroid_dist
-//         );
+        centroid1[0] /= n_per_cluster as f32;
+        centroid1[1] /= n_per_cluster as f32;
+        centroid2[0] /= n_per_cluster as f32;
+        centroid2[1] /= n_per_cluster as f32;
 
-//         // Check spread
-//         let mean_x: f32 = embedding[0].iter().sum::<f32>() / embedding[0].len() as f32;
-//         let mean_y: f32 = embedding[1].iter().sum::<f32>() / embedding[1].len() as f32;
+        // Distance between cluster centroids
+        let centroid_dist =
+            ((centroid1[0] - centroid2[0]).powi(2) + (centroid1[1] - centroid2[1]).powi(2)).sqrt();
 
-//         let var_x: f32 = embedding[0]
-//             .iter()
-//             .map(|&x| (x - mean_x).powi(2))
-//             .sum::<f32>()
-//             / embedding[0].len() as f32;
-//         let var_y: f32 = embedding[1]
-//             .iter()
-//             .map(|&y| (y - mean_y).powi(2))
-//             .sum::<f32>()
-//             / embedding[1].len() as f32;
+        assert!(
+            centroid_dist > 2.0,
+            "Clusters should be separated (distance: {:.2})",
+            centroid_dist
+        );
 
-//         assert!(
-//             var_x > 0.5 && var_y > 0.5,
-//             "Embedding should have spread (var_x: {:.2}, var_y: {:.2})",
-//             var_x,
-//             var_y
-//         );
-//     }
+        // Check spread
+        let mean_x: f32 = embedding[0].iter().sum::<f32>() / embedding[0].len() as f32;
+        let mean_y: f32 = embedding[1].iter().sum::<f32>() / embedding[1].len() as f32;
 
-//     #[test]
-//     fn test_umap_separates_clusters_adam() {
-//         let n_per_cluster = 50;
-//         let n_dim_input = 10;
+        let var_x: f32 = embedding[0]
+            .iter()
+            .map(|&x| (x - mean_x).powi(2))
+            .sum::<f32>()
+            / embedding[0].len() as f32;
+        let var_y: f32 = embedding[1]
+            .iter()
+            .map(|&y| (y - mean_y).powi(2))
+            .sum::<f32>()
+            / embedding[1].len() as f32;
 
-//         let data = create_data(n_per_cluster, n_dim_input, 12456);
+        assert!(
+            var_x > 0.5 && var_y > 0.5,
+            "Embedding should have spread (var_x: {:.2}, var_y: {:.2})",
+            var_x,
+            var_y
+        );
+    }
 
-//         let embedding = umap(
-//             data.as_ref(),
-//             2,
-//             15,
-//             "adam".into(),
-//             "hnsw".into(),
-//             &UmapParams::default(),
-//             None,
-//             None,
-//             42,
-//             false,
-//         );
+    #[test]
+    fn test_umap_separates_clusters_adam() {
+        let seed: usize = 42;
 
-//         // Check embedding has correct shape
-//         assert_eq!(embedding.len(), 2);
-//         assert_eq!(embedding[0].len(), n_per_cluster * 2);
+        let n_per_cluster = 150;
+        let n_dim_input = 10;
 
-//         // Compute centroids of the two clusters in embedding space
-//         let mut centroid1 = [0.0f32; 2];
-//         let mut centroid2 = [0.0f32; 2];
+        let data = create_data(n_per_cluster, n_dim_input, seed);
 
-//         for i in 0..n_per_cluster {
-//             centroid1[0] += embedding[0][i];
-//             centroid1[1] += embedding[1][i];
-//         }
-//         for i in n_per_cluster..(n_per_cluster * 2) {
-//             centroid2[0] += embedding[0][i];
-//             centroid2[1] += embedding[1][i];
-//         }
+        let embedding = umap(
+            data.as_ref(),
+            2,
+            15,
+            "adam".into(),
+            "annoy".into(),
+            "pca".into(),
+            &UmapParams::default(),
+            None,
+            None,
+            false,
+            seed,
+            false,
+        );
 
-//         centroid1[0] /= n_per_cluster as f32;
-//         centroid1[1] /= n_per_cluster as f32;
-//         centroid2[0] /= n_per_cluster as f32;
-//         centroid2[1] /= n_per_cluster as f32;
+        // Check embedding has correct shape
+        assert_eq!(embedding.len(), 2);
+        assert_eq!(embedding[0].len(), n_per_cluster * 2);
 
-//         // Distance between cluster centroids
-//         let centroid_dist =
-//             ((centroid1[0] - centroid2[0]).powi(2) + (centroid1[1] - centroid2[1]).powi(2)).sqrt();
+        // Compute centroids of the two clusters in embedding space
+        let mut centroid1 = [0.0f32; 2];
+        let mut centroid2 = [0.0f32; 2];
 
-//         assert!(
-//             centroid_dist > 2.0,
-//             "Clusters should be separated (distance: {:.2})",
-//             centroid_dist
-//         );
+        for i in 0..n_per_cluster {
+            centroid1[0] += embedding[0][i];
+            centroid1[1] += embedding[1][i];
+        }
+        for i in n_per_cluster..(n_per_cluster * 2) {
+            centroid2[0] += embedding[0][i];
+            centroid2[1] += embedding[1][i];
+        }
 
-//         // Check spread
-//         let mean_x: f32 = embedding[0].iter().sum::<f32>() / embedding[0].len() as f32;
-//         let mean_y: f32 = embedding[1].iter().sum::<f32>() / embedding[1].len() as f32;
+        centroid1[0] /= n_per_cluster as f32;
+        centroid1[1] /= n_per_cluster as f32;
+        centroid2[0] /= n_per_cluster as f32;
+        centroid2[1] /= n_per_cluster as f32;
 
-//         let var_x: f32 = embedding[0]
-//             .iter()
-//             .map(|&x| (x - mean_x).powi(2))
-//             .sum::<f32>()
-//             / embedding[0].len() as f32;
-//         let var_y: f32 = embedding[1]
-//             .iter()
-//             .map(|&y| (y - mean_y).powi(2))
-//             .sum::<f32>()
-//             / embedding[1].len() as f32;
+        // Distance between cluster centroids
+        let centroid_dist =
+            ((centroid1[0] - centroid2[0]).powi(2) + (centroid1[1] - centroid2[1]).powi(2)).sqrt();
 
-//         assert!(
-//             var_x > 0.5 && var_y > 0.5,
-//             "Embedding should have spread (var_x: {:.2}, var_y: {:.2})",
-//             var_x,
-//             var_y
-//         );
-//     }
+        assert!(
+            centroid_dist > 2.0,
+            "Clusters should be separated (distance: {:.2})",
+            centroid_dist
+        );
 
-//     #[test]
-//     fn test_umap_separates_clusters_different_seed_adam() {
-//         let n_per_cluster = 50;
-//         let n_dim_input = 10;
+        // Check spread
+        let mean_x: f32 = embedding[0].iter().sum::<f32>() / embedding[0].len() as f32;
+        let mean_y: f32 = embedding[1].iter().sum::<f32>() / embedding[1].len() as f32;
 
-//         let data = create_data(n_per_cluster, n_dim_input, 42);
+        let var_x: f32 = embedding[0]
+            .iter()
+            .map(|&x| (x - mean_x).powi(2))
+            .sum::<f32>()
+            / embedding[0].len() as f32;
+        let var_y: f32 = embedding[1]
+            .iter()
+            .map(|&y| (y - mean_y).powi(2))
+            .sum::<f32>()
+            / embedding[1].len() as f32;
 
-//         let embedding = umap(
-//             data.as_ref(),
-//             2,
-//             15,
-//             "adam".into(),
-//             "hnsw".into(),
-//             &UmapParams::default(),
-//             None,
-//             None,
-//             42,
-//             false,
-//         );
+        assert!(
+            var_x > 0.5 && var_y > 0.5,
+            "Embedding should have spread (var_x: {:.2}, var_y: {:.2})",
+            var_x,
+            var_y
+        );
+    }
 
-//         // Check embedding has correct shape
-//         assert_eq!(embedding.len(), 2);
-//         assert_eq!(embedding[0].len(), n_per_cluster * 2);
+    #[test]
+    fn test_umap_separates_clusters_different_seed_init_adam() {
+        let seed: usize = 1005;
 
-//         // Compute centroids of the two clusters in embedding space
-//         let mut centroid1 = [0.0f32; 2];
-//         let mut centroid2 = [0.0f32; 2];
+        let n_per_cluster = 150;
+        let n_dim_input = 10;
 
-//         for i in 0..n_per_cluster {
-//             centroid1[0] += embedding[0][i];
-//             centroid1[1] += embedding[1][i];
-//         }
-//         for i in n_per_cluster..(n_per_cluster * 2) {
-//             centroid2[0] += embedding[0][i];
-//             centroid2[1] += embedding[1][i];
-//         }
+        let data = create_data(n_per_cluster, n_dim_input, seed);
 
-//         centroid1[0] /= n_per_cluster as f32;
-//         centroid1[1] /= n_per_cluster as f32;
-//         centroid2[0] /= n_per_cluster as f32;
-//         centroid2[1] /= n_per_cluster as f32;
+        let embedding = umap(
+            data.as_ref(),
+            2,
+            15,
+            "adam".into(),
+            "hnsw".into(),
+            "pca".into(),
+            &UmapParams::default(),
+            None,
+            None,
+            false,
+            seed,
+            false,
+        );
 
-//         // Distance between cluster centroids
-//         let centroid_dist =
-//             ((centroid1[0] - centroid2[0]).powi(2) + (centroid1[1] - centroid2[1]).powi(2)).sqrt();
+        // Check embedding has correct shape
+        assert_eq!(embedding.len(), 2);
+        assert_eq!(embedding[0].len(), n_per_cluster * 2);
 
-//         assert!(
-//             centroid_dist > 2.0,
-//             "Clusters should be separated (distance: {:.2})",
-//             centroid_dist
-//         );
+        // Compute centroids of the two clusters in embedding space
+        let mut centroid1 = [0.0f32; 2];
+        let mut centroid2 = [0.0f32; 2];
 
-//         // Check spread
-//         let mean_x: f32 = embedding[0].iter().sum::<f32>() / embedding[0].len() as f32;
-//         let mean_y: f32 = embedding[1].iter().sum::<f32>() / embedding[1].len() as f32;
+        for i in 0..n_per_cluster {
+            centroid1[0] += embedding[0][i];
+            centroid1[1] += embedding[1][i];
+        }
+        for i in n_per_cluster..(n_per_cluster * 2) {
+            centroid2[0] += embedding[0][i];
+            centroid2[1] += embedding[1][i];
+        }
 
-//         let var_x: f32 = embedding[0]
-//             .iter()
-//             .map(|&x| (x - mean_x).powi(2))
-//             .sum::<f32>()
-//             / embedding[0].len() as f32;
-//         let var_y: f32 = embedding[1]
-//             .iter()
-//             .map(|&y| (y - mean_y).powi(2))
-//             .sum::<f32>()
-//             / embedding[1].len() as f32;
+        centroid1[0] /= n_per_cluster as f32;
+        centroid1[1] /= n_per_cluster as f32;
+        centroid2[0] /= n_per_cluster as f32;
+        centroid2[1] /= n_per_cluster as f32;
 
-//         assert!(
-//             var_x > 0.5 && var_y > 0.5,
-//             "Embedding should have spread (var_x: {:.2}, var_y: {:.2})",
-//             var_x,
-//             var_y
-//         );
-//     }
-// }
+        // Distance between cluster centroids
+        let centroid_dist =
+            ((centroid1[0] - centroid2[0]).powi(2) + (centroid1[1] - centroid2[1]).powi(2)).sqrt();
+
+        assert!(
+            centroid_dist > 2.0,
+            "Clusters should be separated (distance: {:.2})",
+            centroid_dist
+        );
+
+        // Check spread
+        let mean_x: f32 = embedding[0].iter().sum::<f32>() / embedding[0].len() as f32;
+        let mean_y: f32 = embedding[1].iter().sum::<f32>() / embedding[1].len() as f32;
+
+        let var_x: f32 = embedding[0]
+            .iter()
+            .map(|&x| (x - mean_x).powi(2))
+            .sum::<f32>()
+            / embedding[0].len() as f32;
+        let var_y: f32 = embedding[1]
+            .iter()
+            .map(|&y| (y - mean_y).powi(2))
+            .sum::<f32>()
+            / embedding[1].len() as f32;
+
+        assert!(
+            var_x > 0.5 && var_y > 0.5,
+            "Embedding should have spread (var_x: {:.2}, var_y: {:.2})",
+            var_x,
+            var_y
+        );
+    }
+
+    #[test]
+    fn test_umap_separates_clusters_adam_par() {
+        let seed: usize = 42;
+
+        let n_per_cluster = 150;
+        let n_dim_input = 10;
+
+        let data = create_data(n_per_cluster, n_dim_input, seed);
+
+        let embedding = umap(
+            data.as_ref(),
+            2,
+            15,
+            "adam_parallel".into(),
+            "annoy".into(),
+            "pca".into(),
+            &UmapParams::default(),
+            None,
+            None,
+            false,
+            seed,
+            false,
+        );
+
+        // Check embedding has correct shape
+        assert_eq!(embedding.len(), 2);
+        assert_eq!(embedding[0].len(), n_per_cluster * 2);
+
+        // Compute centroids of the two clusters in embedding space
+        let mut centroid1 = [0.0f32; 2];
+        let mut centroid2 = [0.0f32; 2];
+
+        for i in 0..n_per_cluster {
+            centroid1[0] += embedding[0][i];
+            centroid1[1] += embedding[1][i];
+        }
+        for i in n_per_cluster..(n_per_cluster * 2) {
+            centroid2[0] += embedding[0][i];
+            centroid2[1] += embedding[1][i];
+        }
+
+        centroid1[0] /= n_per_cluster as f32;
+        centroid1[1] /= n_per_cluster as f32;
+        centroid2[0] /= n_per_cluster as f32;
+        centroid2[1] /= n_per_cluster as f32;
+
+        // Distance between cluster centroids
+        let centroid_dist =
+            ((centroid1[0] - centroid2[0]).powi(2) + (centroid1[1] - centroid2[1]).powi(2)).sqrt();
+
+        assert!(
+            centroid_dist > 2.0,
+            "Clusters should be separated (distance: {:.2})",
+            centroid_dist
+        );
+
+        // Check spread
+        let mean_x: f32 = embedding[0].iter().sum::<f32>() / embedding[0].len() as f32;
+        let mean_y: f32 = embedding[1].iter().sum::<f32>() / embedding[1].len() as f32;
+
+        let var_x: f32 = embedding[0]
+            .iter()
+            .map(|&x| (x - mean_x).powi(2))
+            .sum::<f32>()
+            / embedding[0].len() as f32;
+        let var_y: f32 = embedding[1]
+            .iter()
+            .map(|&y| (y - mean_y).powi(2))
+            .sum::<f32>()
+            / embedding[1].len() as f32;
+
+        assert!(
+            var_x > 0.5 && var_y > 0.5,
+            "Embedding should have spread (var_x: {:.2}, var_y: {:.2})",
+            var_x,
+            var_y
+        );
+    }
+}
