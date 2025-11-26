@@ -39,14 +39,18 @@ where
         .map(|dists| {
             let target = (k as f64).ln();
 
-            // rho: distance to nearest neighbour (considering local_connectivity)
+            // FIXED: Subtract 1 because your distances exclude self
             let rho = if local_connectivity > T::zero() {
-                let idx = local_connectivity
+                let idx = (local_connectivity - T::one()) // <-- ADD THIS
+                    .max(T::zero())
                     .floor()
                     .to_usize()
                     .unwrap()
                     .min(dists.len() - 1);
-                let fraction = local_connectivity - local_connectivity.floor();
+
+                let fraction = (local_connectivity - T::one()).max(T::zero())
+                    - (local_connectivity - T::one()).max(T::zero()).floor();
+
                 if fraction > T::zero() && idx + 1 < dists.len() {
                     dists[idx] * (T::one() - fraction) + dists[idx + 1] * fraction
                 } else {
@@ -56,7 +60,7 @@ where
                 T::zero()
             };
 
-            // Binary search for sigma
+            // Binary search for sigma (rest unchanged)
             let mut lo = T::zero();
             let mut hi = T::max_value();
             let mut mid = T::one();
@@ -173,9 +177,9 @@ where
 ///
 /// ### Notes
 ///
-/// - `mix_weight = 1.0`: Use only outgoing edges (directed)
-/// - `mix_weight = 0.5`: Full fuzzy union (standard UMAP, symmetric)
-/// - `mix_weight = 0.0`: Use only incoming edges (transpose)
+/// * `mix_weight = 1.0`: Full fuzzy union (standard UMAP, symmetric)
+/// * `mix_weight = 0.5`: Weighted average of union and directed)
+/// * `mix_weight = 0.0`: Use only outgoing edges (directed)
 pub fn symmetrise_graph<T>(graph: SparseGraph<T>, mix_weight: T) -> SparseGraph<T>
 where
     T: Float + Send + Sync,
@@ -275,6 +279,57 @@ where
     adj
 }
 
+/// Filter out edges that are too weak to be sampled during optimization
+///
+/// Removes edges where weight < max_weight / n_epochs, matching uwot's
+/// preprocessing step. These weak edges would never be sampled during
+/// optimization and can cause fragmentation.
+///
+/// ### Params
+///
+/// * `graph` - Input graph in COO format
+/// * `n_epochs` - Optimization parameters (uses n_epochs for threshold)
+///
+/// ### Returns
+///
+/// Filtered graph with weak edges removed
+pub fn filter_weak_edges<T>(graph: SparseGraph<T>, n_epochs: usize) -> SparseGraph<T>
+where
+    T: Float + Send + Sync,
+{
+    let max_weight = graph
+        .values
+        .iter()
+        .copied()
+        .fold(T::zero(), |acc, w| if w > acc { w } else { acc });
+
+    let threshold = max_weight / T::from(n_epochs).unwrap();
+
+    let mut filtered_rows = Vec::new();
+    let mut filtered_cols = Vec::new();
+    let mut filtered_vals = Vec::new();
+
+    for ((&i, &j), &w) in graph
+        .row_indices
+        .iter()
+        .zip(&graph.col_indices)
+        .zip(&graph.values)
+    {
+        if w >= threshold {
+            filtered_rows.push(i);
+            filtered_cols.push(j);
+            filtered_vals.push(w);
+        }
+    }
+
+    SparseGraph {
+        row_indices: filtered_rows,
+        col_indices: filtered_cols,
+        values: filtered_vals,
+        n_vertices: graph.n_vertices,
+    }
+}
+
 ///////////
 // Tests //
 ///////////
@@ -287,11 +342,7 @@ mod test_data_gen {
     #[test]
     fn test_smooth_knn_dist_basic() {
         // Simple test with 3 points, k=2
-        let dist = vec![
-            vec![0.0, 1.0, 2.0],
-            vec![0.0, 1.5, 3.0],
-            vec![0.0, 0.5, 1.5],
-        ];
+        let dist = vec![vec![1.0, 2.0], vec![1.5, 3.0], vec![0.5, 1.5]];
 
         let (sigmas, rhos) = smooth_knn_dist(&dist, 2, 1.0, 1e-5, 64);
 

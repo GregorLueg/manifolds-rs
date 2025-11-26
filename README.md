@@ -23,12 +23,15 @@ reduction algorithm
 - **Distance metrics**:
   - Euclidean
   - Cosine
-- **Spectral initialisation**: Graph Laplacian eigenvector-based initialisation 
-using Lanczos iteration
+- **Multiple initialisations**: 
+  - Graph Laplacian eigenvector-based initialisation using Lanczos iteration
+  - Random initialisation
+  - PCA-based initialisation with randomised SVD for veeery large data sets
 - **Customisable parameters**: Full control over fuzzy simplicial set 
 construction, graph symmetrisation, and optimisation
 - **High performance**: Parallel processing with Rayon, efficient sparse matrix
-operations, and optimised SGD
+operations, and optimised SGD and Adam optimisers (for the latter also a 
+parallelised version...)
 
 ## Installation
 
@@ -40,6 +43,11 @@ manifold-rs = "*"  # always get the latest version
 ann-search-rs = "*"  # required for ANN functionality
 faer = "*"  # required for matrix operations
 ```
+
+## Notes
+
+Please use version `0.1.3` and higher. These ones are not extensively tested
+against real data.
 
 ## Licence
 

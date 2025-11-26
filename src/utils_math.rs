@@ -1,15 +1,111 @@
 use faer::traits::{ComplexField, RealField};
-use faer::Mat;
-use num_traits::Float;
-use num_traits::ToPrimitive;
+use faer::{Mat, MatRef};
+use num_traits::{Float, ToPrimitive};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+use rand_distr::{Distribution, Normal, StandardNormal};
 use rayon::iter::*;
 use std::iter::Sum;
 use std::ops::{Add, Mul};
 
 use crate::assert_same_len;
 use crate::data_struct::*;
+
+////////////////////
+// Randomised SVD //
+////////////////////
+
+/// Structure for random SVD results
+///
+/// ### Fields
+///
+/// * `u` - Matrix u of the SVD decomposition
+/// * `v` - Matrix v of the SVD decomposition
+/// * `s` - Eigen vectors of the SVD decomposition
+#[derive(Clone, Debug)]
+pub struct RandomSvdResults<T> {
+    pub u: faer::Mat<T>,
+    pub v: faer::Mat<T>,
+    pub s: Vec<T>,
+}
+
+/// Randomised SVD
+///
+/// ### Params
+///
+/// * `x` - The matrix on which to apply the randomised SVD.
+/// * `rank` - The target rank of the approximation (number of singular values,
+///   vectors to compute).
+/// * `seed` - Random seed for reproducible results.
+/// * `oversampling` - Additional samples beyond the target rank to improve
+///   accuracy. Defaults to 10 if not specified.
+/// * `n_power_iter` - Number of power iterations to perform for better
+///   approximation quality. More iterations generally improve accuracy but
+///   increase computation time. Defaults to 2 if not specified.
+///
+/// ### Returns
+///
+/// The randomised SVD results in form of `RandomSvdResults`.
+///
+/// ### Algorithm Details
+///
+/// 1. Generate a random Gaussian matrix Ω of size n × (rank + oversampling)
+/// 2. Compute `Y = X * Ω` to capture the range of X
+/// 3. Orthogonalize Y using QR decomposition to get Q
+/// 4. Apply power iterations: for each iteration, compute `Z = X^T * Q`, then
+///    `Q = QR(X * Z)`
+/// 5. Form B = Q^T * X and compute its SVD
+/// 6. Reconstruct the final `SVD: U = Q * U_B, V = V_B, S = S_B`
+pub fn randomised_svd<T>(
+    x: MatRef<T>,
+    rank: usize,
+    seed: usize,
+    oversampling: Option<usize>,
+    n_power_iter: Option<usize>,
+) -> RandomSvdResults<T>
+where
+    T: Float + Send + Sync + Sum + ComplexField + RealField + ToPrimitive,
+    StandardNormal: Distribution<T>,
+{
+    let ncol = x.ncols();
+    let nrow = x.nrows();
+
+    // Add adaptive oversampling for very small ranks
+    let os = oversampling.unwrap_or({
+        if rank < 10 {
+            rank // 100% oversampling for small ranks
+        } else {
+            10
+        }
+    });
+    let sample_size = (rank + os).min(ncol.min(nrow));
+    let n_iter = n_power_iter.unwrap_or(2);
+
+    // Create a random matrix
+    let mut rng = StdRng::seed_from_u64(seed as u64);
+    let normal = Normal::new(T::from(0.0).unwrap(), T::from(1.0).unwrap()).unwrap();
+    let omega = Mat::from_fn(ncol, sample_size, |_, _| normal.sample(&mut rng));
+
+    // Multiply random matrix with original and use QR composition to get
+    // low rank approximation of x
+    let y = x * omega;
+
+    let mut q = y.qr().compute_thin_Q();
+    for _ in 0..n_iter {
+        let z = x.transpose() * q;
+        q = (x * z).qr().compute_thin_Q();
+    }
+
+    // Perform the SVD on the low-rank approximation
+    let b = q.transpose() * x;
+    let svd = b.thin_svd().unwrap();
+
+    RandomSvdResults {
+        u: q * svd.U(),
+        v: svd.V().cloned(), // Use clone instead of manual copying
+        s: svd.S().column_vector().iter().copied().collect(),
+    }
+}
 
 /////////////////////////////////////
 // Lanczos Eigenvalue calculations //
@@ -94,7 +190,10 @@ where
     (evals, evecs)
 }
 
-/// Compute largest eigenvalues and eigenvectors using Lanczos
+/// Compute smallest eigenvalues and eigenvectors using Lanczos
+///
+/// This function returns the smallest eigenvalues, specifically designed
+/// for spectral initialisations.
 ///
 /// ### Params
 ///
@@ -106,7 +205,7 @@ where
 ///
 /// (eigenvalues, eigenvectors) where eigenvectors[i][j] is element j of
 /// eigenvector i
-pub fn compute_largest_eigenpairs_lanczos<T>(
+pub fn compute_smallest_eigenpairs_lanczos<T>(
     matrix: &CompressedSparseData<T>,
     n_components: usize,
     seed: u64,
@@ -178,13 +277,13 @@ where
     let (evals, evecs) = tridiag_eig(&alpha[..n_iter], &beta[..n_iter - 1]);
 
     let mut indices: Vec<usize> = (0..evals.len()).collect();
-    indices.sort_by(|&i, &j| evals[j].partial_cmp(&evals[i]).unwrap());
+    indices.sort_by(|&i, &j| evals[i].partial_cmp(&evals[j]).unwrap());
 
-    let mut largest_evals: Vec<f32> = Vec::with_capacity(n_components);
-    let mut largest_evecs: Vec<Vec<f32>> = Vec::with_capacity(n_components);
+    let mut smallest_evals: Vec<f32> = Vec::with_capacity(n_components);
+    let mut smallest_evecs: Vec<Vec<f32>> = Vec::with_capacity(n_components);
 
     for &idx in indices.iter().take(n_components) {
-        // Transform eigenvector back to original space: v_original = V * v_tridiag
+        // transform eigenvector back to original space: v_original = V * v_tridiag
         let mut evec = vec![0.0; n];
         for i in 0..n {
             for j in 0..n_iter {
@@ -192,24 +291,24 @@ where
             }
         }
 
-        // Normalise the transformed eigenvector... Really should do this...
+        // normalise the transformed eigenvector... Really should do this...
         let norm: f64 = evec.iter().map(|x| x * x).sum::<f64>().sqrt();
         for x in &mut evec {
             *x /= norm;
         }
 
-        largest_evals.push(evals[idx].to_f64().unwrap() as f32);
-        largest_evecs.push(evec.iter().map(|&x| x as f32).collect());
+        smallest_evals.push(evals[idx].to_f64().unwrap() as f32);
+        smallest_evecs.push(evec.iter().map(|&x| x as f32).collect());
     }
 
     let mut transposed = vec![vec![0.0f32; n_components]; n];
     for comp_idx in 0..n_components {
         for point_idx in 0..n {
-            transposed[point_idx][comp_idx] = largest_evecs[comp_idx][point_idx];
+            transposed[point_idx][comp_idx] = smallest_evecs[comp_idx][point_idx];
         }
     }
 
-    (largest_evals, transposed)
+    (smallest_evals, transposed)
 }
 
 ///////////
@@ -295,7 +394,7 @@ mod test_utils_math {
 
         let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
 
-        let (evals, evecs) = compute_largest_eigenpairs_lanczos(&matrix, 2, 42);
+        let (evals, evecs) = compute_smallest_eigenpairs_lanczos(&matrix, 2, 42);
 
         assert_eq!(evals.len(), 2);
         assert_eq!(evecs.len(), n);
@@ -308,7 +407,7 @@ mod test_utils_math {
     }
 
     #[test]
-    fn test_compute_largest_eigenpairs_diagonal() {
+    fn test_compute_smallest_eigenpairs_diagonal() {
         // Diagonal matrix with values [5, 4, 3, 2, 1]
         let n = 5;
         let data = vec![5.0, 4.0, 3.0, 2.0, 1.0];
@@ -317,18 +416,18 @@ mod test_utils_math {
 
         let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
 
-        let (evals, evecs) = compute_largest_eigenpairs_lanczos(&matrix, 3, 42);
+        let (evals, evecs) = compute_smallest_eigenpairs_lanczos(&matrix, 3, 42);
 
         assert_eq!(evals.len(), 3);
         assert_eq!(evecs.len(), n);
 
-        // Largest eigenvalues should be approximately 5, 4, 3
+        // smallest eigenvalues should be approximately 1, 2, 3
         let mut sorted_evals = evals.clone();
         sorted_evals.sort_by(|a, b| b.partial_cmp(a).unwrap());
 
-        assert_relative_eq!(sorted_evals[0], 5.0, epsilon = 0.1);
-        assert_relative_eq!(sorted_evals[1], 4.0, epsilon = 0.1);
-        assert_relative_eq!(sorted_evals[2], 3.0, epsilon = 0.1);
+        assert_relative_eq!(sorted_evals[0], 3.0, epsilon = 0.1);
+        assert_relative_eq!(sorted_evals[1], 2.0, epsilon = 0.1);
+        assert_relative_eq!(sorted_evals[2], 1.0, epsilon = 0.1);
     }
 
     #[test]
@@ -357,8 +456,8 @@ mod test_utils_math {
 
         let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
 
-        let (evals1, evecs1) = compute_largest_eigenpairs_lanczos(&matrix, 3, 42);
-        let (evals2, evecs2) = compute_largest_eigenpairs_lanczos(&matrix, 3, 42);
+        let (evals1, evecs1) = compute_smallest_eigenpairs_lanczos(&matrix, 3, 42);
+        let (evals2, evecs2) = compute_smallest_eigenpairs_lanczos(&matrix, 3, 42);
 
         assert_eq!(evals1, evals2);
         assert_eq!(evecs1, evecs2);
