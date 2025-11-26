@@ -17,6 +17,7 @@ use rand_distr::{Distribution, StandardNormal};
 use std::default::Default;
 use std::iter::Sum;
 use std::marker::{Send, Sync};
+use std::ops::AddAssign;
 use std::time::Instant;
 use thousands::*;
 
@@ -143,7 +144,7 @@ pub fn umap<T>(
     verbose: bool,
 ) -> Vec<Vec<T>>
 where
-    T: Float + FromPrimitive + Send + Sync + Default + ComplexField + RealField + Sum,
+    T: Float + FromPrimitive + Send + Sync + Default + ComplexField + RealField + Sum + AddAssign,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: UpdateNeighbours<T>,
     StandardNormal: Distribution<T>,
