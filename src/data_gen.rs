@@ -39,14 +39,18 @@ where
         .map(|dists| {
             let target = (k as f64).ln();
 
-            // rho: distance to nearest neighbour (considering local_connectivity)
+            // FIXED: Subtract 1 because your distances exclude self
             let rho = if local_connectivity > T::zero() {
-                let idx = local_connectivity
+                let idx = (local_connectivity - T::one()) // <-- ADD THIS
+                    .max(T::zero())
                     .floor()
                     .to_usize()
                     .unwrap()
                     .min(dists.len() - 1);
-                let fraction = local_connectivity - local_connectivity.floor();
+
+                let fraction = (local_connectivity - T::one()).max(T::zero())
+                    - (local_connectivity - T::one()).max(T::zero()).floor();
+
                 if fraction > T::zero() && idx + 1 < dists.len() {
                     dists[idx] * (T::one() - fraction) + dists[idx + 1] * fraction
                 } else {
@@ -56,7 +60,7 @@ where
                 T::zero()
             };
 
-            // Binary search for sigma
+            // Binary search for sigma (rest unchanged)
             let mut lo = T::zero();
             let mut hi = T::max_value();
             let mut mid = T::one();
