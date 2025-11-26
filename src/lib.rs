@@ -1,12 +1,9 @@
 #![allow(clippy::needless_range_loop)] // I like loops ... !
 
-pub mod data_gen;
-pub mod data_struct;
-pub mod init;
-pub mod macros;
-pub mod nearest_neighbours;
+pub mod data;
 pub mod optimiser;
-pub mod utils_math;
+pub mod parametric;
+pub mod utils;
 
 use ann_search_rs::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::nndescent::{NNDescent, UpdateNeighbours};
@@ -21,9 +18,9 @@ use std::ops::AddAssign;
 use std::time::Instant;
 use thousands::*;
 
-use crate::data_gen::*;
-use crate::init::*;
-use crate::nearest_neighbours::*;
+use crate::data::graph::*;
+use crate::data::init::*;
+use crate::data::nearest_neighbours::*;
 use crate::optimiser::*;
 
 ////////////

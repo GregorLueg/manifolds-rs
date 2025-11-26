@@ -6,8 +6,8 @@ use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, StandardNormal};
 use std::iter::Sum;
 
-use crate::data_struct::*;
-use crate::utils_math::*;
+use crate::data::structures::*;
+use crate::utils::math::*;
 
 /////////////
 // Helpers //

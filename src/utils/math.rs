@@ -9,7 +9,7 @@ use std::iter::Sum;
 use std::ops::{Add, Mul};
 
 use crate::assert_same_len;
-use crate::data_struct::*;
+use crate::data::structures::*;
 
 ////////////////////
 // Randomised SVD //

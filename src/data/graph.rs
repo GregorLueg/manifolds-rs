@@ -2,7 +2,7 @@ use num_traits::Float;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 
-use crate::data_struct::*;
+use crate::data::structures::*;
 
 /// Smooth kNN distances via binary search to find sigma for each point
 ///
