@@ -999,10 +999,8 @@ pub fn optimise_embedding_adam_parallel<T>(
 
                         for d in 0..n_dim {
                             let delta = embd_flat[base_other + d] - embd_flat[base_i + d];
-                            // uwot doubles this - there are some other differences, but maybe this helps
-                            // i will set it a bit higher... i think the doubling comes from doing each
-                            // edge only once, whereas i do it twice here.
-                            node_gradients[d] += grad_coeff * delta * T::from(1.5).unwrap();
+                            // uwot doubled here, but i think this is due to a different data structure
+                            node_gradients[d] += grad_coeff * delta;
                         }
                     }
 
