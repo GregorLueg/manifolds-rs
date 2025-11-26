@@ -999,7 +999,9 @@ pub fn optimise_embedding_adam_parallel<T>(
 
                         for d in 0..n_dim {
                             let delta = embd_flat[base_other + d] - embd_flat[base_i + d];
-                            node_gradients[d] += grad_coeff * delta;
+                            // uwot doubles this - there are some other differences, but maybe this helps
+                            // i will increase the strength here to see if it helps with isolated nodes/elongation effects
+                            node_gradients[d] += grad_coeff * delta * T::from(1.5).unwrap();
                         }
                     }
 
