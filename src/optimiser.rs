@@ -106,7 +106,7 @@ where
         let beta2 = beta2.unwrap_or(T::from(BETA2).unwrap());
         let eps = eps.unwrap_or(T::from(EPS).unwrap());
 
-        let (a, b) = Self::fit_params(min_dist, spread, None, None);
+        let (a, b) = Self::fit_params(min_dist, spread, None);
         Self {
             a,
             b,
@@ -136,47 +136,66 @@ where
     /// ### Returns
     ///
     /// Tuple of `(a, b)` according to the optimisation problem above.
-    fn fit_params(min_dist: T, spread: T, lr: Option<T>, n_iter: Option<usize>) -> (T, T) {
-        let lr = lr.unwrap_or_else(|| T::from_f64(0.1).unwrap());
-        let n_iter = n_iter.unwrap_or(100);
+    fn fit_params(min_dist: T, spread: T, n_iter: Option<usize>) -> (T, T) {
+        let n_iter = n_iter.unwrap_or(300);
+        let n_points = 300;
 
-        // high membership at min_dist
-        let x0 = min_dist;
-        let y0 = T::from_f64(0.95).unwrap();
+        // Generate x values from 0 to spread * 3
+        let three = T::from_f64(3.0).unwrap();
+        let max_x = spread * three;
+        let step = max_x / T::from_usize(n_points - 1).unwrap();
 
-        // low membership at 3 * spread
-        let x1 = spread * T::from(3.0).unwrap();
-        let y1 = T::from_f64(0.01).unwrap();
+        // Generate target y values
+        let mut xv = Vec::with_capacity(n_points);
+        let mut yv = Vec::with_capacity(n_points);
 
-        // non-linear optimisation to find a and b using SGD
+        for i in 0..n_points {
+            let x = step * T::from_usize(i).unwrap();
+            let y = if x < min_dist {
+                T::one()
+            } else {
+                (-(x - min_dist) / spread).exp()
+            };
+            xv.push(x);
+            yv.push(y);
+        }
+
         let mut a = T::one();
         let mut b = T::one();
+        let two = T::from_f64(2.0).unwrap();
 
         for _ in 0..n_iter {
-            // predictions
-            let pred0 = T::one() / (T::one() + a * x0.powf(T::from_f64(2.0).unwrap() * b));
-            let pred1 = T::one() / (T::one() + a * x1.powf(T::from_f64(2.0).unwrap() * b));
+            let mut grad_a = T::zero();
+            let mut grad_b = T::zero();
+            let n_points_t = T::from_usize(n_points).unwrap();
 
-            let err0 = pred0 - y0;
-            let err1 = pred1 - y1;
+            for i in 0..n_points {
+                let x = xv[i];
+                if x <= T::zero() {
+                    continue;
+                }
 
-            // approximate the gradient - horrible formula...
-            let grad_a = err0 * x0.powf(T::from_f64(2.0).unwrap() * b)
-                / (T::one() + a * x0.powf(T::from_f64(2.0).unwrap() * b)).powi(2)
-                + err1 * x1.powf(T::from_f64(2.0).unwrap() * b)
-                    / (T::one() + a * x1.powf(T::from_f64(2.0).unwrap() * b)).powi(2);
+                let y_target = yv[i];
+                let x_2b = x.powf(two * b);
+                let denom = T::one() + a * x_2b;
+                let pred = T::one() / denom;
+                let err = pred - y_target;
 
-            let two = T::from_f64(2.0).unwrap();
-            let log_x0 = x0.ln();
-            let log_x1 = x1.ln();
-            let grad_b = err0 * (two * a * x0.powf(two * b) * log_x0)
-                / (T::one() + a * x0.powf(two * b)).powi(2)
-                + err1 * (two * a * x1.powf(two * b) * log_x1)
-                    / (T::one() + a * x1.powf(two * b)).powi(2);
+                grad_a = grad_a + err * (-x_2b / (denom * denom));
 
-            // update and clamp
-            a = a - lr * grad_a;
-            b = b - lr * grad_b;
+                let log_x = x.ln();
+                grad_b = grad_b + err * (-two * a * x_2b * log_x / (denom * denom));
+            }
+
+            // Normalise gradients and use adaptive learning rate
+            grad_a = grad_a / n_points_t;
+            grad_b = grad_b / n_points_t;
+
+            let lr_a = T::from_f64(1.0).unwrap();
+            let lr_b = T::from_f64(1.0).unwrap();
+
+            a = a - lr_a * grad_a;
+            b = b - lr_b * grad_b;
 
             a = a
                 .max(T::from_f64(0.001).unwrap())
@@ -1115,7 +1134,7 @@ mod test_optimiser {
 
     #[test]
     fn test_fit_params_constraints() {
-        let (a, b) = OptimParams::<f64>::fit_params(0.1, 1.0, None, None);
+        let (a, b) = OptimParams::<f64>::fit_params(0.1, 1.0, None);
 
         assert!((0.001..=10.0).contains(&a));
         assert!((0.1..=2.0).contains(&b));
@@ -1125,22 +1144,25 @@ mod test_optimiser {
     fn test_fit_params_curve_properties() {
         let min_dist = 0.1;
         let spread = 1.0;
-        let (a, b) = OptimParams::<f64>::fit_params(min_dist, spread, None, None);
+        let (a, b) = OptimParams::<f64>::fit_params(min_dist, spread, None);
 
+        // At min_dist, target is 1.0
         let pred_min = 1.0 / (1.0 + a * min_dist.powf(2.0 * b));
         assert!(
-            pred_min > 0.7,
-            "f(min_dist) = {:.3} should be > 0.7",
+            pred_min > 0.9,
+            "f(min_dist) = {:.3} should be > 0.9",
             pred_min
         );
 
+        // At 3*spread, target is exp(-(3*spread - min_dist)/spread) ≈ 0.055
         let pred_spread = 1.0 / (1.0 + a * (3.0 * spread).powf(2.0 * b));
         assert!(
-            pred_spread < 0.3,
-            "f(3*spread) = {:.3} should be < 0.3",
+            pred_spread < 0.1,
+            "f(3*spread) = {:.3} should be < 0.1",
             pred_spread
         );
 
+        // Should be monotonically decreasing
         let mid_point = 1.5 * spread;
         let pred_mid = 1.0 / (1.0 + a * mid_point.powf(2.0 * b));
         assert!(pred_min > pred_mid && pred_mid > pred_spread);
