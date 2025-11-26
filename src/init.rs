@@ -180,7 +180,7 @@ where
             .fold(T::zero(), |acc, x| if x > acc { x } else { acc });
 
         if max_val > T::from_f64(1e-8).unwrap() {
-            let scale = T::from_f64(1.0).unwrap() / max_val;
+            let scale = T::from_f64(1e-4).unwrap() / max_val;
             for i in 0..n {
                 embedding[i][comp] = embedding[i][comp] * scale;
             }
@@ -188,7 +188,7 @@ where
     }
 
     let mut rng = StdRng::seed_from_u64(seed + 9999); // Different seed for noise
-    let noise_std = T::from_f64(0.0001).unwrap();
+    let noise_std = T::from_f64(1e-6).unwrap();
 
     for i in 0..n {
         for j in 0..n_comp {
@@ -223,7 +223,7 @@ where
 
     for i in 0..n_samples {
         for j in 0..n_comp {
-            embedding[i][j] = T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
+            embedding[i][j] = T::from_f64(rng.random_range(-1e-4..1e-4)).unwrap();
         }
     }
 
@@ -445,7 +445,7 @@ mod test_init {
         // Check that values are approximately in [-10, 10] range (allowing for noise)
         for point in &embedding {
             for &coord in point {
-                assert!((-1.01..=1.01).contains(&coord));
+                assert!((-1e-3..=1e-3).contains(&coord));
             }
         }
 
@@ -496,7 +496,7 @@ mod test_init {
         // Check range [-10, 10]
         for point in &embedding {
             for &coord in point {
-                assert!((-1.0..=1.0).contains(&coord));
+                assert!((-1e-4..=1e-4).contains(&coord));
             }
         }
     }
