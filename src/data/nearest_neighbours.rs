@@ -1,17 +1,19 @@
 use ann_search_rs::hnsw::{HnswIndex, HnswState};
-use ann_search_rs::nndescent::{NNDescent, UpdateNeighbours};
+use ann_search_rs::nndescent::{NNDescent, NNDescentQuery, UpdateNeighbours};
+
 use ann_search_rs::*;
 use faer::MatRef;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use std::default::Default;
+use std::iter::Sum;
 
 #[derive(Default)]
 pub enum AnnSearch {
-    /// Annoy
-    #[default]
-    Annoy,
     /// HNSW
+    #[default]
     Hnsw,
+    /// Annoy
+    Annoy,
     /// NNDescent
     NNDescent,
 }
@@ -48,16 +50,16 @@ pub enum AnnSearch {
 pub struct NearestNeighbourParams<T> {
     pub dist_metric: String,
     // annoy
-    pub n_trees: usize,
-    pub search_budget: usize,
+    pub n_tree: usize,
+    pub search_budget: Option<usize>,
     // hnsw
     pub m: usize,
     pub ef_construction: usize,
     pub ef_search: usize,
     // nndescent
-    pub max_iter: usize,
+    pub diversify_prob: T,
     pub delta: T,
-    pub rho: T,
+    pub ef_budget: Option<usize>,
 }
 
 impl<T> Default for NearestNeighbourParams<T>
@@ -68,14 +70,14 @@ where
     fn default() -> Self {
         Self {
             dist_metric: "cosine".to_string(),
-            n_trees: 50,
-            search_budget: 2,
+            n_tree: 50,
+            search_budget: None,
             m: 16,
             ef_construction: 200,
             ef_search: 2,
-            max_iter: 25,
+            diversify_prob: T::from(0.0).unwrap(),
             delta: T::from(0.001).unwrap(),
-            rho: T::from(1.0).unwrap(),
+            ef_budget: None,
         }
     }
 }
@@ -121,25 +123,18 @@ pub fn run_ann_search<T>(
     seed: usize,
 ) -> (Vec<Vec<usize>>, Vec<Vec<T>>)
 where
-    T: Float + FromPrimitive + ToPrimitive + Send + Sync + Default,
+    T: Float + FromPrimitive + ToPrimitive + Send + Sync + Default + Sum,
     HnswIndex<T>: HnswState<T>,
-    NNDescent<T>: UpdateNeighbours<T>,
+    NNDescent<T>: UpdateNeighbours<T> + NNDescentQuery<T>,
 {
     let ann_search = parse_ann_search(&ann_type).unwrap_or_default();
 
     let (knn_indices, knn_dist) = match ann_search {
         AnnSearch::Annoy => {
-            let index = build_annoy_index(data, params_nn.n_trees, seed);
+            let index =
+                build_annoy_index(data, params_nn.dist_metric.clone(), params_nn.n_tree, seed);
 
-            query_annoy_index(
-                data,
-                &index,
-                &params_nn.dist_metric,
-                k + 1,
-                params_nn.search_budget * k * params_nn.n_trees,
-                true,
-                false,
-            )
+            query_annoy_index(data, &index, k + 1, params_nn.search_budget, true, false)
         }
         AnnSearch::Hnsw => {
             let index = build_hnsw_index(
@@ -153,17 +148,22 @@ where
 
             query_hnsw_index(data, &index, k + 1, params_nn.ef_search * k, true, false)
         }
-        AnnSearch::NNDescent => generate_knn_nndescent_with_dist(
-            data,
-            &params_nn.dist_metric,
-            k + 1,
-            params_nn.max_iter,
-            params_nn.delta,
-            params_nn.rho,
-            seed,
-            false,
-            true,
-        ),
+        AnnSearch::NNDescent => {
+            let index = build_nndescent_index(
+                data,
+                &params_nn.dist_metric,
+                params_nn.delta,
+                params_nn.diversify_prob,
+                None, // will default to the 30 that is usually used in NNDescent
+                None,
+                None,
+                None,
+                seed,
+                false,
+            );
+
+            query_nndescent_index(data, &index, k + 1, params_nn.ef_budget, true, false)
+        }
     };
 
     let knn_dist = knn_dist.unwrap();

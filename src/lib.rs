@@ -6,7 +6,7 @@ pub mod parametric;
 pub mod utils;
 
 use ann_search_rs::hnsw::{HnswIndex, HnswState};
-use ann_search_rs::nndescent::{NNDescent, UpdateNeighbours};
+use ann_search_rs::nndescent::{NNDescent, NNDescentQuery, UpdateNeighbours};
 use faer::traits::{ComplexField, RealField};
 use faer::MatRef;
 use num_traits::{Float, FromPrimitive};
@@ -143,7 +143,7 @@ pub fn umap<T>(
 where
     T: Float + FromPrimitive + Send + Sync + Default + ComplexField + RealField + Sum + AddAssign,
     HnswIndex<T>: HnswState<T>,
-    NNDescent<T>: UpdateNeighbours<T>,
+    NNDescent<T>: UpdateNeighbours<T> + NNDescentQuery<T>,
     StandardNormal: Distribution<T>,
 {
     // parse various parameters
