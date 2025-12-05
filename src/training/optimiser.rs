@@ -24,16 +24,17 @@ const EPS: f64 = 1e-7;
 ///
 /// ### Fields
 ///
-/// * `a` - Curve parameter for repulsive force (typically ~1.93 for 2D)
-/// * `b` - Curve parameter for repulsive force (typically ~0.79 for 2D)
+/// * `a` - Curve parameter for repulsive force (typically ~1.5 for 2D)
+/// * `b` - Curve parameter for repulsive force (typically ~0.9 for 2D)
 /// * `lr` - Initial learning rate (typically 1.0)
+/// * `gamma` - Parameter to control repulsion force
 /// * `n_epochs` - Number of optimisation epochs (typically 500)
 /// * `neg_sample_rate` - Number of negative samples per positive edge
 ///   (typically 5)
 /// * `min_dist` - Minimum distance between points in embedding (typically 0.1)
-/// * `beta1` -
-/// * `beta2` -
-/// * `eps` -
+/// * `beta1` - beta1 parameter for Adam optimiser
+/// * `beta2` - beta2 parameter for Adam optimiser
+/// * `eps` - eps for Adam optimiser
 #[derive(Clone, Debug)]
 pub struct OptimParams<T> {
     pub a: T,
@@ -59,8 +60,8 @@ where
     /// Self with sensible default parameters for the classical
     pub fn default_2d() -> Self {
         Self {
-            a: T::from_f64(1.929).unwrap(),
-            b: T::from_f64(0.7915).unwrap(),
+            a: T::from_f64(1.5).unwrap(),
+            b: T::from_f64(0.9).unwrap(),
             lr: T::one(),
             gamma: T::one(),
             n_epochs: 500,

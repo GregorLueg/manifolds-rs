@@ -1,8 +1,8 @@
 #![allow(clippy::needless_range_loop)] // I like loops ... !
 
 pub mod data;
-pub mod optimiser;
 pub mod parametric;
+pub mod training;
 pub mod utils;
 
 use ann_search_rs::hnsw::{HnswIndex, HnswState};
@@ -21,51 +21,87 @@ use thousands::*;
 use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
-use crate::optimiser::*;
+use crate::data::structures::*;
+use crate::training::optimiser::*;
+use crate::training::UmapParams;
 
-////////////
-// Params //
-////////////
+/////////////
+// Helpers //
+/////////////
 
-/// UMAP algorithm parameters
+/// Helper function to generate the UMAP graph
 ///
-/// Controls the fuzzy simplicial set construction and graph symmetrisation.
+/// ### Params
 ///
-/// ### Fields
+/// * `data` - Input data matrix (samples × features)
+/// * `k` - Number of nearest neighbours (typically 15-50).
+/// * `ann_type` - Approximate nearest neighbour method: `"annoy"`, `"hnsw"`, or
+///   `"nndescent"`. If you provide a weird string, the function will default
+///   to `"hnsw"`
+/// * `umap_params` - UMAP-specific parameters (bandwidth, local_connectivity,
+///   mix_weight)
+/// * `nn_params` - Nearest neighbour parameters for nearest neighbour search.
+/// * `seed` - Random seed
+/// * `verbose` - Controls verbosity
 ///
-/// * `bandwidth` - Convergence tolerance for smooth kNN distance binary search
-///   (typically 1e-5). Controls how precisely sigma values are computed.
-/// * `local_connectivity` - Number of nearest neighbours assumed to be at
-///   distance zero (typically 1.0). Allows for local manifold structure by
-///   treating the nearest neighbour(s) as having maximal membership strength.
-/// * `mix_weight` - Balance between fuzzy union and directed graph during
-///   symmetrisation (typically 1.0).
-#[derive(Clone, Debug)]
-pub struct UmapParams<T> {
-    pub bandwidth: T,
-    pub local_connectivity: T,
-    pub mix_weight: T,
-}
-
-impl<T> Default for UmapParams<T>
+/// ### Returns
+///
+/// Tuple of (graph, knn_indices, knn_dist) for use in optimisation
+pub fn construct_umap_graph<T>(
+    data: MatRef<T>,
+    k: usize,
+    ann_type: String,
+    umap_params: &UmapParams<T>,
+    nn_params: &NearestNeighbourParams<T>,
+    seed: usize,
+    verbose: bool,
+) -> (SparseGraph<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
 where
-    T: Float,
+    T: Float + FromPrimitive + Send + Sync + Default + ComplexField + RealField + Sum + AddAssign,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: UpdateNeighbours<T> + NNDescentQuery<T>,
 {
-    /// Returns sensible defaults for UMAP
-    ///
-    /// ### Returns
-    ///
-    /// * `bandwidth = 1e-5` - Tight convergence for sigma computation
-    /// * `local_connectivity = 1.0` - Treat nearest neighbour as connected
-    /// * `mix_weight = 1.0` - Standard symmetric fuzzy union
-    fn default() -> Self {
-        Self {
-            local_connectivity: T::from(1.0).unwrap(),
-            bandwidth: T::from(1e-5).unwrap(),
-            mix_weight: T::from(1.0).unwrap(),
-        }
+    if verbose {
+        println!(
+            "Running approximate nearest neighbour search using {}...",
+            ann_type
+        );
     }
+
+    let start_knn = Instant::now();
+    let (knn_indices, knn_dist) = run_ann_search(data, k, ann_type, nn_params, seed);
+
+    if verbose {
+        println!("kNN search done in: {:.2?}.", start_knn.elapsed());
+        println!("Constructing fuzzy simplicial set...");
+    }
+
+    let start_graph = Instant::now();
+
+    let (sigma, rho) = smooth_knn_dist(
+        &knn_dist,
+        k,
+        umap_params.local_connectivity,
+        umap_params.bandwidth,
+        64,
+    );
+
+    let graph = knn_to_coo(&knn_indices, &knn_dist, &sigma, &rho);
+    let graph = symmetrise_graph(graph, umap_params.mix_weight);
+
+    if verbose {
+        println!(
+            "Finalised graph generation in {:.2?}.",
+            start_graph.elapsed()
+        );
+    }
+
+    (graph, knn_indices, knn_dist)
 }
+
+////////////////////////
+// Main "normal" UMAP //
+////////////////////////
 
 /// Run UMAP dimensionality reduction
 ///
@@ -88,7 +124,7 @@ where
 ///   you provide a weird string, the function will default to `"adam"`.
 /// * `ann_type` - Approximate nearest neighbour method: `"annoy"`, `"hnsw"`, or
 ///   `"nndescent"`. If you provide a weird string, the function will default
-///   to `"annoy"`
+///   to `"hnsw"`
 /// * `initialisation` - The initialisation you wish to use. One of
 ///   `"spectral"`, `"pca"` or `"random"`.
 /// * `umap_params` - UMAP-specific parameters (bandwidth, local_connectivity,
@@ -157,39 +193,12 @@ where
             "Running umap with alpha: {:.4?} and beta: {:.4?}",
             optim_params.a, optim_params.b
         );
-        println!(
-            "Running approximate nearest neighbour search using {}...",
-            ann_type
-        );
     }
 
-    let start_knn = Instant::now();
-    let (knn_indices, knn_dist) = run_ann_search(data, k, ann_type, &nn_params, seed);
-    let end_knn = start_knn.elapsed();
+    let (graph, _, _) =
+        construct_umap_graph(data, k, ann_type, umap_params, &nn_params, seed, verbose);
 
     if verbose {
-        println!("kNN search done in: {:.2?}.", end_knn);
-        println!("Constructing fuzzy simplicial set...");
-    }
-
-    let start_graph_gen = Instant::now();
-
-    let (sigma, rho) = smooth_knn_dist(
-        &knn_dist,
-        k,
-        umap_params.local_connectivity,
-        umap_params.bandwidth,
-        64,
-    );
-
-    let graph = knn_to_coo(&knn_indices, &knn_dist, &sigma, &rho);
-
-    let graph = symmetrise_graph(graph, umap_params.mix_weight);
-
-    let end_graph_gen = start_graph_gen.elapsed();
-
-    if verbose {
-        println!("Finalised graph generation in {:.2?}.", end_graph_gen);
         println!(
             "Initialising embedding via {} layout...",
             match init_type {
@@ -261,6 +270,12 @@ where
 
     transposed
 }
+
+/////////////////////
+// Parametric UMAP //
+/////////////////////
+
+
 
 ///////////
 // Tests //
