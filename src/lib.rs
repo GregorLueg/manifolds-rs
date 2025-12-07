@@ -23,6 +23,8 @@ use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
 use crate::data::structures::*;
 use crate::training::optimiser::*;
+use crate::training::parametric_train::*;
+
 use crate::training::UmapParams;
 
 /////////////
@@ -151,7 +153,7 @@ where
 ///     2,                          // 2D embedding
 ///     15,                         // 15 nearest neighbours
 ///     "adam".into()               // ADAM optimiser
-///     "annoy".into(),             // Annoy-based kNN search
+///     "hnsw".into(),              // Annoy-based kNN search
 ///     &UmapParams::default(),     // default parameters for UMAP
 ///     None,                       // default NN params
 ///     None,                       // default optim params
@@ -275,7 +277,30 @@ where
 // Parametric UMAP //
 /////////////////////
 
+#[allow(clippy::too_many_arguments)]
+pub fn parametric_umap<T>(
+    data: MatRef<T>,
+    n_dim: usize,
+    k: usize,
+    ann_type: String,
+    umap_params: &UmapParams<T>,
+    train_param: &TrainParametricParams,
+    nn_params: Option<NearestNeighbourParams<T>>,
+    seed: usize,
+    verbose: bool,
+) where
+    T: Float,
+{
+    // parse various parameters
+    let nn_params = nn_params.unwrap_or_default();
 
+    if verbose {
+        println!(
+            "Running umap with alpha: {:.4?} and beta: {:.4?}",
+            train_param.a, train_param.b
+        );
+    }
+}
 
 ///////////
 // Tests //
