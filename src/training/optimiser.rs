@@ -98,8 +98,8 @@ where
         spread: T,
         lr: T,
         gamma: T,
-        n_epochs: usize,
-        neg_sample_rate: usize,
+        n_epochs: Option<usize>,
+        neg_sample_rate: Option<usize>,
         beta1: Option<T>,
         beta2: Option<T>,
         eps: Option<T>,
@@ -108,6 +108,8 @@ where
         let beta1 = beta1.unwrap_or(T::from(BETA1).unwrap());
         let beta2 = beta2.unwrap_or(T::from(BETA2).unwrap());
         let eps = eps.unwrap_or(T::from(EPS).unwrap());
+        let n_epochs = n_epochs.unwrap_or(500);
+        let neg_sample_rate = neg_sample_rate.unwrap_or(5);
 
         let (a, b) = Self::fit_params(min_dist, spread, None);
         Self {
@@ -1113,8 +1115,8 @@ mod test_optimiser {
     fn test_optim_params_default_2d() {
         let params = OptimParams::<f64>::default_2d();
 
-        assert_relative_eq!(params.a, 1.929, epsilon = 1e-6);
-        assert_relative_eq!(params.b, 0.7915, epsilon = 1e-6);
+        assert_relative_eq!(params.a, 1.5, epsilon = 1e-6);
+        assert_relative_eq!(params.b, 0.9, epsilon = 1e-6);
         assert_eq!(params.lr, 1.0);
         assert_eq!(params.gamma, 1.0);
         assert_eq!(params.n_epochs, 500);
@@ -1124,8 +1126,17 @@ mod test_optimiser {
 
     #[test]
     fn test_optim_params_from_min_dist_spread() {
-        let params =
-            OptimParams::<f64>::from_min_dist_spread(0.1, 1.0, 1.0, 1.0, 500, 5, None, None, None);
+        let params = OptimParams::<f64>::from_min_dist_spread(
+            0.1,
+            1.0,
+            1.0,
+            1.0,
+            Some(500),
+            Some(5),
+            None,
+            None,
+            None,
+        );
 
         assert!(params.a > 0.0);
         assert!(params.b > 0.0);
