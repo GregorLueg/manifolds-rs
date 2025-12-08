@@ -96,8 +96,8 @@ where
     pub fn from_min_dist_spread(
         min_dist: T,
         spread: T,
-        lr: T,
-        gamma: T,
+        lr: Option<T>,
+        gamma: Option<T>,
         n_epochs: Option<usize>,
         neg_sample_rate: Option<usize>,
         beta1: Option<T>,
@@ -110,6 +110,8 @@ where
         let eps = eps.unwrap_or(T::from(EPS).unwrap());
         let n_epochs = n_epochs.unwrap_or(500);
         let neg_sample_rate = neg_sample_rate.unwrap_or(5);
+        let lr = lr.unwrap_or(T::one());
+        let gamma = gamma.unwrap_or(T::one());
 
         let (a, b) = Self::fit_params(min_dist, spread, None);
         Self {
@@ -1129,8 +1131,8 @@ mod test_optimiser {
         let params = OptimParams::<f64>::from_min_dist_spread(
             0.1,
             1.0,
-            1.0,
-            1.0,
+            Some(1.0),
+            Some(1.0),
             Some(500),
             Some(5),
             None,
