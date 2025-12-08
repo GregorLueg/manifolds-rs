@@ -5,27 +5,34 @@ pub mod parametric;
 pub mod training;
 pub mod utils;
 
-use ann_search_rs::hnsw::{HnswIndex, HnswState};
-use ann_search_rs::nndescent::{NNDescent, NNDescentQuery, UpdateNeighbours};
-use faer::traits::{ComplexField, RealField};
-use faer::MatRef;
-use num_traits::{Float, FromPrimitive};
+use ann_search_rs::{
+    hnsw::{HnswIndex, HnswState},
+    nndescent::{NNDescent, NNDescentQuery, UpdateNeighbours},
+};
+use burn::tensor::{backend::AutodiffBackend, Element};
+use faer::{
+    traits::{ComplexField, RealField},
+    MatRef,
+};
+use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand_distr::{Distribution, StandardNormal};
-use std::default::Default;
-use std::iter::Sum;
-use std::marker::{Send, Sync};
-use std::ops::AddAssign;
-use std::time::Instant;
+use std::{
+    default::Default,
+    iter::Sum,
+    marker::{Send, Sync},
+    ops::AddAssign,
+    time::Instant,
+};
 use thousands::*;
 
 use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
 use crate::data::structures::*;
+use crate::parametric::model::*;
 use crate::training::optimiser::*;
 use crate::training::parametric_train::*;
-
-use crate::training::UmapParams;
+use crate::training::*;
 
 /////////////
 // Helpers //
@@ -53,7 +60,7 @@ pub fn construct_umap_graph<T>(
     data: MatRef<T>,
     k: usize,
     ann_type: String,
-    umap_params: &UmapParams<T>,
+    umap_params: &UmapGraphParams<T>,
     nn_params: &NearestNeighbourParams<T>,
     seed: usize,
     verbose: bool,
@@ -105,6 +112,152 @@ where
 // Main "normal" UMAP //
 ////////////////////////
 
+/// Main Config structure with all of the possible sub configurations
+///
+/// ### Fields
+///
+/// * `n_dim` - How many dimensions to return
+/// * `k` - Number of neighbours
+/// * `optimiser` - Which optimiser to use. Defaults to `"adam_parallel"`.
+/// * `ann_type` - Which of the possible approximate nearest neighbour searches
+///   to use. Defaults to `"hnsw"`.
+/// * `initialisation` - Which embedding initialisation to use. Defaults to
+///   spectral clustering.
+/// * `nn_params` - Nearest neighbour parameters.
+/// * `optim_params` - The optimiser parameters.
+/// * `umap_graph_params` - The graph parameters for the generation of the
+///   graph structure.
+/// * `randomised` - If initialisation is set to PCA, shall randomised PCA be
+///   used.
+#[derive(Debug, Clone)]
+pub struct UmapParams<T> {
+    n_dim: usize,
+    k: usize,
+    optimiser: String,
+    ann_type: String,
+    initialisation: String,
+    nn_params: NearestNeighbourParams<T>,
+    umap_graph_params: UmapGraphParams<T>,
+    optim_params: OptimParams<T>,
+    randomised: bool,
+}
+
+impl<T> UmapParams<T>
+where
+    T: Float + FromPrimitive,
+{
+    /// Generate new UMAP parameters
+    ///
+    /// This function will generate new UMAP parameters and has a lot of
+    /// options that give fine-grained control. If everything is set to `None`,
+    /// sensible (hopefully) defaults will be provided.
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - How many dimensions to return. Default `2`.
+    /// * `k` - How many neighbours to consider. Default `15`.
+    /// * `optimiser` - Which optimiser to use. Default `"adam_parallel"`.
+    /// * `ann_type` - Which approximate nearest neighbour search algorithm
+    ///   to use. Defaults to `"hnsw"`.
+    /// * `initialisation` - Which initialisation of the embedding to use.
+    ///   Defaults to `"spectral"`.
+    /// * `nn_params` - Further nearest neighbour parameters.
+    /// * `optim_params` - Further optimiser parameters.
+    /// * `umap_graph_params` - Further UMAP graph generation parameters
+    /// * `randomised` - If initialisation is set to `"PCA"`, shall randomised
+    ///   SVD be used. Defaults to `false`.
+    ///
+    /// ### Returns
+    ///
+    /// Hopefully sensible standard parameters.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        n_dim: Option<usize>,
+        k: Option<usize>,
+        optimiser: Option<String>,
+        ann_type: Option<String>,
+        initialisation: Option<String>,
+        nn_params: Option<NearestNeighbourParams<T>>,
+        optim_params: Option<OptimParams<T>>,
+        umap_graph_params: Option<UmapGraphParams<T>>,
+        randomised: Option<bool>,
+    ) -> Self {
+        // sensible defaults
+        let n_dim = n_dim.unwrap_or(2);
+        let k = k.unwrap_or(15);
+        let optimiser = optimiser.unwrap_or("adam_parallel".to_string());
+        let ann_type = ann_type.unwrap_or("hnsw".to_string());
+        let initialisation = initialisation.unwrap_or("spectral".to_string());
+        let nn_params = nn_params.unwrap_or_default();
+        let optim_params = optim_params.unwrap_or_default();
+        let umap_graph_params = umap_graph_params.unwrap_or_default();
+        let randomised = randomised.unwrap_or(false);
+
+        Self {
+            n_dim,
+            k,
+            optimiser,
+            ann_type,
+            initialisation,
+            nn_params,
+            optim_params,
+            umap_graph_params,
+            randomised,
+        }
+    }
+
+    /// Default 2D parameters
+    ///
+    /// This function will generate new UMAP parameters and has a lot of
+    /// options that give fine-grained control. If everything is set to `None`,
+    /// sensible (hopefully) defaults will be provided.
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - How many dimensions to return. Default `2`.
+    /// * `k` - How many neighbours to consider. Default `15`.
+    /// * `min_dist` - Minimum distance between the data points. Defaults to
+    ///   `0.1`.
+    /// * `spread` - Spread paramter. Defaults to `1.0`.
+    ///
+    /// ### Returns
+    ///
+    /// Hopefully sensible standard parameters for standard 2D visualisation.
+    pub fn default_2d(
+        n_dim: Option<usize>,
+        k: Option<usize>,
+        min_dist: Option<T>,
+        spread: Option<T>,
+    ) -> Self {
+        let n_dim = n_dim.unwrap_or(2);
+        let k = k.unwrap_or(15);
+        let min_dist = min_dist.unwrap_or(T::from_f64(0.1).unwrap());
+        let spread = spread.unwrap_or(T::from_f64(1.0).unwrap());
+
+        Self {
+            n_dim,
+            k,
+            optimiser: "adam_parallel".into(),
+            ann_type: "hnsw".into(),
+            initialisation: "spectral".into(),
+            nn_params: NearestNeighbourParams::default(),
+            optim_params: OptimParams::from_min_dist_spread(
+                min_dist,
+                spread,
+                T::from_f64(0.001).unwrap(),
+                T::from_f64(1.0).unwrap(),
+                500,
+                5,
+                None,
+                None,
+                None,
+            ),
+            umap_graph_params: UmapGraphParams::default(),
+            randomised: false,
+        }
+    }
+}
+
 /// Run UMAP dimensionality reduction
 ///
 /// Uniform Manifold Approximation and Projection (UMAP) is a manifold learning
@@ -120,22 +273,9 @@ where
 /// ### Params
 ///
 /// * `data` - Input data matrix (samples × features)
-/// * `n_dim` - Target dimensionality (typically 2 or 3)
-/// * `k` - Number of nearest neighbours (typically 15-50).
-/// * `optimiser` - Which optimiser to use. Choise is `"adam"` or `"sgd"`. If
-///   you provide a weird string, the function will default to `"adam"`.
-/// * `ann_type` - Approximate nearest neighbour method: `"annoy"`, `"hnsw"`, or
-///   `"nndescent"`. If you provide a weird string, the function will default
-///   to `"hnsw"`
-/// * `initialisation` - The initialisation you wish to use. One of
-///   `"spectral"`, `"pca"` or `"random"`.
-/// * `umap_params` - UMAP-specific parameters (bandwidth, local_connectivity,
-///   mix_weight)
-/// * `nn_params` - Optional parameters for nearest neighbour search (uses
-///   defaults if None)
-/// * `optim_params` - Optional optimisation parameters (uses defaults if None)
-/// * `seed` - Random seed for reproducibility
-/// * `verbose` - Print progress information
+/// * `umap_params` - The UMAP parameters.
+/// * `seed` - Seed for reproducibility.
+/// * `verbose` - Controls verbosity of the function.
 ///
 /// ### Returns
 ///
@@ -150,31 +290,13 @@ where
 /// let data = Mat::from_fn(1000, 128, |_, _| rand::random::<f32>());
 /// let embedding = umap(
 ///     data.as_ref(),
-///     2,                          // 2D embedding
-///     15,                         // 15 nearest neighbours
-///     "adam".into()               // ADAM optimiser
-///     "hnsw".into(),              // Annoy-based kNN search
-///     &UmapParams::default(),     // default parameters for UMAP
-///     None,                       // default NN params
-///     None,                       // default optim params
-///     42,                         // seed
-///     true,                       // verbose
 /// );
 /// // embedding[0] contains x-coordinates for all points
 /// // embedding[1] contains y-coordinates for all points
 /// ```
-#[allow(clippy::too_many_arguments)]
 pub fn umap<T>(
     data: MatRef<T>,
-    n_dim: usize,
-    k: usize,
-    optimiser: String,
-    ann_type: String,
-    initialisation: String,
     umap_params: &UmapParams<T>,
-    nn_params: Option<NearestNeighbourParams<T>>,
-    optim_params: Option<OptimParams<T>>,
-    randomised: bool,
     seed: usize,
     verbose: bool,
 ) -> Vec<Vec<T>>
@@ -185,20 +307,26 @@ where
     StandardNormal: Distribution<T>,
 {
     // parse various parameters
-    let nn_params = nn_params.unwrap_or_default();
-    let optim_params = optim_params.unwrap_or_default();
-    let optimiser = parse_optimiser(&optimiser).unwrap_or_default();
-    let init_type = parse_initilisation(&initialisation, randomised).unwrap_or_default();
+    let init_type = parse_initilisation(&umap_params.initialisation, umap_params.randomised)
+        .unwrap_or_default();
+    let optimiser = parse_optimiser(&umap_params.optimiser).unwrap_or_default();
 
     if verbose {
         println!(
             "Running umap with alpha: {:.4?} and beta: {:.4?}",
-            optim_params.a, optim_params.b
+            umap_params.optim_params.a, umap_params.optim_params.b
         );
     }
 
-    let (graph, _, _) =
-        construct_umap_graph(data, k, ann_type, umap_params, &nn_params, seed, verbose);
+    let (graph, _, _) = construct_umap_graph(
+        data,
+        umap_params.k,
+        umap_params.ann_type.clone(),
+        &umap_params.umap_graph_params,
+        &umap_params.nn_params,
+        seed,
+        verbose,
+    );
 
     if verbose {
         println!(
@@ -214,9 +342,9 @@ where
 
     let start_layout = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, n_dim, seed as u64, &graph, data);
+    let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data);
 
-    let graph = filter_weak_edges(graph, optim_params.n_epochs);
+    let graph = filter_weak_edges(graph, umap_params.optim_params.n_epochs);
     let graph_adj = coo_to_adjacency_list(&graph);
 
     if verbose {
@@ -227,23 +355,33 @@ where
                 Optimiser::Sgd => "SGD",
                 Optimiser::AdamParallel => "Adam (multi-threaded)",
             },
-            optim_params.n_epochs,
+            umap_params.optim_params.n_epochs,
             graph.col_indices.len().separate_with_underscores()
         );
     }
 
     match optimiser {
-        Optimiser::Adam => {
-            optimise_embedding_adam(&mut embd, &graph_adj, &optim_params, seed as u64, verbose)
-        }
+        Optimiser::Adam => optimise_embedding_adam(
+            &mut embd,
+            &graph_adj,
+            &umap_params.optim_params,
+            seed as u64,
+            verbose,
+        ),
         Optimiser::Sgd => {
-            optimise_embedding_sgd(&mut embd, &graph_adj, &optim_params, seed as u64, verbose);
+            optimise_embedding_sgd(
+                &mut embd,
+                &graph_adj,
+                &umap_params.optim_params,
+                seed as u64,
+                verbose,
+            );
         }
         Optimiser::AdamParallel => {
             optimise_embedding_adam_parallel(
                 &mut embd,
                 &graph_adj,
-                &optim_params,
+                &umap_params.optim_params,
                 seed as u64,
                 verbose,
             );
@@ -262,10 +400,10 @@ where
 
     // transpose: from [n_samples][n_dim] to [n_dim][n_samples]
     let n_samples = embd.len();
-    let mut transposed = vec![vec![T::zero(); n_samples]; n_dim];
+    let mut transposed = vec![vec![T::zero(); n_samples]; umap_params.n_dim];
 
     for sample_idx in 0..n_samples {
-        for dim_idx in 0..n_dim {
+        for dim_idx in 0..umap_params.n_dim {
             transposed[dim_idx][sample_idx] = embd[sample_idx][dim_idx];
         }
     }
@@ -277,29 +415,97 @@ where
 // Parametric UMAP //
 /////////////////////
 
-#[allow(clippy::too_many_arguments)]
-pub fn parametric_umap<T>(
-    data: MatRef<T>,
+/// Stores the parameters for parametric UMAP via neural nets
+///
+/// * `n_dim` - How many dimensions to return
+/// * `k` - Number of neighbours
+/// * `ann_type` - Which of the possible approximate nearest neighbour searches
+///   to use. Defaults to `"hnsw"`.
+/// * `hidden_layers` - Vector of usizes for the hidden layers in the MLP.
+/// * `nn_params` - Nearest neighbour parameters.
+/// * `umap_graph_params` - The graph parameters for the generation of the
+///   graph structure.
+/// * `train_param` - Train parameters for the neural network.
+#[derive(Debug, Clone)]
+pub struct ParametricUmapParams<T> {
     n_dim: usize,
     k: usize,
     ann_type: String,
-    umap_params: &UmapParams<T>,
-    train_param: &TrainParametricParams,
-    nn_params: Option<NearestNeighbourParams<T>>,
+    hidden_layers: Vec<usize>,
+    nn_params: NearestNeighbourParams<T>,
+    umap_graph_params: UmapGraphParams<T>,
+    train_param: TrainParametricParams<T>,
+}
+
+pub fn parametric_umap<T, B>(
+    data: MatRef<T>,
+    umap_params: &ParametricUmapParams<T>,
+    device: &B::Device,
     seed: usize,
     verbose: bool,
-) where
-    T: Float,
+) -> Vec<Vec<T>>
+where
+    T: Float
+        + FromPrimitive
+        + ToPrimitive
+        + Default
+        + ComplexField
+        + RealField
+        + Sum
+        + AddAssign
+        + Element,
+    B: AutodiffBackend,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: UpdateNeighbours<T> + NNDescentQuery<T>,
 {
     // parse various parameters
-    let nn_params = nn_params.unwrap_or_default();
+    let nn_params = umap_params.nn_params.clone();
 
     if verbose {
         println!(
             "Running umap with alpha: {:.4?} and beta: {:.4?}",
-            train_param.a, train_param.b
+            ToPrimitive::to_f32(&umap_params.train_param.a).unwrap(),
+            ToPrimitive::to_f32(&umap_params.train_param.b).unwrap()
         );
     }
+
+    let (graph, _, _) = construct_umap_graph(
+        data,
+        umap_params.k,
+        umap_params.ann_type.clone(),
+        &umap_params.umap_graph_params,
+        &nn_params,
+        seed,
+        verbose,
+    );
+
+    let model_params = UmapMlpConfig::from_params(
+        data.ncols(),
+        umap_params.hidden_layers.clone(),
+        umap_params.n_dim,
+    );
+
+    let embd: Vec<Vec<T>> = train_parametric_umap::<B, T>(
+        data,
+        graph,
+        &model_params,
+        &umap_params.train_param,
+        device,
+        seed,
+        verbose,
+    );
+
+    // transpose: from [n_samples][n_dim] to [n_dim][n_samples]
+    let n_samples = embd.len();
+    let mut transposed = vec![vec![T::zero(); n_samples]; umap_params.n_dim];
+
+    for sample_idx in 0..n_samples {
+        for dim_idx in 0..umap_params.n_dim {
+            transposed[dim_idx][sample_idx] = embd[sample_idx][dim_idx];
+        }
+    }
+
+    transposed
 }
 
 ///////////
@@ -351,16 +557,18 @@ mod test_umap {
 
         let embedding = umap(
             data.as_ref(),
-            2,
-            15,
-            "sgd".into(),
-            "annoy".into(),
-            "pca".into(),
-            &UmapParams::default(),
-            None,
-            None,
-            false,
-            seed,
+            &UmapParams::new(
+                None,
+                None,
+                Some("sgd".into()),
+                None,
+                Some("pca".into()),
+                None,
+                None,
+                None,
+                None,
+            ),
+            42,
             false,
         );
 
@@ -431,16 +639,18 @@ mod test_umap {
 
         let embedding = umap(
             data.as_ref(),
-            2,
-            15,
-            "sgd".into(),
-            "annoy".into(),
-            "spectral".into(),
-            &UmapParams::default(),
-            None,
-            None,
-            false,
-            seed,
+            &UmapParams::new(
+                None,
+                None,
+                Some("sgd".into()),
+                None,
+                Some("pca".into()),
+                None,
+                None,
+                None,
+                None,
+            ),
+            42,
             false,
         );
 
@@ -510,16 +720,18 @@ mod test_umap {
 
         let embedding = umap(
             data.as_ref(),
-            2,
-            15,
-            "adam".into(),
-            "annoy".into(),
-            "pca".into(),
-            &UmapParams::default(),
-            None,
-            None,
-            false,
-            seed,
+            &UmapParams::new(
+                None,
+                None,
+                Some("adam".into()),
+                None,
+                Some("pca".into()),
+                None,
+                None,
+                None,
+                None,
+            ),
+            42,
             false,
         );
 
@@ -589,16 +801,18 @@ mod test_umap {
 
         let embedding = umap(
             data.as_ref(),
-            2,
-            15,
-            "adam".into(),
-            "hnsw".into(),
-            "pca".into(),
-            &UmapParams::default(),
-            None,
-            None,
-            false,
-            seed,
+            &UmapParams::new(
+                None,
+                None,
+                Some("adam".into()),
+                None,
+                Some("pca".into()),
+                None,
+                None,
+                None,
+                None,
+            ),
+            42,
             false,
         );
 
@@ -668,16 +882,18 @@ mod test_umap {
 
         let embedding = umap(
             data.as_ref(),
-            2,
-            15,
-            "adam_parallel".into(),
-            "annoy".into(),
-            "pca".into(),
-            &UmapParams::default(),
-            None,
-            None,
-            false,
-            seed,
+            &UmapParams::new(
+                None,
+                None,
+                Some("adam_par".into()),
+                None,
+                Some("pca".into()),
+                None,
+                None,
+                None,
+                None,
+            ),
+            42,
             false,
         );
 

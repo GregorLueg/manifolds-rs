@@ -1,11 +1,11 @@
-use burn::data::dataloader::DataLoaderBuilder;
-use burn::data::dataloader::Dataset;
-use burn::optim::GradientsParams;
-use burn::optim::{AdamConfig, Optimizer};
-use burn::prelude::*;
-use burn::tensor::backend::AutodiffBackend;
-use burn::tensor::Element;
+use burn::{
+    data::dataloader::{DataLoaderBuilder, Dataset},
+    optim::{AdamConfig, GradientsParams, Optimizer},
+    prelude::*,
+    tensor::{backend::AutodiffBackend, Element},
+};
 use faer::MatRef;
+use num_traits::{Float, FromPrimitive, ToPrimitive};
 
 use crate::data::structures::*;
 use crate::parametric::batch::*;
@@ -17,68 +17,120 @@ use crate::parametric::model::*;
 ////////////
 
 /// Parameters for parametric UMAP training
+///
+/// ### Fields
+///
+/// * `a` - Curve parameter for attractive force (typically ~1.5 for 2D)
+/// * `b` - Curve parameter for repulsive force (typically ~0.9 for 2D)
+/// * `lr` - Learning rate for the optimiser
+/// * `corr_weight` - Coefficient in front of the negative Pearson correlation
+///   coefficient that encourages similar distance in the embedding space as
+///   in the original target space.
+/// * `n_epochs` - Number of epochs to train the neural net for (typically 500).
+/// * `batch_size` - Number of samples to train in a given batch (typically
+///   256).
+/// * `neg_sample_rate` - Number of negative samples per positive edge
+///   (typically 5).
 #[derive(Clone, Debug)]
-pub struct TrainParametricParams {
-    pub a: f32,
-    pub b: f32,
-    pub lr: f64,
+pub struct TrainParametricParams<T> {
+    pub a: T,
+    pub b: T,
+    pub lr: T,
+    pub corr_weight: T,
     pub n_epochs: usize,
     pub batch_size: usize,
     pub neg_sample_rate: usize,
-    pub corr_weight: f32,
 }
 
-impl TrainParametricParams {
+impl<T> TrainParametricParams<T>
+where
+    T: Float + FromPrimitive + Element,
+{
     /// Default parameters for 2D embedding
+    ///
+    /// ### Returns
+    ///
+    /// Sensible default parameters for 2D embeddings
     pub fn default_2d() -> Self {
         Self {
-            a: 1.5,
-            b: 0.9,
-            lr: 0.001,
+            a: T::from_f64(1.5).unwrap(),
+            b: T::from_f64(0.9).unwrap(),
+            lr: T::from_f64(0.001).unwrap(),
             n_epochs: 500,
             batch_size: 256,
             neg_sample_rate: 5,
-            corr_weight: 0.0,
+            corr_weight: T::from_f64(0.0).unwrap(),
         }
     }
 
-    /// Parameters from specified minimum distance and spread
+    /// Parameters from specified minimum distance, spread and correlation loss
+    ///
+    /// ### Params
+    ///
+    /// * `min_dist` - Minimum distance parameter
+    /// * `spread` - Effective scale of embedded points
+    /// * `corr_weight` - Coefficient in front of the Pearson correlation loss
+    ///   that encourages similar distance between embedding space and original
+    ///   space.
+    /// * `lr` - Optional learning rate. Default: `0.001`.
+    /// * `n_epochs` - Optional number of epochs. Default: `500`.
+    /// * `batch_size` - Optional batch size. Default: `256`.
+    /// * `neg_sample_rate` - Optional negative sampling rate. Defaults to `5`.
     pub fn from_min_dist_spread(
-        min_dist: f32,
-        spread: f32,
-        lr: f64,
-        n_epochs: usize,
-        batch_size: usize,
-        neg_sample_rate: usize,
-        corr_weight: f32,
+        min_dist: T,
+        spread: T,
+        corr_weight: T,
+        lr: Option<T>,
+        n_epochs: Option<usize>,
+        batch_size: Option<usize>,
+        neg_sample_rate: Option<usize>,
     ) -> Self {
+        // calculate alpha and beta
         let (a, b) = Self::fit_params(min_dist, spread, None);
+        // return
         Self {
             a,
             b,
-            lr,
-            n_epochs,
-            batch_size,
-            neg_sample_rate,
             corr_weight,
+            lr: lr.unwrap_or(T::from_f64(0.001).unwrap()),
+            n_epochs: n_epochs.unwrap_or(500),
+            batch_size: batch_size.unwrap_or(256),
+            neg_sample_rate: neg_sample_rate.unwrap_or(5),
         }
     }
 
     /// Fit curve parameters from min_dist and spread
-    fn fit_params(min_dist: f32, spread: f32, n_iter: Option<usize>) -> (f32, f32) {
+    ///
+    /// Fits the UMAP curve: `f(x) = 1 / (1 + a + x^(2b))` such that
+    /// `f(min_dist) ca. 1.0` and `f(spread) ca. 0.0`.
+    ///
+    /// ### Params
+    ///
+    /// * `min_dist` - Minimum distance parameter
+    /// * `spread` - Effective scale of embedded points
+    /// * `lr` - Learning rate for gradient descent (default: 0.1)
+    /// * `n_iter` - Number of optimisation iterations (default: 100)
+    ///
+    /// ### Returns
+    ///
+    /// Tuple of `(a, b)` according to the optimisation problem above.
+    fn fit_params(min_dist: T, spread: T, n_iter: Option<usize>) -> (T, T) {
         let n_iter = n_iter.unwrap_or(300);
         let n_points = 300;
 
-        let max_x = spread * 3.0;
-        let step = max_x / (n_points - 1) as f32;
+        // Generate x values from 0 to spread * 3
+        let three = T::from_f64(3.0).unwrap();
+        let max_x = spread * three;
+        let step = max_x / T::from_usize(n_points - 1).unwrap();
 
+        // Generate target y values
         let mut xv = Vec::with_capacity(n_points);
         let mut yv = Vec::with_capacity(n_points);
 
         for i in 0..n_points {
-            let x = step * i as f32;
+            let x = step * T::from_usize(i).unwrap();
             let y = if x < min_dist {
-                1.0
+                T::one()
             } else {
                 (-(x - min_dist) / spread).exp()
             };
@@ -86,46 +138,59 @@ impl TrainParametricParams {
             yv.push(y);
         }
 
-        let mut a = 1.0f32;
-        let mut b = 1.0f32;
+        let mut a = T::one();
+        let mut b = T::one();
+        let two = T::from_f64(2.0).unwrap();
 
         for _ in 0..n_iter {
-            let mut grad_a = 0.0f32;
-            let mut grad_b = 0.0f32;
+            let mut grad_a = T::zero();
+            let mut grad_b = T::zero();
+            let n_points_t = T::from_usize(n_points).unwrap();
 
             for i in 0..n_points {
                 let x = xv[i];
-                if x <= 0.0 {
+                if x <= T::zero() {
                     continue;
                 }
 
                 let y_target = yv[i];
-                let x_2b = x.powf(2.0 * b);
-                let denom = 1.0 + a * x_2b;
-                let pred = 1.0 / denom;
+                let x_2b = x.powf(two * b);
+                let denom = T::one() + a * x_2b;
+                let pred = T::one() / denom;
                 let err = pred - y_target;
 
-                grad_a += err * (-x_2b / (denom * denom));
+                grad_a = grad_a + err * (-x_2b / (denom * denom));
 
                 let log_x = x.ln();
-                grad_b += err * (-2.0 * a * x_2b * log_x / (denom * denom));
+                grad_b = grad_b + err * (-two * a * x_2b * log_x / (denom * denom));
             }
 
-            grad_a /= n_points as f32;
-            grad_b /= n_points as f32;
+            // Normalise gradients and use adaptive learning rate
+            grad_a = grad_a / n_points_t;
+            grad_b = grad_b / n_points_t;
 
-            a -= grad_a;
-            b -= grad_b;
+            let lr_a = T::from_f64(1.0).unwrap();
+            let lr_b = T::from_f64(1.0).unwrap();
 
-            a = a.clamp(0.001, 10.0);
-            b = b.clamp(0.1, 2.0);
+            a = a - lr_a * grad_a;
+            b = b - lr_b * grad_b;
+
+            a = a
+                .max(T::from_f64(0.001).unwrap())
+                .min(T::from_f64(10.0).unwrap());
+            b = b
+                .max(T::from_f64(0.1).unwrap())
+                .min(T::from_f64(2.0).unwrap());
         }
 
         (a, b)
     }
 }
 
-impl Default for TrainParametricParams {
+impl<T> Default for TrainParametricParams<T>
+where
+    T: Float + FromPrimitive + Element,
+{
     fn default() -> Self {
         TrainParametricParams::default_2d()
     }
@@ -147,7 +212,7 @@ impl Default for TrainParametricParams {
 /// Tensor of the data
 pub fn data_to_tensor<T, B>(data: MatRef<T>, device: &B::Device) -> Tensor<B, 2>
 where
-    T: Element,
+    T: Element + Float + FromPrimitive,
     B: AutodiffBackend,
 {
     let n_samples = data.nrows();
@@ -185,13 +250,13 @@ pub fn train_parametric_umap<B, T>(
     data: MatRef<T>,
     graph_data: SparseGraph<T>,
     model_config: &UmapMlpConfig,
-    train_params: &TrainParametricParams,
+    train_params: &TrainParametricParams<T>,
     device: &B::Device,
     seed: usize,
     verbose: bool,
-) -> Vec<Vec<f32>>
+) -> Vec<Vec<T>>
 where
-    T: Element,
+    T: Element + Float + FromPrimitive + ToPrimitive,
     B: AutodiffBackend,
 {
     let n_samples = data.nrows();
@@ -216,7 +281,7 @@ where
     let mut model: UmapMlp<B> = model_config.init::<B>(device);
     let mut optim = AdamConfig::new().init();
 
-    let use_correlation = train_params.corr_weight > 0.0;
+    let use_correlation = train_params.corr_weight > T::zero();
 
     for epoch in 0..train_params.n_epochs {
         let mut total_loss = 0.0;
@@ -252,7 +317,7 @@ where
 
             let grads = loss.backward();
             let grads = GradientsParams::from_grads(grads, &model);
-            model = optim.step(train_params.lr, model, grads);
+            model = optim.step(ToPrimitive::to_f64(&train_params.lr).unwrap(), model, grads);
 
             total_loss += loss.clone().into_scalar().elem::<f64>();
             n_batches += 1;
@@ -273,9 +338,9 @@ where
 
     // Convert to Vec<Vec<f32>> format [n_components][n_samples]
     let n_components = model_config.output_size;
-    let embedding_data: Vec<f32> = embeddings.into_data().to_vec().unwrap();
+    let embedding_data: Vec<T> = embeddings.into_data().to_vec().unwrap();
 
-    let mut result = vec![vec![0.0f32; n_samples]; n_components];
+    let mut result = vec![vec![T::zero(); n_samples]; n_components];
     for i in 0..n_samples {
         for j in 0..n_components {
             result[j][i] = embedding_data[i * n_components + j];

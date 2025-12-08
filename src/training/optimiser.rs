@@ -1,7 +1,9 @@
 use core::f64;
 use num_traits::{Float, FromPrimitive};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{
+    rngs::StdRng,
+    {Rng, SeedableRng},
+};
 use rayon::prelude::*;
 use std::ops::AddAssign;
 

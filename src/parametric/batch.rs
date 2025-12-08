@@ -1,6 +1,4 @@
-use burn::data::dataloader::batcher::Batcher;
-use burn::prelude::*;
-use burn::tensor::TensorData;
+use burn::{data::dataloader::batcher::Batcher, prelude::*, tensor::TensorData};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use std::sync::{Arc, Mutex};

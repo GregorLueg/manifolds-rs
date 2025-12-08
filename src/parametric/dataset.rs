@@ -1,6 +1,9 @@
-use burn::data::dataset::Dataset;
-use burn::prelude::*;
-use burn::tensor::Int;
+use burn::{
+    data::dataset::Dataset,
+    prelude::*,
+    tensor::{Element, Int},
+};
+use num_traits::{Float, FromPrimitive};
 
 ////////////
 // Losses //
@@ -13,19 +16,23 @@ use burn::tensor::Int;
 /// * `src_embed` - Source node embeddings [batch_size, n_components]
 /// * `dst_embed` - Destination node embeddings [batch_size, n_components]
 /// * `targets` - Target values (1.0 for edges in graph, 0.0 for negatives)
-/// * `a` - UMAP parameter (typically 0.1)
-/// * `b` - UMAP parameter (typically 1.0)
+/// * `a` - Curve parameter for attractive force (typically ~1.5 for 2D)
+/// * `b` - Curve parameter for repulsive force (typically ~0.9 for 2D)
 ///
 /// ### Returns
 ///
 /// Binary cross-entropy loss between predicted and target probabilities
-pub fn umap_loss<B: Backend>(
+pub fn umap_loss<B, T>(
     src_embed: Tensor<B, 2>,
     dst_embed: Tensor<B, 2>,
     targets: Tensor<B, 1>,
-    a: f32,
-    b: f32,
-) -> Tensor<B, 1> {
+    a: T,
+    b: T,
+) -> Tensor<B, 1>
+where
+    B: Backend,
+    T: Float + FromPrimitive + Element,
+{
     // compute squared distances
     let diff: Tensor<B, 2> = src_embed - dst_embed;
     // use ::<1> turbofish syntax <- important!
@@ -90,24 +97,28 @@ pub fn correlation_loss<B: Backend>(x_dist: Tensor<B, 1>, z_dist: Tensor<B, 1>) 
 /// * `dst_orig` - Original high-dimensional data for destination nodes
 ///   [batch_size, n_features]
 /// * `targets` - Target values (1.0 for edges in graph, 0.0 for negatives)
-/// * `a` - UMAP parameter (typically 0.1)
-/// * `b` - UMAP parameter (typically 1.0)
+/// * `a` - Curve parameter for attractive force (typically ~1.5 for 2D)
+/// * `b` - Curve parameter for repulsive force (typically ~0.9 for 2D)
 /// * `correlation_weight` - Weight for correlation regularisation term
 ///
 /// ### Returns
 ///
 /// Combined loss: UMAP BCE loss + correlation_weight * correlation_loss
 #[allow(clippy::too_many_arguments)]
-pub fn umap_loss_with_correlation<B: Backend>(
+pub fn umap_loss_with_correlation<B, T>(
     src_embed: Tensor<B, 2>,
     dst_embed: Tensor<B, 2>,
     src_orig: Tensor<B, 2>, // original high-dim data
     dst_orig: Tensor<B, 2>,
     targets: Tensor<B, 1>,
-    a: f32,
-    b: f32,
-    correlation_weight: f32,
-) -> Tensor<B, 1> {
+    a: T,
+    b: T,
+    correlation_weight: T,
+) -> Tensor<B, 1>
+where
+    B: Backend,
+    T: Float + FromPrimitive + Element,
+{
     let umap = umap_loss(src_embed.clone(), dst_embed.clone(), targets, a, b);
 
     // Distances in embedding space

@@ -1,8 +1,12 @@
-use faer::traits::{ComplexField, RealField};
-use faer::MatRef;
+use faer::{
+    traits::{ComplexField, RealField},
+    MatRef,
+};
 use num_traits::{Float, FromPrimitive, ToPrimitive};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{
+    rngs::StdRng,
+    {Rng, SeedableRng},
+};
 use rand_distr::{Distribution, StandardNormal};
 use std::iter::Sum;
 

@@ -1,7 +1,8 @@
-use ann_search_rs::hnsw::{HnswIndex, HnswState};
-use ann_search_rs::nndescent::{NNDescent, NNDescentQuery, UpdateNeighbours};
-
-use ann_search_rs::*;
+use ann_search_rs::{
+    hnsw::{HnswIndex, HnswState},
+    nndescent::{NNDescent, NNDescentQuery, UpdateNeighbours},
+    *,
+};
 use faer::MatRef;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use std::default::Default;
@@ -47,6 +48,7 @@ pub enum AnnSearch {
 ///   neighbours.
 /// * `rho` - Sampling rate for the old neighbours. Will adaptively decrease
 ///   over time.
+#[derive(Debug, Clone)]
 pub struct NearestNeighbourParams<T> {
     pub dist_metric: String,
     // annoy
