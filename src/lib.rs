@@ -437,6 +437,157 @@ pub struct ParametricUmapParams<T> {
     train_param: TrainParametricParams<T>,
 }
 
+impl<T> ParametricUmapParams<T>
+where
+    T: Float + FromPrimitive + Element,
+{
+    /// Generate new parametric UMAP parameters
+    ///
+    /// Provides fine-grained control over all parametric UMAP settings.
+    /// If parameters are set to `None`, sensible defaults will be provided.
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - Number of embedding dimensions. Default `2`.
+    /// * `k` - Number of nearest neighbours. Default `15`.
+    /// * `ann_type` - Approximate nearest neighbour algorithm. Default `"hnsw"`.
+    /// * `hidden_layers` - Hidden layer sizes for MLP. Default `vec![128, 128, 128]`.
+    /// * `nn_params` - Nearest neighbour parameters. Default uses sensible values.
+    /// * `umap_graph_params` - UMAP graph parameters. Default uses sensible values.
+    /// * `train_param` - Training parameters. Default uses sensible values.
+    ///
+    /// ### Returns
+    ///
+    /// Configured `ParametricUmapParams` instance
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        n_dim: Option<usize>,
+        k: Option<usize>,
+        ann_type: Option<String>,
+        hidden_layers: Option<Vec<usize>>,
+        nn_params: Option<NearestNeighbourParams<T>>,
+        umap_graph_params: Option<UmapGraphParams<T>>,
+        train_param: Option<TrainParametricParams<T>>,
+    ) -> Self {
+        let n_dim = n_dim.unwrap_or(2);
+        let k = k.unwrap_or(15);
+        let ann_type = ann_type.unwrap_or("hnsw".to_string());
+        let hidden_layers = hidden_layers.unwrap_or(vec![128, 128, 128]);
+        let nn_params = nn_params.unwrap_or_default();
+        let umap_graph_params = umap_graph_params.unwrap_or_default();
+        let train_param = train_param.unwrap_or_default();
+
+        Self {
+            n_dim,
+            k,
+            ann_type,
+            hidden_layers,
+            nn_params,
+            umap_graph_params,
+            train_param,
+        }
+    }
+
+    /// Default parameters for 2D parametric UMAP
+    ///
+    /// Generates sensible defaults for standard 2D visualisation using
+    /// parametric UMAP with a neural network encoder.
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - Number of embedding dimensions. Default `2`.
+    /// * `k` - Number of nearest neighbours. Default `15`.
+    /// * `min_dist` - Minimum distance between embedded points. Default `0.1`.
+    /// * `spread` - Effective scale of embedded points. Default `1.0`.
+    /// * `corr_weight` -
+    ///
+    /// ### Returns
+    ///
+    /// Configured `ParametricUmapParams` suitable for 2D visualisation
+    #[allow(clippy::too_many_arguments)]
+    pub fn default_2d(
+        n_dim: Option<usize>,
+        k: Option<usize>,
+        min_dist: Option<T>,
+        spread: Option<T>,
+        corr_weight: Option<T>,
+    ) -> Self {
+        let n_dim = n_dim.unwrap_or(2);
+        let k = k.unwrap_or(15);
+        let min_dist = min_dist.unwrap_or(T::from_f64(0.1).unwrap());
+        let spread = spread.unwrap_or(T::from_f64(1.0).unwrap());
+        let corr_weight = corr_weight.unwrap_or(T::from_f64(0.0).unwrap());
+
+        Self {
+            n_dim,
+            k,
+            ann_type: "hnsw".to_string(),
+            hidden_layers: vec![128, 128, 128],
+            nn_params: NearestNeighbourParams::default(),
+            umap_graph_params: UmapGraphParams::default(),
+            train_param: TrainParametricParams::from_min_dist_spread(
+                min_dist,
+                spread,
+                corr_weight,
+                None,
+                None,
+                None,
+                None,
+            ),
+        }
+    }
+}
+
+/// Run parametric UMAP dimensionality reduction
+///
+/// Parametric UMAP learns a neural network encoder that maps high-dimensional
+/// data to a low-dimensional embedding space. Unlike standard UMAP, this
+/// approach provides an explicit parametric mapping that can be applied to
+/// new data points without retraining.
+///
+/// The algorithm follows these steps:
+///
+/// 1. Find k-nearest neighbours using approximate nearest neighbour search
+/// 2. Construct fuzzy simplicial set via smooth kNN distances
+/// 3. Symmetrise the graph using fuzzy set union
+/// 4. Train an MLP encoder to preserve the graph structure using UMAP loss
+/// 5. Return embeddings by passing all data through the trained encoder
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `umap_params` - Configuration parameters for parametric UMAP
+/// * `device` - Burn backend device for neural network training
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - Whether to print progress information
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
+/// `n_dim` and inner vectors have length `n_samples`. Each outer element
+/// represents one embedding dimension.
+///
+/// ### Example
+///
+/// ```ignore
+/// use burn::backend::ndarray::{NdArray, NdArrayDevice};
+/// use burn::backend::Autodiff;
+/// use faer::Mat;
+///
+/// let data = Mat::from_fn(1000, 128, |_, _| rand::random::<f64>());
+/// let params = ParametricUmapParams::default_2d(None, None, None, None, None, None, None);
+/// let device = NdArrayDevice::Cpu;
+///
+/// let embedding = parametric_umap::<f64, Autodiff<NdArray>>(
+///     data.as_ref(),
+///     &params,
+///     &device,
+///     42,
+///     true,
+/// );
+/// // embedding[0] contains x-coordinates for all points
+/// // embedding[1] contains y-coordinates for all points
+/// ```
 pub fn parametric_umap<T, B>(
     data: MatRef<T>,
     umap_params: &ParametricUmapParams<T>,
