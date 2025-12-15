@@ -115,10 +115,10 @@ where
     CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n))
 }
 
-/// Spectral embedding initialisation via graph Laplacian eigenvectors
+/// Spectral embedding initialisation
 ///
-/// Computes the first `n_comp` eigenvectors of the normalised graph
-/// Laplacian as initial embedding coordinates using Lanczos iteration.
+/// Computes eigenvectors and scales to reasonable range like Python UMAP.
+/// Now scales so max absolute value is 10.0.
 ///
 /// ### Params
 ///
@@ -128,29 +128,23 @@ where
 ///
 /// ### Returns
 ///
-/// Initial embedding coordinates as `Vec<Vec<T>>` where outer vector is samples
-/// and inner vector is coordinates
-///
-/// ### Notes
-///
-/// Uses the smallest non-trivial eigenvectors (skipping the constant
-/// eigenvector). The result is centred and scaled to [-1, 1] range.
+/// Initial embedding coordinates scaled to max absolute value of 10.0
 pub fn spectral_layout<T>(graph: &SparseGraph<T>, n_comp: usize, seed: u64) -> Vec<Vec<T>>
 where
     T: Float + FromPrimitive + Send + Sync,
 {
     let n = graph.n_vertices;
 
-    // convert to normalised Laplacian
+    // Convert to normalised Laplacian
     let laplacian = graph_to_normalised_laplacian(graph);
 
-    // compute smallest eigenvectors (skip first which is constant)
+    // Compute smallest eigenvectors (skip first which is constant)
     let n_eigs = (n_comp + 1).min(n);
     let (_, evecs) = compute_smallest_eigenpairs_lanczos(&laplacian, n_eigs, seed);
 
     let mut embedding = vec![vec![T::zero(); n_comp]; n];
 
-    // take eigenvectors 1 to n_components (skip the trivial one at index 0)
+    // Take eigenvectors 1 to n_components (skip the trivial one at index 0)
     for comp_idx in 0..n_comp {
         let evec_idx = comp_idx + 1;
         if evec_idx < evecs[0].len() {
@@ -158,15 +152,15 @@ where
                 embedding[i][comp_idx] = T::from_f32(evecs[i][evec_idx]).unwrap();
             }
         } else {
-            // fallback to random if not enough eigenvectors
+            // Fallback to random if not enough eigenvectors
             let mut rng = StdRng::seed_from_u64(seed + comp_idx as u64);
             for i in 0..n {
-                embedding[i][comp_idx] = T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
+                embedding[i][comp_idx] = T::from_f64(rng.random_range(-10.0..10.0)).unwrap();
             }
         }
     }
 
-    // centre and scale each component
+    // Centre each component
     for comp in 0..n_comp {
         let mean: T = embedding
             .iter()
@@ -177,21 +171,26 @@ where
         for i in 0..n {
             embedding[i][comp] = embedding[i][comp] - mean;
         }
+    }
 
-        let max_val = embedding
-            .iter()
-            .map(|v| v[comp].abs())
-            .fold(T::zero(), |acc, x| if x > acc { x } else { acc });
+    // Scale so max absolute value is 10.0 (like Python UMAP)
+    let max_abs: T = embedding
+        .iter()
+        .flat_map(|v| v.iter())
+        .map(|&x| x.abs())
+        .fold(T::zero(), |acc, x| if x > acc { x } else { acc });
 
-        if max_val > T::from_f64(1e-8).unwrap() {
-            let scale = T::from_f64(1.0).unwrap() / max_val;
-            for i in 0..n {
-                embedding[i][comp] = embedding[i][comp] * scale;
+    if max_abs > T::from_f64(1e-8).unwrap() {
+        let scale = T::from_f64(10.0).unwrap() / max_abs;
+        for i in 0..n {
+            for j in 0..n_comp {
+                embedding[i][j] = embedding[i][j] * scale;
             }
         }
     }
 
-    let mut rng = StdRng::seed_from_u64(seed + 9999); // Different seed for noise
+    // Add small noise for numerical stability
+    let mut rng = StdRng::seed_from_u64(seed + 9999);
     let noise_std = T::from_f64(1e-4).unwrap();
 
     for i in 0..n {
@@ -206,8 +205,8 @@ where
 
 /// Random initialisation fallback
 ///
-/// Provides random Gaussian initialisation when spectral embedding isn't
-/// suitable (e.g., disconnected graphs, very large datasets).
+/// Provides random uniform initialisation matching Python UMAP behaviour.
+/// Uses uniform distribution in [-10, 10] range, NOT Gaussian near origin.
 ///
 /// ### Params
 ///
@@ -217,7 +216,7 @@ where
 ///
 /// ### Returns
 ///
-/// Random embedding coordinates scaled to [-10, 10] range
+/// Random embedding coordinates uniformly distributed in [-10, 10] range
 pub fn random_layout<T>(n_samples: usize, n_comp: usize, seed: u64) -> Vec<Vec<T>>
 where
     T: Float + FromPrimitive,
@@ -225,12 +224,10 @@ where
     let mut rng = StdRng::seed_from_u64(seed);
     let mut embedding = vec![vec![T::zero(); n_comp]; n_samples];
 
-    let scale = T::from_f64(1e-4 * 10.0).unwrap();
-
+    // Use uniform distribution [-10, 10] like Python UMAP, not Gaussian
     for i in 0..n_samples {
         for j in 0..n_comp {
-            let noise: f64 = rng.sample(StandardNormal);
-            embedding[i][j] = T::from_f64(noise).unwrap() * scale;
+            embedding[i][j] = T::from_f64(rng.random_range(-10.0..10.0)).unwrap();
         }
     }
 
@@ -239,26 +236,20 @@ where
 
 /// PCA-based embedding initialisation
 ///
-/// Computes principal component scores for UMAP initialisation. Projects data
-/// onto the first `n_comp` principal components, optionally using randomised
-/// SVD for high-dimensional data. Additionally, scales the PCA scores for
-/// better initialisation in UMAP.
+/// Scales PCA scores to have reasonable spread like other init methods.
+/// Now scales to have standard deviation of ~0.0001 then multiplies by 10,
+/// giving coordinates roughly in [-0.003, 0.003] initially.
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features), will be centred
-///   internally
-/// * `n_comp` - Number of principal components to compute (typically 2-3 for
-///   UMAP)
-/// * `randomised` - Whether to use randomised SVD. Recommended for
-///   `n_features > 500`.
-/// * `seed` - Random seed for reproducibility (only used if `randomised =
-///   true`)
+/// * `data` - Input data matrix (samples × features)
+/// * `n_comp` - Number of principal components
+/// * `randomised` - Whether to use randomised SVD
+/// * `seed` - Random seed
 ///
 /// ### Returns
 ///
-/// Matrix of size `(n_samples, n_comp)` containing PC scores. These can be
-/// used directly as initial embedding coordinates.
+/// PCA-based embedding coordinates
 pub fn pca_layout<T>(data: MatRef<T>, n_comp: usize, randomised: bool, seed: u64) -> Vec<Vec<T>>
 where
     T: Float + Send + Sync + Sum + ComplexField + RealField + ToPrimitive + FromPrimitive,
@@ -287,7 +278,7 @@ where
         }
     };
 
-    // project onto first n_comp components: PC scores = U * S
+    // Project onto first n_comp components: PC scores = U * S
     let u_truncated = svd_result.u.get(.., ..n_comp);
     let s_diagonal = faer::Mat::from_fn(n_comp, n_comp, |i, j| {
         if i == j {
@@ -298,28 +289,28 @@ where
     });
     let pca_scores = u_truncated * s_diagonal;
 
-    // convert to Vec<Vec<T>> and scale each component
-    let target_std = T::from_f64(1e-4).unwrap();
+    // Convert to Vec<Vec<T>> and scale to small std like uwot
+    let target_std = T::from_f64(1.0).unwrap();
     let mut embedding = vec![vec![T::zero(); n_comp]; n_samples];
 
     for comp in 0..n_comp {
-        // extract component values
+        // Extract component values
         let col: Vec<T> = (0..n_samples).map(|i| pca_scores[(i, comp)]).collect();
 
-        // compute mean and standard deviation
+        // Compute mean and standard deviation
         let mean = col.iter().copied().sum::<T>() / T::from(n_samples).unwrap();
         let variance =
             col.iter().map(|&x| (x - mean) * (x - mean)).sum::<T>() / T::from(n_samples).unwrap();
         let current_std = variance.sqrt();
 
-        // scale to target std_dev (avoid division by zero)
+        // Scale to target std_dev
         let scale_factor = if current_std > T::from_f64(1e-8).unwrap() {
             target_std / current_std
         } else {
             T::one()
         };
 
-        // apply scaling
+        // Apply scaling and centre
         for i in 0..n_samples {
             embedding[i][comp] = (pca_scores[(i, comp)] - mean) * scale_factor;
         }
