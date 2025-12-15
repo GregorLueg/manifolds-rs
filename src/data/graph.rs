@@ -1,6 +1,7 @@
 use num_traits::Float;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
+use thousands::*;
 
 use crate::data::structures::*;
 
@@ -328,7 +329,8 @@ where
     if verbose {
         println!(
             " Remaining edges: {} out of {} after filtering",
-            filtered_edge_no, original_edge_no
+            filtered_edge_no.separate_with_underscores(),
+            original_edge_no.separate_with_underscores()
         );
     }
 

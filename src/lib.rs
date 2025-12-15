@@ -1102,15 +1102,12 @@ mod test_umap {
 // Diagnostic tests //
 //////////////////////
 
-// Add these diagnostic tests to lib.rs test module
-
 #[cfg(test)]
 mod diagnostic_tests {
     use super::*;
     use faer::Mat;
-    use rand::rngs::StdRng;
-    use rand::{Rng, SeedableRng};
-    use std::collections::HashMap;
+    use rand::{rngs::StdRng, Rng, SeedableRng};
+    use rustc_hash::FxHashMap;
 
     /// Create a synthetic dataset with well-separated clusters
     ///
@@ -1121,7 +1118,7 @@ mod diagnostic_tests {
     /// - Cluster 3: centred at (0, 0, 20, ...)
     /// - Cluster 4: centred at (10, 10, 10, ...)
     ///
-    /// Each cluster has tight spread (std=0.5) so they're clearly separated
+    /// Each cluster has tight spread (std = 0.5) so they're clearly separated
     fn create_diagnostic_data(
         n_per_cluster: usize,
         n_dim: usize,
@@ -1164,7 +1161,7 @@ mod diagnostic_tests {
         (data, labels)
     }
 
-    /// Test 1: Verify kNN search finds correct neighbors
+    /// Test 1: Verify kNN search finds correct neighbours
     #[test]
     fn diagnostic_01_knn_correctness() {
         let (data, labels) = create_diagnostic_data(50, 10, 42);
@@ -1180,38 +1177,41 @@ mod diagnostic_tests {
             data.nrows(),
             data.ncols()
         );
-        println!("Requested k={} neighbors", k);
-        println!("Returned {} neighbors per point", knn_indices[0].len());
+        println!("Requested k = {} neighbours", k);
+        println!("Returned {} neighbours per point", knn_indices[0].len());
 
         // Check that kNN doesn't include self
-        let mut self_in_neighbors = 0;
-        for (i, neighbors) in knn_indices.iter().enumerate() {
-            if neighbors.contains(&i) {
-                self_in_neighbors += 1;
-                if self_in_neighbors == 1 {
+        let mut self_in_neighbours = 0;
+        for (i, neighbours) in knn_indices.iter().enumerate() {
+            if neighbours.contains(&i) {
+                self_in_neighbours += 1;
+                if self_in_neighbours == 1 {
                     println!(
-                        "WARNING: Point {} has itself in neighbors: {:?}",
-                        i, neighbors
+                        "WARNING: Point {} has itself in neighbours: {:?}",
+                        i, neighbours
                     );
                 }
             }
         }
 
-        if self_in_neighbors > 0 {
+        if self_in_neighbours > 0 {
             println!(
-                "ERROR: {} points have themselves in their neighbors!",
-                self_in_neighbors
+                "ERROR: {} points have themselves in their neighbours!",
+                self_in_neighbours
             );
         } else {
-            println!("✓ No point has itself in neighbors (correct)");
+            println!("✓ No point has itself in neighbours (correct)");
         }
 
-        // Check that neighbors are mostly from same cluster
+        // check that neighbours are mostly from same cluster
         let mut intra_cluster_ratio = 0.0;
-        for (i, neighbors) in knn_indices.iter().enumerate() {
+        for (i, neighbours) in knn_indices.iter().enumerate() {
             let my_label = labels[i];
-            let same_cluster = neighbors.iter().filter(|&&j| labels[j] == my_label).count();
-            intra_cluster_ratio += same_cluster as f64 / neighbors.len() as f64;
+            let same_cluster = neighbours
+                .iter()
+                .filter(|&&j| labels[j] == my_label)
+                .count();
+            intra_cluster_ratio += same_cluster as f64 / neighbours.len() as f64;
         }
         intra_cluster_ratio /= knn_indices.len() as f64;
 
@@ -1222,18 +1222,18 @@ mod diagnostic_tests {
 
         assert!(
             intra_cluster_ratio > 0.8,
-            "kNN should find mostly same-cluster neighbors, got {:.2}",
+            "kNN should find mostly same-cluster neighbours, got {:.2}",
             intra_cluster_ratio
         );
 
-        // Check distance statistics
+        // check distance statistics
         let all_dists: Vec<f64> = knn_dist.iter().flatten().copied().collect();
         let min_dist = all_dists.iter().copied().fold(f64::INFINITY, f64::min);
         let max_dist = all_dists.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let mean_dist = all_dists.iter().sum::<f64>() / all_dists.len() as f64;
 
         println!(
-            "Distance statistics: min={:.3}, mean={:.3}, max={:.3}",
+            "Distance statistics: min = {:.3}, mean = {:.3}, max = {:.3}",
             min_dist, mean_dist, max_dist
         );
 
@@ -1265,7 +1265,7 @@ mod diagnostic_tests {
         let max_sigma = sigma.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let mean_sigma = sigma.iter().sum::<f64>() / sigma.len() as f64;
         println!(
-            "  min={:.6}, mean={:.6}, max={:.6}",
+            "  min = {:.6}, mean = {:.6}, max = {:.6}",
             min_sigma, mean_sigma, max_sigma
         );
 
@@ -1275,10 +1275,10 @@ mod diagnostic_tests {
         let mean_rho = rho.iter().sum::<f64>() / rho.len() as f64;
         let zero_rho = rho.iter().filter(|&&r| r == 0.0).count();
         println!(
-            "  min={:.6}, mean={:.6}, max={:.6}",
+            "  min = {:.6}, mean = {:.6}, max = {:.6}",
             min_rho, mean_rho, max_rho
         );
-        println!("  Points with rho=0: {}/{}", zero_rho, rho.len());
+        println!("  Points with rho=0: {} / {}", zero_rho, rho.len());
 
         // Critical checks
         assert!(min_sigma > 0.0, "All sigma values should be > 0");
@@ -1290,7 +1290,7 @@ mod diagnostic_tests {
 
         if zero_rho > 0 {
             println!(
-                "WARNING: {} points have rho=0 (first neighbor at distance 0!)",
+                "WARNING: {} points have rho = 0 (first neighbor at distance 0!)",
                 zero_rho
             );
             println!("This suggests self is still in the neighbor list!");
@@ -1298,7 +1298,7 @@ mod diagnostic_tests {
 
         assert_eq!(
             zero_rho, 0,
-            "No point should have rho=0 (would mean self is in neighbors)"
+            "No point should have rho=0 (would mean self is in neighbours)"
         );
 
         // Check that rho values are reasonable (should be smallest distance to actual neighbor)
@@ -1308,7 +1308,7 @@ mod diagnostic_tests {
 
             assert!(
                 (expected_rho - actual_rho).abs() < 1e-6,
-                "Point {}: rho={:.6} but first neighbor is at distance {:.6}",
+                "Point {}: rho = {:.6} but first neighbor is at distance {:.6}",
                 i,
                 actual_rho,
                 expected_rho
@@ -1385,7 +1385,7 @@ mod diagnostic_tests {
             }
 
             println!(
-                "  Reachable within cluster: {}/{}",
+                "  Reachable within cluster: {} / {}",
                 reachable,
                 cluster_points.len()
             );
@@ -1412,7 +1412,7 @@ mod diagnostic_tests {
                     .copied()
                     .fold(f64::NEG_INFINITY, f64::max);
                 println!(
-                    "  Intra-cluster edges: min={:.6}, avg={:.6}, max={:.6}",
+                    "  Intra-cluster edges: min = {:.6}, avg = {:.6}, max = {:.6}",
                     min_intra, avg_intra, max_intra
                 );
             }
@@ -1425,7 +1425,7 @@ mod diagnostic_tests {
                     .copied()
                     .fold(f64::NEG_INFINITY, f64::max);
                 println!(
-                    "  Inter-cluster edges: min={:.6}, avg={:.6}, max={:.6}",
+                    "  Inter-cluster edges: min = {:.6}, avg = {:.6}, max = {:.6}",
                     min_inter, avg_inter, max_inter
                 );
             }
@@ -1433,7 +1433,7 @@ mod diagnostic_tests {
             assert_eq!(
                 reachable,
                 cluster_points.len(),
-                "Cluster {} is fragmented! Only {}/{} points reachable",
+                "Cluster {} is fragmented! Only {} / {} points reachable",
                 cluster_id,
                 reachable,
                 cluster_points.len()
@@ -1441,9 +1441,9 @@ mod diagnostic_tests {
         }
     }
 
-    /// Test 4 (updated): Verify initialization doesn't pre-split clusters
+    /// Test 4: Verify initialisation doesn't pre-split clusters
     #[test]
-    fn diagnostic_04_initialization() {
+    fn diagnostic_04_initialisation() {
         let (data, labels) = create_diagnostic_data(50, 10, 42);
 
         let umap_params = UmapGraphParams::default();
@@ -1460,14 +1460,14 @@ mod diagnostic_tests {
             false,
         );
 
-        println!("\n=== DIAGNOSTIC 4: Initialization Quality ===");
+        println!("\n=== DIAGNOSTIC 4: Initialisation Quality ===");
 
-        // Test each initialization method INCLUDING PCA
+        // Test each initialisation method INCLUDING PCA
         for init_name in &["spectral", "random", "pca"] {
             let init_type = parse_initilisation(init_name, false).unwrap();
             let embedding = initialise_embedding(&init_type, 2, 42, &graph, data.as_ref());
 
-            println!("\n{} initialization:", init_name);
+            println!("\n{} initialisation:", init_name);
 
             // Check coordinate range
             let coords: Vec<f64> = embedding.iter().flat_map(|p| p.iter().copied()).collect();
@@ -1480,7 +1480,7 @@ mod diagnostic_tests {
             );
 
             // Check if clusters are separated
-            let mut cluster_centres: HashMap<usize, (f64, f64, usize)> = HashMap::new();
+            let mut cluster_centres: FxHashMap<usize, (f64, f64, usize)> = FxHashMap::default();
 
             for (i, &label) in labels.iter().enumerate() {
                 let entry = cluster_centres.entry(label).or_insert((0.0, 0.0, 0));
@@ -1509,7 +1509,7 @@ mod diagnostic_tests {
             }
 
             println!(
-                "  Inter-cluster centroid distances: min={:.3}, max={:.3}",
+                "  Inter-cluster centroid distances: min = {:.3}, max = {:.3}",
                 min_centroid_dist, max_centroid_dist
             );
 
@@ -1548,7 +1548,7 @@ mod diagnostic_tests {
             if init_name != &"pca" {
                 assert!(
                     min_centroid_dist > 0.1 || max_centroid_dist > 2.0,
-                    "{} initialization has poor initial separation: min={:.3}, max={:.3}",
+                    "{} initialisation has poor initial separation: min = {:.3}, max = {:.3}",
                     init_name,
                     min_centroid_dist,
                     max_centroid_dist
@@ -1557,12 +1557,12 @@ mod diagnostic_tests {
         }
     }
 
-    /// Test 5: Check optimization with different optimizers
+    /// Test 5: Check optimisation with different optimisers
     #[test]
     fn diagnostic_05_optimisation_quality() {
         let (data, labels) = create_diagnostic_data(50, 10, 42);
 
-        println!("\n=== DIAGNOSTIC 5: Optimization Quality ===");
+        println!("\n=== DIAGNOSTIC 5: Optimisation Quality ===");
 
         // Test all init+optimizer combinations
         let configs = vec![
@@ -1578,7 +1578,7 @@ mod diagnostic_tests {
         ];
 
         for (init, opt) in configs {
-            println!("\n--- Testing: init={}, optimizer={} ---", init, opt);
+            println!("\n--- Testing: init = {}, optimiser = {} ---", init, opt);
 
             let params = UmapParams::new(
                 Some(2),
@@ -1610,7 +1610,7 @@ mod diagnostic_tests {
             assert!(!has_inf, "Embedding contains infinite values!");
 
             // Check cluster separation
-            let mut cluster_centres: HashMap<usize, (f64, f64, usize)> = HashMap::new();
+            let mut cluster_centres: FxHashMap<usize, (f64, f64, usize)> = FxHashMap::default();
 
             for (i, &label) in labels.iter().enumerate() {
                 let entry = cluster_centres.entry(label).or_insert((0.0, 0.0, 0));
@@ -1697,13 +1697,13 @@ mod diagnostic_tests {
             avg_inter_dist /= count as f64;
 
             println!(
-                "  Inter-cluster distances: min={:.3}, avg={:.3}",
+                "  Inter-cluster distances: min = {:.3}, avg = {:.3}",
                 min_inter_dist, avg_inter_dist
             );
 
             assert!(
                 min_inter_dist > 0.5,
-                "Clusters too close with init={}, opt={}: min distance = {:.3}",
+                "Clusters too close with init = {}, opt = {}: min dist = {:.3}",
                 init,
                 opt,
                 min_inter_dist
@@ -1739,20 +1739,20 @@ mod diagnostic_tests {
 
             assert!(
                 separation_ratio > 0.3,
-                "Poor separation with init={}, opt={}: ratio = {:.2}",
+                "Poor separation with init = {}, opt = {}: ratio = {:.2}",
                 init,
                 opt,
                 separation_ratio
             );
         }
 
-        println!("\n✓ All init+optimizer combinations produced valid embeddings!");
+        println!("\n✓ All init+optimiser combinations produced valid embeddings!");
     }
 
-    /// Test 6: Compare optimization consistency across runs
+    /// Test 6: Compare optimisation consistency across runs
     #[test]
     fn diagnostic_06_reproducibility() {
-        let (data, labels) = create_diagnostic_data(50, 10, 42);
+        let (data, _) = create_diagnostic_data(50, 10, 42);
 
         println!("\n=== DIAGNOSTIC 6: Reproducibility ===");
 
@@ -1760,7 +1760,7 @@ mod diagnostic_tests {
         let params = UmapParams::new(
             Some(2),
             Some(15),
-            Some("adam".to_string()),
+            Some("adam_parallel".to_string()),
             None,
             Some("spectral".to_string()),
             None,

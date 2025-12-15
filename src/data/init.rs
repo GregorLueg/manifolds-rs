@@ -443,7 +443,7 @@ mod test_init {
         // Check that values are approximately in [-10, 10] range (allowing for noise)
         for point in &embedding {
             for &coord in point {
-                assert!((-1.01..=1.01).contains(&coord));
+                assert!((-10.01..=10.01).contains(&coord));
             }
         }
 
@@ -494,7 +494,7 @@ mod test_init {
         // Check range [-10, 10]
         for point in &embedding {
             for &coord in point {
-                assert!((-1.0..=1.0).contains(&coord));
+                assert!((-10.01..=10.01).contains(&coord));
             }
         }
     }
