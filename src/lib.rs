@@ -89,7 +89,7 @@ where
 
     let (sigma, rho) = smooth_knn_dist(
         &knn_dist,
-        k,
+        knn_dist[0].len(),
         umap_params.local_connectivity,
         umap_params.bandwidth,
         64,
