@@ -5,6 +5,7 @@ use rand::{
     {Rng, SeedableRng},
 };
 use rayon::prelude::*;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::ops::AddAssign;
 
 /////////////
@@ -880,7 +881,7 @@ pub fn optimise_embedding_adam_parallel<T>(
     seed: u64,
     verbose: bool,
 ) where
-    T: Float + FromPrimitive + Send + Sync + AddAssign,
+    T: Float + FromPrimitive + Send + Sync + AddAssign + std::fmt::Display,
 {
     let n = embd.len();
     let n_dim = embd[0].len();
@@ -892,12 +893,27 @@ pub fn optimise_embedding_adam_parallel<T>(
 
     let consts = OptimConstants::new(params.a, params.b, params.gamma);
 
+    // CRITICAL FIX: For symmetric graphs, only keep ONE direction per undirected edge
+    // uwot's NodeWorker processes each edge once, but your adjacency list has both (i,j) and (j,i)
+    // This was causing each edge to be processed twice, doubling attractive forces
     let mut edges: Vec<(usize, usize, T)> = Vec::new();
+    let mut seen: FxHashSet<(usize, usize)> = FxHashSet::default();
+
     for (i, neighbours) in graph.iter().enumerate() {
         for &(j, w) in neighbours {
-            edges.push((i, j, w));
+            // Only add edge once - keep the one where i < j
+            if i < j && !seen.contains(&(i, j)) {
+                edges.push((i, j, w));
+                seen.insert((i, j));
+            }
         }
     }
+
+    println!(
+        "DEBUG: After deduplication, {} edges (was {})",
+        edges.len(),
+        graph.iter().map(|n| n.len()).sum::<usize>()
+    );
 
     if edges.is_empty() {
         return;
@@ -923,6 +939,14 @@ pub fn optimise_embedding_adam_parallel<T>(
 
     let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
 
+    println!(
+        "DEBUG: Edges firing at/before epoch 1: {}",
+        epoch_of_next_sample
+            .iter()
+            .filter(|&&e| e <= T::one())
+            .count()
+    );
+
     let epochs_per_neg_sample: Vec<T> = epochs_per_sample
         .iter()
         .map(|eps| *eps / T::from(params.neg_sample_rate).unwrap())
@@ -937,13 +961,12 @@ pub fn optimise_embedding_adam_parallel<T>(
     let mut m: Vec<T> = vec![T::zero(); n * n_dim];
     let mut v: Vec<T> = vec![T::zero(); n * n_dim];
 
-    // CHANGE 1: Build node-to-edges mapping
-    // For symmetric graphs: edge (i,j) at index k means node i is head
-    // and edge (j,i) at some other index means node j is head.
-    // We only track edges where each node is the head.
-    let mut node_edges: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for (edge_idx, &(i, _j, _)) in edges.iter().enumerate() {
-        node_edges[i].push(edge_idx); // Node i is head of this edge
+    // Build node-to-edges mapping for BOTH endpoints
+    // Since we only store (i,j) where i<j, node j needs to know about this edge too
+    let mut node_edges: Vec<Vec<(usize, bool)>> = vec![Vec::new(); n];
+    for (edge_idx, &(i, j, _)) in edges.iter().enumerate() {
+        node_edges[i].push((edge_idx, true)); // i is smaller node
+        node_edges[j].push((edge_idx, false)); // j is larger node
     }
 
     let bias_corrections: Vec<(T, T)> = (0..params.n_epochs)
@@ -968,8 +991,6 @@ pub fn optimise_embedding_adam_parallel<T>(
         let epoch_t = T::from(epoch).unwrap();
         let (ad_scale, epsc) = bias_corrections[epoch];
 
-        // CHANGE 2: Parallel gradient accumulation - simpler structure
-        // Each node only processes edges where it's the head (matches uwot's NodeWorker)
         let updates: Vec<(usize, Vec<T>)> = (0..n)
             .into_par_iter()
             .filter_map(|node_i| {
@@ -983,70 +1004,71 @@ pub fn optimise_embedding_adam_parallel<T>(
                 let mut node_gradients = vec![T::zero(); n_dim];
                 let mut has_updates = false;
 
-                // Process only edges where this node is the head
-                for &edge_idx in &node_edges[node_i] {
+                // Process all edges involving this node
+                for &(edge_idx, is_smaller) in &node_edges[node_i] {
                     if epoch_of_next_sample[edge_idx] > epoch_t {
                         continue;
                     }
 
                     has_updates = true;
-                    let (_i, j, _) = edges[edge_idx];
-                    let base_j = j * n_dim;
+                    let (i, j, _) = edges[edge_idx];
+
+                    // Determine the other endpoint
+                    let other_node = if is_smaller { j } else { i };
+                    let base_other = other_node * n_dim;
 
                     let mut dist_sq = T::zero();
                     for d in 0..n_dim {
-                        let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
+                        let diff = embd_flat[base_i + d] - embd_flat[base_other + d];
                         dist_sq += diff * diff;
                     }
 
-                    // CHANGE 3: Attractive gradient with *2.0 factor
-                    // Matches uwot's update_head_grad_vec<true> which doubles the gradient
-                    // Reason: In symmetric graphs, each node only accumulates gradients from
-                    // edges where it's the head. The *2.0 compensates for not updating both
-                    // endpoints simultaneously (as InPlaceUpdate does).
+                    // Attractive gradient - with *2.0 matching uwot's update_head_grad_vec
                     if dist_sq >= T::from(1e-8).unwrap() {
                         let dist_sq_b = dist_sq.powf(consts.b);
                         let denom = T::one() + consts.a * dist_sq_b;
                         let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
 
                         for d in 0..n_dim {
-                            let delta = embd_flat[base_j + d] - embd_flat[base_i + d];
-                            // Double the gradient to match uwot's BatchUpdate behavior
+                            let delta = embd_flat[base_other + d] - embd_flat[base_i + d];
+                            // Factor of 2 matches uwot's BatchUpdate::attract behavior
                             node_gradients[d] += T::from(2.0).unwrap() * grad_coeff * delta;
                         }
                     }
 
-                    // Negative sampling
-                    let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
-                        / epochs_per_neg_sample[edge_idx])
-                        .floor()
-                        .to_usize()
-                        .unwrap_or(0);
+                    // Negative sampling - only for the smaller node to avoid duplication
+                    if is_smaller {
+                        let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
+                            / epochs_per_neg_sample[edge_idx])
+                            .floor()
+                            .to_usize()
+                            .unwrap_or(0);
 
-                    for _ in 0..n_neg_samples {
-                        let k = rng.random_range(0..n);
-                        if k == node_i {
-                            continue;
-                        }
+                        for _ in 0..n_neg_samples {
+                            let k = rng.random_range(0..n);
+                            if k == node_i {
+                                continue;
+                            }
 
-                        let base_k = k * n_dim;
+                            let base_k = k * n_dim;
 
-                        let mut dist_sq = T::zero();
-                        for d in 0..n_dim {
-                            let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
-                            dist_sq += diff * diff;
-                        }
+                            let mut dist_sq = T::zero();
+                            for d in 0..n_dim {
+                                let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
+                                dist_sq += diff * diff;
+                            }
 
-                        let dist_sq_safe = dist_sq + consts.eps;
-                        let dist_sq_b = dist_sq_safe.powf(consts.b);
-                        let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
-                        let grad_coeff = (consts.two_gamma_b / denom)
-                            .max(-consts.clip_val)
-                            .min(consts.clip_val);
+                            let dist_sq_safe = dist_sq + consts.eps;
+                            let dist_sq_b = dist_sq_safe.powf(consts.b);
+                            let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
+                            let grad_coeff = (consts.two_gamma_b / denom)
+                                .max(-consts.clip_val)
+                                .min(consts.clip_val);
 
-                        for d in 0..n_dim {
-                            let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
-                            node_gradients[d] += grad_coeff * delta;
+                            for d in 0..n_dim {
+                                let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
+                                node_gradients[d] += grad_coeff * delta;
+                            }
                         }
                     }
                 }
@@ -1058,6 +1080,10 @@ pub fn optimise_embedding_adam_parallel<T>(
                 }
             })
             .collect();
+
+        if epoch == 1 {
+            println!("DEBUG Epoch 1: {} nodes updated", updates.len());
+        }
 
         for (node_i, node_gradients) in updates {
             let base_i = node_i * n_dim;
@@ -1076,9 +1102,6 @@ pub fn optimise_embedding_adam_parallel<T>(
             }
         }
 
-        // CHANGE 4: Update sampling schedules
-        // Each directed edge has its own independent schedule (matches uwot)
-        // No synchronization between (i,j) and (j,i) - they fire independently
         for (edge_idx, &_) in edges.iter().enumerate() {
             if epoch_of_next_sample[edge_idx] <= epoch_t {
                 epoch_of_next_sample[edge_idx] += epochs_per_sample[edge_idx];
@@ -1093,10 +1116,6 @@ pub fn optimise_embedding_adam_parallel<T>(
                     T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
             }
         }
-
-        // CHANGE 5: REMOVED schedule synchronization block
-        // The old code synced (i,j) and (j,i) schedules, but uwot doesn't do this.
-        // Each directed edge should fire independently based on its own schedule.
 
         if verbose && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
