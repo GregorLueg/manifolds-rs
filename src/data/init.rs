@@ -225,9 +225,12 @@ where
     let mut rng = StdRng::seed_from_u64(seed);
     let mut embedding = vec![vec![T::zero(); n_comp]; n_samples];
 
+    let scale = T::from_f64(1e-4 * 10.0).unwrap();
+
     for i in 0..n_samples {
         for j in 0..n_comp {
-            embedding[i][j] = T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
+            let noise: f64 = rng.sample(StandardNormal);
+            embedding[i][j] = T::from_f64(noise).unwrap() * scale;
         }
     }
 

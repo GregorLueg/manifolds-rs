@@ -56,12 +56,14 @@ use crate::training::*;
 /// ### Returns
 ///
 /// Tuple of (graph, knn_indices, knn_dist) for use in optimisation
+#[allow(clippy::too_many_arguments)]
 pub fn construct_umap_graph<T>(
     data: MatRef<T>,
     k: usize,
     ann_type: String,
     umap_params: &UmapGraphParams<T>,
     nn_params: &NearestNeighbourParams<T>,
+    n_epochs: usize,
     seed: usize,
     verbose: bool,
 ) -> (SparseGraph<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
@@ -97,6 +99,7 @@ where
 
     let graph = knn_to_coo(&knn_indices, &knn_dist, &sigma, &rho);
     let graph = symmetrise_graph(graph, umap_params.mix_weight);
+    let graph = filter_weak_edges(graph, n_epochs, verbose);
 
     if verbose {
         println!(
@@ -316,6 +319,7 @@ where
         umap_params.ann_type.clone(),
         &umap_params.umap_graph_params,
         &umap_params.nn_params,
+        umap_params.optim_params.n_epochs,
         seed,
         verbose,
     );
@@ -336,7 +340,6 @@ where
 
     let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data);
 
-    let graph = filter_weak_edges(graph, umap_params.optim_params.n_epochs);
     let graph_adj = coo_to_adjacency_list(&graph);
 
     if verbose {
@@ -616,6 +619,7 @@ where
         umap_params.ann_type.clone(),
         &umap_params.umap_graph_params,
         &nn_params,
+        umap_params.train_param.n_epochs,
         seed,
         verbose,
     );

@@ -40,7 +40,7 @@ where
             let target = (k as f64).ln();
 
             let rho = if local_connectivity > T::zero() {
-                let idx = (local_connectivity - T::one()) 
+                let idx = (local_connectivity - T::one())
                     .max(T::zero())
                     .floor()
                     .to_usize()
@@ -292,7 +292,7 @@ where
 /// ### Returns
 ///
 /// Filtered graph with weak edges removed
-pub fn filter_weak_edges<T>(graph: SparseGraph<T>, n_epochs: usize) -> SparseGraph<T>
+pub fn filter_weak_edges<T>(graph: SparseGraph<T>, n_epochs: usize, verbose: bool) -> SparseGraph<T>
 where
     T: Float + Send + Sync,
 {
@@ -301,6 +301,8 @@ where
         .iter()
         .copied()
         .fold(T::zero(), |acc, w| if w > acc { w } else { acc });
+
+    let original_edge_no = graph.col_indices.len();
 
     let threshold = max_weight / T::from(n_epochs).unwrap();
 
@@ -319,6 +321,15 @@ where
             filtered_cols.push(j);
             filtered_vals.push(w);
         }
+    }
+
+    let filtered_edge_no = filtered_cols.len();
+
+    if verbose {
+        println!(
+            " Remaining edges: {} out of {} after filtering",
+            filtered_edge_no, original_edge_no
+        );
     }
 
     SparseGraph {
