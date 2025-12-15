@@ -451,7 +451,6 @@ where
     /// ### Returns
     ///
     /// Configured `ParametricUmapParams` instance
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         n_dim: Option<usize>,
         k: Option<usize>,
@@ -496,7 +495,6 @@ where
     /// ### Returns
     ///
     /// Configured `ParametricUmapParams` suitable for 2D visualisation
-    #[allow(clippy::too_many_arguments)]
     pub fn default_2d(
         n_dim: Option<usize>,
         k: Option<usize>,

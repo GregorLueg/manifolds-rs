@@ -39,9 +39,8 @@ where
         .map(|dists| {
             let target = (k as f64).ln();
 
-            // FIXED: Subtract 1 because your distances exclude self
             let rho = if local_connectivity > T::zero() {
-                let idx = (local_connectivity - T::one()) // <-- ADD THIS
+                let idx = (local_connectivity - T::one()) 
                     .max(T::zero())
                     .floor()
                     .to_usize()
