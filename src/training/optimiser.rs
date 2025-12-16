@@ -5,7 +5,7 @@ use rand::{
     {Rng, SeedableRng},
 };
 use rayon::prelude::*;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 use std::ops::AddAssign;
 
 /////////////
@@ -901,19 +901,13 @@ pub fn optimise_embedding_adam_parallel<T>(
 
     for (i, neighbours) in graph.iter().enumerate() {
         for &(j, w) in neighbours {
-            // Only add edge once - keep the one where i < j
+            // only add edge once - keep the one where i < j
             if i < j && !seen.contains(&(i, j)) {
                 edges.push((i, j, w));
                 seen.insert((i, j));
             }
         }
     }
-
-    println!(
-        "DEBUG: After deduplication, {} edges (was {})",
-        edges.len(),
-        graph.iter().map(|n| n.len()).sum::<usize>()
-    );
 
     if edges.is_empty() {
         return;
@@ -938,14 +932,6 @@ pub fn optimise_embedding_adam_parallel<T>(
         .collect();
 
     let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
-
-    println!(
-        "DEBUG: Edges firing at/before epoch 1: {}",
-        epoch_of_next_sample
-            .iter()
-            .filter(|&&e| e <= T::one())
-            .count()
-    );
 
     let epochs_per_neg_sample: Vec<T> = epochs_per_sample
         .iter()
@@ -1080,10 +1066,6 @@ pub fn optimise_embedding_adam_parallel<T>(
                 }
             })
             .collect();
-
-        if epoch == 1 {
-            println!("DEBUG Epoch 1: {} nodes updated", updates.len());
-        }
 
         for (node_i, node_gradients) in updates {
             let base_i = node_i * n_dim;

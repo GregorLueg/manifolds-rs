@@ -328,9 +328,8 @@ where
 
     if verbose {
         println!(
-            " Remaining edges: {} out of {} after filtering",
-            filtered_edge_no.separate_with_underscores(),
-            original_edge_no.separate_with_underscores()
+            " Filtered out {} weak edges.",
+            (original_edge_no - filtered_edge_no).separate_with_underscores(),
         );
     }
 
