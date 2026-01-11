@@ -221,7 +221,7 @@ where
         .flat_map(|i| (0..n_features).map(move |j| data[(i, j)]))
         .collect();
 
-    Tensor::<B, 2>::from_floats(&data_flat[..], device).reshape([n_samples, n_features])
+    Tensor::<B, 2>::from_data(TensorData::new(data_flat, [n_samples, n_features]), device)
 }
 
 /// Transform a graph into a UmapEdgeDataSet
@@ -348,4 +348,71 @@ where
     }
 
     result
+}
+
+///////////
+// Tests //
+///////////
+
+#[cfg(test)]
+mod parametric_train_tests {
+    use super::*;
+    use burn::backend::ndarray::{NdArray, NdArrayDevice};
+    use burn::backend::Autodiff;
+    use faer::Mat;
+
+    type TestBackend = Autodiff<NdArray<f64>>;
+
+    #[test]
+    fn test_data_to_tensor_shape() {
+        let data = Mat::from_fn(10, 5, |i, j| (i * 5 + j) as f64);
+        let device = NdArrayDevice::Cpu;
+
+        let tensor = data_to_tensor::<f64, TestBackend>(data.as_ref(), &device);
+
+        assert_eq!(tensor.dims()[0], 10);
+        assert_eq!(tensor.dims()[1], 5);
+    }
+
+    #[test]
+    fn test_train_params_default() {
+        let params = TrainParametricParams::<f64>::default_2d();
+
+        assert!(params.a > 0.0);
+        assert!(params.b > 0.0);
+        assert!(params.lr > 0.0);
+        assert!(params.n_epochs > 0);
+        assert!(params.batch_size > 0);
+        assert!(params.neg_sample_rate > 0);
+    }
+
+    #[test]
+    fn test_train_params_from_min_dist_spread() {
+        let params = TrainParametricParams::<f64>::from_min_dist_spread(
+            0.1, 1.0, 0.0, None, None, None, None,
+        );
+
+        assert!(params.a > 0.0);
+        assert!(params.b > 0.0);
+        assert_eq!(params.corr_weight, 0.0);
+    }
+
+    #[test]
+    fn test_graph_to_training_data() {
+        use crate::data::structures::SparseGraph;
+
+        let graph = SparseGraph {
+            n_vertices: 10,
+            row_indices: vec![0, 0, 1, 1, 2],
+            col_indices: vec![1, 2, 0, 2, 1],
+            values: vec![0.9, 0.8, 0.9, 0.7, 0.8],
+        };
+
+        let dataset = graph_to_trainings_data(&graph);
+
+        assert_eq!(dataset.len(), 5);
+        assert_eq!(dataset.get(0), Some((0, 1, 1.0)));
+        assert_eq!(dataset.get(1), Some((0, 2, 1.0)));
+        assert_eq!(dataset.get(2), Some((1, 0, 1.0)));
+    }
 }

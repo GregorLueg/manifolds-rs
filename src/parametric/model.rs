@@ -133,3 +133,158 @@ impl UmapMlpConfig {
         }
     }
 }
+
+///////////
+// Tests //
+///////////
+
+#[cfg(test)]
+mod model_tests {
+    use super::*;
+    use burn::backend::ndarray::{NdArray, NdArrayDevice};
+
+    type TestBackend = NdArray<f32>;
+
+    #[test]
+    fn test_model_forward_shape() {
+        let device = NdArrayDevice::Cpu;
+        let config = UmapMlpConfig::from_params(10, vec![64, 32], 2);
+        let model: UmapMlp<TestBackend> = config.init(&device);
+
+        let batch_size = 16;
+        let input = Tensor::<TestBackend, 2>::random(
+            [batch_size, 10],
+            burn::tensor::Distribution::Uniform(-1.0, 1.0),
+            &device,
+        );
+
+        let output = model.forward(input);
+
+        assert_eq!(output.dims()[0], batch_size);
+        assert_eq!(output.dims()[1], 2);
+    }
+
+    #[test]
+    fn test_model_no_hidden_layers() {
+        let device = NdArrayDevice::Cpu;
+        let config = UmapMlpConfig::from_params(10, vec![], 2);
+        let model: UmapMlp<TestBackend> = config.init(&device);
+
+        let input = Tensor::<TestBackend, 2>::random(
+            [5, 10],
+            burn::tensor::Distribution::Uniform(-1.0, 1.0),
+            &device,
+        );
+        let output = model.forward(input);
+
+        assert_eq!(output.dims()[0], 5);
+        assert_eq!(output.dims()[1], 2);
+    }
+
+    #[test]
+    fn test_model_single_hidden_layer() {
+        let device = NdArrayDevice::Cpu;
+        let config = UmapMlpConfig::from_params(10, vec![64], 2);
+        let model: UmapMlp<TestBackend> = config.init(&device);
+
+        let input = Tensor::<TestBackend, 2>::random(
+            [8, 10],
+            burn::tensor::Distribution::Uniform(-1.0, 1.0),
+            &device,
+        );
+        let output = model.forward(input);
+
+        assert_eq!(output.dims()[0], 8);
+        assert_eq!(output.dims()[1], 2);
+    }
+
+    #[test]
+    fn test_model_output_is_finite() {
+        let device = NdArrayDevice::Cpu;
+        let config = UmapMlpConfig::from_params(10, vec![64, 32], 2);
+        let model: UmapMlp<TestBackend> = config.init(&device);
+
+        let input = Tensor::<TestBackend, 2>::random(
+            [16, 10],
+            burn::tensor::Distribution::Uniform(-1.0, 1.0),
+            &device,
+        );
+        let output = model.forward(input);
+
+        let output_data: Vec<f32> = output.to_data().to_vec().unwrap();
+
+        for (i, &val) in output_data.iter().enumerate() {
+            assert!(
+                val.is_finite(),
+                "Output at index {} is not finite: {}",
+                i,
+                val
+            );
+        }
+    }
+
+    #[test]
+    fn test_model_batch_size_one() {
+        let device = NdArrayDevice::Cpu;
+        let config = UmapMlpConfig::from_params(5, vec![32], 3);
+        let model: UmapMlp<TestBackend> = config.init(&device);
+
+        let input = Tensor::<TestBackend, 2>::random(
+            [1, 5],
+            burn::tensor::Distribution::Uniform(-1.0, 1.0),
+            &device,
+        );
+        let output = model.forward(input);
+
+        assert_eq!(output.dims()[0], 1);
+        assert_eq!(output.dims()[1], 3);
+    }
+
+    #[test]
+    fn test_model_deterministic() {
+        let device = NdArrayDevice::Cpu;
+        let config = UmapMlpConfig::from_params(10, vec![64], 2);
+        let model: UmapMlp<TestBackend> = config.init(&device);
+
+        let input =
+            Tensor::<TestBackend, 2>::from_floats([[1.0; 10], [2.0; 10], [3.0; 10]], &device);
+
+        let output1 = model.forward(input.clone());
+        let output2 = model.forward(input.clone());
+
+        let data1: Vec<f32> = output1.to_data().to_vec().unwrap();
+        let data2: Vec<f32> = output2.to_data().to_vec().unwrap();
+
+        assert_eq!(data1, data2, "Model should be deterministic");
+    }
+
+    #[test]
+    fn test_model_different_inputs_different_outputs() {
+        let device = NdArrayDevice::Cpu;
+        let config = UmapMlpConfig::from_params(10, vec![64], 2);
+        let model: UmapMlp<TestBackend> = config.init(&device);
+
+        let input1 = Tensor::<TestBackend, 2>::from_floats([[1.0; 10]], &device);
+        let input2 = Tensor::<TestBackend, 2>::from_floats([[2.0; 10]], &device);
+
+        let output1 = model.forward(input1);
+        let output2 = model.forward(input2);
+
+        let data1: Vec<f32> = output1.to_data().to_vec().unwrap();
+        let data2: Vec<f32> = output2.to_data().to_vec().unwrap();
+
+        assert_ne!(
+            data1, data2,
+            "Different inputs should produce different outputs"
+        );
+    }
+
+    #[test]
+    fn test_model_config_builder() {
+        let config = UmapMlpConfig::from_params(20, vec![128, 64, 32], 5);
+
+        assert_eq!(config.input_size, 20);
+        assert_eq!(config.hidden_sizes, vec![128, 64, 32]);
+        assert_eq!(config.output_size, 5);
+    }
+}
