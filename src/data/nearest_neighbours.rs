@@ -1,5 +1,6 @@
 use ann_search_rs::hnsw::{HnswIndex, HnswState};
-use ann_search_rs::nndescent::{NNDescent, NNDescentQuery, UpdateNeighbours};
+use ann_search_rs::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
+use ann_search_rs::utils::dist::SimdDistance;
 
 use ann_search_rs::*;
 use faer::MatRef;
@@ -123,9 +124,9 @@ pub fn run_ann_search<T>(
     seed: usize,
 ) -> (Vec<Vec<usize>>, Vec<Vec<T>>)
 where
-    T: Float + FromPrimitive + ToPrimitive + Send + Sync + Default + Sum,
+    T: Float + FromPrimitive + ToPrimitive + Send + Sync + Default + Sum + SimdDistance,
     HnswIndex<T>: HnswState<T>,
-    NNDescent<T>: UpdateNeighbours<T> + NNDescentQuery<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
     let ann_search = parse_ann_search(&ann_type).unwrap_or_default();
 

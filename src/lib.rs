@@ -6,7 +6,8 @@ pub mod training;
 pub mod utils;
 
 use ann_search_rs::hnsw::{HnswIndex, HnswState};
-use ann_search_rs::nndescent::{NNDescent, NNDescentQuery, UpdateNeighbours};
+use ann_search_rs::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
+use ann_search_rs::utils::dist::SimdDistance;
 use faer::traits::{ComplexField, RealField};
 use faer::MatRef;
 use num_traits::{Float, FromPrimitive};
@@ -59,9 +60,18 @@ pub fn construct_umap_graph<T>(
     verbose: bool,
 ) -> (SparseGraph<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
 where
-    T: Float + FromPrimitive + Send + Sync + Default + ComplexField + RealField + Sum + AddAssign,
+    T: Float
+        + FromPrimitive
+        + Send
+        + Sync
+        + Default
+        + ComplexField
+        + RealField
+        + Sum
+        + AddAssign
+        + SimdDistance,
     HnswIndex<T>: HnswState<T>,
-    NNDescent<T>: UpdateNeighbours<T> + NNDescentQuery<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
     if verbose {
         println!(
@@ -179,10 +189,19 @@ pub fn umap<T>(
     verbose: bool,
 ) -> Vec<Vec<T>>
 where
-    T: Float + FromPrimitive + Send + Sync + Default + ComplexField + RealField + Sum + AddAssign,
+    T: Float
+        + FromPrimitive
+        + Send
+        + Sync
+        + Default
+        + ComplexField
+        + RealField
+        + Sum
+        + AddAssign
+        + SimdDistance,
     HnswIndex<T>: HnswState<T>,
-    NNDescent<T>: UpdateNeighbours<T> + NNDescentQuery<T>,
     StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
     // parse various parameters
     let nn_params = nn_params.unwrap_or_default();
