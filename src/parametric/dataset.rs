@@ -71,7 +71,7 @@ where
 ///
 /// Negative correlation (to minimise during training)
 pub fn correlation_loss<B: Backend>(x_dist: Tensor<B, 1>, z_dist: Tensor<B, 1>) -> Tensor<B, 1> {
-    let epsilon = 1e-8;
+    let epsilon = 1e-8; // Small constant to prevent division by zero
 
     let x_mean = x_dist.clone().mean();
     let z_mean = z_dist.clone().mean();
@@ -80,8 +80,12 @@ pub fn correlation_loss<B: Backend>(x_dist: Tensor<B, 1>, z_dist: Tensor<B, 1>) 
     let z_centered = z_dist - z_mean;
 
     let numerator = (x_centered.clone() * z_centered.clone()).mean();
-    let x_std = (x_centered.powf_scalar(2.0).mean()).sqrt();
-    let z_std = (z_centered.powf_scalar(2.0).mean()).sqrt();
+
+    let x_var = x_centered.powf_scalar(2.0).mean();
+    let z_var = z_centered.powf_scalar(2.0).mean();
+
+    let x_std = (x_var + epsilon).sqrt();
+    let z_std = (z_var + epsilon).sqrt();
 
     let correlation = numerator / (x_std * z_std + epsilon);
 
