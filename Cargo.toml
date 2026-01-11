@@ -19,7 +19,7 @@ strip = true
 
 [dependencies]
 burn = { version = "0.19.1", features = ["dataset", "train"] }
-ann-search-rs = "0.1.7"
+ann-search-rs = "0.2.2"
 approx = "0.5.1"
 faer = "0.23.2"
 faer-entity = "0.20.1"
