@@ -1,5 +1,4 @@
 pub mod optimiser;
-pub mod parametric_train;
 
 use num_traits::Float;
 

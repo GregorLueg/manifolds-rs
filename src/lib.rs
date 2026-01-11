@@ -27,8 +27,8 @@ use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
 use crate::data::structures::*;
 use crate::parametric::model::*;
+use crate::parametric::parametric_train::*;
 use crate::training::optimiser::*;
-use crate::training::parametric_train::*;
 use crate::training::*;
 
 /////////////
