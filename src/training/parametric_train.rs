@@ -224,6 +224,20 @@ where
     Tensor::<B, 2>::from_floats(&data_flat[..], device).reshape([n_samples, n_features])
 }
 
+fn gather_rows<B: Backend>(
+    data: &Tensor<B, 2>,
+    indices: &[usize],
+    device: &B::Device,
+) -> Tensor<B, 2> {
+    let n_features = data.dims()[1];
+    let rows: Vec<Tensor<B, 2>> = indices
+        .iter()
+        .map(|&idx| data.clone().slice([idx..idx + 1, 0..n_features]))
+        .collect();
+
+    Tensor::cat(rows, 0)
+}
+
 /// Transform a graph into a UmapEdgeDataSet
 ///
 /// ### Params
@@ -288,8 +302,27 @@ where
         let mut n_batches = 0;
 
         for batch in dataloader.iter() {
-            let src_feats = tensor_data.clone().select(0, batch.src_indices.clone());
-            let dst_feats = tensor_data.clone().select(0, batch.dst_indices.clone());
+            let src_indices_vec: Vec<usize> = batch
+                .src_indices
+                .clone()
+                .into_data()
+                .to_vec::<i64>()
+                .unwrap()
+                .iter()
+                .map(|&x| x as usize)
+                .collect();
+            let dst_indices_vec: Vec<usize> = batch
+                .dst_indices
+                .clone()
+                .into_data()
+                .to_vec::<i64>()
+                .unwrap()
+                .iter()
+                .map(|&x| x as usize)
+                .collect();
+
+            let src_feats = gather_rows(&tensor_data, &src_indices_vec, device);
+            let dst_feats = gather_rows(&tensor_data, &dst_indices_vec, device);
 
             let src_embed = model.forward(src_feats.clone());
             let dst_embed = model.forward(dst_feats.clone());
