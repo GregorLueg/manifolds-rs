@@ -48,9 +48,12 @@ pub fn parse_initilisation(s: &str, randomised: bool) -> Option<UmapInit> {
     }
 }
 
-/// Convert COO graph to normalised Laplacian in CSR format
+/// Convert COO graph to negative normalised adjacency in CSR format
 ///
-/// Computes L = I - D^(-1/2) * A * D^(-1/2) where D is the degree matrix
+/// Computes `M = - D^(-1/2) * A * D^(-1/2)`
+/// This allows the Lanczos solver (which finds largest magnitude/smallest
+/// algebraic) to converge to the cluster-structure eigenvectors (near -1) much
+/// faster than finding Laplacian eigenvectors near 0.
 ///
 /// ### Params
 ///
@@ -86,17 +89,19 @@ where
         .map(|&d| if d > 1e-8 { 1.0 / d.sqrt() } else { 0.0 })
         .collect();
 
-    // Build normalised Laplacian: L = I - D^(-1/2) * A * D^(-1/2)
+    // Build matrix: M = - D^(-1/2) * A * D^(-1/2)
     let mut data = Vec::new();
     let mut indices = Vec::new();
     let mut indptr = vec![0];
 
     for i in 0..n {
-        // Collect and sort this row's entries
-        let mut row_entries = vec![(i, 1.0)]; // diagonal
+        // [FIX]: Do NOT add the diagonal identity term (i, 1.0) here.
+        // We want only the negative adjacency part.
+        let mut row_entries = vec![];
 
         for &(j, w) in &adj[i] {
             if i != j {
+                // Keep the negative sign
                 let normalised_weight = -d_inv_sqrt[i] * w * d_inv_sqrt[j];
                 row_entries.push((j, normalised_weight));
             }
