@@ -38,9 +38,12 @@ where
     // use ::<1> turbofish syntax <- important!
     let dist_sq: Tensor<B, 1> = diff.clone().powf_scalar(2.0).sum_dim(1).squeeze_dims(&[1]);
 
+    let epsilon = T::from_f32(1e-6).unwrap();
+    let dist_sq_safe = dist_sq + Tensor::from_floats([epsilon], &diff.device());
+
     // UMAP probability: 1 / (1 + a * dist^(2b))
     let a_tensor: Tensor<B, 1> = Tensor::from_floats([a], &diff.device());
-    let power: Tensor<B, 1> = dist_sq.powf_scalar(b);
+    let power: Tensor<B, 1> = dist_sq_safe.powf_scalar(b);
     let qs: Tensor<B, 1> = (Tensor::ones_like(&power) + a_tensor * power).powf_scalar(-1.0);
 
     // binary cross-entropy: -[t*log(q) + (1-t)*log(1-q)]
