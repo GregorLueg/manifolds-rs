@@ -128,15 +128,17 @@ where
     B: Backend,
     T: Float + FromPrimitive + Element,
 {
+    let eps = 1e-8;
+
     let umap = umap_loss(src_embed.clone(), dst_embed.clone(), targets, a, b);
 
     // Distances in embedding space
     let z_diff = src_embed - dst_embed;
-    let z_dist = z_diff.powf_scalar(2.0).sum_dim(1).squeeze_dims(&[1]).sqrt();
+    let z_dist = (z_diff.powf_scalar(2.0).sum_dim(1).squeeze_dims(&[1]) + eps).sqrt();
 
     // Distances in original space
     let x_diff = src_orig - dst_orig;
-    let x_dist = x_diff.powf_scalar(2.0).sum_dim(1).squeeze_dims(&[1]).sqrt();
+    let x_dist = (x_diff.powf_scalar(2.0).sum_dim(1).squeeze_dims(&[1]) + eps).sqrt();
 
     let corr = correlation_loss(x_dist, z_dist);
 
