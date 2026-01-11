@@ -1,10 +1,11 @@
 #![allow(clippy::needless_range_loop)] // I like loops ... !
 
 pub mod data;
-#[cfg(feature = "parametric_umap")]
-pub mod parametric;
 pub mod training;
 pub mod utils;
+
+#[cfg(feature = "parametric")]
+pub mod parametric;
 
 use ann_search_rs::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
@@ -18,7 +19,7 @@ use std::{
     default::Default,
     iter::Sum,
     marker::{Send, Sync},
-    ops::AddAssign,
+    ops::{AddAssign, DivAssign, MulAssign, SubAssign},
     time::Instant,
 };
 use thousands::*;
@@ -423,11 +424,301 @@ where
     transposed
 }
 
+//////////
+// tSNE //
+//////////
+
+/// Main configuration for t-SNE dimensionality reduction
+///
+/// ### Fields
+///
+/// * `n_dim` - Number of output dimensions (typically 2)
+/// * `perplexity` - Perplexity parameter controlling neighbourhood size
+///   (typical: 5-50)
+/// * `ann_type` - Approximate nearest neighbour method: "hnsw" or "nndescent"
+/// * `initialisation` - Embedding initialisation method: "pca", "random", or
+///   "spectral"
+/// * `nn_params` - Nearest neighbour search parameters
+/// * `optim_params` - Optimization parameters (learning rate, epochs, early
+///   exaggeration, theta)
+/// * `randomised_init` - Use randomised SVD for PCA initialisation
+#[derive(Debug, Clone)]
+pub struct TsneParams<T> {
+    pub n_dim: usize,
+    pub perplexity: T,
+    pub ann_type: String,
+    pub initialisation: String,
+    pub nn_params: NearestNeighbourParams<T>,
+    pub optim_params: TsneOptimParams<T>,
+    pub randomised_init: bool,
+}
+
+impl<T> TsneParams<T>
+where
+    T: Float + FromPrimitive,
+{
+    /// Create new t-SNE parameters with sensible defaults
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - Number of output dimensions. Default: 2
+    /// * `perplexity` - Perplexity parameter. Default: 30.0
+    /// * `lr` - Learning rate. Default: 200.0
+    /// * `n_epochs` - Number of optimization epochs. Default: 1000
+    /// * `ann_type` - ANN algorithm: "hnsw" or "nndescent". Default: "hnsw"
+    /// * `theta` - Barnes-Hut approximation parameter. Default: 0.5
+    ///
+    /// ### Returns
+    ///
+    /// `TsneParams` with sensible defaults for standard t-SNE
+    pub fn new(
+        n_dim: Option<usize>,
+        perplexity: Option<T>,
+        lr: Option<T>,
+        n_epochs: Option<usize>,
+        ann_type: Option<String>,
+        theta: Option<T>,
+    ) -> Self {
+        let n_dim = n_dim.unwrap_or(2);
+        let perplexity = perplexity.unwrap_or_else(|| T::from_f64(30.0).unwrap());
+        let lr = lr.unwrap_or_else(|| T::from_f64(200.0).unwrap());
+        let n_epochs = n_epochs.unwrap_or(1000);
+        let ann_type = ann_type.unwrap_or_else(|| "hnsw".to_string());
+        let theta = theta.unwrap_or_else(|| T::from_f64(0.5).unwrap());
+
+        Self {
+            n_dim,
+            perplexity,
+            ann_type,
+            initialisation: "pca".to_string(),
+            nn_params: NearestNeighbourParams::default(),
+            optim_params: TsneOptimParams {
+                n_epochs,
+                lr,
+                early_exag_iter: 250,
+                early_exag_factor: T::from_f64(12.0).unwrap(),
+                theta,
+            },
+            randomised_init: true,
+        }
+    }
+}
+
+/// Construct affinity graph for t-SNE from high-dimensional data
+///
+/// Performs the following steps:
+/// 1. Runs k-nearest neighbour search where k = 3 × perplexity
+/// 2. Computes Gaussian affinities P(j|i) via binary search for target entropy
+/// 3. Symmetrises to joint probabilities: P_ij = (P(j|i) + P(i|j)) / 2N
+///
+/// # Arguments
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `perplexity` - Target perplexity (effective number of neighbours,
+///   typical: 5-50)
+/// * `ann_type` - ANN algorithm: "hnsw" or "nndescent"
+/// * `nn_params` - Nearest neighbour search parameters
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - Print progress information
+///
+/// # Returns
+///
+/// Tuple of:
+/// - `SparseGraph<T>` containing symmetric joint probabilities P_ij
+/// - `Vec<Vec<usize>>` k-nearest neighbour indices for each point
+/// - `Vec<Vec<T>>` k-nearest neighbour distances for each point
+///
+/// # Notes
+///
+/// The k value is automatically set to `3 × perplexity`, clamped between 10 and
+/// n-1. This is standard practice in t-SNE implementations.
+pub fn construct_tsne_graph<T>(
+    data: MatRef<T>,
+    perplexity: T,
+    ann_type: String,
+    nn_params: &NearestNeighbourParams<T>,
+    seed: usize,
+    verbose: bool,
+) -> (SparseGraph<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
+where
+    T: Float
+        + FromPrimitive
+        + ToPrimitive
+        + Send
+        + Sync
+        + Default
+        + ComplexField
+        + RealField
+        + Sum
+        + AddAssign
+        + SimdDistance,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    // t-SNE rule of thumb: k = 3 * perplexity
+    let k_float = perplexity * T::from_f64(3.0).unwrap();
+    let k = k_float.to_usize().unwrap().max(15).min(data.nrows() - 1);
+
+    if verbose {
+        println!("Running kNN search (k={}) using {}...", k, ann_type);
+    }
+
+    let start_knn = Instant::now();
+    let (knn_indices, knn_dist) = run_ann_search(data, k, ann_type, nn_params, seed);
+
+    if verbose {
+        println!("kNN search done in: {:.2?}.", start_knn.elapsed());
+        println!("Computing Gaussian affinities and symmetrising...");
+    }
+
+    let start_graph = Instant::now();
+
+    // 1. compute Conditional Probs P(j|i)
+    let directed_graph = gaussian_knn_affinities(
+        &knn_indices,
+        &knn_dist,
+        perplexity,
+        T::from_f64(1e-5).unwrap(),
+        200,
+    );
+
+    // 2. symmetrise to Joint Probs P_ij
+    let graph = symmetrise_affinities_tsne(directed_graph);
+
+    if verbose {
+        println!(
+            "Finalised graph generation in {:.2?}.",
+            start_graph.elapsed()
+        );
+    }
+
+    (graph, knn_indices, knn_dist)
+}
+
+/// Run Barnes-Hut t-SNE dimensionality reduction
+///
+/// t-Distributed Stochastic Neighbour Embedding (t-SNE) is a technique for
+/// visualising high-dimensional data by reducing it to 2 or 3 dimensions.
+/// This implementation uses the Barnes-Hut approximation for O(N log N)
+/// complexity.
+///
+/// ### Algorithm
+///
+/// 1. Construct high-dimensional affinity graph via Gaussian kernels
+///    - k-NN search with k = 3 × perplexity
+///    - Binary search for precision to match target perplexity
+///    - Symmetrise to joint probabilities P_ij
+/// 2. Initialise low-dimensional embedding (typically via PCA)
+/// 3. Optimise embedding via gradient descent
+///    - Attractive forces: exact computation from graph
+///    - Repulsive forces: Barnes-Hut approximation
+///    - Early exaggeration (first 250 iterations)
+///    - Momentum switching at iteration 250
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `params` - t-SNE parameters controlling algorithm behaviour
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - Print progress information
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
+/// `n_dim` and inner vectors have length `n_samples`. Each outer element
+/// represents one embedding dimension.
+///
+/// # Example
+///
+/// ```ignore
+/// use faer::Mat;
+/// let data = Mat::from_fn(1000, 128, |_, _| rand::random::<f32>());
+/// let params = TsneParams::new(None, None, None, None, None, None);
+/// let embedding = tsne(data.as_ref(), &params, 42, true);
+/// // embedding[0] contains x-coordinates for all points
+/// // embedding[1] contains y-coordinates for all points
+/// ```
+///
+/// # References
+///
+/// - van der Maaten & Hinton (2008): "Visualizing Data using t-SNE"
+/// - van der Maaten (2014): "Accelerating t-SNE using Tree-Based Algorithms"
+pub fn tsne<T>(data: MatRef<T>, params: &TsneParams<T>, seed: usize, verbose: bool) -> Vec<Vec<T>>
+where
+    T: Float
+        + FromPrimitive
+        + ToPrimitive
+        + Send
+        + Sync
+        + Default
+        + ComplexField
+        + RealField
+        + Sum
+        + AddAssign
+        + SubAssign
+        + MulAssign
+        + DivAssign
+        + SimdDistance
+        + std::fmt::Display
+        + std::fmt::Debug,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    // 1. graph construction
+    let (graph, _, _) = construct_tsne_graph(
+        data,
+        params.perplexity,
+        params.ann_type.clone(),
+        &params.nn_params,
+        seed,
+        verbose,
+    );
+
+    // 2. initialise embedding
+    let init_type = parse_initilisation(&params.initialisation, params.randomised_init)
+        .unwrap_or(UmapInit::PcaInit { randomised: true });
+
+    if verbose {
+        println!("Initialising embedding via PCA...");
+    }
+
+    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
+
+    // 3. optimise
+    if verbose {
+        println!(
+            "Optimising via Barnes-Hut t-SNE ({} epochs)...",
+            params.optim_params.n_epochs
+        );
+    }
+
+    let start_optim = Instant::now();
+
+    optimise_bh_tsne(&mut embd, &params.optim_params, &graph, verbose);
+
+    if verbose {
+        println!("Optimisation complete in {:.2?}.", start_optim.elapsed());
+    }
+
+    // 4. transpose output: [n_samples][n_dim] → [n_dim][n_samples]
+    let n_samples = embd.len();
+    let mut transposed = vec![vec![T::zero(); n_samples]; params.n_dim];
+
+    for sample_idx in 0..n_samples {
+        for dim_idx in 0..params.n_dim {
+            transposed[dim_idx][sample_idx] = embd[sample_idx][dim_idx];
+        }
+    }
+
+    transposed
+}
+
 /////////////////////
 // Parametric UMAP //
 /////////////////////
 
-#[cfg(feature = "parametric_umap")]
+#[cfg(feature = "parametric")]
 /// Stores the parameters for parametric UMAP via neural nets
 ///
 /// * `n_dim` - How many dimensions to return
@@ -450,6 +741,7 @@ pub struct ParametricUmapParams<T> {
     train_param: TrainParametricParams<T>,
 }
 
+#[cfg(feature = "parametric")]
 impl<T> ParametricUmapParams<T>
 where
     T: Float + FromPrimitive + Element,
@@ -549,7 +841,7 @@ where
     }
 }
 
-#[cfg(feature = "parametric_umap")]
+#[cfg(feature = "parametric")]
 /// Run parametric UMAP dimensionality reduction
 ///
 /// Parametric UMAP learns a neural network encoder that maps high-dimensional
@@ -663,7 +955,7 @@ where
     embd
 }
 
-#[cfg(feature = "parametric_umap")]
+#[cfg(feature = "parametric")]
 /// Train the parametric UMAP model and return it
 ///
 /// ### Params

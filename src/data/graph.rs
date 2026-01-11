@@ -1,9 +1,13 @@
-use num_traits::Float;
+use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rayon::prelude::*;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use thousands::*;
 
 use crate::data::structures::*;
+
+//////////
+// UMAP //
+//////////
 
 /// Smooth kNN distances via binary search to find sigma for each point
 ///
@@ -26,6 +30,10 @@ use crate::data::structures::*;
 /// * `sigmas` - Smoothing bandwidth for each point
 /// * `rhos` - Distance to the `local_connectivity`-th nearest neighbour for
 ///   each point
+///
+/// ### Notes
+///
+/// Used for UMAP
 pub fn smooth_knn_dist<T>(
     dist: &[Vec<T>],
     k: usize,
@@ -338,6 +346,241 @@ where
         col_indices: filtered_cols,
         values: filtered_vals,
         n_vertices: graph.n_vertices,
+    }
+}
+
+//////////
+// tSNE //
+//////////
+
+/// Compute Gaussian affinities from k-nearest neighbours using perplexity-based
+/// calibration
+///
+/// For each point i, computes conditional probabilities p_{j|i} using a
+/// Gaussian kernel with bandwidth calibrated via binary search to achieve a
+/// target perplexity. The result is a sparse graph where edge (i,j) has weight
+/// p_{j|i}.
+///
+/// ### Params
+///
+/// * `knn_indices` - For each point, indices of its k nearest neighbours
+/// * `knn_dists` - For each point, distances to its k nearest neighbours
+///   (same order as indices!)
+/// * `perplexity` - Target perplexity (effective number of neighbours). Typical
+///   values: 5-50
+/// * `tol` - Convergence tolerance for entropy (typical: 1e-5)
+/// * `max_iter` - Maximum iterations for binary search (typical: 50-200)
+///
+/// ### Returns
+///
+/// A `SparseGraph` containing the asymmetric conditional probabilities p_{j|i}
+///
+/// ### Notes
+///
+/// Used for tSNE
+pub fn gaussian_knn_affinities<T>(
+    knn_indices: &[Vec<usize>],
+    knn_dists: &[Vec<T>],
+    perplexity: T,
+    tol: T,
+    max_iter: usize,
+) -> SparseGraph<T>
+where
+    T: Float + Send + Sync + FromPrimitive + ToPrimitive,
+{
+    let n = knn_indices.len();
+    let target_entropy = perplexity.log2();
+    let machine_epsilon = T::epsilon();
+
+    let results: Vec<Vec<T>> = knn_indices
+        .par_iter()
+        .zip(knn_dists.par_iter())
+        .map(|(_, dists)| {
+            // binary search for precision (beta = 1 / (2*sigma^2))
+            let mut beta = T::one();
+            let mut min_beta = T::neg_infinity();
+            let mut max_beta = T::infinity();
+            let mut current_probs = vec![T::zero(); dists.len()];
+
+            for _ in 0..max_iter {
+                // compute P_i with current beta: p_{j|i} = exp(-beta * d_{ij}^2)
+                let mut sum_p = T::zero();
+                for (j, &d) in dists.iter().enumerate() {
+                    let d_sq = d * d;
+                    let p = (-beta * d_sq).exp();
+                    current_probs[j] = p;
+                    sum_p = sum_p + p;
+                }
+
+                // check for numerical stability
+                if sum_p.abs() < machine_epsilon {
+                    sum_p = machine_epsilon;
+                }
+
+                // normalise to get probabilities and compute entropy H
+                let mut entropy = T::zero();
+                for p in current_probs.iter_mut() {
+                    *p = *p / sum_p;
+                    if *p > machine_epsilon {
+                        entropy = entropy - *p * p.log2();
+                    }
+                }
+
+                // check convergence
+                let entropy_diff = entropy - target_entropy;
+                if entropy_diff.abs() < tol {
+                    break;
+                }
+
+                // adjust beta
+                if entropy_diff > T::zero() {
+                    // entropy too high → distribution too flat → increase beta (narrow curve)
+                    min_beta = beta;
+                    if max_beta.is_infinite() {
+                        beta = beta * (T::one() + T::one());
+                    } else {
+                        beta = (beta + max_beta) / (T::one() + T::one());
+                    }
+                } else {
+                    // entropy too low → distribution too peaked → decrease beta (widen curve)
+                    max_beta = beta;
+                    if min_beta.is_infinite() {
+                        beta = beta / (T::one() + T::one());
+                    } else {
+                        beta = (beta + min_beta) / (T::one() + T::one());
+                    }
+                }
+            }
+
+            current_probs
+        })
+        .collect();
+
+    // build sparse graph
+    let capacity: usize = results.iter().map(|p| p.len()).sum();
+    let mut row_indices = Vec::with_capacity(capacity);
+    let mut col_indices = Vec::with_capacity(capacity);
+    let mut values = Vec::with_capacity(capacity);
+
+    for (i, probs) in results.into_iter().enumerate() {
+        for (&j, p) in knn_indices[i].iter().zip(probs) {
+            if p > machine_epsilon && j != i {
+                row_indices.push(i);
+                col_indices.push(j);
+                values.push(p);
+            }
+        }
+    }
+
+    SparseGraph {
+        row_indices,
+        col_indices,
+        values,
+        n_vertices: n,
+    }
+}
+
+/// Symmetrise graph for t-SNE: P_sym = (P + P^T) / 2N
+///
+/// Converts conditional probabilities P(j|i) to symmetric joint probabilities
+/// P_ij. This ensures P_ij = P_ji and Σ_ij P_ij = 1.
+///
+/// ### Params
+///
+/// * `graph` - Directed sparse graph containing conditional probabilities P(j|i)
+///
+/// ### Returns
+///
+/// Symmetric `SparseGraph` where:
+/// - Each edge (i,j) has weight P_ij = (P(j|i) + P(i|j)) / 2N
+/// - P_ij = P_ji (symmetric)
+/// - All weights sum to 1.0
+///
+/// ### Algorithm
+///
+/// 1. Build adjacency map for fast lookup of P(j|i)
+/// 2. Collect all unique unordered pairs {i,j} from input edges
+/// 3. For each pair: compute P_ij = (P(j|i) + P(i|j)) / 2N
+/// 4. Add both directions (i,j) and (j,i) to output with weight P_ij
+pub fn symmetrise_affinities_tsne<T>(graph: SparseGraph<T>) -> SparseGraph<T>
+where
+    T: Float + Send + Sync + FromPrimitive,
+{
+    let n = graph.n_vertices;
+    let n_float = T::from_usize(n).unwrap();
+    let two = T::from_f64(2.0).unwrap();
+    let normalization = two * n_float;
+
+    // Build adjacency map for O(1) lookup
+    let mut adj: Vec<FxHashMap<usize, T>> = vec![FxHashMap::default(); n];
+    for ((&i, &j), &w) in graph
+        .row_indices
+        .iter()
+        .zip(&graph.col_indices)
+        .zip(&graph.values)
+    {
+        adj[i].insert(j, w);
+    }
+
+    // Collect all unique unordered pairs {i,j} from edges
+    let mut pairs_set: FxHashSet<(usize, usize)> = FxHashSet::default();
+    for ((&i, &j), _) in graph
+        .row_indices
+        .iter()
+        .zip(&graph.col_indices)
+        .zip(&graph.values)
+    {
+        let pair = if i < j {
+            (i, j)
+        } else if i > j {
+            (j, i)
+        } else {
+            (i, i)
+        };
+        pairs_set.insert(pair);
+    }
+
+    let pairs: Vec<(usize, usize)> = pairs_set.into_iter().collect();
+
+    // Process each unique pair in parallel
+    let edges: Vec<Vec<(usize, usize, T)>> = pairs
+        .par_iter()
+        .map(|&(i, j)| {
+            // Get both directions (may not exist)
+            let w_ij = adj[i].get(&j).copied().unwrap_or_else(T::zero);
+            let w_ji = adj[j].get(&i).copied().unwrap_or_else(T::zero);
+            let p_sym = (w_ij + w_ji) / normalization;
+
+            let mut local_edges = Vec::new();
+            if p_sym > T::epsilon() {
+                local_edges.push((i, j, p_sym));
+                if i != j {
+                    local_edges.push((j, i, p_sym));
+                }
+            }
+            local_edges
+        })
+        .collect();
+
+    // Flatten into final arrays
+    let total_capacity: usize = edges.iter().map(|v| v.len()).sum();
+    let mut rows = Vec::with_capacity(total_capacity);
+    let mut cols = Vec::with_capacity(total_capacity);
+    let mut vals = Vec::with_capacity(total_capacity);
+
+    for edge_vec in edges {
+        for (i, j, w) in edge_vec {
+            rows.push(i);
+            cols.push(j);
+            vals.push(w);
+        }
+    }
+
+    SparseGraph {
+        row_indices: rows,
+        col_indices: cols,
+        values: vals,
+        n_vertices: n,
     }
 }
 

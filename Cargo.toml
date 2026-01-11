@@ -18,7 +18,7 @@ codegen-units = 1
 strip = true
 
 [features]
-parametric_umap = ["burn"]
+parametric = ["burn"]
 
 [dependencies]
 burn = { version = "0.19.1", features = [
