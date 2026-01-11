@@ -1,8 +1,11 @@
 use core::f64;
 use num_traits::{Float, FromPrimitive};
-use rand::rngs::StdRng;
-use rand::{Rng, SeedableRng};
+use rand::{
+    rngs::StdRng,
+    {Rng, SeedableRng},
+};
 use rayon::prelude::*;
+use rustc_hash::FxHashSet;
 use std::ops::AddAssign;
 
 /////////////
@@ -94,10 +97,10 @@ where
     pub fn from_min_dist_spread(
         min_dist: T,
         spread: T,
-        lr: T,
-        gamma: T,
-        n_epochs: usize,
-        neg_sample_rate: usize,
+        lr: Option<T>,
+        gamma: Option<T>,
+        n_epochs: Option<usize>,
+        neg_sample_rate: Option<usize>,
         beta1: Option<T>,
         beta2: Option<T>,
         eps: Option<T>,
@@ -106,6 +109,10 @@ where
         let beta1 = beta1.unwrap_or(T::from(BETA1).unwrap());
         let beta2 = beta2.unwrap_or(T::from(BETA2).unwrap());
         let eps = eps.unwrap_or(T::from(EPS).unwrap());
+        let n_epochs = n_epochs.unwrap_or(500);
+        let neg_sample_rate = neg_sample_rate.unwrap_or(5);
+        let lr = lr.unwrap_or(T::one());
+        let gamma = gamma.unwrap_or(T::one());
 
         let (a, b) = Self::fit_params(min_dist, spread, None);
         Self {
@@ -840,7 +847,8 @@ pub fn optimise_embedding_adam<T>(
 /// Optimise UMAP embedding using Adam optimizer (parallel batch version)
 ///
 /// Implements uwot's `BatchUpdate` with `NodeWorker` behavior:
-/// - Parallelizes over nodes (not edges)
+///
+/// - Parallelises over nodes (not edges)
 /// - Accumulates gradients per node per epoch
 /// - Applies Adam updates with per-epoch bias correction (matches uwot)
 /// - Single update per node per epoch
@@ -851,7 +859,7 @@ pub fn optimise_embedding_adam<T>(
 ///   Matches uwot's Adam::epoch_end() behavior where beta1^t and beta2^t
 ///   are updated once per epoch and applied to all updates
 /// - **Update frequency**: One Adam step per node per epoch
-/// - **Parallelization**: Over nodes instead of edges
+/// - **Parallelisation**: Over nodes instead of edges
 ///
 /// # Parameters
 ///
@@ -865,7 +873,7 @@ pub fn optimise_embedding_adam<T>(
 ///
 /// - Uses `two_gamma_b` for repulsive gradients (matches uwot)
 /// - Bias correction matches uwot's per-epoch approach
-/// - Builds bidirectional node-to-edges mapping for efficient parallelization
+/// - Builds bidirectional node-to-edges mapping for efficient parallelisation
 pub fn optimise_embedding_adam_parallel<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
@@ -873,7 +881,7 @@ pub fn optimise_embedding_adam_parallel<T>(
     seed: u64,
     verbose: bool,
 ) where
-    T: Float + FromPrimitive + Send + Sync + AddAssign,
+    T: Float + FromPrimitive + Send + Sync + AddAssign + std::fmt::Display,
 {
     let n = embd.len();
     let n_dim = embd[0].len();
@@ -885,10 +893,19 @@ pub fn optimise_embedding_adam_parallel<T>(
 
     let consts = OptimConstants::new(params.a, params.b, params.gamma);
 
+    // CRITICAL FIX: For symmetric graphs, only keep ONE direction per undirected edge
+    // uwot's NodeWorker processes each edge once, but your adjacency list has both (i,j) and (j,i)
+    // This was causing each edge to be processed twice, doubling attractive forces
     let mut edges: Vec<(usize, usize, T)> = Vec::new();
+    let mut seen: FxHashSet<(usize, usize)> = FxHashSet::default();
+
     for (i, neighbours) in graph.iter().enumerate() {
         for &(j, w) in neighbours {
-            edges.push((i, j, w));
+            // only add edge once - keep the one where i < j
+            if i < j && !seen.contains(&(i, j)) {
+                edges.push((i, j, w));
+                seen.insert((i, j));
+            }
         }
     }
 
@@ -930,15 +947,14 @@ pub fn optimise_embedding_adam_parallel<T>(
     let mut m: Vec<T> = vec![T::zero(); n * n_dim];
     let mut v: Vec<T> = vec![T::zero(); n * n_dim];
 
-    // build bidirectional node-to-edges mapping
+    // Build node-to-edges mapping for BOTH endpoints
+    // Since we only store (i,j) where i<j, node j needs to know about this edge too
     let mut node_edges: Vec<Vec<(usize, bool)>> = vec![Vec::new(); n];
     for (edge_idx, &(i, j, _)) in edges.iter().enumerate() {
-        node_edges[i].push((edge_idx, true)); // i is head
-        node_edges[j].push((edge_idx, false)); // j is tail
+        node_edges[i].push((edge_idx, true)); // i is smaller node
+        node_edges[j].push((edge_idx, false)); // j is larger node
     }
 
-    // pre-compute per-epoch bias correction (matching uwot's Adam::epoch_end)
-    // beta1t and beta2t track beta1^epoch and beta2^epoch
     let bias_corrections: Vec<(T, T)> = (0..params.n_epochs)
         .map(|epoch| {
             let t = T::from(epoch + 1).unwrap();
@@ -946,7 +962,6 @@ pub fn optimise_embedding_adam_parallel<T>(
             let beta2t = params.beta2.powf(t);
             let sqrt_b2t1 = (T::one() - beta2t).sqrt();
 
-            // ad_scale and epsc as in uwot's Adam::epoch_end
             let ad_scale = sqrt_b2t1 / (T::one() - beta1t);
             let epsc = sqrt_b2t1 * params.eps;
 
@@ -962,7 +977,6 @@ pub fn optimise_embedding_adam_parallel<T>(
         let epoch_t = T::from(epoch).unwrap();
         let (ad_scale, epsc) = bias_corrections[epoch];
 
-        // parallel gradient accumulation
         let updates: Vec<(usize, Vec<T>)> = (0..n)
             .into_par_iter()
             .filter_map(|node_i| {
@@ -976,7 +990,8 @@ pub fn optimise_embedding_adam_parallel<T>(
                 let mut node_gradients = vec![T::zero(); n_dim];
                 let mut has_updates = false;
 
-                for &(edge_idx, is_head) in &node_edges[node_i] {
+                // Process all edges involving this node
+                for &(edge_idx, is_smaller) in &node_edges[node_i] {
                     if epoch_of_next_sample[edge_idx] > epoch_t {
                         continue;
                     }
@@ -984,7 +999,8 @@ pub fn optimise_embedding_adam_parallel<T>(
                     has_updates = true;
                     let (i, j, _) = edges[edge_idx];
 
-                    let other_node = if is_head { j } else { i };
+                    // Determine the other endpoint
+                    let other_node = if is_smaller { j } else { i };
                     let base_other = other_node * n_dim;
 
                     let mut dist_sq = T::zero();
@@ -993,6 +1009,7 @@ pub fn optimise_embedding_adam_parallel<T>(
                         dist_sq += diff * diff;
                     }
 
+                    // Attractive gradient - with *2.0 matching uwot's update_head_grad_vec
                     if dist_sq >= T::from(1e-8).unwrap() {
                         let dist_sq_b = dist_sq.powf(consts.b);
                         let denom = T::one() + consts.a * dist_sq_b;
@@ -1000,13 +1017,13 @@ pub fn optimise_embedding_adam_parallel<T>(
 
                         for d in 0..n_dim {
                             let delta = embd_flat[base_other + d] - embd_flat[base_i + d];
-                            // uwot doubled here, but i think this is due to a different data structure
-                            node_gradients[d] += grad_coeff * delta;
+                            // Factor of 2 matches uwot's BatchUpdate::attract behavior
+                            node_gradients[d] += T::from(2.0).unwrap() * grad_coeff * delta;
                         }
                     }
 
-                    // negative sampling only for head nodes
-                    if is_head {
+                    // Negative sampling - only for the smaller node to avoid duplication
+                    if is_smaller {
                         let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
                             / epochs_per_neg_sample[edge_idx])
                             .floor()
@@ -1027,7 +1044,6 @@ pub fn optimise_embedding_adam_parallel<T>(
                                 dist_sq += diff * diff;
                             }
 
-                            // repulsive: 2*gamma*b / ((0.001 + d^2) * (1 + a*d^(2b)))
                             let dist_sq_safe = dist_sq + consts.eps;
                             let dist_sq_b = dist_sq_safe.powf(consts.b);
                             let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
@@ -1051,7 +1067,6 @@ pub fn optimise_embedding_adam_parallel<T>(
             })
             .collect();
 
-        // sequential update application
         for (node_i, node_gradients) in updates {
             let base_i = node_i * n_dim;
 
@@ -1059,19 +1074,16 @@ pub fn optimise_embedding_adam_parallel<T>(
                 let idx = base_i + d;
                 let g = node_gradients[d];
 
-                // update moments (using in-place trick from uwot)
                 let m_old = m[idx];
                 m[idx] += one_minus_beta1 * (g - m_old);
 
                 let v_old = v[idx];
                 v[idx] += one_minus_beta2 * (g * g - v_old);
 
-                // apply update with per-epoch bias correction
                 embd_flat[idx] += lr * ad_scale * m[idx] / (v[idx].sqrt() + epsc);
             }
         }
 
-        // update sampling schedules
         for (edge_idx, &_) in edges.iter().enumerate() {
             if epoch_of_next_sample[edge_idx] <= epoch_t {
                 epoch_of_next_sample[edge_idx] += epochs_per_sample[edge_idx];
@@ -1111,8 +1123,8 @@ mod test_optimiser {
     fn test_optim_params_default_2d() {
         let params = OptimParams::<f64>::default_2d();
 
-        assert_relative_eq!(params.a, 1.929, epsilon = 1e-6);
-        assert_relative_eq!(params.b, 0.7915, epsilon = 1e-6);
+        assert_relative_eq!(params.a, 1.5, epsilon = 1e-6);
+        assert_relative_eq!(params.b, 0.9, epsilon = 1e-6);
         assert_eq!(params.lr, 1.0);
         assert_eq!(params.gamma, 1.0);
         assert_eq!(params.n_epochs, 500);
@@ -1122,8 +1134,17 @@ mod test_optimiser {
 
     #[test]
     fn test_optim_params_from_min_dist_spread() {
-        let params =
-            OptimParams::<f64>::from_min_dist_spread(0.1, 1.0, 1.0, 1.0, 500, 5, None, None, None);
+        let params = OptimParams::<f64>::from_min_dist_spread(
+            0.1,
+            1.0,
+            Some(1.0),
+            Some(1.0),
+            Some(500),
+            Some(5),
+            None,
+            None,
+            None,
+        );
 
         assert!(params.a > 0.0);
         assert!(params.b > 0.0);

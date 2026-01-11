@@ -21,13 +21,13 @@ use num_traits::Float;
 /// * `mix_weight` - Balance between fuzzy union and directed graph during
 ///   symmetrisation (typically 1.0).
 #[derive(Clone, Debug)]
-pub struct UmapParams<T> {
+pub struct UmapGraphParams<T> {
     pub bandwidth: T,
     pub local_connectivity: T,
     pub mix_weight: T,
 }
 
-impl<T> Default for UmapParams<T>
+impl<T> Default for UmapGraphParams<T>
 where
     T: Float,
 {

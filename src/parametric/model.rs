@@ -113,4 +113,23 @@ impl UmapMlpConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> UmapMlp<B> {
         UmapMlp::new(self, device)
     }
+
+    /// Generate a new configuration based on parameters
+    ///
+    /// ### Params
+    ///
+    /// * `input_size` - Number of input features.
+    /// * `hidden_sizes` - Vector of sizes for the hidden layers.
+    /// * `output_size` - Number of output features.
+    ///
+    /// ### Returns
+    ///
+    /// Initialised UmapMlpConfig
+    pub fn from_params(input_size: usize, hidden_sizes: Vec<usize>, output_size: usize) -> Self {
+        Self {
+            input_size,
+            hidden_sizes,
+            output_size,
+        }
+    }
 }

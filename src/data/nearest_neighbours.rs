@@ -5,6 +5,7 @@ use ann_search_rs::utils::dist::SimdDistance;
 use ann_search_rs::*;
 use faer::MatRef;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
+use rayon::prelude::*;
 use std::default::Default;
 use std::iter::Sum;
 
@@ -30,24 +31,23 @@ pub enum AnnSearch {
 /// * `n_trees` - Number of trees to use to build the index. Defaults to `50`
 ///   like the `uwot` package.
 /// * `search_budget` - Multiplier. The algorithm will set the search budget to
-///   `search_budget * k * n_trees`
+///   `10 * k * n_trees`
 ///
 /// **HNSW**-specific parameter:
 ///
 /// * `m` - Number of bidirectional connections per layer. Defaults to 16 based
 ///   on uwot R package.
 /// * `ef_construction` - Size of candidate list during construction.
-/// * `ef_search` - Multipler. Size of candidate list during search (higher =
-///   better recall, slower). The total search will be `ef_search * k`.
+/// * `ef_search` - Size of candidate list during search (higher = better
+///   recall, slower)
 ///
 /// **NNDescent**-specific parameter
 ///
-/// * `max_iter` - Maximum iterations for the algorithm.
-/// * `delta` - Early stop criterium for the algorithm. For example if set to
-///   `0.001` the search stops when less than 0.1% of nodes change their
-///   neighbours.
-/// * `rho` - Sampling rate for the old neighbours. Will adaptively decrease
-///   over time.
+/// * `diversify_prob` - Diversifying probability at the end of the index
+///   generation.
+/// * `delta` - Early termination criterium
+/// * `ef_budget` - Optional query budget.
+#[derive(Debug, Clone)]
 pub struct NearestNeighbourParams<T> {
     pub dist_metric: String,
     // annoy
@@ -63,19 +63,66 @@ pub struct NearestNeighbourParams<T> {
     pub ef_budget: Option<usize>,
 }
 
+impl<T> NearestNeighbourParams<T> {
+    /// Generate a new instance
+    ///
+    /// ### Params
+    ///
+    /// * `dist_metric` - One of `"euclidean"` or `"cosine"`
+    /// * `n_trees` - Number of trees to use to build the index. Defaults to `50`
+    ///   like the `uwot` package.
+    /// * `search_budget` - Optional search budget. The algorithm will set the
+    ///   search budget to `10 * k * n_trees` if not provided.
+    ///
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        dist_metric: String,
+        // annoy
+        n_tree: usize,
+        search_budget: Option<usize>,
+        // hnsw
+        m: usize,
+        ef_construction: usize,
+        ef_search: usize,
+        // nndescent
+        diversify_prob: T,
+        delta: T,
+        ef_budget: Option<usize>,
+    ) -> Self {
+        Self {
+            dist_metric,
+            n_tree,
+            search_budget,
+            m,
+            ef_construction,
+            ef_search,
+            diversify_prob,
+            delta,
+            ef_budget,
+        }
+    }
+}
+
 impl<T> Default for NearestNeighbourParams<T>
 where
     T: Float,
 {
     /// Returns sensible defaults for the approximate nearest neighbour search
+    ///
+    /// ### Returns
+    ///
+    /// Initialised self with sensible default parameters.
     fn default() -> Self {
         Self {
             dist_metric: "cosine".to_string(),
+            // annoy
             n_tree: 50,
             search_budget: None,
+            // hnsw
             m: 16,
             ef_construction: 200,
-            ef_search: 2,
+            ef_search: 100,
+            // nndescent
             diversify_prob: T::from(0.0).unwrap(),
             delta: T::from(0.001).unwrap(),
             ef_budget: None,
@@ -147,7 +194,7 @@ where
                 false,
             );
 
-            query_hnsw_index(data, &index, k + 1, params_nn.ef_search * k, true, false)
+            query_hnsw_index(data, &index, k + 1, params_nn.ef_search, true, false)
         }
         AnnSearch::NNDescent => {
             let index = build_nndescent_index(
@@ -169,16 +216,16 @@ where
 
     let knn_dist = knn_dist.unwrap();
 
-    // // remove self (first element) from both indices and distances
-    // let knn_indices: Vec<Vec<usize>> = knn_indices
-    //     .into_par_iter()
-    //     .map(|mut v| v.drain(1..).collect())
-    //     .collect();
+    // remove self (first element) from both indices and distances
+    let knn_indices: Vec<Vec<usize>> = knn_indices
+        .into_par_iter()
+        .map(|mut v| v.drain(1..).collect())
+        .collect();
 
-    // let knn_dist: Vec<Vec<T>> = knn_dist
-    //     .into_par_iter()
-    //     .map(|mut v| v.drain(1..).collect())
-    //     .collect();
+    let knn_dist: Vec<Vec<T>> = knn_dist
+        .into_par_iter()
+        .map(|mut v| v.drain(1..).collect())
+        .collect();
 
     (knn_indices, knn_dist)
 }
