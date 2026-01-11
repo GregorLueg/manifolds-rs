@@ -70,7 +70,7 @@ impl<B: Backend> UmapMlp<B> {
         );
 
         let activation = LeakyReluConfig::init(&LeakyReluConfig {
-            negative_slope: 0.01,
+            negative_slope: 0.1,
         });
 
         Self {
