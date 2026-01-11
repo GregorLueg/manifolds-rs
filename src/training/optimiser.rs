@@ -1,12 +1,21 @@
 use core::f64;
-use num_traits::{Float, FromPrimitive};
+use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand::{
     rngs::StdRng,
     {Rng, SeedableRng},
 };
 use rayon::prelude::*;
 use rustc_hash::FxHashSet;
-use std::ops::AddAssign;
+use std::fmt::Debug;
+use std::iter::Sum;
+use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
+
+use crate::data::structures::*;
+use crate::utils::bh_tree::*;
+
+//////////
+// UMAP //
+//////////
 
 /////////////
 // Globals //
@@ -323,7 +332,10 @@ pub fn parse_optimiser(s: &str) -> Option<Optimiser> {
 ///
 /// Squared distance between two points
 #[inline(always)]
-fn squared_dist_flat<T: Float>(embd: &[T], i: usize, j: usize, n_dim: usize) -> T {
+fn squared_dist_flat<T>(embd: &[T], i: usize, j: usize, n_dim: usize) -> T
+where
+    T: Float,
+{
     let mut sum = T::zero();
     let base_i = i * n_dim;
     let base_j = j * n_dim;
@@ -355,14 +367,16 @@ fn squared_dist_flat<T: Float>(embd: &[T], i: usize, j: usize, n_dim: usize) -> 
 /// * Skips update if points are essentially at the same location (dist_square
 ///   < 1e-8) to avoid numerical instability.
 #[inline]
-fn apply_attractive_force_flat<T: Float>(
+fn apply_attractive_force_flat<T>(
     embd: &mut [T],
     i: usize,
     j: usize,
     n_dim: usize,
     consts: &OptimConstants<T>,
     lr: T,
-) {
+) where
+    T: Float,
+{
     let dist_sq = squared_dist_flat(embd, i, j, n_dim);
 
     if dist_sq < T::from(1e-8).unwrap() {
@@ -414,14 +428,16 @@ fn apply_attractive_force_flat<T: Float>(
 /// * **Clips gradients** to the range [-4.0, 4.0] to prevent the "exploding
 ///   gradient" problem when points are very close to one another.
 #[inline]
-fn apply_repulsive_force_flat<T: Float>(
+fn apply_repulsive_force_flat<T>(
     embd: &mut [T],
     i: usize,
     k: usize,
     n_dim: usize,
     consts: &OptimConstants<T>,
     lr: T,
-) {
+) where
+    T: Float,
+{
     let dist_sq = squared_dist_flat(embd, i, k, n_dim);
 
     let grad_coeff = if dist_sq > T::zero() {
@@ -447,13 +463,14 @@ fn apply_repulsive_force_flat<T: Float>(
     }
 }
 
-////////////////////
-// Main functions //
-////////////////////
+////////////////
+// Optimisers //
+////////////////
 
 /// Optimise UMAP embedding using Stochastic Gradient Descent (SGD)
 ///
-/// Implements the standard UMAP optimization procedure using SGD with:
+/// Implements the standard UMAP optimisation procedure using SGD with:
+///
 /// - Adaptive edge sampling based on edge weights (higher weights sampled more
 ///   frequently)
 /// - Negative sampling for repulsive forces
@@ -603,8 +620,9 @@ pub fn optimise_embedding_sgd<T>(
 
 /// Optimise UMAP embedding using Adam optimiser (sequential version)
 ///
-/// Implements UMAP optimization using the Adam adaptive learning rate
+/// Implements UMAP optimisation using the Adam adaptive learning rate
 /// algorithm:
+///
 /// - Adaptive edge sampling based on edge weights
 /// - First and second moment estimation (momentum and RMSprop)
 /// - Bias correction for moment estimates
@@ -809,7 +827,7 @@ pub fn optimise_embedding_adam<T>(
                     dist_sq += diff * diff;
                 }
 
-                // Repulsive gradient: 2 * gamma * b / ((0.001 + d^2) * (1 + a*d^(2b)))
+                // repulsive gradient: 2 * gamma * b / ((0.001 + d^2) * (1 + a*d^(2b)))
                 let dist_sq_safe = dist_sq + consts.eps;
                 let dist_sq_b = dist_sq_safe.powf(consts.b);
                 let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
@@ -844,22 +862,14 @@ pub fn optimise_embedding_adam<T>(
     }
 }
 
-/// Optimise UMAP embedding using Adam optimizer (parallel batch version)
+/// Optimise UMAP embedding using Adam optimiser (parallel batch version)
 ///
-/// Implements uwot's `BatchUpdate` with `NodeWorker` behavior:
+/// Implements uwot's `BatchUpdate` with `NodeWorker` behaviour:
 ///
 /// - Parallelises over nodes (not edges)
 /// - Accumulates gradients per node per epoch
 /// - Applies Adam updates with per-epoch bias correction (matches uwot)
 /// - Single update per node per epoch
-///
-/// ### Key Differences from Sequential Adam
-///
-/// - **Bias correction**: Per-epoch (not per-gradient-step)
-///   Matches uwot's Adam::epoch_end() behavior where beta1^t and beta2^t
-///   are updated once per epoch and applied to all updates
-/// - **Update frequency**: One Adam step per node per epoch
-/// - **Parallelisation**: Over nodes instead of edges
 ///
 /// ### Params
 ///
@@ -893,9 +903,6 @@ pub fn optimise_embedding_adam_parallel<T>(
 
     let consts = OptimConstants::new(params.a, params.b, params.gamma);
 
-    // CRITICAL FIX: For symmetric graphs, only keep ONE direction per undirected edge
-    // uwot's NodeWorker processes each edge once, but your adjacency list has both (i,j) and (j,i)
-    // This was causing each edge to be processed twice, doubling attractive forces
     let mut edges: Vec<(usize, usize, T)> = Vec::new();
     let mut seen: FxHashSet<(usize, usize)> = FxHashSet::default();
 
@@ -1009,7 +1016,7 @@ pub fn optimise_embedding_adam_parallel<T>(
                         dist_sq += diff * diff;
                     }
 
-                    // Attractive gradient - with *2.0 matching uwot's update_head_grad_vec
+                    // attractive gradient - with *2.0 matching uwot's update_head_grad_vec
                     if dist_sq >= T::from(1e-8).unwrap() {
                         let dist_sq_b = dist_sq.powf(consts.b);
                         let denom = T::one() + consts.a * dist_sq_b;
@@ -1107,6 +1114,288 @@ pub fn optimise_embedding_adam_parallel<T>(
     for (i, point) in embd.iter_mut().enumerate() {
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
+    }
+}
+
+//////////
+// tSNE //
+//////////
+
+////////////////
+// Structures //
+////////////////
+
+/// t-SNE specific optimization parameters
+///
+/// ### Fields
+///
+/// * `n_epochs` - Number of epochs (typically n / 12 or 200 or so)
+/// * `lr` - Learning rate
+/// * `early_exag_iter` - Early exaggeration iters
+/// * `early_exag_factor` - The factor to exaggerate in the early iterations
+/// * `theta` - The Barnes-Hut theta
+#[derive(Clone, Debug)]
+pub struct TsneOptimParams<T> {
+    pub n_epochs: usize,
+    pub lr: T,
+    pub early_exag_iter: usize,
+    pub early_exag_factor: T,
+    pub theta: T,
+}
+
+impl<T> TsneOptimParams<T>
+where
+    T: Float + FromPrimitive,
+{
+    /// Generate a new instance
+    ///
+    /// ### Params
+    ///
+    /// * `n_epochs` - Number of epochs (typically n / 12 or 200 or so)
+    /// * `lr` - Learning rate
+    /// * `early_exag_iter` - Early exaggeration iters
+    /// * `early_exag_factor` - The factor to exaggerate in the early iterations
+    /// * `theta` - The Barnes-Hut theta
+    ///
+    /// ### Returns
+    ///
+    /// Initialised self
+    pub fn new(
+        n_epochs: usize,
+        lr: T,
+        early_exag_iter: usize,
+        early_exag_factor: T,
+        theta: T,
+    ) -> Self {
+        Self {
+            n_epochs,
+            lr,
+            early_exag_iter,
+            early_exag_factor,
+            theta,
+        }
+    }
+}
+
+impl<T: Float + FromPrimitive> Default for TsneOptimParams<T> {
+    fn default() -> Self {
+        Self {
+            n_epochs: 1000,
+            lr: T::from_f64(200.0).unwrap(),
+            early_exag_iter: 250,
+            early_exag_factor: T::from_f64(12.0).unwrap(),
+            theta: T::from_f64(0.5).unwrap(),
+        }
+    }
+}
+
+///////////////
+// Optimiser //
+///////////////
+
+/// Adaptive gain update for t-SNE gradient descent
+///
+/// Implements per-parameter adaptive learning rates: gains increase when
+/// gradient maintains direction, decrease when oscillating.
+///
+/// ### Params
+///
+/// * `val` - Current parameter value to update
+/// * `update` - Accumulated momentum vector for this parameter
+/// * `gain` - Adaptive gain (learning rate multiplier) for this parameter
+/// * `grad` - Current gradient for this parameter
+/// * `lr` - Base learning rate
+/// * `momentum` - Momentum coefficient (typically 0.5 early, 0.8 later)
+/// * `min_gain` - Minimum allowed gain value (typically 0.01)
+#[inline(always)]
+fn update_parameter<T>(
+    val: &mut T,
+    update: &mut T,
+    gain: &mut T,
+    grad: T,
+    lr: T,
+    momentum: T,
+    min_gain: T,
+) where
+    T: Float + FromPrimitive + ToPrimitive,
+{
+    // adjust gain based on gradient-update alignment
+    if (grad > T::zero()) != (*update > T::zero()) {
+        *gain = *gain + T::from_f64(0.2).unwrap();
+    } else {
+        *gain = *gain * T::from_f64(0.8).unwrap();
+    }
+    *gain = (*gain).max(min_gain);
+
+    // momentum update with adaptive gain
+    *update = momentum * *update - lr * *gain * grad;
+    *val = *val + *update;
+}
+
+/// Optimise 2D embedding using Barnes-Hut t-SNE
+///
+/// Minimises KL divergence between high-dimensional affinities (graph) and
+/// low-dimensional Student-t similarities using gradient descent with momentum
+/// and adaptive gains.
+///
+/// ### Params
+///
+/// * `embd` - Mutable 2D embedding to optimise in-place
+/// * `params` - Optimisation parameters (learning rate, epochs, etc.)
+/// * `graph` - Symmetric sparse graph of high-dimensional affinities P_ij
+/// * `verbose` - Print progress every 50 epochs
+///
+/// ### Notes
+///
+/// For each epoch:
+/// 1. Build Barnes-Hut tree from current embedding
+/// 2. Compute gradients: ∇C = 4 * (F_attractive - F_repulsive / Z)
+///    - F_attractive: exact via sparse graph
+///    - F_repulsive: approximated via Barnes-Hut tree
+/// 3. Update positions with momentum and adaptive gains
+/// 4. Centre embedding every 100 epochs to prevent drift
+///
+/// Uses early exaggeration (first 250 iterations) and momentum switching.
+pub fn optimise_bh_tsne<T>(
+    embd: &mut [Vec<T>],
+    params: &TsneOptimParams<T>,
+    graph: &SparseGraph<T>,
+    verbose: bool,
+) where
+    T: Float
+        + FromPrimitive
+        + Send
+        + Sync
+        + AddAssign
+        + SubAssign
+        + MulAssign
+        + DivAssign
+        + Sum
+        + Debug,
+{
+    let n = embd.len();
+    let n_dim = embd[0].len();
+
+    let momentum_switch_iter = 250;
+    let initial_momentum = T::from_f64(0.5).unwrap();
+    let final_momentum = T::from_f64(0.8).unwrap();
+    let min_gain = T::from_f64(0.01).unwrap();
+    let four = T::from_f64(4.0).unwrap();
+    let eps = T::from_f64(1e-12).unwrap();
+
+    let mut update_flat = vec![T::zero(); n * n_dim];
+    let mut gains_flat = vec![T::one(); n * n_dim];
+
+    // Build adjacency list once (graph is fixed)
+    let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
+    for ((&i, &j), &w) in graph
+        .row_indices
+        .iter()
+        .zip(&graph.col_indices)
+        .zip(&graph.values)
+    {
+        adj[i].push((j, w));
+    }
+
+    for epoch in 0..params.n_epochs {
+        let bh_tree = BarnesHutTree::new(embd);
+
+        let momentum = if epoch < momentum_switch_iter {
+            initial_momentum
+        } else {
+            final_momentum
+        };
+        let exag_factor = if epoch < params.early_exag_iter {
+            params.early_exag_factor
+        } else {
+            T::one()
+        };
+
+        // Compute forces for all points in parallel
+        let results: Vec<(T, T, T, T, T)> = embd
+            .par_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let px = p[0];
+                let py = p[1];
+
+                // Repulsive forces (Barnes-Hut approximation)
+                let (rep_x, rep_y, partial_z) =
+                    bh_tree.compute_repulsive_force(i, px, py, params.theta);
+
+                // Attractive forces (exact via graph)
+                let mut attr_x = T::zero();
+                let mut attr_y = T::zero();
+                if let Some(neighbors) = adj.get(i) {
+                    for &(j, p_val) in neighbors {
+                        let other = &embd[j];
+                        let dx = px - other[0];
+                        let dy = py - other[1];
+                        let dist_sq = dx * dx + dy * dy;
+                        let q = T::one() / (T::one() + dist_sq);
+                        let force = p_val * exag_factor * q;
+                        attr_x += force * dx;
+                        attr_y += force * dy;
+                    }
+                }
+                (attr_x, attr_y, rep_x, rep_y, partial_z)
+            })
+            .collect();
+
+        // Global normalisation constant Z
+        let z_total: T = results.par_iter().map(|t| t.4).sum();
+        let z_inv = if z_total > eps {
+            T::one() / z_total
+        } else {
+            T::zero()
+        };
+
+        // Apply gradient updates (sequential is fine - negligible runtime)
+        for i in 0..n {
+            let (attr_x, attr_y, rep_x, rep_y, _) = results[i];
+            let grad_x = four * (attr_x - rep_x * z_inv);
+            let grad_y = four * (attr_y - rep_y * z_inv);
+
+            update_parameter(
+                &mut embd[i][0],
+                &mut update_flat[i * 2],
+                &mut gains_flat[i * 2],
+                grad_x,
+                params.lr,
+                momentum,
+                min_gain,
+            );
+
+            update_parameter(
+                &mut embd[i][1],
+                &mut update_flat[i * 2 + 1],
+                &mut gains_flat[i * 2 + 1],
+                grad_y,
+                params.lr,
+                momentum,
+                min_gain,
+            );
+        }
+
+        // centre embedding to prevent drift
+        if epoch % 100 == 0 {
+            let mut mean_x = T::zero();
+            let mut mean_y = T::zero();
+            for p in embd.iter() {
+                mean_x += p[0];
+                mean_y += p[1];
+            }
+            mean_x /= T::from_usize(n).unwrap();
+            mean_y /= T::from_usize(n).unwrap();
+            for p in embd.iter_mut() {
+                p[0] -= mean_x;
+                p[1] -= mean_y;
+            }
+        }
+
+        if verbose && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
+            println!("Epoch {} :: Z = {:?}", epoch, z_total);
+        }
     }
 }
 
