@@ -17,8 +17,15 @@ lto = true
 codegen-units = 1
 strip = true
 
+[features]
+parametric_umap = ["burn"]
+
 [dependencies]
-burn = { version = "0.19.1", features = ["dataset", "train", "ndarray"] }
+burn = { version = "0.19.1", features = [
+    "dataset",
+    "train",
+    "ndarray",
+], optional = true }
 ann-search-rs = "0.2.2"
 approx = "0.5.1"
 faer = "0.23.2"

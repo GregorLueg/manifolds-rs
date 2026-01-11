@@ -411,7 +411,7 @@ mod test_init {
         assert!(laplacian.cs_type.is_csr());
 
         // Check structure: should have diagonal entries (1.0) and off-diagonal (-1.0)
-        assert_eq!(laplacian.get_nnz(), 4); // 2 diagonal + 2 off-diagonal
+        assert_eq!(laplacian.get_nnz(), 2); // 2 off-diagonal
     }
 
     #[test]

@@ -1,6 +1,7 @@
 #![allow(clippy::needless_range_loop)] // I like loops ... !
 
 pub mod data;
+#[cfg(feature = "parametric_umap")]
 pub mod parametric;
 pub mod training;
 pub mod utils;
@@ -426,6 +427,7 @@ where
 // Parametric UMAP //
 /////////////////////
 
+#[cfg(feature = "parametric_umap")]
 /// Stores the parameters for parametric UMAP via neural nets
 ///
 /// * `n_dim` - How many dimensions to return
@@ -547,6 +549,7 @@ where
     }
 }
 
+#[cfg(feature = "parametric_umap")]
 /// Run parametric UMAP dimensionality reduction
 ///
 /// Parametric UMAP learns a neural network encoder that maps high-dimensional
@@ -660,6 +663,7 @@ where
     embd
 }
 
+#[cfg(feature = "parametric_umap")]
 /// Train the parametric UMAP model and return it
 ///
 /// ### Params

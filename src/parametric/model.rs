@@ -1,7 +1,7 @@
-use burn::prelude::*;
 use burn::tensor::Element;
+use burn::{nn::LeakyReluConfig, prelude::*};
 use faer::MatRef;
-use nn::{Linear, LinearConfig, Relu};
+use nn::{LeakyRelu, Linear, LinearConfig};
 use num_traits::{Float, FromPrimitive};
 use std::marker::PhantomData;
 
@@ -32,7 +32,7 @@ pub struct UmapMlpConfig {
 #[derive(Module, Debug)]
 pub struct UmapMlp<B: Backend> {
     layers: Vec<Linear<B>>,
-    activation: Relu,
+    activation: LeakyRelu,
 }
 
 ///////////
@@ -69,7 +69,9 @@ impl<B: Backend> UmapMlp<B> {
                 .init(device),
         );
 
-        let activation = Relu::new();
+        let activation = LeakyReluConfig::init(&LeakyReluConfig {
+            negative_slope: 0.01,
+        });
 
         Self {
             layers: layer_vec,

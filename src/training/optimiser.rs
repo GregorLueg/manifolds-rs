@@ -481,7 +481,7 @@ fn apply_repulsive_force_flat<T: Float>(
 /// * `seed` - Random seed for negative sampling reproducibility
 /// * `verbose` - Controls verbosity
 ///
-/// # Notes
+/// ### Notes
 ///
 /// - Embedding is flattened internally for cache locality
 /// - Edge weights are normalised to determine sampling frequency
@@ -631,7 +631,7 @@ pub fn optimise_embedding_sgd<T>(
 /// * `seed` - Random seed for negative sampling
 /// * `verbose` - If true, prints progress every 100 epochs
 ///
-/// # Implementation Notes
+/// ### Notes
 ///
 /// - Uses per-gradient-step timestep counter (`global_timestep`) for bias
 ///   correction
@@ -853,7 +853,7 @@ pub fn optimise_embedding_adam<T>(
 /// - Applies Adam updates with per-epoch bias correction (matches uwot)
 /// - Single update per node per epoch
 ///
-/// # Key Differences from Sequential Adam
+/// ### Key Differences from Sequential Adam
 ///
 /// - **Bias correction**: Per-epoch (not per-gradient-step)
 ///   Matches uwot's Adam::epoch_end() behavior where beta1^t and beta2^t
@@ -861,7 +861,7 @@ pub fn optimise_embedding_adam<T>(
 /// - **Update frequency**: One Adam step per node per epoch
 /// - **Parallelisation**: Over nodes instead of edges
 ///
-/// # Parameters
+/// ### Params
 ///
 /// * `embd` - Initial embedding, modified in place
 /// * `graph` - Adjacency list representation
@@ -869,7 +869,7 @@ pub fn optimise_embedding_adam<T>(
 /// * `seed` - Random seed
 /// * `verbose` - Progress reporting
 ///
-/// # Implementation Notes
+/// ### Notes
 ///
 /// - Uses `two_gamma_b` for repulsive gradients (matches uwot)
 /// - Bias correction matches uwot's per-epoch approach
