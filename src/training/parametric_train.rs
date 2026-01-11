@@ -246,15 +246,29 @@ pub fn graph_to_trainings_data<T>(graph_data: &SparseGraph<T>) -> UmapEdgeDatase
 //////////////
 
 /// Trainings loop for parametric UMAP
-pub fn train_parametric_umap<B, T>(
+///
+/// ### Params
+///
+/// * `data` - The underlying data.
+/// * `graph_data` - The graph data.
+/// * `model_config` - The model configuration.
+/// * `train_params` - The training parameters for the parametric UMAP
+/// * `device` - The device on which to train the model on
+/// * `seed` - Seed for reproducibility.
+/// * `verbose` - Controls verbosity of the function.
+///
+/// ### Returns
+///
+/// A tuple of `(embedding, trained model)`
+pub fn train_parametric_umap<'a, B, T>(
     data: MatRef<T>,
     graph_data: SparseGraph<T>,
     model_config: &UmapMlpConfig,
     train_params: &TrainParametricParams<T>,
-    device: &B::Device,
+    device: &'a B::Device,
     seed: usize,
     verbose: bool,
-) -> Vec<Vec<T>>
+) -> (Vec<Vec<T>>, TrainedUmapModel<'a, B, T>)
 where
     T: Element + Float + FromPrimitive + ToPrimitive,
     B: AutodiffBackend,
@@ -323,7 +337,7 @@ where
             n_batches += 1;
         }
 
-        if verbose && (epoch % 10 == 0 || epoch + 1 == train_params.n_epochs) {
+        if verbose && (epoch == 0 || (epoch + 1) % 25 == 0 || epoch + 1 == train_params.n_epochs) {
             println!(
                 "Epoch {}/{}: Loss = {:.6}",
                 epoch + 1,
@@ -336,6 +350,8 @@ where
     // Get final embeddings
     let embeddings = model.forward(tensor_data);
 
+    let trained_model = TrainedUmapModel::new(model, device);
+
     // Convert to Vec<Vec<f32>> format [n_components][n_samples]
     let n_components = model_config.output_size;
     let embedding_data: Vec<T> = embeddings.into_data().to_vec().unwrap();
@@ -347,7 +363,7 @@ where
         }
     }
 
-    result
+    (result, trained_model)
 }
 
 ///////////

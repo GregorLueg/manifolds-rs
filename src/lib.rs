@@ -324,7 +324,7 @@ where
 
     if verbose {
         println!(
-            "Running umap with alpha: {:.4?} and beta: {:.4?}",
+            "Running umap with alpha: {:.2?} and beta: {:.2?}",
             umap_params.optim_params.a, umap_params.optim_params.b
         );
     }
@@ -624,7 +624,7 @@ where
 
     if verbose {
         println!(
-            "Running umap with alpha: {:.4?} and beta: {:.4?}",
+            "Running parametric umap with alpha: {:.2?} and beta: {:.2?}",
             ToPrimitive::to_f32(&umap_params.train_param.a).unwrap(),
             ToPrimitive::to_f32(&umap_params.train_param.b).unwrap()
         );
@@ -647,7 +647,7 @@ where
         umap_params.n_dim,
     );
 
-    train_parametric_umap::<B, T>(
+    let (embd, _) = train_parametric_umap::<B, T>(
         data,
         graph,
         &model_params,
@@ -655,7 +655,98 @@ where
         device,
         seed,
         verbose,
-    )
+    );
+
+    embd
+}
+
+/// Train the parametric UMAP model and return it
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `umap_params` - Configuration parameters for parametric UMAP
+/// * `device` - Burn backend device for neural network training
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - Whether to print progress information
+///
+/// Parametric UMAP learns a neural network encoder that maps high-dimensional
+/// data to a low-dimensional embedding space. Unlike standard UMAP, this
+/// approach provides an explicit parametric mapping that can be applied to
+/// new data points without retraining.
+///
+/// The algorithm follows these steps:
+///
+/// 1. Find k-nearest neighbours using approximate nearest neighbour search
+/// 2. Construct fuzzy simplicial set via smooth kNN distances
+/// 3. Symmetrise the graph using fuzzy set union
+/// 4. Train an MLP encoder to preserve the graph structure using UMAP loss
+/// 5. Returns the trained MLP encoder that can be used now also on new data
+///
+/// ### Returns
+///
+/// Returns the `TrainedUmapModel` for further usage.
+pub fn train_parametric_umap_model<'a, T, B>(
+    data: MatRef<T>,
+    umap_params: &ParametricUmapParams<T>,
+    device: &'a B::Device,
+    seed: usize,
+    verbose: bool,
+) -> TrainedUmapModel<'a, B, T>
+where
+    T: Float
+        + FromPrimitive
+        + ToPrimitive
+        + Default
+        + ComplexField
+        + RealField
+        + Sum
+        + AddAssign
+        + Element
+        + SimdDistance,
+    B: AutodiffBackend,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    // parse various parameters
+    let nn_params = umap_params.nn_params.clone();
+
+    if verbose {
+        println!(
+            "Training parametric umap model with alpha: {:.2?} and beta: {:.2?}",
+            ToPrimitive::to_f32(&umap_params.train_param.a).unwrap(),
+            ToPrimitive::to_f32(&umap_params.train_param.b).unwrap()
+        );
+    }
+
+    let (graph, _, _) = construct_umap_graph(
+        data,
+        umap_params.k,
+        umap_params.ann_type.clone(),
+        &umap_params.umap_graph_params,
+        &nn_params,
+        umap_params.train_param.n_epochs,
+        seed,
+        verbose,
+    );
+
+    let model_params = UmapMlpConfig::from_params(
+        data.ncols(),
+        umap_params.hidden_layers.clone(),
+        umap_params.n_dim,
+    );
+
+    let (_, trained_model) = train_parametric_umap::<B, T>(
+        data,
+        graph,
+        &model_params,
+        &umap_params.train_param,
+        device,
+        seed,
+        verbose,
+    );
+
+    trained_model
 }
 
 #[cfg(test)]
