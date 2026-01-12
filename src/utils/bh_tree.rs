@@ -227,6 +227,25 @@ where
             buckets[quadrant].push(idx);
         }
 
+        // to avoid infinity recursion
+        let max_bucket_size = buckets.iter().map(|b| b.len()).max().unwrap_or(0);
+        if max_bucket_size == point_indices.len() {
+            let idx = point_indices[0];
+
+            let node = QuadNode {
+                com_x: sum_x / mass,
+                com_y: sum_y / mass,
+                mass,
+                width,
+                children: [None; 4],
+                point_idx: Some(idx),
+            };
+
+            let node_idx = nodes.len();
+            nodes.push(node);
+            return node_idx;
+        }
+
         let node_idx = nodes.len();
 
         nodes.push(QuadNode {
