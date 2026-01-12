@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Gregor Lueg <gregorlueg@me.com>"]
 license = "MIT"
 repository = "https://github.com/GregorLueg/manifolds-rs"
-description = "Embedding methods implemented into Rust, starting with UMAP, parametric UMAP and tSNE"
+description = "Embedding methods implemented into Rust, starting with UMAP, parametric UMAP and tSNE."
 
 [lib]
 name = "manifolds_rs"

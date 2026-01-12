@@ -670,9 +670,7 @@ where
         + SubAssign
         + MulAssign
         + DivAssign
-        + SimdDistance
-        + std::fmt::Display
-        + std::fmt::Debug,
+        + SimdDistance,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,

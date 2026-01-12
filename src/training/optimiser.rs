@@ -6,7 +6,6 @@ use rand::{
 };
 use rayon::prelude::*;
 use rustc_hash::FxHashSet;
-use std::fmt::Debug;
 use std::iter::Sum;
 use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
 
@@ -1262,16 +1261,7 @@ pub fn optimise_bh_tsne<T>(
     graph: &SparseGraph<T>,
     verbose: bool,
 ) where
-    T: Float
-        + FromPrimitive
-        + Send
-        + Sync
-        + AddAssign
-        + SubAssign
-        + MulAssign
-        + DivAssign
-        + Sum
-        + Debug,
+    T: Float + FromPrimitive + Send + Sync + AddAssign + SubAssign + MulAssign + DivAssign + Sum,
 {
     let n = embd.len();
     let n_dim = embd[0].len();
@@ -1397,7 +1387,12 @@ pub fn optimise_bh_tsne<T>(
         }
 
         if verbose && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
-            println!("Epoch {} :: Z = {:?}", epoch, z_total);
+            println!(
+                "Completed Epoch {} out of {} | Z = {}",
+                epoch,
+                params.n_epochs,
+                z_total.to_f32().unwrap()
+            );
         }
     }
 }
