@@ -557,7 +557,7 @@ where
 {
     // t-SNE rule of thumb: k = 3 * perplexity
     let k_float = perplexity * T::from_f64(3.0).unwrap();
-    let k = k_float.to_usize().unwrap().max(15).min(data.nrows() - 1);
+    let k = k_float.to_usize().unwrap().max(5).min(data.nrows() - 1);
 
     if verbose {
         println!("Running kNN search (k={}) using {}...", k, ann_type);
