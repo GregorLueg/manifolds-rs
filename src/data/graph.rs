@@ -406,8 +406,7 @@ where
                 // compute P_i with current beta: p_{j|i} = exp(-beta * d_{ij}^2)
                 let mut sum_p = T::zero();
                 for (j, &d) in dists.iter().enumerate() {
-                    let d_sq = d * d;
-                    let p = (-beta * d_sq).exp();
+                    let p = (-beta * d).exp();
                     current_probs[j] = p;
                     sum_p = sum_p + p;
                 }
