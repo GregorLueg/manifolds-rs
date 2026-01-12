@@ -8,25 +8,32 @@ use rand::{
     {Rng, SeedableRng},
 };
 use rand_distr::{Distribution, StandardNormal};
+use std::collections::VecDeque;
 use std::iter::Sum;
 
 use crate::data::structures::*;
 use crate::utils::math::*;
+
+// Different initial ranges for the embedddings
+// Defaults based on what works for UMAP
+
+pub const SPECTRAL_RANGE: f64 = 10.0;
+pub const RANDOM_RANGE: f64 = 10.0;
+pub const PCA_RANGE: f64 = 1.0;
 
 /////////////
 // Helpers //
 /////////////
 
 /// Different initialisation methods for the UMAP
-#[derive(Default, Clone, Debug)]
-pub enum UmapInit {
-    #[default]
+#[derive(Clone, Debug)]
+pub enum EmbdInit<T> {
     /// Spectral initialisation
-    SpectralInit,
+    SpectralInit { range: Option<T> },
     /// Random initialisation
-    RandomInit,
+    RandomInit { range: Option<T> },
     /// PCA initialisation
-    PcaInit { randomised: bool },
+    PcaInit { range: Option<T>, randomised: bool },
 }
 
 /// Parse the respective initialisation
@@ -38,15 +45,22 @@ pub enum UmapInit {
 ///
 /// ### Returns
 ///
-/// The Option of a UmapInit
-pub fn parse_initilisation(s: &str, randomised: bool) -> Option<UmapInit> {
+/// The Option of a EmbdInit
+pub fn parse_initilisation<T>(s: &str, randomised: bool, range: Option<T>) -> Option<EmbdInit<T>>
+where
+    T: Float,
+{
     match s.to_lowercase().as_str() {
-        "spectral" => Some(UmapInit::SpectralInit),
-        "pca" => Some(UmapInit::PcaInit { randomised }),
-        "random" => Some(UmapInit::RandomInit),
+        "spectral" => Some(EmbdInit::SpectralInit { range }),
+        "pca" => Some(EmbdInit::PcaInit { randomised, range }),
+        "random" => Some(EmbdInit::RandomInit { range }),
         _ => None,
     }
 }
+
+//////////////
+// Spectral //
+//////////////
 
 /// Convert COO graph to negative normalised adjacency in CSR format
 ///
@@ -95,8 +109,6 @@ where
     let mut indptr = vec![0];
 
     for i in 0..n {
-        // [FIX]: Do NOT add the diagonal identity term (i, 1.0) here.
-        // We want only the negative adjacency part.
         let mut row_entries = vec![];
 
         for &(j, w) in &adj[i] {
@@ -120,36 +132,237 @@ where
     CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n))
 }
 
-/// Spectral embedding initialisation
-///
-/// Computes eigenvectors and scales to reasonable range like Python UMAP.
-/// Now scales so max absolute value is 10.0.
+/// Find connected components in a sparse graph using BFS
 ///
 /// ### Params
 ///
-/// * `graph` - Symmetric weighted graph in COO format
-/// * `n_comp` - Dimensionality of the embedding (typically 2 or 3)
-/// * `seed` - Random seed for reproducibility
+/// * `graph` - Sparse graph in COO format
 ///
 /// ### Returns
 ///
-/// Initial embedding coordinates scaled to max absolute value of 10.0
-pub fn spectral_layout<T>(graph: &SparseGraph<T>, n_comp: usize, seed: u64) -> Vec<Vec<T>>
+/// Vector of components, where each component is a vector of vertex indices
+fn find_connected_components<T>(graph: &SparseGraph<T>) -> Vec<Vec<usize>>
 where
-    T: Float + FromPrimitive + Send + Sync,
+    T: Float,
 {
     let n = graph.n_vertices;
 
-    // Convert to normalised Laplacian
+    // Build adjacency list
+    let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
+    for (&i, &j) in graph.row_indices.iter().zip(&graph.col_indices) {
+        adj[i].push(j);
+    }
+
+    let mut visited = vec![false; n];
+    let mut components = Vec::new();
+
+    for start in 0..n {
+        if visited[start] {
+            continue;
+        }
+
+        let mut component = Vec::new();
+        let mut queue = VecDeque::new();
+        queue.push_back(start);
+        visited[start] = true;
+
+        while let Some(node) = queue.pop_front() {
+            component.push(node);
+            for &neighbor in &adj[node] {
+                if !visited[neighbor] {
+                    visited[neighbor] = true;
+                    queue.push_back(neighbor);
+                }
+            }
+        }
+
+        components.push(component);
+    }
+
+    components
+}
+
+/// Initialise embedding for graphs with multiple connected components
+///
+/// Places component centroids on a hypersphere and performs spectral
+/// embedding within each sufficiently large component. Small components
+/// are randomly placed around their centroids.
+///
+/// ### Params
+///
+/// * `graph` - Full graph in COO format
+/// * `components` - Vector of component vertex indices
+/// * `n_comp` - Number of embedding dimensions
+/// * `seed` - Random seed
+/// * `range` - Scaling range for embedding
+///
+/// ### Returns
+///
+/// Initial embedding coordinates
+fn multi_component_init<T>(
+    graph: &SparseGraph<T>,
+    components: &[Vec<usize>],
+    n_comp: usize,
+    seed: u64,
+    range: T,
+) -> Vec<Vec<T>>
+where
+    T: Float + FromPrimitive + Send + Sync + Sum,
+{
+    let n = graph.n_vertices;
+    let n_components = components.len();
+    let mut embedding = vec![vec![T::zero(); n_comp]; n];
+    let mut rng = StdRng::seed_from_u64(seed);
+
+    // Place component centroids on a circle (or hypersphere for n_comp > 2)
+    let centroid_radius = range * T::from_f64(0.6).unwrap();
+    let component_spread = range * T::from_f64(0.3).unwrap();
+
+    for (comp_idx, component) in components.iter().enumerate() {
+        // Compute centroid position for this component
+        let angle = T::from_f64(2.0 * std::f64::consts::PI * comp_idx as f64 / n_components as f64)
+            .unwrap();
+
+        let mut centroid = vec![T::zero(); n_comp];
+        if n_comp >= 2 {
+            centroid[0] = centroid_radius * T::from_f64(angle.to_f64().unwrap().cos()).unwrap();
+            centroid[1] = centroid_radius * T::from_f64(angle.to_f64().unwrap().sin()).unwrap();
+        }
+        // For n_comp > 2, add small random offsets to other dimensions
+        for d in 2..n_comp {
+            centroid[d] = T::from_f64(rng.random_range(-0.1..0.1)).unwrap() * centroid_radius;
+        }
+
+        // If component is large enough, do spectral embedding within it
+        if component.len() > n_comp + 1 {
+            // Build subgraph for this component
+            let subgraph = extract_subgraph(graph, component);
+            let sub_embedding = single_component_spectral(
+                &subgraph,
+                n_comp,
+                seed + comp_idx as u64,
+                component_spread,
+            );
+
+            // Place sub-embedding at centroid
+            for (local_idx, &global_idx) in component.iter().enumerate() {
+                for d in 0..n_comp {
+                    embedding[global_idx][d] = centroid[d] + sub_embedding[local_idx][d];
+                }
+            }
+        } else {
+            // Too small for spectral - random placement around centroid
+            for &global_idx in component {
+                for d in 0..n_comp {
+                    let noise = T::from_f64(rng.sample::<f64, _>(StandardNormal)).unwrap()
+                        * component_spread
+                        * T::from_f64(0.1).unwrap();
+                    embedding[global_idx][d] = centroid[d] + noise;
+                }
+            }
+        }
+    }
+
+    embedding
+}
+
+/// Extract subgraph for a connected component
+///
+/// Creates a new graph containing only the vertices in the specified component
+/// with local index mapping.
+///
+/// ### Params
+///
+/// * `graph` - Full graph in COO format
+/// * `component` - Vertex indices in this component
+///
+/// ### Returns
+///
+/// Subgraph with locally indexed vertices
+fn extract_subgraph<T>(graph: &SparseGraph<T>, component: &[usize]) -> SparseGraph<T>
+where
+    T: Float,
+{
+    let n = graph.n_vertices;
+
+    // Use Vec for O(1) lookup - faster than HashMap for dense component indices
+    let mut global_to_local = vec![None; n];
+    for (local, &global) in component.iter().enumerate() {
+        global_to_local[global] = Some(local);
+    }
+
+    let mut row_indices = Vec::new();
+    let mut col_indices = Vec::new();
+    let mut values = Vec::new();
+
+    for ((&i, &j), &v) in graph
+        .row_indices
+        .iter()
+        .zip(&graph.col_indices)
+        .zip(&graph.values)
+    {
+        if let (Some(local_i), Some(local_j)) = (global_to_local[i], global_to_local[j]) {
+            row_indices.push(local_i);
+            col_indices.push(local_j);
+            values.push(v);
+        }
+    }
+
+    SparseGraph {
+        row_indices,
+        col_indices,
+        values,
+        n_vertices: component.len(),
+    }
+}
+
+/// Perform spectral embedding for a single connected component
+///
+/// Computes eigenvectors of the normalised Laplacian and uses them as
+/// embedding coordinates. Falls back to random initialisation for trivially
+/// small graphs.
+///
+/// ### Params
+///
+/// * `graph` - Connected graph in COO format
+/// * `n_comp` - Number of embedding dimensions
+/// * `seed` - Random seed
+/// * `range` - Scaling range for embedding
+///
+/// ### Returns
+///
+/// Initial embedding coordinates
+fn single_component_spectral<T>(
+    graph: &SparseGraph<T>,
+    n_comp: usize,
+    seed: u64,
+    range: T,
+) -> Vec<Vec<T>>
+where
+    T: Float + FromPrimitive + Send + Sync + Sum,
+{
+    let n = graph.n_vertices;
+
+    // Handle trivially small graphs
+    if n <= n_comp + 1 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        let mut embedding = vec![vec![T::zero(); n_comp]; n];
+        for i in 0..n {
+            for j in 0..n_comp {
+                embedding[i][j] = T::from_f64(rng.random_range(-1.0..1.0)).unwrap() * range;
+            }
+        }
+        return finalise_spectral_embedding(embedding, n_comp, range, seed);
+    }
+
     let laplacian = graph_to_normalised_laplacian(graph);
 
-    // Compute smallest eigenvectors (skip first which is constant)
     let n_eigs = (n_comp + 1).min(n);
     let (_, evecs) = compute_smallest_eigenpairs_lanczos(&laplacian, n_eigs, seed);
 
     let mut embedding = vec![vec![T::zero(); n_comp]; n];
 
-    // Take eigenvectors 1 to n_components (skip the trivial one at index 0)
+    // Use eigenvectors 1 through n_comp (skip trivial eigenvector 0)
     for comp_idx in 0..n_comp {
         let evec_idx = comp_idx + 1;
         if evec_idx < evecs[0].len() {
@@ -157,39 +370,71 @@ where
                 embedding[i][comp_idx] = T::from_f32(evecs[i][evec_idx]).unwrap();
             }
         } else {
-            // Fallback to random if not enough eigenvectors
             let mut rng = StdRng::seed_from_u64(seed + comp_idx as u64);
             for i in 0..n {
-                embedding[i][comp_idx] = T::from_f64(rng.random_range(-10.0..10.0)).unwrap();
+                embedding[i][comp_idx] = T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
             }
         }
     }
 
+    finalise_spectral_embedding(embedding, n_comp, range, seed)
+}
+
+/// Finalise spectral embedding by centring, scaling and adding noise
+///
+/// Post-processes raw eigenvector coordinates by centring each dimension,
+/// scaling to the specified range, and adding small Gaussian noise for
+/// numerical stability.
+///
+/// ### Params
+///
+/// * `embedding` - Raw embedding coordinates
+/// * `n_comp` - Number of dimensions
+/// * `range` - Target range for scaling
+/// * `seed` - Random seed for noise
+///
+/// ### Returns
+///
+/// Finalised embedding coordinates
+fn finalise_spectral_embedding<T>(
+    mut embedding: Vec<Vec<T>>,
+    n_comp: usize,
+    range: T,
+    seed: u64,
+) -> Vec<Vec<T>>
+where
+    T: Float + FromPrimitive + Sum,
+{
+    let n = embedding.len();
+    let n_t = T::from_usize(n).unwrap();
+
     // Centre each component
     for comp in 0..n_comp {
-        let mean: T = embedding
-            .iter()
-            .map(|v| v[comp])
-            .fold(T::zero(), |acc, x| acc + x)
-            / T::from_usize(n).unwrap();
+        let mean: T = embedding.iter().map(|v| v[comp]).sum::<T>() / n_t;
 
         for i in 0..n {
             embedding[i][comp] = embedding[i][comp] - mean;
         }
     }
 
-    // Scale so max absolute value is 10.0 (like Python UMAP)
+    // Scale so max absolute value is range
     let max_abs: T = embedding
         .iter()
         .flat_map(|v| v.iter())
-        .map(|&x| x.abs())
-        .fold(T::zero(), |acc, x| if x > acc { x } else { acc });
+        .fold(T::zero(), |acc, &x| {
+            let abs_x = x.abs();
+            if abs_x > acc {
+                abs_x
+            } else {
+                acc
+            }
+        });
 
     if max_abs > T::from_f64(1e-8).unwrap() {
-        let scale = T::from_f64(10.0).unwrap() / max_abs;
-        for i in 0..n {
-            for j in 0..n_comp {
-                embedding[i][j] = embedding[i][j] * scale;
+        let scale = range / max_abs;
+        for row in &mut embedding {
+            for val in row {
+                *val = *val * scale;
             }
         }
     }
@@ -198,15 +443,58 @@ where
     let mut rng = StdRng::seed_from_u64(seed + 9999);
     let noise_std = T::from_f64(1e-4).unwrap();
 
-    for i in 0..n {
-        for j in 0..n_comp {
+    for row in &mut embedding {
+        for val in row {
             let noise = T::from_f64(rng.sample::<f64, _>(StandardNormal)).unwrap() * noise_std;
-            embedding[i][j] = embedding[i][j] + noise;
+            *val = *val + noise;
         }
     }
 
     embedding
 }
+
+/// Compute spectral layout initialisation for graph
+///
+/// Uses spectral decomposition of the normalised Laplacian to initialise
+/// embedding coordinates. Handles disconnected graphs by placing components
+/// separately and performing spectral embedding within each component.
+///
+/// ### Params
+///
+/// * `graph` - Symmetric weighted graph in COO format
+/// * `n_comp` - Number of embedding dimensions
+/// * `seed` - Random seed for reproducibility
+/// * `range` - Optional scaling range (defaults to SPECTRAL_RANGE)
+///
+/// ### Returns
+///
+/// Initial embedding coordinates for each vertex
+pub fn spectral_layout<T>(
+    graph: &SparseGraph<T>,
+    n_comp: usize,
+    seed: u64,
+    range: Option<T>,
+) -> Vec<Vec<T>>
+where
+    T: Float + FromPrimitive + Send + Sync + Sum,
+{
+    let range = range.unwrap_or(T::from_f64(SPECTRAL_RANGE).unwrap());
+
+    // Find connected components
+    let components = find_connected_components(graph);
+
+    if components.len() > 1 {
+        // Multiple components - place each at different location
+        return multi_component_init(graph, &components, n_comp, seed, range);
+    }
+
+    // Single connected component - standard spectral embedding
+    single_component_spectral(graph, n_comp, seed, range)
+}
+
+////////////
+// Random //
+////////////
 
 /// Random initialisation fallback
 ///
@@ -222,22 +510,30 @@ where
 /// ### Returns
 ///
 /// Random embedding coordinates uniformly distributed in [-10, 10] range
-pub fn random_layout<T>(n_samples: usize, n_comp: usize, seed: u64) -> Vec<Vec<T>>
+pub fn random_layout<T>(n_samples: usize, n_comp: usize, seed: u64, range: Option<T>) -> Vec<Vec<T>>
 where
-    T: Float + FromPrimitive,
+    T: Float + FromPrimitive + ToPrimitive,
 {
+    let range = range
+        .unwrap_or(T::from_f64(RANDOM_RANGE).unwrap())
+        .to_f64()
+        .unwrap();
     let mut rng = StdRng::seed_from_u64(seed);
     let mut embedding = vec![vec![T::zero(); n_comp]; n_samples];
 
     // Use uniform distribution [-10, 10] like Python UMAP, not Gaussian
     for i in 0..n_samples {
         for j in 0..n_comp {
-            embedding[i][j] = T::from_f64(rng.random_range(-10.0..10.0)).unwrap();
+            embedding[i][j] = T::from_f64(rng.random_range(-range..range)).unwrap();
         }
     }
 
     embedding
 }
+
+/////////
+// PCA //
+/////////
 
 /// PCA-based embedding initialisation
 ///
@@ -255,11 +551,18 @@ where
 /// ### Returns
 ///
 /// PCA-based embedding coordinates
-pub fn pca_layout<T>(data: MatRef<T>, n_comp: usize, randomised: bool, seed: u64) -> Vec<Vec<T>>
+pub fn pca_layout<T>(
+    data: MatRef<T>,
+    n_comp: usize,
+    randomised: bool,
+    range: Option<T>,
+    seed: u64,
+) -> Vec<Vec<T>>
 where
     T: Float + Send + Sync + Sum + ComplexField + RealField + ToPrimitive + FromPrimitive,
     StandardNormal: Distribution<T>,
 {
+    let target_std = range.unwrap_or(T::from_f64(PCA_RANGE).unwrap());
     let (n_samples, n_features) = (data.nrows(), data.ncols());
 
     // Centre the data
@@ -295,7 +598,6 @@ where
     let pca_scores = u_truncated * s_diagonal;
 
     // Convert to Vec<Vec<T>> and scale to small std like uwot
-    let target_std = T::from_f64(1.0).unwrap();
     let mut embedding = vec![vec![T::zero(); n_comp]; n_samples];
 
     for comp in 0..n_comp {
@@ -324,6 +626,10 @@ where
     embedding
 }
 
+//////////
+// Main //
+//////////
+
 /// Initialise embedding coordinates using specified method
 ///
 /// ### Params
@@ -345,7 +651,7 @@ where
 /// * **PCA**: Projects onto principal components, scaled to `std_dev = 1e-4`
 /// * **Random**: Gaussian random values in [-10, 10] range
 pub fn initialise_embedding<T>(
-    init_method: &UmapInit,
+    init_method: &EmbdInit<T>,
     n_comp: usize,
     seed: u64,
     graph: &SparseGraph<T>,
@@ -356,14 +662,20 @@ where
     StandardNormal: Distribution<T>,
 {
     match init_method {
-        UmapInit::SpectralInit => spectral_layout(graph, n_comp, seed),
-        UmapInit::RandomInit => {
+        EmbdInit::SpectralInit { range } => spectral_layout(graph, n_comp, seed, *range),
+        EmbdInit::RandomInit { range } => {
             let n_samples = data.nrows();
-            random_layout(n_samples, n_comp, seed)
+            random_layout(n_samples, n_comp, seed, *range)
         }
-        UmapInit::PcaInit { randomised } => pca_layout(data, n_comp, *randomised, seed),
+        EmbdInit::PcaInit { randomised, range } => {
+            pca_layout(data, n_comp, *randomised, *range, seed)
+        }
     }
 }
+
+///////////
+// Tests //
+///////////
 
 #[cfg(test)]
 mod test_init {
@@ -372,27 +684,52 @@ mod test_init {
 
     #[test]
     fn test_parse_initialisation() {
+        // spectral
         assert!(matches!(
-            parse_initilisation("spectral", false),
-            Some(UmapInit::SpectralInit)
+            parse_initilisation::<f32>("spectral", false, None),
+            Some(EmbdInit::SpectralInit { range: None })
         ));
         assert!(matches!(
-            parse_initilisation("SPECTRAL", false),
-            Some(UmapInit::SpectralInit)
+            parse_initilisation::<f32>("SPECTRAL", false, None),
+            Some(EmbdInit::SpectralInit { range: None })
         ));
         assert!(matches!(
-            parse_initilisation("random", false),
-            Some(UmapInit::RandomInit)
+            parse_initilisation::<f32>("spectral", false, Some(0.01)),
+            Some(EmbdInit::SpectralInit { range: Some(0.01) })
+        ));
+        // random
+        assert!(matches!(
+            parse_initilisation::<f32>("random", false, None),
+            Some(EmbdInit::RandomInit { range: None })
         ));
         assert!(matches!(
-            parse_initilisation("pca", false),
-            Some(UmapInit::PcaInit { randomised: false })
+            parse_initilisation::<f32>("random", false, Some(0.01)),
+            Some(EmbdInit::RandomInit { range: Some(0.01) })
+        ));
+        //
+        assert!(matches!(
+            parse_initilisation::<f32>("pca", false, None),
+            Some(EmbdInit::PcaInit {
+                randomised: false,
+                range: None
+            })
         ));
         assert!(matches!(
-            parse_initilisation("pca", true),
-            Some(UmapInit::PcaInit { randomised: true })
+            parse_initilisation::<f32>("pca", true, None),
+            Some(EmbdInit::PcaInit {
+                randomised: true,
+                range: None
+            })
         ));
-        assert!(parse_initilisation("invalid", false).is_none());
+        assert!(matches!(
+            parse_initilisation::<f32>("pca", false, Some(0.01)),
+            Some(EmbdInit::PcaInit {
+                randomised: false,
+                range: Some(0.01)
+            })
+        ));
+        // error
+        assert!(parse_initilisation::<f32>("invalid", false, None).is_none());
     }
 
     #[test]
@@ -410,8 +747,8 @@ mod test_init {
         assert_eq!(laplacian.shape(), (2, 2));
         assert!(laplacian.cs_type.is_csr());
 
-        // Check structure: should have diagonal entries (1.0) and off-diagonal (-1.0)
-        assert_eq!(laplacian.get_nnz(), 2); // 2 off-diagonal
+        // Only off-diagonal entries (no diagonal in negative normalised adjacency)
+        assert_eq!(laplacian.get_nnz(), 2);
     }
 
     #[test]
@@ -440,7 +777,7 @@ mod test_init {
             n_vertices: 3,
         };
 
-        let embedding = spectral_layout(&graph, 2, 42);
+        let embedding = spectral_layout(&graph, 2, 42, None);
 
         assert_eq!(embedding.len(), 3); // 3 vertices
         assert_eq!(embedding[0].len(), 2); // 2 dimensions
@@ -460,6 +797,35 @@ mod test_init {
     }
 
     #[test]
+    fn test_spectral_layout_range_bound() {
+        // Create a simple connected graph
+        let graph = SparseGraph {
+            row_indices: vec![0, 0, 1, 1, 2, 2],
+            col_indices: vec![1, 2, 0, 2, 0, 1],
+            values: vec![1.0, 0.5, 1.0, 1.0, 0.5, 1.0],
+            n_vertices: 3,
+        };
+
+        let embedding = spectral_layout(&graph, 2, 42, Some(1.0));
+
+        assert_eq!(embedding.len(), 3); // 3 vertices
+        assert_eq!(embedding[0].len(), 2); // 2 dimensions
+
+        // Check that values are approximately in [-10, 10] range (allowing for noise)
+        for point in &embedding {
+            for &coord in point {
+                assert!((-1.01..=1.01).contains(&coord));
+            }
+        }
+
+        // Check that embedding is centred (mean ≈ 0, allowing for noise)
+        for dim in 0..2 {
+            let mean: f64 = embedding.iter().map(|p| p[dim]).sum::<f64>() / 3.0;
+            assert_relative_eq!(mean, 0.0, epsilon = 0.01);
+        }
+    }
+
+    #[test]
     fn test_spectral_layout_reproducibility() {
         let graph = SparseGraph {
             row_indices: vec![0, 1, 2],
@@ -468,8 +834,8 @@ mod test_init {
             n_vertices: 3,
         };
 
-        let embd1 = spectral_layout(&graph, 2, 42);
-        let embd2 = spectral_layout(&graph, 2, 42);
+        let embd1 = spectral_layout(&graph, 2, 42, None);
+        let embd2 = spectral_layout(&graph, 2, 42, None);
 
         assert_eq!(embd1, embd2);
     }
@@ -483,7 +849,7 @@ mod test_init {
             n_vertices: 4,
         };
 
-        let embedding = spectral_layout(&graph, 3, 42);
+        let embedding = spectral_layout(&graph, 3, 42, None);
 
         assert_eq!(embedding.len(), 4);
         assert_eq!(embedding[0].len(), 3);
@@ -491,7 +857,7 @@ mod test_init {
 
     #[test]
     fn test_random_layout_basic() {
-        let embedding = random_layout::<f64>(10, 2, 42);
+        let embedding = random_layout::<f64>(10, 2, 42, None);
 
         assert_eq!(embedding.len(), 10);
         assert_eq!(embedding[0].len(), 2);
@@ -505,24 +871,39 @@ mod test_init {
     }
 
     #[test]
+    fn test_random_layout_basic_rangebound() {
+        let embedding = random_layout::<f64>(10, 2, 42, Some(1.0));
+
+        assert_eq!(embedding.len(), 10);
+        assert_eq!(embedding[0].len(), 2);
+
+        // Check range [-10, 10]
+        for point in &embedding {
+            for &coord in point {
+                assert!((-1.01..=1.01).contains(&coord));
+            }
+        }
+    }
+
+    #[test]
     fn test_random_layout_reproducibility() {
-        let embd1 = random_layout::<f64>(10, 2, 42);
-        let embd2 = random_layout::<f64>(10, 2, 42);
+        let embd1 = random_layout::<f64>(10, 2, 42, None);
+        let embd2 = random_layout::<f64>(10, 2, 42, None);
 
         assert_eq!(embd1, embd2);
     }
 
     #[test]
     fn test_random_layout_different_seeds() {
-        let embd1 = random_layout::<f64>(10, 2, 42);
-        let embd2 = random_layout::<f64>(10, 2, 999);
+        let embd1 = random_layout::<f64>(10, 2, 42, None);
+        let embd2 = random_layout::<f64>(10, 2, 999, None);
 
         assert_ne!(embd1, embd2);
     }
 
     #[test]
     fn test_random_layout_dimensions() {
-        let embedding = random_layout::<f32>(5, 3, 42);
+        let embedding = random_layout::<f32>(5, 3, 42, None);
 
         assert_eq!(embedding.len(), 5);
         assert_eq!(embedding[0].len(), 3);
@@ -537,7 +918,7 @@ mod test_init {
             n_vertices: 1,
         };
 
-        let embedding = spectral_layout(&graph, 2, 42);
+        let embedding = spectral_layout(&graph, 2, 42, None);
 
         assert_eq!(embedding.len(), 1);
         assert_eq!(embedding[0].len(), 2);
@@ -545,26 +926,65 @@ mod test_init {
 
     #[test]
     fn test_pca_layout_basic() {
-        let data = faer::mat![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0],];
-
-        let embedding = pca_layout(data.as_ref(), 2, false, 42);
-
-        assert_eq!(embedding.len(), 3);
+        // Data with variance in multiple dimensions
+        let data = faer::mat![
+            [1.0, 2.0, 1.0],
+            [2.0, 3.0, 2.0],
+            [3.0, 4.0, 1.5],
+            [4.0, 5.0, 2.5],
+            [5.0, 6.0, 2.0],
+        ];
+        let embedding = pca_layout(data.as_ref(), 2, false, None, 42);
+        assert_eq!(embedding.len(), 5);
         assert_eq!(embedding[0].len(), 2);
 
         // Check mean is approximately zero
         for dim in 0..2 {
-            let mean: f64 = embedding.iter().map(|p| p[dim]).sum::<f64>() / 3.0;
+            let mean: f64 = embedding.iter().map(|p| p[dim]).sum::<f64>() / 5.0;
             assert_relative_eq!(mean, 0.0, epsilon = 1e-6);
         }
+
+        // Check at least first component has std approximately PCA_RANGE
+        let mean_0: f64 = embedding.iter().map(|p| p[0]).sum::<f64>() / 5.0;
+        let variance_0: f64 = embedding
+            .iter()
+            .map(|p| (p[0] - mean_0).powi(2))
+            .sum::<f64>()
+            / 5.0;
+        let std_0 = variance_0.sqrt();
+        assert_relative_eq!(std_0, PCA_RANGE, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_pca_layout_custom_range() {
+        let data = faer::mat![
+            [1.0, 2.0, 1.0],
+            [2.0, 3.0, 2.0],
+            [3.0, 4.0, 1.5],
+            [4.0, 5.0, 2.5],
+            [5.0, 6.0, 2.0],
+        ];
+        let custom_range = 1.0;
+        let embedding = pca_layout(data.as_ref(), 2, false, Some(custom_range), 42);
+        assert_eq!(embedding.len(), 5);
+        assert_eq!(embedding[0].len(), 2);
+
+        let mean_0: f64 = embedding.iter().map(|p| p[0]).sum::<f64>() / 5.0;
+        let variance_0: f64 = embedding
+            .iter()
+            .map(|p| (p[0] - mean_0).powi(2))
+            .sum::<f64>()
+            / 5.0;
+        let std_0 = variance_0.sqrt();
+        assert_relative_eq!(std_0, custom_range, epsilon = 1e-4);
     }
 
     #[test]
     fn test_pca_layout_reproducibility() {
         let data = faer::mat![[1.0, 2.0], [3.0, 4.0], [5.0, 6.0],];
 
-        let embd1 = pca_layout(data.as_ref(), 2, false, 42);
-        let embd2 = pca_layout(data.as_ref(), 2, false, 42);
+        let embd1 = pca_layout(data.as_ref(), 2, false, None, 42);
+        let embd2 = pca_layout(data.as_ref(), 2, false, None, 42);
 
         assert_eq!(embd1, embd2);
     }
@@ -577,15 +997,15 @@ mod test_init {
             [9.0, 10.0, 11.0, 12.0],
         ];
 
-        let embd_standard = pca_layout(data.as_ref(), 2, false, 42);
-        let embd_randomised = pca_layout(data.as_ref(), 2, true, 42);
+        let embd_standard = pca_layout(data.as_ref(), 2, false, None, 42);
+        let embd_randomised = pca_layout(data.as_ref(), 2, true, None, 42);
 
         assert_eq!(embd_standard.len(), 3);
         assert_eq!(embd_randomised.len(), 3);
     }
 
     #[test]
-    fn test_initialize_embedding_spectral() {
+    fn test_initialise_embedding_spectral() {
         let graph = SparseGraph {
             row_indices: vec![0, 1],
             col_indices: vec![1, 0],
@@ -594,14 +1014,20 @@ mod test_init {
         };
         let data = faer::mat![[1.0, 2.0], [3.0, 4.0],];
 
-        let embedding = initialise_embedding(&UmapInit::SpectralInit, 2, 42, &graph, data.as_ref());
+        let embedding = initialise_embedding(
+            &EmbdInit::SpectralInit { range: None },
+            2,
+            42,
+            &graph,
+            data.as_ref(),
+        );
 
         assert_eq!(embedding.len(), 2);
         assert_eq!(embedding[0].len(), 2);
     }
 
     #[test]
-    fn test_initialize_embedding_random() {
+    fn test_initialise_embedding_random() {
         let graph = SparseGraph {
             row_indices: vec![],
             col_indices: vec![],
@@ -610,14 +1036,20 @@ mod test_init {
         };
         let data = faer::mat![[1.0, 2.0], [3.0, 4.0], [5.0, 6.0],];
 
-        let embedding = initialise_embedding(&UmapInit::RandomInit, 2, 42, &graph, data.as_ref());
+        let embedding = initialise_embedding(
+            &EmbdInit::RandomInit { range: None },
+            2,
+            42,
+            &graph,
+            data.as_ref(),
+        );
 
         assert_eq!(embedding.len(), 3);
         assert_eq!(embedding[0].len(), 2);
     }
 
     #[test]
-    fn test_initialize_embedding_pca() {
+    fn test_initialise_embedding_pca() {
         let graph = SparseGraph {
             row_indices: vec![],
             col_indices: vec![],
@@ -627,7 +1059,10 @@ mod test_init {
         let data = faer::mat![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0],];
 
         let embedding = initialise_embedding(
-            &UmapInit::PcaInit { randomised: false },
+            &EmbdInit::PcaInit {
+                randomised: false,
+                range: None,
+            },
             2,
             42,
             &graph,

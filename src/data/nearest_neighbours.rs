@@ -114,7 +114,7 @@ where
     /// Initialised self with sensible default parameters.
     fn default() -> Self {
         Self {
-            dist_metric: "cosine".to_string(),
+            dist_metric: "euclidean".to_string(),
             // annoy
             n_tree: 50,
             search_budget: None,

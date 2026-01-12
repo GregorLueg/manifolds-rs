@@ -370,6 +370,9 @@ where
 ///   values: 5-50
 /// * `tol` - Convergence tolerance for entropy (typical: 1e-5)
 /// * `max_iter` - Maximum iterations for binary search (typical: 50-200)
+/// * `distances_squared` - If true, distances are already squared (e.g.,
+///   squared Euclidean). If false, distances will be squared before computing
+///   the kernel.
 ///
 /// ### Returns
 ///
@@ -384,6 +387,7 @@ pub fn gaussian_knn_affinities<T>(
     perplexity: T,
     tol: T,
     max_iter: usize,
+    distances_squared: bool,
 ) -> SparseGraph<T>
 where
     T: Float + Send + Sync + FromPrimitive + ToPrimitive,
@@ -403,13 +407,14 @@ where
             let mut current_probs = vec![T::zero(); dists.len()];
 
             for _ in 0..max_iter {
-                // compute P_i with current beta: p_{j|i} = exp(-beta * d_{ij}^2)
+                // compute P_i with current beta: p_{j|i} = exp(-beta * d²)
                 let mut sum_p = T::zero();
                 for (j, &d) in dists.iter().enumerate() {
                     if d < T::epsilon() {
                         continue;
                     }
-                    let p = (-beta * d).exp();
+                    let d_sq = if distances_squared { d } else { d * d };
+                    let p = (-beta * d_sq).exp();
                     current_probs[j] = p;
                     sum_p = sum_p + p;
                 }
@@ -595,6 +600,10 @@ mod test_data_gen {
     use super::*;
     use approx::assert_relative_eq;
 
+    ////////////////
+    // Umap stuff //
+    ////////////////
+
     #[test]
     fn test_smooth_knn_dist_basic() {
         // Simple test with 3 points, k=2
@@ -756,5 +765,245 @@ mod test_data_gen {
         assert!(adj[0].is_empty());
         assert!(adj[1].is_empty());
         assert!(adj[2].is_empty());
+    }
+
+    ////////////////
+    // tSNE stuff //
+    ////////////////
+
+    /// Helper: build adjacency map from sparse graph for easier testing
+    fn graph_to_adj<T: Float + Copy>(graph: &SparseGraph<T>) -> Vec<Vec<(usize, T)>> {
+        let mut adj = vec![Vec::new(); graph.n_vertices];
+        for ((&i, &j), &w) in graph
+            .row_indices
+            .iter()
+            .zip(&graph.col_indices)
+            .zip(&graph.values)
+        {
+            adj[i].push((j, w));
+        }
+        adj
+    }
+
+    /// Helper: compute entropy of a probability distribution
+    fn entropy(probs: &[f64]) -> f64 {
+        probs
+            .iter()
+            .filter(|&&p| p > 1e-12)
+            .map(|&p| -p * p.log2())
+            .sum()
+    }
+
+    #[test]
+    fn test_row_probabilities_sum_to_one() {
+        // 5 points, each has 4 neighbours (excluding self)
+        let knn_indices = vec![
+            vec![1, 2, 3, 4],
+            vec![0, 2, 3, 4],
+            vec![0, 1, 3, 4],
+            vec![0, 1, 2, 4],
+            vec![0, 1, 2, 3],
+        ];
+        // Squared Euclidean distances
+        let knn_dists = vec![
+            vec![1.0, 4.0, 9.0, 16.0],
+            vec![1.0, 1.0, 4.0, 9.0],
+            vec![4.0, 1.0, 1.0, 4.0],
+            vec![9.0, 4.0, 1.0, 1.0],
+            vec![16.0, 9.0, 4.0, 1.0],
+        ];
+
+        let perplexity = 2.0;
+        let graph = gaussian_knn_affinities(&knn_indices, &knn_dists, perplexity, 1e-5, 200, true);
+        let adj = graph_to_adj(&graph);
+
+        for (i, neighbours) in adj.iter().enumerate() {
+            let sum: f64 = neighbours.iter().map(|(_, w)| *w).sum();
+            assert_relative_eq!(sum, 1.0, epsilon = 1e-4, max_relative = 1e-4);
+            println!("Row {}: sum = {:.6}", i, sum);
+        }
+    }
+
+    #[test]
+    fn test_entropy_matches_target_perplexity() {
+        // Create data where we can verify entropy
+        let knn_indices = vec![
+            vec![1, 2, 3, 4, 5, 6, 7],
+            vec![0, 2, 3, 4, 5, 6, 7],
+            vec![0, 1, 3, 4, 5, 6, 7],
+            vec![0, 1, 2, 4, 5, 6, 7],
+            vec![0, 1, 2, 3, 5, 6, 7],
+            vec![0, 1, 2, 3, 4, 6, 7],
+            vec![0, 1, 2, 3, 4, 5, 7],
+            vec![0, 1, 2, 3, 4, 5, 6],
+        ];
+        // Squared distances with some variation
+        let knn_dists: Vec<Vec<f64>> = (0..8)
+            .map(|i| {
+                (0..7)
+                    .map(|j| ((j + 1) as f64) * (1.0 + 0.1 * (i as f64)))
+                    .collect()
+            })
+            .collect();
+
+        let perplexity = 3.0;
+        let target_entropy = perplexity.log2();
+
+        let graph = gaussian_knn_affinities(&knn_indices, &knn_dists, perplexity, 1e-5, 200, true);
+        let adj = graph_to_adj(&graph);
+
+        for (i, neighbours) in adj.iter().enumerate() {
+            let probs: Vec<f64> = neighbours.iter().map(|(_, w)| *w).collect();
+            let h = entropy(&probs);
+            println!(
+                "Row {}: entropy = {:.4}, target = {:.4}, diff = {:.6}",
+                i,
+                h,
+                target_entropy,
+                (h - target_entropy).abs()
+            );
+            assert_relative_eq!(h, target_entropy, epsilon = 1e-3, max_relative = 1e-3);
+        }
+    }
+
+    #[test]
+    fn test_squared_vs_unsquared_equivalence() {
+        // Same underlying distances, but one is squared, one is not
+        let knn_indices = vec![
+            vec![1, 2, 3, 4],
+            vec![0, 2, 3, 4],
+            vec![0, 1, 3, 4],
+            vec![0, 1, 2, 4],
+            vec![0, 1, 2, 3],
+        ];
+
+        // Unsquared Euclidean distances
+        let unsquared: Vec<Vec<f64>> = vec![
+            vec![1.0, 2.0, 3.0, 4.0],
+            vec![1.0, 1.0, 2.0, 3.0],
+            vec![2.0, 1.0, 1.0, 2.0],
+            vec![3.0, 2.0, 1.0, 1.0],
+            vec![4.0, 3.0, 2.0, 1.0],
+        ];
+
+        // Squared Euclidean distances
+        let squared: Vec<Vec<f64>> = unsquared
+            .iter()
+            .map(|row| row.iter().map(|d| d * d).collect())
+            .collect();
+
+        let perplexity = 2.0;
+
+        let graph_unsq =
+            gaussian_knn_affinities(&knn_indices, &unsquared, perplexity, 1e-5, 200, false);
+        let graph_sq = gaussian_knn_affinities(&knn_indices, &squared, perplexity, 1e-5, 200, true);
+
+        let adj_unsq = graph_to_adj(&graph_unsq);
+        let adj_sq = graph_to_adj(&graph_sq);
+
+        // Results should be identical
+        for i in 0..5 {
+            assert_eq!(adj_unsq[i].len(), adj_sq[i].len());
+            for (a, b) in adj_unsq[i].iter().zip(adj_sq[i].iter()) {
+                assert_eq!(a.0, b.0); // same neighbour index
+                assert_relative_eq!(a.1, b.1, epsilon = 1e-10);
+            }
+        }
+        println!("Squared vs unsquared: results match!");
+    }
+
+    #[test]
+    fn test_self_loops_excluded() {
+        // kNN includes self (index i appears in knn_indices[i])
+        let knn_indices = vec![
+            vec![0, 1, 2, 3], // includes self
+            vec![1, 0, 2, 3], // includes self
+            vec![2, 0, 1, 3], // includes self
+            vec![3, 0, 1, 2], // includes self
+        ];
+        let knn_dists = vec![
+            vec![0.0, 1.0, 4.0, 9.0], // distance to self is 0
+            vec![0.0, 1.0, 1.0, 4.0],
+            vec![0.0, 4.0, 1.0, 1.0],
+            vec![0.0, 9.0, 4.0, 1.0],
+        ];
+
+        let graph = gaussian_knn_affinities(&knn_indices, &knn_dists, 2.0, 1e-5, 200, true);
+
+        // Check no self-loops in output
+        for (&i, &j) in graph.row_indices.iter().zip(&graph.col_indices) {
+            assert_ne!(i, j, "Self-loop found: {} -> {}", i, j);
+        }
+        println!("No self-loops in output graph.");
+    }
+
+    #[test]
+    fn test_closer_neighbours_have_higher_probability() {
+        let knn_indices = vec![vec![1, 2, 3, 4]];
+        // Strictly increasing squared distances
+        let knn_dists = vec![vec![1.0, 4.0, 9.0, 16.0]];
+
+        let graph = gaussian_knn_affinities(&knn_indices, &knn_dists, 2.0, 1e-5, 200, true);
+        let adj = graph_to_adj(&graph);
+
+        let probs: Vec<(usize, f64)> = adj[0].clone();
+        println!("Probabilities: {:?}", probs);
+
+        // Closer neighbours should have higher probability
+        // neighbour 1 (d²=1) > neighbour 2 (d²=4) > neighbour 3 (d²=9) > neighbour 4 (d²=16)
+        let p1 = probs.iter().find(|(j, _)| *j == 1).unwrap().1;
+        let p2 = probs.iter().find(|(j, _)| *j == 2).unwrap().1;
+        let p3 = probs.iter().find(|(j, _)| *j == 3).unwrap().1;
+        let p4 = probs.iter().find(|(j, _)| *j == 4).unwrap().1;
+
+        assert!(p1 > p2, "p1={} should be > p2={}", p1, p2);
+        assert!(p2 > p3, "p2={} should be > p3={}", p2, p3);
+        assert!(p3 > p4, "p3={} should be > p4={}", p3, p4);
+    }
+
+    #[test]
+    fn test_uniform_distances_give_uniform_probs() {
+        // All neighbours at same distance → should get uniform distribution
+        // Use perplexity = 4 so target entropy matches uniform entropy over 4 items
+        let knn_indices = vec![vec![1, 2, 3, 4]];
+        let knn_dists = vec![vec![4.0, 4.0, 4.0, 4.0]]; // all same squared distance
+
+        let perplexity = 4.0; // Changed from 2.0
+        let graph = gaussian_knn_affinities(&knn_indices, &knn_dists, perplexity, 1e-5, 200, true);
+        let adj = graph_to_adj(&graph);
+
+        let probs: Vec<f64> = adj[0].iter().map(|(_, p)| *p).collect();
+        let expected = 0.25; // uniform over 4 neighbours
+
+        for (i, &p) in probs.iter().enumerate() {
+            assert_relative_eq!(p, expected, epsilon = 1e-4);
+            println!("Neighbour {}: p = {:.6}", i, p);
+        }
+    }
+
+    #[test]
+    fn test_perplexity_affects_distribution_spread() {
+        let knn_indices = vec![vec![1, 2, 3, 4, 5, 6, 7]];
+        let knn_dists = vec![vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]]; // unsquared
+
+        // Low perplexity → more concentrated distribution
+        let graph_low = gaussian_knn_affinities(&knn_indices, &knn_dists, 1.5, 1e-5, 200, false);
+        let adj_low = graph_to_adj(&graph_low);
+        let probs_low: Vec<f64> = adj_low[0].iter().map(|(_, p)| *p).collect();
+        let entropy_low = entropy(&probs_low);
+
+        // High perplexity → more spread distribution
+        let graph_high = gaussian_knn_affinities(&knn_indices, &knn_dists, 4.0, 1e-5, 200, false);
+        let adj_high = graph_to_adj(&graph_high);
+        let probs_high: Vec<f64> = adj_high[0].iter().map(|(_, p)| *p).collect();
+        let entropy_high = entropy(&probs_high);
+
+        println!("Low perplexity (1.5): entropy = {:.4}", entropy_low);
+        println!("High perplexity (4.0): entropy = {:.4}", entropy_high);
+
+        assert!(
+            entropy_high > entropy_low,
+            "Higher perplexity should give higher entropy"
+        );
     }
 }

@@ -1343,7 +1343,10 @@ pub fn optimise_bh_tsne<T>(
             .collect();
 
         // Global normalisation constant Z
-        let z_total: T = results.par_iter().map(|t| t.4).sum();
+        let z_total: T = results
+            .iter()
+            .map(|t| t.4)
+            .fold(T::zero(), |acc, x| acc + x);
         let z_inv = if z_total > eps {
             T::one() / z_total
         } else {

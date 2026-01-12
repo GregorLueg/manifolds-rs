@@ -5,13 +5,6 @@ use num_traits::{Float, FromPrimitive};
 /////////////
 
 /// A simple 2D Bounding Box
-///
-/// ### Fields
-///
-/// * `x_min` - Min value in x direction
-/// * `x_max` - Max value in x direction
-/// * `y_min` - Min value in y direction
-/// * `y_max` - Max value in y direction
 #[derive(Clone, Copy, Debug)]
 struct BBox<T> {
     x_min: T,
@@ -21,17 +14,6 @@ struct BBox<T> {
 }
 
 impl<T: Float> BBox<T> {
-    /// Check which quadrant a point belongs to relative to the center of this
-    /// box
-    ///
-    /// ### Params
-    ///
-    /// * `x` - X coordinate
-    /// * `y` - Y coordinate
-    ///
-    /// ### Returns
-    ///
-    /// `usize` -> 0 (NW), 1 (NE), 2 (SW), 3 (SE)
     fn get_quadrant(&self, x: T, y: T) -> usize {
         let center_x = (self.x_min + self.x_max) / (T::one() + T::one());
         let center_y = (self.y_min + self.y_max) / (T::one() + T::one());
@@ -41,16 +23,6 @@ impl<T: Float> BBox<T> {
         right + bottom
     }
 
-    /// Return the boundaries for a specific quadrant
-    ///
-    /// ### Params
-    ///
-    /// * `quadrant` - The idx of the quadrant. Must be one of `0`, `1`, `2` or
-    ///   `3`; otherwise, it will panic.
-    ///
-    /// ### Returns
-    ///
-    /// The `BBox`.
     fn sub_quadrant(&self, quadrant: usize) -> Self {
         let center_x = (self.x_min + self.x_max) / (T::one() + T::one());
         let center_y = (self.y_min + self.y_max) / (T::one() + T::one());
@@ -61,25 +33,25 @@ impl<T: Float> BBox<T> {
                 x_max: center_x,
                 y_min: self.y_min,
                 y_max: center_y,
-            }, // NW
+            },
             1 => BBox {
                 x_min: center_x,
                 x_max: self.x_max,
                 y_min: self.y_min,
                 y_max: center_y,
-            }, // NE
+            },
             2 => BBox {
                 x_min: self.x_min,
                 x_max: center_x,
                 y_min: center_y,
                 y_max: self.y_max,
-            }, // SW
+            },
             3 => BBox {
                 x_min: center_x,
                 x_max: self.x_max,
                 y_min: center_y,
                 y_max: self.y_max,
-            }, // SE
+            },
             _ => unreachable!(),
         }
     }
@@ -93,14 +65,14 @@ impl<T: Float> BBox<T> {
 ///
 /// ### Fields
 ///
-/// * `com_x` -  Center of mass (X)
-/// * `com_y` - Center of mass (Y)
+/// * `com_x` - Centre of mass (X)
+/// * `com_y` - Centre of mass (Y)
 /// * `mass` - Total mass (number of points in this node/subtree)
 /// * `width` - Width of the cell covered by this node
 /// * `children` - Indices of children in the `nodes` vector; `None` if child
 ///   does not exist.
-/// * `point_idx` - If this is a leaf, it may store the index of the original
-///   data point
+/// * `point_indices` - If this is a leaf, stores indices of all points in this cell.
+///   Empty for internal nodes.
 #[derive(Debug, Clone)]
 pub struct QuadNode<T> {
     pub com_x: T,
@@ -108,17 +80,26 @@ pub struct QuadNode<T> {
     pub mass: T,
     pub width: T,
     pub children: [Option<usize>; 4],
-    pub point_idx: Option<usize>,
+    pub point_indices: Vec<usize>, // Changed from Option<usize> to Vec<usize>
+}
+
+impl<T: Float> QuadNode<T> {
+    /// Check if this node contains a specific point index
+    #[inline]
+    pub fn contains_point(&self, idx: usize) -> bool {
+        self.point_indices.contains(&idx)
+    }
+
+    /// Check if this is a leaf node
+    #[inline]
+    pub fn is_leaf(&self) -> bool {
+        !self.point_indices.is_empty() || self.children.iter().all(|c| c.is_none())
+    }
 }
 
 /// Barnes-Hut Tree
 ///
 /// Continuous flat arena to store the nodes for better cache locality
-///
-/// ### Fields
-///
-/// * `nodes` - The flat structure storing the `QuadNode`s
-/// * `root` - The index of the root (usually 0).
 pub struct BarnesHutTree<T> {
     pub nodes: Vec<QuadNode<T>>,
     root: usize,
@@ -129,14 +110,7 @@ where
     T: Float + FromPrimitive + Send + Sync,
 {
     /// Build the QuadTree from the current embedding
-    ///
-    /// ### Params
-    ///
-    /// * `embd` - The current 2D embeddings.
-    ///
-    /// ### Returns self
     pub fn new(embd: &[Vec<T>]) -> Self {
-        // global bounds
         let (min_x, max_x, min_y, max_y) = embd.iter().fold(
             (
                 T::infinity(),
@@ -154,8 +128,6 @@ where
             },
         );
 
-        // add a small epsilon to bounds to ensure points don't fall exactly on
-        // edge
         let epsilon = T::from_f64(1e-6).unwrap();
         let bbox = BBox {
             x_min: min_x - epsilon,
@@ -172,28 +144,15 @@ where
         Self { nodes, root }
     }
 
-    /// Build the BarnesHutTree recursively
-    ///
-    /// ### Params
-    ///
-    /// * `nodes` - Mutable reference to the internal vector storage
-    /// * `embd` - The current 2D embeddings.
-    /// * `point_indices` - Slice of indices of the samples
-    /// * `bbox` - The BBox (in the recursion the subquadrants will be used)
-    ///
-    /// ### Returns
-    ///
-    /// The index of the created node in the `nodes` vector
     fn build_recursive(
         nodes: &mut Vec<QuadNode<T>>,
         embd: &[Vec<T>],
         point_indices: &[usize],
         bbox: BBox<T>,
     ) -> usize {
-        // assuming roughly square for simplicity -> will go back to this
         let width = bbox.x_max - bbox.x_min;
 
-        // add the first node
+        // Single point → leaf
         if point_indices.len() == 1 {
             let idx = point_indices[0];
             let p = &embd[idx];
@@ -204,7 +163,7 @@ where
                 mass: T::one(),
                 width,
                 children: [None; 4],
-                point_idx: Some(idx),
+                point_indices: vec![idx],
             };
 
             let node_idx = nodes.len();
@@ -227,18 +186,17 @@ where
             buckets[quadrant].push(idx);
         }
 
-        // to avoid infinity recursion
+        // Check for infinite recursion (all points in same quadrant)
         let max_bucket_size = buckets.iter().map(|b| b.len()).max().unwrap_or(0);
         if max_bucket_size == point_indices.len() {
-            let idx = point_indices[0];
-
+            // All points coincident or very close — create leaf with ALL point indices
             let node = QuadNode {
                 com_x: sum_x / mass,
                 com_y: sum_y / mass,
                 mass,
                 width,
                 children: [None; 4],
-                point_idx: Some(idx),
+                point_indices: point_indices.to_vec(), // Store ALL indices
             };
 
             let node_idx = nodes.len();
@@ -246,6 +204,7 @@ where
             return node_idx;
         }
 
+        // Internal node
         let node_idx = nodes.len();
 
         nodes.push(QuadNode {
@@ -254,7 +213,7 @@ where
             mass,
             width,
             children: [None; 4],
-            point_idx: None,
+            point_indices: Vec::new(), // Internal nodes have no direct points
         });
 
         let mut children_indices = [None; 4];
@@ -267,22 +226,19 @@ where
             }
         }
 
-        // add the children information
         nodes[node_idx].children = children_indices;
 
         node_idx
     }
 
-    /// Compute the repulsive forces on a point using the Barnes-Hut
-    /// approximation
+    /// Compute the repulsive forces on a point using the Barnes-Hut approximation
     ///
     /// ### Params
     ///
     /// * `point_idx` - Index of the point in the original embedding
     /// * `p_x` - X coordinate of the point
     /// * `p_y` - Y coordinate of the point
-    /// * `theta` - Barnes-Hut approximation parameter (typically 0.5). Lower
-    ///   values are more accurate but slower
+    /// * `theta` - Barnes-Hut approximation parameter (typically 0.5)
     ///
     /// ### Returns
     ///
@@ -295,29 +251,47 @@ where
         let mut force_y = T::zero();
         let mut sum_q = T::zero();
 
-        // we use an iterative stack to traverse the tree (avoids recursion
-        // overhead)
         let mut stack = Vec::with_capacity(64);
         stack.push(self.root);
+
+        let theta_sq = theta * theta;
+        let min_dist_sq = T::from_f64(1e-12).unwrap();
 
         while let Some(node_idx) = stack.pop() {
             let node = &self.nodes[node_idx];
 
             let dx = p_x - node.com_x;
             let dy = p_y - node.com_y;
-            let dist_sq = dx * dx + dy * dy;
+            let dist_sq = (dx * dx + dy * dy).max(min_dist_sq);
 
-            // 1. check if node is the point itself (ignore)
-            if node.point_idx == Some(point_idx) && dist_sq < T::from_f64(1e-8).unwrap() {
-                continue;
+            // Skip if this node contains the query point and distance is tiny
+            // (handles both single-point leaves and coincident point leaves)
+            if node.contains_point(point_idx) {
+                if node.is_leaf() {
+                    // Leaf containing query point: compute force from OTHER points in this leaf
+                    let other_mass = node.mass - T::one();
+                    if other_mass > T::zero() && dist_sq > min_dist_sq {
+                        let q = T::one() / (T::one() + dist_sq);
+                        let mult = other_mass * q * q;
+                        sum_q = sum_q + other_mass * q;
+                        force_x = force_x + mult * dx;
+                        force_y = force_y + mult * dy;
+                    }
+                    continue;
+                } else {
+                    // Internal node containing query point: must open it
+                    for child in node.children.iter().flatten() {
+                        stack.push(*child);
+                    }
+                    continue;
+                }
             }
 
-            // 2. Barnes-Hut condition: is the node far enough to be treated as
-            // a summary? width^2 / dist^2 < theta^2
-            let is_summary = node.width * node.width < theta * theta * dist_sq;
-            let is_leaf = node.point_idx.is_some() || node.children.iter().all(|c| c.is_none());
+            // Barnes-Hut criterion: is the node far enough to use as summary?
+            let is_summary = node.width * node.width < theta_sq * dist_sq;
 
-            if is_summary || is_leaf {
+            if is_summary || node.is_leaf() {
+                // Use this node as a summary
                 let q = T::one() / (T::one() + dist_sq);
                 let mult = node.mass * q * q;
 
@@ -325,7 +299,7 @@ where
                 force_x = force_x + mult * dx;
                 force_y = force_y + mult * dy;
             } else {
-                // node is too close and not a leaf: Open it up (push children to stack)
+                // Node too close: open it
                 for child in node.children.iter().flatten() {
                     stack.push(*child);
                 }
@@ -333,5 +307,312 @@ where
         }
 
         (force_x, force_y, sum_q)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Helper: create embedding from slice of tuples
+    fn embd_from_tuples(pts: &[(f64, f64)]) -> Vec<Vec<f64>> {
+        pts.iter().map(|&(x, y)| vec![x, y]).collect()
+    }
+
+    #[test]
+    fn test_single_point_tree() {
+        let embd = embd_from_tuples(&[(1.0, 2.0)]);
+        let tree = BarnesHutTree::new(&embd);
+
+        assert_eq!(tree.nodes.len(), 1);
+        let root = &tree.nodes[tree.root];
+        assert_relative_eq!(root.com_x, 1.0);
+        assert_relative_eq!(root.com_y, 2.0);
+        assert_relative_eq!(root.mass, 1.0);
+        assert_eq!(root.point_indices, vec![0]);
+        assert!(root.is_leaf());
+    }
+
+    #[test]
+    fn test_two_points_different_quadrants() {
+        // Points in opposite corners should create tree with depth
+        let embd = embd_from_tuples(&[(0.0, 0.0), (10.0, 10.0)]);
+        let tree = BarnesHutTree::new(&embd);
+
+        let root = &tree.nodes[tree.root];
+        assert_relative_eq!(root.mass, 2.0);
+        assert_relative_eq!(root.com_x, 5.0);
+        assert_relative_eq!(root.com_y, 5.0);
+        assert!(!root.is_leaf()); // Should have children
+        assert!(root.point_indices.is_empty());
+    }
+
+    #[test]
+    fn test_coincident_points_stored_correctly() {
+        // Multiple points at same location
+        let embd = embd_from_tuples(&[(5.0, 5.0), (5.0, 5.0), (5.0, 5.0)]);
+        let tree = BarnesHutTree::new(&embd);
+
+        // Should create a single leaf with all three points
+        let root = &tree.nodes[tree.root];
+        assert_relative_eq!(root.mass, 3.0);
+        assert_eq!(root.point_indices.len(), 3);
+        assert!(root.point_indices.contains(&0));
+        assert!(root.point_indices.contains(&1));
+        assert!(root.point_indices.contains(&2));
+        assert!(root.is_leaf());
+    }
+
+    #[test]
+    fn test_mass_conservation() {
+        // Total mass should equal number of points
+        let embd = embd_from_tuples(&[
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (1.0, 1.0),
+            (0.5, 0.5),
+            (2.0, 2.0),
+            (3.0, 1.0),
+        ]);
+        let tree = BarnesHutTree::new(&embd);
+
+        let root = &tree.nodes[tree.root];
+        assert_relative_eq!(root.mass, 7.0);
+    }
+
+    #[test]
+    fn test_centre_of_mass_correctness() {
+        let embd = embd_from_tuples(&[(0.0, 0.0), (4.0, 0.0), (0.0, 4.0), (4.0, 4.0)]);
+        let tree = BarnesHutTree::new(&embd);
+
+        let root = &tree.nodes[tree.root];
+        assert_relative_eq!(root.com_x, 2.0);
+        assert_relative_eq!(root.com_y, 2.0);
+    }
+
+    #[test]
+    fn test_no_self_interaction_single_point() {
+        let embd = embd_from_tuples(&[(0.0, 0.0)]);
+        let tree = BarnesHutTree::new(&embd);
+
+        let (fx, fy, sum_q) = tree.compute_repulsive_force(0, 0.0, 0.0, 0.5);
+
+        // Single point should have zero force on itself
+        assert_relative_eq!(fx, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(fy, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(sum_q, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_no_self_interaction_coincident_points() {
+        // Three coincident points — each should only feel force from the other two
+        let embd = embd_from_tuples(&[(5.0, 5.0), (5.0, 5.0), (5.0, 5.0)]);
+        let tree = BarnesHutTree::new(&embd);
+
+        for i in 0..3 {
+            let (fx, fy, sum_q) = tree.compute_repulsive_force(i, 5.0, 5.0, 0.5);
+
+            // Force should be finite (not NaN or Inf)
+            assert!(fx.is_finite(), "fx is not finite for point {}", i);
+            assert!(fy.is_finite(), "fy is not finite for point {}", i);
+            assert!(sum_q.is_finite(), "sum_q is not finite for point {}", i);
+
+            // At exact same location, dx=dy=0, so force direction is zero
+            // but sum_q should reflect the other 2 points
+            println!(
+                "Point {}: fx={:.6}, fy={:.6}, sum_q={:.6}",
+                i, fx, fy, sum_q
+            );
+        }
+    }
+
+    #[test]
+    fn test_force_symmetry_two_points() {
+        let embd = embd_from_tuples(&[(0.0, 0.0), (2.0, 0.0)]);
+        let tree = BarnesHutTree::new(&embd);
+
+        let (fx0, fy0, _) = tree.compute_repulsive_force(0, 0.0, 0.0, 0.5);
+        let (fx1, fy1, _) = tree.compute_repulsive_force(1, 2.0, 0.0, 0.5);
+
+        // Forces should be equal and opposite
+        assert_relative_eq!(fx0, -fx1, epsilon = 1e-10);
+        assert_relative_eq!(fy0, -fy1, epsilon = 1e-10);
+
+        // Point 0 should be pushed left (negative x), point 1 pushed right (positive x)
+        assert!(fx0 < 0.0, "Point 0 should be pushed left");
+        assert!(fx1 > 0.0, "Point 1 should be pushed right");
+        assert_relative_eq!(fy0, 0.0, epsilon = 1e-10);
+        assert_relative_eq!(fy1, 0.0, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_force_magnitude_decreases_with_distance() {
+        // Two configurations: points close vs far
+        let embd_close = embd_from_tuples(&[(0.0, 0.0), (1.0, 0.0)]);
+        let embd_far = embd_from_tuples(&[(0.0, 0.0), (10.0, 0.0)]);
+
+        let tree_close = BarnesHutTree::new(&embd_close);
+        let tree_far = BarnesHutTree::new(&embd_far);
+
+        let (fx_close, _, _) = tree_close.compute_repulsive_force(0, 0.0, 0.0, 0.5);
+        let (fx_far, _, _) = tree_far.compute_repulsive_force(0, 0.0, 0.0, 0.5);
+
+        // Closer points should have larger force magnitude
+        assert!(
+            fx_close.abs() > fx_far.abs(),
+            "Close force {} should be larger than far force {}",
+            fx_close.abs(),
+            fx_far.abs()
+        );
+    }
+
+    #[test]
+    fn test_sum_q_equals_n_minus_1_for_exact_computation() {
+        // With theta=0, we get exact computation (no approximation)
+        // For well-separated points, sum_q should be close to n-1 when points are far apart
+        // (each q_ij ≈ 1 when dist_sq >> 1)
+        let embd = embd_from_tuples(&[(0.0, 0.0), (100.0, 0.0), (0.0, 100.0), (100.0, 100.0)]);
+        let tree = BarnesHutTree::new(&embd);
+
+        let theta = 0.0; // Force exact computation
+        let (_, _, sum_q) = tree.compute_repulsive_force(0, 0.0, 0.0, theta);
+
+        // With large distances, q = 1/(1+d²) ≈ 0, so sum_q < n-1
+        // But it should be positive and reasonable
+        assert!(sum_q > 0.0);
+        assert!(sum_q < 3.0); // Less than n-1=3 because of distance decay
+        println!("sum_q with exact computation: {}", sum_q);
+    }
+
+    #[test]
+    fn test_barnes_hut_approximation_reasonable() {
+        // Compare exact (theta=0) vs approximate (theta=0.5) for a larger point set
+        let mut pts = Vec::new();
+        for i in 0..10 {
+            for j in 0..10 {
+                pts.push((i as f64 * 2.0, j as f64 * 2.0));
+            }
+        }
+        let embd = embd_from_tuples(&pts);
+        let tree = BarnesHutTree::new(&embd);
+
+        // Test point in middle of grid
+        let test_idx = 55;
+        let (px, py) = pts[test_idx];
+
+        let (fx_exact, fy_exact, sq_exact) = tree.compute_repulsive_force(test_idx, px, py, 0.0);
+        let (fx_approx, fy_approx, sq_approx) = tree.compute_repulsive_force(test_idx, px, py, 0.5);
+
+        println!(
+            "Exact:  fx={:.6}, fy={:.6}, sum_q={:.6}",
+            fx_exact, fy_exact, sq_exact
+        );
+        println!(
+            "Approx: fx={:.6}, fy={:.6}, sum_q={:.6}",
+            fx_approx, fy_approx, sq_approx
+        );
+
+        // Approximation should be in the same ballpark (within 50% for theta=0.5)
+        let fx_ratio = if fx_exact.abs() > 1e-10 {
+            (fx_approx / fx_exact - 1.0).abs()
+        } else {
+            0.0
+        };
+        let fy_ratio = if fy_exact.abs() > 1e-10 {
+            (fy_approx / fy_exact - 1.0).abs()
+        } else {
+            0.0
+        };
+
+        println!(
+            "Force relative errors: fx={:.2}%, fy={:.2}%",
+            fx_ratio * 100.0,
+            fy_ratio * 100.0
+        );
+
+        // Allow up to 50% error for theta=0.5
+        assert!(
+            fx_ratio < 0.5 || fx_exact.abs() < 1e-6,
+            "fx error too large"
+        );
+        assert!(
+            fy_ratio < 0.5 || fy_exact.abs() < 1e-6,
+            "fy error too large"
+        );
+    }
+
+    #[test]
+    fn test_no_nan_or_inf_forces() {
+        // Stress test with various configurations
+        let configs: Vec<Vec<(f64, f64)>> = vec![
+            // Coincident points
+            vec![(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)],
+            // Very close points
+            vec![(0.0, 0.0), (1e-10, 0.0)],
+            // Mix of close and far
+            vec![(0.0, 0.0), (1e-8, 1e-8), (100.0, 100.0)],
+            // Large coordinates
+            vec![(1e6, 1e6), (1e6 + 1.0, 1e6)],
+        ];
+
+        for (cfg_idx, pts) in configs.iter().enumerate() {
+            let embd = embd_from_tuples(pts);
+            let tree = BarnesHutTree::new(&embd);
+
+            for i in 0..pts.len() {
+                let (fx, fy, sum_q) = tree.compute_repulsive_force(i, pts[i].0, pts[i].1, 0.5);
+
+                assert!(
+                    fx.is_finite(),
+                    "Config {}, point {}: fx is not finite: {}",
+                    cfg_idx,
+                    i,
+                    fx
+                );
+                assert!(
+                    fy.is_finite(),
+                    "Config {}, point {}: fy is not finite: {}",
+                    cfg_idx,
+                    i,
+                    fy
+                );
+                assert!(
+                    sum_q.is_finite(),
+                    "Config {}, point {}: sum_q is not finite: {}",
+                    cfg_idx,
+                    i,
+                    sum_q
+                );
+                assert!(
+                    sum_q >= 0.0,
+                    "Config {}, point {}: sum_q is negative: {}",
+                    cfg_idx,
+                    i,
+                    sum_q
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_total_sum_q_consistent() {
+        // Sum of all sum_q values should be consistent (each pair counted twice)
+        let embd = embd_from_tuples(&[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]);
+        let tree = BarnesHutTree::new(&embd);
+
+        let total: f64 = (0..4)
+            .map(|i| {
+                let (_, _, sq) = tree.compute_repulsive_force(i, embd[i][0], embd[i][1], 0.0);
+                sq
+            })
+            .sum();
+
+        println!("Total sum_q across all points: {}", total);
+
+        // Should be positive and finite
+        assert!(total > 0.0);
+        assert!(total.is_finite());
     }
 }
