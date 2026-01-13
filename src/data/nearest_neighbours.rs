@@ -5,7 +5,6 @@ use ann_search_rs::utils::dist::SimdDistance;
 use ann_search_rs::*;
 use faer::MatRef;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
-use rayon::prelude::*;
 use std::default::Default;
 use std::iter::Sum;
 
@@ -38,8 +37,8 @@ pub enum AnnSearch {
 /// * `m` - Number of bidirectional connections per layer. Defaults to 16 based
 ///   on uwot R package.
 /// * `ef_construction` - Size of candidate list during construction.
-/// * `ef_search` - Size of candidate list during search (higher = better
-///   recall, slower)
+/// * `ef_search` - Multipler. Size of candidate list during search (higher =
+///   better recall, slower). The total search will be `ef_search * k`.
 ///
 /// **NNDescent**-specific parameter
 ///
@@ -216,16 +215,16 @@ where
 
     let knn_dist = knn_dist.unwrap();
 
-    // remove self (first element) from both indices and distances
-    let knn_indices: Vec<Vec<usize>> = knn_indices
-        .into_par_iter()
-        .map(|mut v| v.drain(1..).collect())
-        .collect();
+    // // remove self (first element) from both indices and distances
+    // let knn_indices: Vec<Vec<usize>> = knn_indices
+    //     .into_par_iter()
+    //     .map(|mut v| v.drain(1..).collect())
+    //     .collect();
 
-    let knn_dist: Vec<Vec<T>> = knn_dist
-        .into_par_iter()
-        .map(|mut v| v.drain(1..).collect())
-        .collect();
+    // let knn_dist: Vec<Vec<T>> = knn_dist
+    //     .into_par_iter()
+    //     .map(|mut v| v.drain(1..).collect())
+    //     .collect();
 
     (knn_indices, knn_dist)
 }

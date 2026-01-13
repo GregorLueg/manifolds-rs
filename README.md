@@ -61,6 +61,11 @@ If you want to enable parametric UMAP, please use:
 manifold-rs = { version = "0.1.4", features = [ "parametric" ] }  
 ```
 
+## Notes
+
+Please use version `0.1.3` and higher. These ones are not extensively tested
+against real data.
+
 ## Licence
 
 MIT Licence
