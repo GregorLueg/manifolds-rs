@@ -1,3 +1,4 @@
+use ann_search_rs::utils::dist::SimdDistance;
 use faer::traits::{ComplexField, RealField};
 use faer::{Mat, MatRef};
 use num_traits::{Float, ToPrimitive};
@@ -9,7 +10,7 @@ use std::iter::Sum;
 use std::ops::{Add, Mul};
 
 use crate::assert_same_len;
-use crate::data_struct::*;
+use crate::data::structures::*;
 
 ////////////////////
 // Randomised SVD //
@@ -123,10 +124,10 @@ where
 /// Dot product of the two vectors
 fn dot<T>(a: &[T], b: &[T]) -> T
 where
-    T: Float + Send + Sync + Sum,
+    T: Float + Send + Sync + Sum + SimdDistance,
 {
     assert_same_len!(a, b);
-    a.par_iter().zip(b).map(|(&x, &y)| x * y).sum()
+    T::dot_simd(a, b)
 }
 
 /// Helper function to normalise a vector
@@ -140,7 +141,7 @@ where
 /// Normalised dot product of the vector `v`
 fn norm<T>(v: &[T]) -> T
 where
-    T: Float + Send + Sync + Sum,
+    T: Float + Send + Sync + Sum + SimdDistance,
 {
     dot(v, v).sqrt()
 }
@@ -152,7 +153,7 @@ where
 /// * `v` - Mutable reference of the vector to normalise
 fn normalise<T>(v: &mut [T])
 where
-    T: Float + Send + Sync + Sum,
+    T: Float + Send + Sync + Sum + SimdDistance,
 {
     let n = norm(v);
     v.par_iter_mut().for_each(|x| *x = *x / n);
