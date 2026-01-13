@@ -591,7 +591,8 @@ where
         perplexity,
         T::from_f64(1e-5).unwrap(),
         200,
-        true,
+        // euclidean is already squared; cosine not
+        nn_params.dist_metric == "euclidean",
     );
 
     // 2. symmetrise to Joint Probs P_ij
