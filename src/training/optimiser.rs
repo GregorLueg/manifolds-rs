@@ -1270,7 +1270,6 @@ pub fn optimise_bh_tsne<T>(
     let initial_momentum = T::from_f64(0.5).unwrap();
     let final_momentum = T::from_f64(0.8).unwrap();
     let min_gain = T::from_f64(0.01).unwrap();
-    let four = T::from_f64(4.0).unwrap();
     let eps = T::from_f64(1e-12).unwrap();
 
     let mut update_flat = vec![T::zero(); n * n_dim];
@@ -1346,8 +1345,8 @@ pub fn optimise_bh_tsne<T>(
         // Apply gradient updates (sequential is fine - negligible runtime)
         for i in 0..n {
             let (attr_x, attr_y, rep_x, rep_y, _) = results[i];
-            let grad_x = four * (attr_x - rep_x * z_inv);
-            let grad_y = four * (attr_y - rep_y * z_inv);
+            let grad_x = attr_x - rep_x * z_inv;
+            let grad_y = attr_y - rep_y * z_inv;
 
             update_parameter(
                 &mut embd[i][0],
@@ -1370,20 +1369,17 @@ pub fn optimise_bh_tsne<T>(
             );
         }
 
-        // centre embedding to prevent drift
-        if epoch % 100 == 0 {
-            let mut mean_x = T::zero();
-            let mut mean_y = T::zero();
-            for p in embd.iter() {
-                mean_x += p[0];
-                mean_y += p[1];
-            }
-            mean_x /= T::from_usize(n).unwrap();
-            mean_y /= T::from_usize(n).unwrap();
-            for p in embd.iter_mut() {
-                p[0] -= mean_x;
-                p[1] -= mean_y;
-            }
+        let mut mean_x = T::zero();
+        let mut mean_y = T::zero();
+        for p in embd.iter() {
+            mean_x += p[0];
+            mean_y += p[1];
+        }
+        mean_x /= T::from_usize(n).unwrap();
+        mean_y /= T::from_usize(n).unwrap();
+        for p in embd.iter_mut() {
+            p[0] -= mean_x;
+            p[1] -= mean_y;
         }
 
         if verbose && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
