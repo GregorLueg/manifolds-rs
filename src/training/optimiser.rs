@@ -1369,6 +1369,7 @@ pub fn optimise_bh_tsne<T>(
             );
         }
 
+        // renormalise to avoid drift
         let mut mean_x = T::zero();
         let mut mean_y = T::zero();
         for p in embd.iter() {

@@ -676,6 +676,11 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    assert!(
+        params.n_dim == 2,
+        "At the moment, this tSNE implementation only supports n_dim = 2"
+    );
+
     // 1. graph construction
     let (graph, _, _) = construct_tsne_graph(
         data,

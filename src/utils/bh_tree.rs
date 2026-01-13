@@ -14,6 +14,13 @@ struct BBox<T> {
 }
 
 impl<T: Float> BBox<T> {
+    /// Determines which quadrant a point belongs to relative to the center of the box.
+    ///
+    /// The quadrants are indexed in Z-order (Morton order):
+    /// * 0: Top-Left (x < center, y < center)
+    /// * 1: Top-Right (x > center, y < center)
+    /// * 2: Bottom-Left (x < center, y > center)
+    /// * 3: Bottom-Right (x > center, y > center)
     fn get_quadrant(&self, x: T, y: T) -> usize {
         let center_x = (self.x_min + self.x_max) / (T::one() + T::one());
         let center_y = (self.y_min + self.y_max) / (T::one() + T::one());
@@ -23,6 +30,15 @@ impl<T: Float> BBox<T> {
         right + bottom
     }
 
+    /// Creates a new Bounding Box representing one of the four sub-quadrants.
+    ///
+    /// ### Params
+    ///
+    /// * `quadrant` - The index (0-3) of the quadrant to generate.
+    ///
+    /// ### Panics
+    ///
+    /// Panics if `quadrant` is not in the range [0, 3].
     fn sub_quadrant(&self, quadrant: usize) -> Self {
         let center_x = (self.x_min + self.x_max) / (T::one() + T::one());
         let center_y = (self.y_min + self.y_max) / (T::one() + T::one());
@@ -144,6 +160,23 @@ where
         Self { nodes, root }
     }
 
+    /// Recursively builds the QuadTree by partitioning points into quadrants.
+    ///
+    /// This function determines if the current set of points forms a leaf node
+    /// (single point or coincident points) or an internal node. If internal,
+    /// it distributes points into four child buckets and recurses.
+    ///
+    /// ### Params
+    ///
+    /// * `nodes` - The flat arena of nodes being populated.
+    /// * `embd` - The read-only embedding coordinates.
+    /// * `point_indices` - Indices of the points contained in the current
+    ///   node's region.
+    /// * `bbox` - The spatial bounding box covered by this node.
+    ///
+    /// ### Returns
+    ///
+    /// The index of the newly created node within the `nodes` vector.
     fn build_recursive(
         nodes: &mut Vec<QuadNode<T>>,
         embd: &[Vec<T>],
