@@ -10,7 +10,6 @@ pub mod parametric;
 use ann_search_rs::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
 use ann_search_rs::utils::dist::SimdDistance;
-use burn::tensor::{backend::AutodiffBackend, Element};
 use faer::traits::{ComplexField, RealField};
 use faer::MatRef;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
@@ -24,14 +23,20 @@ use std::{
 };
 use thousands::*;
 
+#[cfg(feature = "parametric")]
+use burn::tensor::{backend::AutodiffBackend, Element};
+
 use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
 use crate::data::structures::*;
-use crate::parametric::model::*;
-use crate::parametric::parametric_train::*;
 use crate::training::optimiser::*;
 use crate::training::*;
+
+#[cfg(feature = "parametric")]
+use crate::parametric::model::*;
+#[cfg(feature = "parametric")]
+use crate::parametric::parametric_train::*;
 
 /////////////
 // Helpers //
@@ -2430,6 +2435,7 @@ mod tsne_full_tests {
     }
 }
 
+#[cfg(feature = "parametric")]
 #[cfg(test)]
 mod parametric_integration_tests {
     use super::*;
