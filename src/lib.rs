@@ -366,26 +366,6 @@ where
 
     let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data);
 
-    let end_graph_gen = start_graph_gen.elapsed();
-
-    if verbose {
-        println!("Finalised graph generation in {:.2?}.", end_graph_gen);
-        println!(
-            "Initialising embedding via {} layout...",
-            match init_type {
-                #[allow(unused)]
-                UmapInit::PcaInit { randomised } => "pca",
-                UmapInit::RandomInit => "random",
-                UmapInit::SpectralInit => "spectral",
-            }
-        );
-    }
-
-    let start_layout = Instant::now();
-
-    let mut embd = initialise_embedding(&init_type, n_dim, seed as u64, &graph, data);
-
-    let graph = filter_weak_edges(graph, optim_params.n_epochs);
     let graph_adj = coo_to_adjacency_list(&graph);
 
     if verbose {
@@ -423,15 +403,6 @@ where
                 &mut embd,
                 &graph_adj,
                 &umap_params.optim_params,
-                seed as u64,
-                verbose,
-            );
-        }
-        Optimiser::AdamParallel => {
-            optimise_embedding_adam_parallel(
-                &mut embd,
-                &graph_adj,
-                &optim_params,
                 seed as u64,
                 verbose,
             );
