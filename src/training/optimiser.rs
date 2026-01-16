@@ -11,6 +11,7 @@ use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
 
 use crate::data::structures::*;
 use crate::utils::bh_tree::*;
+use crate::utils::fft::*;
 
 //////////
 // UMAP //
@@ -1132,7 +1133,10 @@ pub fn optimise_embedding_adam_parallel<T>(
 /// * `lr` - Learning rate
 /// * `early_exag_iter` - Early exaggeration iters
 /// * `early_exag_factor` - The factor to exaggerate in the early iterations
-/// * `theta` - The Barnes-Hut theta
+/// * `theta` - The Barnes-Hut theta; relevant if you use the
+///   `optimise_bh_tsne()`
+/// * `n_interp_points` - Interpolation points per box (typically 3); relevant
+///   if you use `optimise_fft_tsne()`
 #[derive(Clone, Debug)]
 pub struct TsneOptimParams<T> {
     pub n_epochs: usize,
@@ -1140,6 +1144,7 @@ pub struct TsneOptimParams<T> {
     pub early_exag_iter: usize,
     pub early_exag_factor: T,
     pub theta: T,
+    pub n_interp_points: usize,
 }
 
 impl<T> TsneOptimParams<T>
@@ -1165,13 +1170,17 @@ where
         early_exag_iter: usize,
         early_exag_factor: T,
         theta: T,
+        n_interp_points: Option<usize>,
     ) -> Self {
+        let n_interp_points = n_interp_points.unwrap_or(3);
+
         Self {
             n_epochs,
             lr,
             early_exag_iter,
             early_exag_factor,
             theta,
+            n_interp_points,
         }
     }
 }
@@ -1184,6 +1193,7 @@ impl<T: Float + FromPrimitive> Default for TsneOptimParams<T> {
             early_exag_iter: 250,
             early_exag_factor: T::from_f64(12.0).unwrap(),
             theta: T::from_f64(0.5).unwrap(),
+            n_interp_points: 3,
         }
     }
 }
@@ -1191,6 +1201,16 @@ impl<T: Float + FromPrimitive> Default for TsneOptimParams<T> {
 ///////////////
 // Optimiser //
 ///////////////
+
+const TSNE_MOMENTUM_SWITCH_ITER: usize = 250;
+const TSNE_INITIAL_MOMENTUM: f64 = 0.5;
+const TSNE_FINAL_MOMENTUM: f64 = 0.8;
+const TSNE_MIN_GAIN: f64 = 0.01;
+const TSNE_EPS: f64 = 1e-12;
+
+////////////////
+// Barnes Hut //
+////////////////
 
 /// Adaptive gain update for t-SNE gradient descent
 ///
@@ -1266,11 +1286,11 @@ pub fn optimise_bh_tsne<T>(
     let n = embd.len();
     let n_dim = embd[0].len();
 
-    let momentum_switch_iter = 250;
-    let initial_momentum = T::from_f64(0.5).unwrap();
-    let final_momentum = T::from_f64(0.8).unwrap();
-    let min_gain = T::from_f64(0.01).unwrap();
-    let eps = T::from_f64(1e-12).unwrap();
+    // main paramters
+    let initial_momentum = T::from_f64(TSNE_INITIAL_MOMENTUM).unwrap();
+    let final_momentum = T::from_f64(TSNE_FINAL_MOMENTUM).unwrap();
+    let min_gain = T::from_f64(TSNE_MIN_GAIN).unwrap();
+    let eps = T::from_f64(TSNE_EPS).unwrap();
 
     let mut update_flat = vec![T::zero(); n * n_dim];
     let mut gains_flat = vec![T::one(); n * n_dim];
@@ -1289,7 +1309,7 @@ pub fn optimise_bh_tsne<T>(
     for epoch in 0..params.n_epochs {
         let bh_tree = BarnesHutTree::new(embd);
 
-        let momentum = if epoch < momentum_switch_iter {
+        let momentum = if epoch < TSNE_MOMENTUM_SWITCH_ITER {
             initial_momentum
         } else {
             final_momentum
@@ -1389,6 +1409,192 @@ pub fn optimise_bh_tsne<T>(
                 epoch,
                 params.n_epochs,
                 z_total.to_f32().unwrap()
+            );
+        }
+    }
+}
+
+/////////
+// FTT //
+/////////
+
+/// Compute embedding bounding box with padding
+fn compute_embedding_bounds<T>(embd: &[Vec<T>], padding_fraction: T) -> (T, T)
+where
+    T: Float,
+{
+    let mut min_val = embd[0][0];
+    let mut max_val = embd[0][0];
+
+    for p in embd {
+        min_val = min_val.min(p[0]).min(p[1]);
+        max_val = max_val.max(p[0]).max(p[1]);
+    }
+
+    let spread = max_val - min_val;
+    let padding = spread * padding_fraction;
+
+    (min_val - padding, max_val + padding)
+}
+
+pub fn optimise_fft_tsne<T>(
+    embd: &mut [Vec<T>],
+    params: &TsneOptimParams<T>,
+    graph: &SparseGraph<T>,
+    verbose: bool,
+) where
+    T: FftFloat + AddAssign + SubAssign + MulAssign + DivAssign + Sum + ToPrimitive,
+{
+    let n = embd.len();
+    let n_dim = embd[0].len();
+    let n_terms = 4;
+
+    // main parameters
+    let initial_momentum = T::from_f64(TSNE_INITIAL_MOMENTUM).unwrap();
+    let final_momentum = T::from_f64(TSNE_FINAL_MOMENTUM).unwrap();
+    let min_gain = T::from_f64(TSNE_MIN_GAIN).unwrap();
+    let eps = T::from_f64(TSNE_EPS).unwrap();
+    let grid_check_interval = 10;
+
+    let mut update_flat = vec![T::zero(); n * n_dim];
+    let mut gains_flat = vec![T::one(); n * n_dim];
+
+    // Build adjacency list once (graph is fixed)
+    let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
+    for ((&i, &j), &w) in graph
+        .row_indices
+        .iter()
+        .zip(&graph.col_indices)
+        .zip(&graph.values)
+    {
+        adj[i].push((j, w));
+    }
+
+    // Initial grid setup
+    let (coord_min, coord_max) = compute_embedding_bounds(embd, T::from_f64(0.1).unwrap());
+    let n_boxes = choose_grid_size(
+        coord_min.to_f64().unwrap(),
+        coord_max.to_f64().unwrap(),
+        1.0,
+        50,
+    );
+    let mut grid = FftGrid::new(coord_min, coord_max, n_boxes, params.n_interp_points);
+    let mut workspace = FftWorkspace::new(n, n_terms, &grid);
+
+    for epoch in 0..params.n_epochs {
+        // Check if grid needs rebuilding (embedding may have spread)
+        if epoch % grid_check_interval == 0 && epoch > 0 {
+            let xs: Vec<T> = embd.iter().map(|p| p[0]).collect();
+            let ys: Vec<T> = embd.iter().map(|p| p[1]).collect();
+            let margin = grid.box_width;
+
+            if !grid.contains_points(&xs, &ys, margin) {
+                let (new_min, new_max) = compute_embedding_bounds(embd, T::from_f64(0.1).unwrap());
+                let new_n_boxes = choose_grid_size(
+                    new_min.to_f64().unwrap(),
+                    new_max.to_f64().unwrap(),
+                    1.0,
+                    50,
+                );
+                grid = FftGrid::new(new_min, new_max, new_n_boxes, params.n_interp_points);
+                workspace = FftWorkspace::new(n, n_terms, &grid);
+
+                if verbose {
+                    println!(
+                        "Epoch {}: Rebuilt grid, new bounds [{:.2}, {:.2}], {} boxes",
+                        epoch,
+                        new_min.to_f32().unwrap(),
+                        new_max.to_f32().unwrap(),
+                        new_n_boxes
+                    );
+                }
+            }
+        }
+
+        let momentum = if epoch < TSNE_MOMENTUM_SWITCH_ITER {
+            initial_momentum
+        } else {
+            final_momentum
+        };
+        let exag_factor = if epoch < params.early_exag_iter {
+            params.early_exag_factor
+        } else {
+            T::one()
+        };
+
+        // Compute repulsive forces via FFT
+        let (rep_x, rep_y, sum_q) = compute_repulsive_forces_fft(embd, &grid, &mut workspace);
+
+        let z_inv = if sum_q > eps {
+            T::one() / sum_q
+        } else {
+            T::zero()
+        };
+
+        // Compute attractive forces (exact via graph) and combine with repulsive
+        // Done per-point to avoid allocating separate attractive force arrays
+        for i in 0..n {
+            let px = embd[i][0];
+            let py = embd[i][1];
+
+            // Attractive forces
+            let mut attr_x = T::zero();
+            let mut attr_y = T::zero();
+            for &(j, p_val) in &adj[i] {
+                let dx = px - embd[j][0];
+                let dy = py - embd[j][1];
+                let dist_sq = dx * dx + dy * dy;
+                let q = T::one() / (T::one() + dist_sq);
+                let force = p_val * exag_factor * q;
+                attr_x += force * dx;
+                attr_y += force * dy;
+            }
+
+            // Gradient = attractive - repulsive/Z
+            let grad_x = attr_x - rep_x[i] * z_inv;
+            let grad_y = attr_y - rep_y[i] * z_inv;
+
+            update_parameter(
+                &mut embd[i][0],
+                &mut update_flat[i * 2],
+                &mut gains_flat[i * 2],
+                grad_x,
+                params.lr,
+                momentum,
+                min_gain,
+            );
+
+            update_parameter(
+                &mut embd[i][1],
+                &mut update_flat[i * 2 + 1],
+                &mut gains_flat[i * 2 + 1],
+                grad_y,
+                params.lr,
+                momentum,
+                min_gain,
+            );
+        }
+
+        // Recentre to prevent drift
+        let mut mean_x = T::zero();
+        let mut mean_y = T::zero();
+        for p in embd.iter() {
+            mean_x += p[0];
+            mean_y += p[1];
+        }
+        mean_x = mean_x / T::from_usize(n).unwrap();
+        mean_y = mean_y / T::from_usize(n).unwrap();
+        for p in embd.iter_mut() {
+            p[0] = p[0] - mean_x;
+            p[1] = p[1] - mean_y;
+        }
+
+        if verbose && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
+            println!(
+                "Epoch {}/{} | Z = {:.4}",
+                epoch,
+                params.n_epochs,
+                sum_q.to_f32().unwrap()
             );
         }
     }

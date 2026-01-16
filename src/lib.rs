@@ -485,6 +485,7 @@ where
     /// ### Returns
     ///
     /// `TsneParams` with sensible defaults for standard t-SNE
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         n_dim: Option<usize>,
         perplexity: Option<T>,
@@ -493,6 +494,7 @@ where
         n_epochs: Option<usize>,
         ann_type: Option<String>,
         theta: Option<T>,
+        n_interp_points: Option<usize>,
     ) -> Self {
         let n_dim = n_dim.unwrap_or(2);
         let perplexity = perplexity.unwrap_or_else(|| T::from_f64(30.0).unwrap());
@@ -500,6 +502,7 @@ where
         let n_epochs = n_epochs.unwrap_or(1000);
         let ann_type = ann_type.unwrap_or_else(|| "hnsw".to_string());
         let theta = theta.unwrap_or_else(|| T::from_f64(0.5).unwrap());
+        let n_interp_points = n_interp_points.unwrap_or(3);
 
         Self {
             n_dim,
@@ -514,6 +517,7 @@ where
                 early_exag_iter: 250,
                 early_exag_factor: T::from_f64(12.0).unwrap(),
                 theta,
+                n_interp_points,
             },
             randomised_init: true,
         }
@@ -2264,6 +2268,7 @@ mod tsne_full_tests {
             Some(500),   // epochs (fewer for test speed)
             None,        // ann_type
             Some(0.5),   // theta
+            Some(3),
         );
 
         let embedding = tsne(data.as_ref(), &params, 42, true);
@@ -2371,6 +2376,7 @@ mod tsne_full_tests {
             Some(200), // fewer epochs for speed
             None,
             Some(0.5),
+            Some(3),
         );
 
         let embd1 = tsne(data.as_ref(), &params, 42, false);
@@ -2409,6 +2415,7 @@ mod tsne_full_tests {
             Some(200),
             None,
             Some(0.5),
+            Some(3),
         );
 
         let embd1 = tsne(data.as_ref(), &params, 42, false);
