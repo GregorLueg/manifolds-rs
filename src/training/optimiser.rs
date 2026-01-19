@@ -237,7 +237,7 @@ where
 }
 
 #[derive(Default)]
-pub enum Optimiser {
+pub enum UmapOptimiser {
     /// Adam
     #[default]
     Adam,
@@ -298,7 +298,7 @@ impl<T: Float + FromPrimitive> OptimConstants<T> {
 // Helpers //
 /////////////
 
-/// Parse the Optimiser to use
+/// Parse the UMAP Optimiser to use
 ///
 /// ### Params
 ///
@@ -308,11 +308,11 @@ impl<T: Float + FromPrimitive> OptimConstants<T> {
 /// ### Return
 ///
 /// Option of Optimiser
-pub fn parse_optimiser(s: &str) -> Option<Optimiser> {
+pub fn parse_umap_optimiser(s: &str) -> Option<UmapOptimiser> {
     match s.to_lowercase().as_str() {
-        "adam" => Some(Optimiser::Adam),
-        "sgd" => Some(Optimiser::Sgd),
-        "adam_parallel" => Some(Optimiser::AdamParallel),
+        "adam" => Some(UmapOptimiser::Adam),
+        "sgd" => Some(UmapOptimiser::Sgd),
+        "adam_parallel" => Some(UmapOptimiser::AdamParallel),
         _ => None,
     }
 }
@@ -1121,6 +1121,16 @@ pub fn optimise_embedding_adam_parallel<T>(
 // tSNE //
 //////////
 
+/////////////
+// Globals //
+/////////////
+
+const TSNE_MOMENTUM_SWITCH_ITER: usize = 250;
+const TSNE_INITIAL_MOMENTUM: f64 = 0.5;
+const TSNE_FINAL_MOMENTUM: f64 = 0.8;
+const TSNE_MIN_GAIN: f64 = 0.01;
+const TSNE_EPS: f64 = 1e-12;
+
 ////////////////
 // Structures //
 ////////////////
@@ -1202,11 +1212,32 @@ impl<T: Float + FromPrimitive> Default for TsneOptimParams<T> {
 // Optimiser //
 ///////////////
 
-const TSNE_MOMENTUM_SWITCH_ITER: usize = 250;
-const TSNE_INITIAL_MOMENTUM: f64 = 0.5;
-const TSNE_FINAL_MOMENTUM: f64 = 0.8;
-const TSNE_MIN_GAIN: f64 = 0.01;
-const TSNE_EPS: f64 = 1e-12;
+#[derive(Default)]
+pub enum TsneOpt {
+    #[default]
+    /// FFT-accelerated version
+    Fft,
+    /// BarnesHut-accelerated version
+    BarnesHut,
+}
+
+/// Parse the tSNE Optimiser to use
+///
+/// ### Params
+///
+/// * `s` - String defining the optimiser. Choice of `"barnes hut" | "bh"` or
+///   `"fft"`.
+///
+/// ### Return
+///
+/// Option of Optimiser
+pub fn parse_tsne_optimiser(s: &str) -> Option<TsneOpt> {
+    match s.to_lowercase().as_str() {
+        "barnes hut" | "bh" => Some(TsneOpt::BarnesHut),
+        "fft" => Some(TsneOpt::Fft),
+        _ => None,
+    }
+}
 
 ////////////////
 // Barnes Hut //
@@ -1437,13 +1468,26 @@ where
     (min_val - padding, max_val + padding)
 }
 
+/// Optimise 2D embedding using FFT-accelerated t-SNE
+///
+/// Minimises KL divergence between high-dimensional affinities (graph) and
+/// low-dimensional Student-t similarities using gradient descent with momentum
+/// and adaptive gains. Uses FFT-based interpolation for O(N) repulsive
+/// force computation (vs O(N log N) for Barnes-Hut).
+///
+/// ### Params
+///
+/// * `embd` - Mutable 2D embedding to optimise in-place
+/// * `params` - Optimisation parameters (learning rate, epochs, etc.)
+/// * `graph` - Symmetric sparse graph of high-dimensional affinities P_ij
+/// * `verbose` - Print progress every 50 epochs
 pub fn optimise_fft_tsne<T>(
     embd: &mut [Vec<T>],
     params: &TsneOptimParams<T>,
     graph: &SparseGraph<T>,
     verbose: bool,
 ) where
-    T: FftFloat + AddAssign + SubAssign + MulAssign + DivAssign + Sum + ToPrimitive,
+    T: FftwFloat + AddAssign + SubAssign + MulAssign + DivAssign + Sum + ToPrimitive,
 {
     let n = embd.len();
     let n_dim = embd[0].len();
@@ -1453,7 +1497,6 @@ pub fn optimise_fft_tsne<T>(
     let initial_momentum = T::from_f64(TSNE_INITIAL_MOMENTUM).unwrap();
     let final_momentum = T::from_f64(TSNE_FINAL_MOMENTUM).unwrap();
     let min_gain = T::from_f64(TSNE_MIN_GAIN).unwrap();
-    let eps = T::from_f64(TSNE_EPS).unwrap();
     let grid_check_interval = 10;
 
     let mut update_flat = vec![T::zero(); n * n_dim];
@@ -1525,12 +1568,6 @@ pub fn optimise_fft_tsne<T>(
         // Compute repulsive forces via FFT
         let (rep_x, rep_y, sum_q) = compute_repulsive_forces_fft(embd, &grid, &mut workspace);
 
-        let z_inv = if sum_q > eps {
-            T::one() / sum_q
-        } else {
-            T::zero()
-        };
-
         // Compute attractive forces (exact via graph) and combine with repulsive
         // Done per-point to avoid allocating separate attractive force arrays
         for i in 0..n {
@@ -1551,8 +1588,8 @@ pub fn optimise_fft_tsne<T>(
             }
 
             // Gradient = attractive - repulsive/Z
-            let grad_x = attr_x - rep_x[i] * z_inv;
-            let grad_y = attr_y - rep_y[i] * z_inv;
+            let grad_x = attr_x - rep_x[i];
+            let grad_y = attr_y - rep_y[i];
 
             update_parameter(
                 &mut embd[i][0],
@@ -1582,11 +1619,11 @@ pub fn optimise_fft_tsne<T>(
             mean_x += p[0];
             mean_y += p[1];
         }
-        mean_x = mean_x / T::from_usize(n).unwrap();
-        mean_y = mean_y / T::from_usize(n).unwrap();
+        mean_x /= T::from_usize(n).unwrap();
+        mean_y /= T::from_usize(n).unwrap();
         for p in embd.iter_mut() {
-            p[0] = p[0] - mean_x;
-            p[1] = p[1] - mean_y;
+            p[0] -= mean_x;
+            p[1] -= mean_y;
         }
 
         if verbose && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
@@ -1608,6 +1645,10 @@ pub fn optimise_fft_tsne<T>(
 mod test_optimiser {
     use super::*;
     use approx::assert_relative_eq;
+
+    //////////
+    // UMAP //
+    //////////
 
     #[test]
     fn test_optim_params_default_2d() {
@@ -2171,5 +2212,266 @@ mod test_optimiser {
             avg_inter,
             avg_intra
         );
+    }
+
+    //////////
+    // tSNE //
+    //////////
+
+    // Helper to create a symmetric COO graph for t-SNE tests
+    fn create_coo_graph(n: usize, edges: &[(usize, usize, f64)]) -> SparseGraph<f64> {
+        let mut row_indices = Vec::new();
+        let mut col_indices = Vec::new();
+        let mut values = Vec::new();
+
+        // t-SNE usually expects a symmetric P matrix (or graph)
+        // We ensure symmetry here manually for the test cases
+        for &(u, v, w) in edges {
+            row_indices.push(u);
+            col_indices.push(v);
+            values.push(w);
+
+            if u != v {
+                row_indices.push(v);
+                col_indices.push(u);
+                values.push(w);
+            }
+        }
+
+        SparseGraph {
+            row_indices,
+            col_indices,
+            values,
+            n_vertices: n,
+        }
+    }
+
+    #[test]
+    fn test_tsne_params_defaults() {
+        let params = TsneOptimParams::<f64>::default();
+        assert_eq!(params.n_epochs, 1000);
+        assert_relative_eq!(params.lr, 200.0);
+        assert_eq!(params.early_exag_iter, 250);
+        assert_relative_eq!(params.early_exag_factor, 12.0);
+        assert_relative_eq!(params.theta, 0.5);
+    }
+
+    #[test]
+    fn test_bh_tsne_basic_convergence() {
+        // Simple triangle graph
+        let edges = vec![(0, 1, 1.0), (1, 2, 1.0), (2, 0, 1.0)];
+        let graph = create_coo_graph(3, &edges);
+
+        // Initializing points in a line
+        let mut embd = vec![
+            vec![0.0, 0.0],
+            vec![1.0, 1.0], // middle
+            vec![2.0, 2.0],
+        ];
+        let initial_embd = embd.clone();
+
+        // Run for a short burst
+        let params = TsneOptimParams {
+            n_epochs: 50, // Short run
+            lr: 50.0,     // Aggressive LR to ensure movement
+            ..TsneOptimParams::default()
+        };
+
+        optimise_bh_tsne(&mut embd, &params, &graph, false);
+
+        // Check for NaNs
+        for point in &embd {
+            for val in point {
+                assert!(val.is_finite(), "Embedding contains non-finite values");
+            }
+        }
+
+        // Check for movement
+        let total_movement: f64 = embd
+            .iter()
+            .zip(initial_embd.iter())
+            .map(|(n, o)| (n[0] - o[0]).powi(2) + (n[1] - o[1]).powi(2))
+            .sum();
+
+        assert!(
+            total_movement > 0.01,
+            "Barnes-Hut t-SNE failed to move points significantly"
+        );
+    }
+
+    #[test]
+    fn test_fft_tsne_basic_convergence() {
+        // Same setup as BH, ensuring FFT path works
+        let edges = vec![(0, 1, 1.0), (1, 2, 1.0), (2, 0, 1.0)];
+        let graph = create_coo_graph(3, &edges);
+
+        let mut embd = vec![vec![0.0, 0.0], vec![1.0, 1.0], vec![2.0, 2.0]];
+        let initial_embd = embd.clone();
+
+        let params = TsneOptimParams {
+            n_epochs: 50,
+            lr: 50.0,
+            n_interp_points: 3, // specific to FFT
+            ..TsneOptimParams::default()
+        };
+
+        optimise_fft_tsne(&mut embd, &params, &graph, false);
+
+        for point in &embd {
+            for val in point {
+                assert!(val.is_finite(), "Embedding contains non-finite values");
+            }
+        }
+
+        let total_movement: f64 = embd
+            .iter()
+            .zip(initial_embd.iter())
+            .map(|(n, o)| (n[0] - o[0]).powi(2) + (n[1] - o[1]).powi(2))
+            .sum();
+
+        assert!(
+            total_movement > 0.01,
+            "FFT t-SNE failed to move points significantly"
+        );
+    }
+
+    #[test]
+    fn test_bh_tsne_structure_preservation() {
+        // Two cliques connected by a weak link
+        // Clique 1: 0, 1, 2
+        // Clique 2: 3, 4, 5
+        // Link: 2-3
+        let edges = vec![
+            // Clique 1
+            (0, 1, 10.0),
+            (0, 2, 10.0),
+            (1, 2, 10.0),
+            // Clique 2
+            (3, 4, 10.0),
+            (3, 5, 10.0),
+            (4, 5, 10.0),
+            // Weak link
+            (2, 3, 0.01),
+        ];
+        let graph = create_coo_graph(6, &edges);
+
+        // Initialize somewhat randomly
+        let mut embd = vec![
+            vec![0.0, 0.0],
+            vec![0.1, 0.0],
+            vec![0.0, 0.1],
+            vec![1.0, 1.0],
+            vec![1.1, 1.0],
+            vec![1.0, 1.1],
+        ];
+
+        let params = TsneOptimParams {
+            n_epochs: 200,
+            lr: 100.0,
+            early_exag_iter: 50, // Shorten exaggeration for test speed
+            ..TsneOptimParams::default()
+        };
+
+        optimise_bh_tsne(&mut embd, &params, &graph, false);
+
+        // Metrics
+        let dist = |i: usize, j: usize| -> f64 {
+            let dx = embd[i][0] - embd[j][0];
+            let dy = embd[i][1] - embd[j][1];
+            (dx * dx + dy * dy).sqrt()
+        };
+
+        // Average distance within clique 1
+        let d_c1 = (dist(0, 1) + dist(0, 2) + dist(1, 2)) / 3.0;
+        // Average distance within clique 2
+        let d_c2 = (dist(3, 4) + dist(3, 5) + dist(4, 5)) / 3.0;
+        let avg_intra = (d_c1 + d_c2) / 2.0;
+
+        // Distance between centers of cliques (using 0 and 5 as proxies)
+        let inter_dist = dist(0, 5);
+
+        assert!(
+            inter_dist > avg_intra * 2.0,
+            "BH t-SNE failed to separate cliques. Intra: {:.3}, Inter: {:.3}",
+            avg_intra,
+            inter_dist
+        );
+    }
+
+    #[test]
+    fn test_fft_tsne_structure_preservation() {
+        // Same clique structure as BH test
+        let edges = vec![
+            (0, 1, 10.0),
+            (0, 2, 10.0),
+            (1, 2, 10.0),
+            (3, 4, 10.0),
+            (3, 5, 10.0),
+            (4, 5, 10.0),
+            (2, 3, 0.01),
+        ];
+        let graph = create_coo_graph(6, &edges);
+
+        let mut embd = vec![
+            vec![0.0, 0.0],
+            vec![0.1, 0.0],
+            vec![0.0, 0.1],
+            vec![1.0, 1.0],
+            vec![1.1, 1.0],
+            vec![1.0, 1.1],
+        ];
+
+        let params = TsneOptimParams {
+            n_epochs: 200,
+            lr: 100.0,
+            early_exag_iter: 50,
+            ..TsneOptimParams::default()
+        };
+
+        optimise_fft_tsne(&mut embd, &params, &graph, false);
+
+        let dist = |i: usize, j: usize| -> f64 {
+            let dx = embd[i][0] - embd[j][0];
+            let dy = embd[i][1] - embd[j][1];
+            (dx * dx + dy * dy).sqrt()
+        };
+
+        let d_c1 = (dist(0, 1) + dist(0, 2) + dist(1, 2)) / 3.0;
+        let d_c2 = (dist(3, 4) + dist(3, 5) + dist(4, 5)) / 3.0;
+        let avg_intra = (d_c1 + d_c2) / 2.0;
+        let inter_dist = dist(0, 5);
+
+        assert!(
+            inter_dist > avg_intra * 2.0,
+            "FFT t-SNE failed to separate cliques. Intra: {:.3}, Inter: {:.3}",
+            avg_intra,
+            inter_dist
+        );
+    }
+
+    #[test]
+    fn test_tsne_determinism() {
+        // Unlike the UMAP SGD implementation which has internal RNG state,
+        // The provided t-SNE implementations are deterministic given an initial embedding.
+        // This test ensures that running BH t-SNE twice yields identical results.
+
+        let edges = vec![(0, 1, 1.0), (1, 2, 1.0)];
+        let graph = create_coo_graph(3, &edges);
+
+        let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
+        let mut embd2 = embd1.clone();
+
+        let params = TsneOptimParams {
+            n_epochs: 50,
+            ..TsneOptimParams::default()
+        };
+
+        optimise_bh_tsne(&mut embd1, &params, &graph, false);
+        optimise_bh_tsne(&mut embd2, &params, &graph, false);
+
+        for (p1, p2) in embd1.iter().zip(embd2.iter()) {
+            assert_relative_eq!(p1[0], p2[0]);
+            assert_relative_eq!(p1[1], p2[1]);
+        }
     }
 }
