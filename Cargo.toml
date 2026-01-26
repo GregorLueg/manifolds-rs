@@ -37,3 +37,6 @@ rayon = "1.11.0"
 rustc-hash = "2.1.1"
 thousands = "0.2.0"
 fftw = "0.8.0"
+
+[profile.test]
+opt-level = 3

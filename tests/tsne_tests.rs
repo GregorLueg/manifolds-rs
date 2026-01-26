@@ -1,12 +1,10 @@
 #![allow(clippy::needless_range_loop)]
 
 mod commons;
-
 use commons::*;
-use manifolds_rs::data::graph::*;
-use manifolds_rs::data::init::*;
-use manifolds_rs::data::nearest_neighbours::*;
-use manifolds_rs::data::structures::SparseGraph;
+
+use manifolds_rs::data::graph::{gaussian_knn_affinities, symmetrise_affinities_tsne};
+use manifolds_rs::prelude::*;
 use manifolds_rs::utils::bh_tree::*;
 use manifolds_rs::*;
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -629,7 +627,7 @@ fn tsne_integration_08_different_seeds() {
 /// Test 9: FFT t-SNE - optimisation quality
 #[test]
 fn tsne_integration_09_fft_optimisation_quality() {
-    let (data, labels) = create_diagnostic_data(40, 10, 123);
+    let (data, labels) = create_diagnostic_data(1000, 10, 123);
 
     println!("\n=== t-SNE DIAGNOSTIC 9: FFT Optimisation Quality ===");
 
@@ -637,7 +635,7 @@ fn tsne_integration_09_fft_optimisation_quality() {
         Some(2),
         Some(20.0),
         Some(1e-4),
-        Some(200.0),
+        Some(100.0),
         Some(500),
         None,
         Some(0.5),

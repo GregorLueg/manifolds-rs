@@ -1497,7 +1497,7 @@ pub fn optimise_fft_tsne<T>(
     let initial_momentum = T::from_f64(TSNE_INITIAL_MOMENTUM).unwrap();
     let final_momentum = T::from_f64(TSNE_FINAL_MOMENTUM).unwrap();
     let min_gain = T::from_f64(TSNE_MIN_GAIN).unwrap();
-    let grid_check_interval = 10;
+    let grid_check_interval = 50;
 
     let mut update_flat = vec![T::zero(); n * n_dim];
     let mut gains_flat = vec![T::one(); n * n_dim];
@@ -1514,7 +1514,10 @@ pub fn optimise_fft_tsne<T>(
     }
 
     // Initial grid setup
-    let (coord_min, coord_max) = compute_embedding_bounds(embd, T::from_f64(0.1).unwrap());
+    let n_f = T::from_usize(n).unwrap();
+    let estimated_spread = n_f.sqrt() * T::from_f64(50.0).unwrap(); // t-SNE typically spreads to O(sqrt(N))
+    let (coord_min, coord_max) = (-estimated_spread, estimated_spread);
+
     let n_boxes = choose_grid_size(
         coord_min.to_f64().unwrap(),
         coord_max.to_f64().unwrap(),
@@ -1529,7 +1532,7 @@ pub fn optimise_fft_tsne<T>(
         if epoch % grid_check_interval == 0 && epoch > 0 {
             let xs: Vec<T> = embd.iter().map(|p| p[0]).collect();
             let ys: Vec<T> = embd.iter().map(|p| p[1]).collect();
-            let margin = grid.box_width;
+            let margin = grid.box_width * T::from_f64(5.0).unwrap();
 
             if !grid.contains_points(&xs, &ys, margin) {
                 let (new_min, new_max) = compute_embedding_bounds(embd, T::from_f64(0.1).unwrap());
@@ -1568,6 +1571,12 @@ pub fn optimise_fft_tsne<T>(
         // Compute repulsive forces via FFT
         let (rep_x, rep_y, sum_q) = compute_repulsive_forces_fft(embd, &grid, &mut workspace);
 
+        let z_inv = if sum_q > T::from_f64(1e-12).unwrap() {
+            T::one() / sum_q
+        } else {
+            T::zero()
+        };
+
         // Compute attractive forces (exact via graph) and combine with repulsive
         // Done per-point to avoid allocating separate attractive force arrays
         for i in 0..n {
@@ -1588,8 +1597,8 @@ pub fn optimise_fft_tsne<T>(
             }
 
             // Gradient = attractive - repulsive/Z
-            let grad_x = attr_x - rep_x[i];
-            let grad_y = attr_y - rep_y[i];
+            let grad_x = attr_x - rep_x[i] * z_inv;
+            let grad_y = attr_y - rep_y[i] * z_inv;
 
             update_parameter(
                 &mut embd[i][0],

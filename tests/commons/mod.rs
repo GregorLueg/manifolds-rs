@@ -2,7 +2,16 @@ use faer::Mat;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
 /// Create a synthetic dataset with well-separated clusters
-/// (Same as UMAP tests - could do DRY)
+///
+/// ### Params
+///
+/// * `n_per_cluster`: Number of points per cluster
+/// * `n_dim`: Number of dimensions
+/// * `seed`: Seed for the random number generator
+///
+/// ### Returns
+///
+/// Tuple containing the data matrix and the labels vector
 pub fn create_diagnostic_data(
     n_per_cluster: usize,
     n_dim: usize,
