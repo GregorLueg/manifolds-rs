@@ -6,8 +6,6 @@ use rand::{
 };
 use rayon::prelude::*;
 use rustc_hash::FxHashSet;
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 use std::iter::Sum;
 use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
 use thousands::*;
@@ -241,11 +239,11 @@ where
 
 #[derive(Default)]
 pub enum UmapOptimiser {
-    /// Adam
-    #[default]
-    Adam,
     /// Parallel version of Adam
+    #[default]
     AdamParallel,
+    /// Adam
+    Adam,
     /// Stochastic gradient descent
     Sgd,
 }
@@ -466,37 +464,6 @@ fn apply_repulsive_force_flat<T>(
     }
 }
 
-/// Heap entry for edge scheduling (min-heap by next_epoch)
-#[derive(Clone, Copy)]
-struct EdgeEntry<T> {
-    next_epoch: T,
-    edge_idx: usize,
-}
-
-impl<T: Float> Ord for EdgeEntry<T> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // Reversed for min-heap behaviour
-        other
-            .next_epoch
-            .partial_cmp(&self.next_epoch)
-            .unwrap_or(Ordering::Equal)
-    }
-}
-
-impl<T: Float> PartialOrd for EdgeEntry<T> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl<T: Float> PartialEq for EdgeEntry<T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.edge_idx == other.edge_idx
-    }
-}
-
-impl<T: Float> Eq for EdgeEntry<T> {}
-
 ////////////////
 // Optimisers //
 ////////////////
@@ -715,9 +682,15 @@ pub fn optimise_embedding_adam<T>(
 
     let zero = T::zero();
     let one = T::one();
+    let two = T::from(2.0).unwrap();
+    let half = T::from(0.5).unwrap();
     let dist_sq_threshold = T::from(1e-8).unwrap();
     let large_epoch = T::from(1e8).unwrap();
-    let b_is_one = consts.b == one;
+
+    // Fast paths for common b values
+    let b_is_one = (consts.b - one).abs() < T::from(1e-10).unwrap();
+    let b_is_half = (consts.b - half).abs() < T::from(1e-10).unwrap();
+    let b_is_two = (consts.b - two).abs() < T::from(1e-10).unwrap();
 
     let mut edges: Vec<(usize, usize, T)> = Vec::new();
     for (i, neighbours) in graph.iter().enumerate() {
@@ -747,6 +720,8 @@ pub fn optimise_embedding_adam<T>(
         })
         .collect();
 
+    let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
+
     let neg_sample_rate_t = T::from(params.neg_sample_rate).unwrap();
     let epochs_per_neg_sample: Vec<T> = epochs_per_sample
         .iter()
@@ -762,54 +737,47 @@ pub fn optimise_embedding_adam<T>(
     let mut m: Vec<T> = vec![zero; n * n_dim];
     let mut v: Vec<T> = vec![zero; n * n_dim];
 
-    let mut rng = SmallRng::seed_from_u64(seed);
-
-    let bias_corrections: Vec<(T, T)> = (0..params.n_epochs)
-        .map(|epoch| {
-            let t = T::from(epoch + 1).unwrap();
-            let beta1t = params.beta1.powf(t);
-            let beta2t = params.beta2.powf(t);
-            let sqrt_b2t1 = (one - beta2t).sqrt();
-            let ad_scale = sqrt_b2t1 / (one - beta1t);
-            let epsc = sqrt_b2t1 * params.eps;
-            (ad_scale, epsc)
-        })
+    let mut rng_states: Vec<SmallRng> = (0..n)
+        .map(|i| SmallRng::seed_from_u64(seed + i as u64))
         .collect();
 
+    let max_lookup = 10000;
+    let mut bias_corr_m_lookup: Vec<T> = Vec::with_capacity(max_lookup);
+    let mut bias_corr_v_lookup: Vec<T> = Vec::with_capacity(max_lookup);
+
+    for t in 1..=max_lookup {
+        let t_f = T::from(t).unwrap();
+        bias_corr_m_lookup.push(one / (one - params.beta1.powf(t_f)));
+        bias_corr_v_lookup.push(one / (one - params.beta2.powf(t_f)));
+    }
+
+    let mut global_timestep = 0;
     let one_minus_beta1 = one - params.beta1;
     let one_minus_beta2 = one - params.beta2;
 
-    // Initialise min-heap with all edges
-    let mut edge_heap: BinaryHeap<EdgeEntry<T>> = edges
-        .iter()
-        .enumerate()
-        .map(|(idx, _)| EdgeEntry {
-            next_epoch: epochs_per_sample[idx],
-            edge_idx: idx,
-        })
-        .collect();
-
-    // Track which edges need processing this epoch (to batch heap operations)
-    let mut edges_to_process: Vec<usize> = Vec::with_capacity(edges.len() / 10);
+    // Inline power function for common b values
+    #[inline(always)]
+    fn fast_pow<T: Float>(x: T, b: T, b_is_one: bool, b_is_half: bool, b_is_two: bool) -> T {
+        if b_is_one {
+            x
+        } else if b_is_half {
+            x.sqrt()
+        } else if b_is_two {
+            x * x
+        } else {
+            x.powf(b)
+        }
+    }
 
     for epoch in 0..params.n_epochs {
         let lr = lr_schedule[epoch];
         let epoch_t = T::from(epoch).unwrap();
-        let (ad_scale, epsc) = bias_corrections[epoch];
-        let lr_scaled = lr * ad_scale;
 
-        // Extract all edges due this epoch
-        edges_to_process.clear();
-        while let Some(entry) = edge_heap.peek() {
-            if entry.next_epoch > epoch_t {
-                break;
+        for (edge_idx, &(i, j, _weight)) in edges.iter().enumerate() {
+            if epoch_of_next_sample[edge_idx] > epoch_t {
+                continue;
             }
-            edges_to_process.push(edge_heap.pop().unwrap().edge_idx);
-        }
 
-        // Process extracted edges
-        for &edge_idx in &edges_to_process {
-            let (i, j, _) = edges[edge_idx];
             let base_i = i * n_dim;
             let base_j = j * n_dim;
 
@@ -820,11 +788,18 @@ pub fn optimise_embedding_adam<T>(
             }
 
             if dist_sq >= dist_sq_threshold {
-                let dist_sq_b = if b_is_one {
-                    dist_sq
+                global_timestep += 1;
+
+                let (bias_corr_m, bias_corr_v) = if global_timestep < max_lookup {
+                    (
+                        bias_corr_m_lookup[global_timestep - 1],
+                        bias_corr_v_lookup[global_timestep - 1],
+                    )
                 } else {
-                    dist_sq.powf(consts.b)
+                    (one, one)
                 };
+
+                let dist_sq_b = fast_pow(dist_sq, consts.b, b_is_one, b_is_half, b_is_two);
                 let denom = one + consts.a * dist_sq_b;
                 let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
 
@@ -835,16 +810,19 @@ pub fn optimise_embedding_adam<T>(
                     let idx_i = base_i + d;
                     m[idx_i] = params.beta1 * m[idx_i] + one_minus_beta1 * grad;
                     v[idx_i] = params.beta2 * v[idx_i] + one_minus_beta2 * grad * grad;
-                    embd_flat[idx_i] += lr_scaled * m[idx_i] / (v[idx_i].sqrt() + epsc);
+                    embd_flat[idx_i] += lr * (m[idx_i] * bias_corr_m)
+                        / ((v[idx_i] * bias_corr_v).sqrt() + params.eps);
 
                     let idx_j = base_j + d;
                     m[idx_j] = params.beta1 * m[idx_j] - one_minus_beta1 * grad;
                     v[idx_j] = params.beta2 * v[idx_j] + one_minus_beta2 * grad * grad;
-                    embd_flat[idx_j] += lr_scaled * m[idx_j] / (v[idx_j].sqrt() + epsc);
+                    embd_flat[idx_j] += lr * (m[idx_j] * bias_corr_m)
+                        / ((v[idx_j] * bias_corr_v).sqrt() + params.eps);
                 }
             }
 
-            // Negative sampling
+            epoch_of_next_sample[edge_idx] += epochs_per_sample[edge_idx];
+
             let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
                 / epochs_per_neg_sample[edge_idx])
                 .floor()
@@ -852,10 +830,20 @@ pub fn optimise_embedding_adam<T>(
                 .unwrap_or(0);
 
             for _ in 0..n_neg_samples {
-                let k = rng.random_range(0..n);
+                let k = rng_states[i].random_range(0..n);
                 if k == i {
                     continue;
                 }
+
+                global_timestep += 1;
+                let (bias_corr_m, bias_corr_v) = if global_timestep < max_lookup {
+                    (
+                        bias_corr_m_lookup[global_timestep - 1],
+                        bias_corr_v_lookup[global_timestep - 1],
+                    )
+                } else {
+                    (one, one)
+                };
 
                 let base_k = k * n_dim;
 
@@ -866,11 +854,7 @@ pub fn optimise_embedding_adam<T>(
                 }
 
                 let dist_sq_safe = dist_sq + consts.eps;
-                let dist_sq_b = if b_is_one {
-                    dist_sq_safe
-                } else {
-                    dist_sq_safe.powf(consts.b)
-                };
+                let dist_sq_b = fast_pow(dist_sq_safe, consts.b, b_is_one, b_is_half, b_is_two);
                 let denom = dist_sq_safe * (one + consts.a * dist_sq_b);
                 let grad_coeff = (consts.two_gamma_b / denom)
                     .max(-consts.clip_val)
@@ -883,21 +867,13 @@ pub fn optimise_embedding_adam<T>(
                     let idx = base_i + d;
                     m[idx] = params.beta1 * m[idx] + one_minus_beta1 * grad;
                     v[idx] = params.beta2 * v[idx] + one_minus_beta2 * grad * grad;
-                    embd_flat[idx] += lr_scaled * m[idx] / (v[idx].sqrt() + epsc);
+                    embd_flat[idx] +=
+                        lr * (m[idx] * bias_corr_m) / ((v[idx] * bias_corr_v).sqrt() + params.eps);
                 }
             }
 
             epoch_of_next_neg_sample[edge_idx] +=
                 T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
-        }
-
-        // Re-insert processed edges with updated next_epoch
-        for &edge_idx in &edges_to_process {
-            let current_next = epoch_t + epochs_per_sample[edge_idx];
-            edge_heap.push(EdgeEntry {
-                next_epoch: current_next,
-                edge_idx,
-            });
         }
 
         if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
