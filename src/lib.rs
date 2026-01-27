@@ -157,7 +157,7 @@ pub struct UmapParams<T> {
     init_range: Option<T>,
     nn_params: NearestNeighbourParams<T>,
     umap_graph_params: UmapGraphParams<T>,
-    optim_params: OptimParams<T>,
+    optim_params: UmapOptimParams<T>,
     randomised: bool,
 }
 
@@ -198,7 +198,7 @@ where
         initialisation: Option<String>,
         init_range: Option<T>,
         nn_params: Option<NearestNeighbourParams<T>>,
-        optim_params: Option<OptimParams<T>>,
+        optim_params: Option<UmapOptimParams<T>>,
         umap_graph_params: Option<UmapGraphParams<T>>,
         randomised: Option<bool>,
     ) -> Self {
@@ -263,7 +263,7 @@ where
             initialisation: "spectral".into(),
             init_range: None,
             nn_params: NearestNeighbourParams::default(),
-            optim_params: OptimParams::from_min_dist_spread(
+            optim_params: UmapOptimParams::from_min_dist_spread(
                 min_dist, spread, None, None, None, None, None, None, None,
             ),
             umap_graph_params: UmapGraphParams::default(),

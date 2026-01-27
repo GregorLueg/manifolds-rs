@@ -48,7 +48,7 @@ const EPS: f64 = 1e-7;
 /// * `beta2` - beta2 parameter for Adam optimiser
 /// * `eps` - eps for Adam optimiser
 #[derive(Clone, Debug)]
-pub struct OptimParams<T> {
+pub struct UmapOptimParams<T> {
     pub a: T,
     pub b: T,
     pub lr: T,
@@ -61,7 +61,7 @@ pub struct OptimParams<T> {
     pub eps: T,
 }
 
-impl<T> OptimParams<T>
+impl<T> UmapOptimParams<T>
 where
     T: Float + FromPrimitive,
 {
@@ -226,13 +226,13 @@ where
     }
 }
 
-impl<T> Default for OptimParams<T>
+impl<T> Default for UmapOptimParams<T>
 where
     T: Float + FromPrimitive,
 {
     /// Returns sensible defaults for the optimiser (assuming 2D)
     fn default() -> Self {
-        OptimParams::default_2d()
+        UmapOptimParams::default_2d()
     }
 }
 
@@ -506,7 +506,7 @@ fn apply_repulsive_force_flat<T>(
 pub fn optimise_embedding_sgd<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
-    params: &OptimParams<T>,
+    params: &UmapOptimParams<T>,
     seed: u64,
     verbose: bool,
 ) where
@@ -660,7 +660,7 @@ pub fn optimise_embedding_sgd<T>(
 pub fn optimise_embedding_adam<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
-    params: &OptimParams<T>,
+    params: &UmapOptimParams<T>,
     seed: u64,
     verbose: bool,
 ) where
@@ -887,7 +887,7 @@ pub fn optimise_embedding_adam<T>(
 pub fn optimise_embedding_adam_parallel<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
-    params: &OptimParams<T>,
+    params: &UmapOptimParams<T>,
     seed: u64,
     verbose: bool,
 ) where
@@ -1708,7 +1708,7 @@ mod test_optimiser {
 
     #[test]
     fn test_optim_params_default_2d() {
-        let params = OptimParams::<f64>::default_2d();
+        let params = UmapOptimParams::<f64>::default_2d();
 
         assert_relative_eq!(params.a, 1.5, epsilon = 1e-6);
         assert_relative_eq!(params.b, 0.9, epsilon = 1e-6);
@@ -1721,7 +1721,7 @@ mod test_optimiser {
 
     #[test]
     fn test_optim_params_from_min_dist_spread() {
-        let params = OptimParams::<f64>::from_min_dist_spread(
+        let params = UmapOptimParams::<f64>::from_min_dist_spread(
             0.1,
             1.0,
             Some(1.0),
@@ -1744,7 +1744,7 @@ mod test_optimiser {
 
     #[test]
     fn test_fit_params_constraints() {
-        let (a, b) = OptimParams::<f64>::fit_params(0.1, 1.0, None);
+        let (a, b) = UmapOptimParams::<f64>::fit_params(0.1, 1.0, None);
 
         assert!((0.001..=10.0).contains(&a));
         assert!((0.1..=2.0).contains(&b));
@@ -1754,7 +1754,7 @@ mod test_optimiser {
     fn test_fit_params_curve_properties() {
         let min_dist = 0.1;
         let spread = 1.0;
-        let (a, b) = OptimParams::<f64>::fit_params(min_dist, spread, None);
+        let (a, b) = UmapOptimParams::<f64>::fit_params(min_dist, spread, None);
 
         // At min_dist, target is 1.0
         let pred_min = 1.0 / (1.0 + a * min_dist.powf(2.0 * b));
@@ -1803,7 +1803,7 @@ mod test_optimiser {
         let mut embd = vec![vec![0.0, 0.0], vec![5.0, 0.0], vec![0.0, 5.0]];
         let initial_embd = embd.clone();
 
-        let params = OptimParams::default_2d();
+        let params = UmapOptimParams::default_2d();
         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
 
         let total_movement: f64 = embd
@@ -1837,7 +1837,7 @@ mod test_optimiser {
         let mut embd = vec![vec![0.0, 0.0], vec![5.0, 0.0], vec![0.0, 5.0]];
         let initial_embd = embd.clone();
 
-        let params = OptimParams::default_2d();
+        let params = UmapOptimParams::default_2d();
         optimise_embedding_adam_parallel(&mut embd, &graph, &params, 42, false);
 
         let total_movement: f64 = embd
@@ -1865,7 +1865,7 @@ mod test_optimiser {
         let graph: Vec<Vec<(usize, f64)>> = vec![vec![], vec![], vec![]];
         let mut embd = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
 
-        let params = OptimParams::default_2d();
+        let params = UmapOptimParams::default_2d();
         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
 
         for point in &embd {
@@ -1881,7 +1881,7 @@ mod test_optimiser {
         let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
         let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             a: 1.0,
             b: 1.0,
             lr: 0.5,
@@ -1906,7 +1906,7 @@ mod test_optimiser {
         let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
         let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             a: 1.0,
             b: 1.0,
             lr: 0.5,
@@ -1933,7 +1933,7 @@ mod test_optimiser {
         let embd_flat: Vec<f64> = embd.iter().flatten().copied().collect();
         let initial_dist = squared_dist_flat(&embd_flat, 0, 1, 2).sqrt();
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             a: 1.0,
             b: 1.0,
             lr: 1.0,
@@ -1964,7 +1964,7 @@ mod test_optimiser {
 
         let initial_embd = vec![vec![0.0, 0.0], vec![10.0, 0.0], vec![0.0, 10.0]];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             a: 1.0,
             b: 1.0,
             lr: 1.0,
@@ -2025,7 +2025,7 @@ mod test_optimiser {
 
         let initial_embd = vec![vec![0.0, 0.0], vec![10.0, 0.0], vec![0.0, 10.0]];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             a: 1.0,
             b: 1.0,
             lr: 1.0,
@@ -2086,7 +2086,7 @@ mod test_optimiser {
         let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
         let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             a: 1.0,
             b: 1.0,
             lr: 0.5,
@@ -2125,9 +2125,9 @@ mod test_optimiser {
             vec![15.0, 15.0],
         ];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             n_epochs: 200,
-            ..OptimParams::default_2d()
+            ..UmapOptimParams::default_2d()
         };
 
         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
@@ -2180,9 +2180,9 @@ mod test_optimiser {
             vec![15.0, 15.0],
         ];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             n_epochs: 200,
-            ..OptimParams::default_2d()
+            ..UmapOptimParams::default_2d()
         };
 
         optimise_embedding_adam_parallel(&mut embd, &graph, &params, 42, false);
@@ -2235,9 +2235,9 @@ mod test_optimiser {
             vec![15.0, 15.0],
         ];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             n_epochs: 200,
-            ..OptimParams::default_2d()
+            ..UmapOptimParams::default_2d()
         };
 
         optimise_embedding_sgd(&mut embd, &graph, &params, 42, false);
