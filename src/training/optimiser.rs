@@ -665,7 +665,7 @@ pub fn optimise_embedding_adam<T>(
     seed: u64,
     verbose: bool,
 ) where
-    T: Float + FromPrimitive + Send + Sync + AddAssign,
+    T: Float + FromPrimitive + Send + Sync + AddAssign + MulAssign,
 {
     let n = embd.len();
     if n == 0 {
@@ -682,15 +682,12 @@ pub fn optimise_embedding_adam<T>(
 
     let zero = T::zero();
     let one = T::one();
-    let two = T::from(2.0).unwrap();
     let half = T::from(0.5).unwrap();
     let dist_sq_threshold = T::from(1e-8).unwrap();
     let large_epoch = T::from(1e8).unwrap();
 
-    // Fast paths for common b values
     let b_is_one = (consts.b - one).abs() < T::from(1e-10).unwrap();
     let b_is_half = (consts.b - half).abs() < T::from(1e-10).unwrap();
-    let b_is_two = (consts.b - two).abs() < T::from(1e-10).unwrap();
 
     let mut edges: Vec<(usize, usize, T)> = Vec::new();
     for (i, neighbours) in graph.iter().enumerate() {
@@ -730,9 +727,6 @@ pub fn optimise_embedding_adam<T>(
     let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
 
     let n_epochs_f = T::from(params.n_epochs).unwrap();
-    let lr_schedule: Vec<T> = (0..params.n_epochs)
-        .map(|e| params.lr * (one - T::from(e).unwrap() / n_epochs_f))
-        .collect();
 
     let mut m: Vec<T> = vec![zero; n * n_dim];
     let mut v: Vec<T> = vec![zero; n * n_dim];
@@ -741,36 +735,30 @@ pub fn optimise_embedding_adam<T>(
         .map(|i| SmallRng::seed_from_u64(seed + i as u64))
         .collect();
 
-    let max_lookup = 10000;
-    let mut bias_corr_m_lookup: Vec<T> = Vec::with_capacity(max_lookup);
-    let mut bias_corr_v_lookup: Vec<T> = Vec::with_capacity(max_lookup);
+    // Adam parameters matching C++ implementation
+    let beta11 = one - params.beta1; // 1 - beta1
+    let beta21 = one - params.beta2; // 1 - beta2
+    let mut beta1t = params.beta1;
+    let mut beta2t = params.beta2;
 
-    for t in 1..=max_lookup {
-        let t_f = T::from(t).unwrap();
-        bias_corr_m_lookup.push(one / (one - params.beta1.powf(t_f)));
-        bias_corr_v_lookup.push(one / (one - params.beta2.powf(t_f)));
-    }
-
-    let mut global_timestep = 0;
-    let one_minus_beta1 = one - params.beta1;
-    let one_minus_beta2 = one - params.beta2;
-
-    // Inline power function for common b values
     #[inline(always)]
-    fn fast_pow<T: Float>(x: T, b: T, b_is_one: bool, b_is_half: bool, b_is_two: bool) -> T {
+    fn fast_pow<T: Float>(x: T, b: T, b_is_one: bool, b_is_half: bool) -> T {
         if b_is_one {
             x
         } else if b_is_half {
             x.sqrt()
-        } else if b_is_two {
-            x * x
         } else {
             x.powf(b)
         }
     }
 
     for epoch in 0..params.n_epochs {
-        let lr = lr_schedule[epoch];
+        // Compute bias-corrected learning rate parameters once per epoch (matching C++ epoch_end)
+        let alpha = params.lr * (one - T::from(epoch).unwrap() / n_epochs_f);
+        let sqrt_b2t1 = (one - beta2t).sqrt();
+        let ad_scale = alpha * sqrt_b2t1 / (one - beta1t);
+        let epsc = sqrt_b2t1 * params.eps;
+
         let epoch_t = T::from(epoch).unwrap();
 
         for (edge_idx, &(i, j, _weight)) in edges.iter().enumerate() {
@@ -788,18 +776,7 @@ pub fn optimise_embedding_adam<T>(
             }
 
             if dist_sq >= dist_sq_threshold {
-                global_timestep += 1;
-
-                let (bias_corr_m, bias_corr_v) = if global_timestep < max_lookup {
-                    (
-                        bias_corr_m_lookup[global_timestep - 1],
-                        bias_corr_v_lookup[global_timestep - 1],
-                    )
-                } else {
-                    (one, one)
-                };
-
-                let dist_sq_b = fast_pow(dist_sq, consts.b, b_is_one, b_is_half, b_is_two);
+                let dist_sq_b = fast_pow(dist_sq, consts.b, b_is_one, b_is_half);
                 let denom = one + consts.a * dist_sq_b;
                 let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
 
@@ -807,17 +784,21 @@ pub fn optimise_embedding_adam<T>(
                     let delta = embd_flat[base_j + d] - embd_flat[base_i + d];
                     let grad = grad_coeff * delta;
 
+                    // Update i (matching C++ compact form)
                     let idx_i = base_i + d;
-                    m[idx_i] = params.beta1 * m[idx_i] + one_minus_beta1 * grad;
-                    v[idx_i] = params.beta2 * v[idx_i] + one_minus_beta2 * grad * grad;
-                    embd_flat[idx_i] += lr * (m[idx_i] * bias_corr_m)
-                        / ((v[idx_i] * bias_corr_v).sqrt() + params.eps);
+                    let v_old = v[idx_i];
+                    let m_old = m[idx_i];
+                    v[idx_i] = v_old + beta21 * (grad * grad - v_old);
+                    m[idx_i] = m_old + beta11 * (grad - m_old);
+                    embd_flat[idx_i] += ad_scale * m[idx_i] / (v[idx_i].sqrt() + epsc);
 
+                    // Update j (negated gradient)
                     let idx_j = base_j + d;
-                    m[idx_j] = params.beta1 * m[idx_j] - one_minus_beta1 * grad;
-                    v[idx_j] = params.beta2 * v[idx_j] + one_minus_beta2 * grad * grad;
-                    embd_flat[idx_j] += lr * (m[idx_j] * bias_corr_m)
-                        / ((v[idx_j] * bias_corr_v).sqrt() + params.eps);
+                    let v_old = v[idx_j];
+                    let m_old = m[idx_j];
+                    v[idx_j] = v_old + beta21 * (grad * grad - v_old);
+                    m[idx_j] = m_old + beta11 * (-grad - m_old);
+                    embd_flat[idx_j] += ad_scale * m[idx_j] / (v[idx_j].sqrt() + epsc);
                 }
             }
 
@@ -835,16 +816,6 @@ pub fn optimise_embedding_adam<T>(
                     continue;
                 }
 
-                global_timestep += 1;
-                let (bias_corr_m, bias_corr_v) = if global_timestep < max_lookup {
-                    (
-                        bias_corr_m_lookup[global_timestep - 1],
-                        bias_corr_v_lookup[global_timestep - 1],
-                    )
-                } else {
-                    (one, one)
-                };
-
                 let base_k = k * n_dim;
 
                 let mut dist_sq = zero;
@@ -854,7 +825,7 @@ pub fn optimise_embedding_adam<T>(
                 }
 
                 let dist_sq_safe = dist_sq + consts.eps;
-                let dist_sq_b = fast_pow(dist_sq_safe, consts.b, b_is_one, b_is_half, b_is_two);
+                let dist_sq_b = fast_pow(dist_sq_safe, consts.b, b_is_one, b_is_half);
                 let denom = dist_sq_safe * (one + consts.a * dist_sq_b);
                 let grad_coeff = (consts.two_gamma_b / denom)
                     .max(-consts.clip_val)
@@ -865,16 +836,21 @@ pub fn optimise_embedding_adam<T>(
                     let grad = grad_coeff * delta;
 
                     let idx = base_i + d;
-                    m[idx] = params.beta1 * m[idx] + one_minus_beta1 * grad;
-                    v[idx] = params.beta2 * v[idx] + one_minus_beta2 * grad * grad;
-                    embd_flat[idx] +=
-                        lr * (m[idx] * bias_corr_m) / ((v[idx] * bias_corr_v).sqrt() + params.eps);
+                    let v_old = v[idx];
+                    let m_old = m[idx];
+                    v[idx] = v_old + beta21 * (grad * grad - v_old);
+                    m[idx] = m_old + beta11 * (grad - m_old);
+                    embd_flat[idx] += ad_scale * m[idx] / (v[idx].sqrt() + epsc);
                 }
             }
 
             epoch_of_next_neg_sample[edge_idx] +=
                 T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
         }
+
+        // Update bias correction factors for next epoch (matching C++ epoch_end)
+        beta1t *= params.beta1;
+        beta2t *= params.beta2;
 
         if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);

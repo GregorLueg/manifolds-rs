@@ -325,7 +325,8 @@ where
         + Sum
         + AddAssign
         + SimdDistance
-        + std::fmt::Display,
+        + std::fmt::Display
+        + MulAssign,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
