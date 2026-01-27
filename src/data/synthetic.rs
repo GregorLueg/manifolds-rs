@@ -118,16 +118,18 @@ pub fn generate_clustered_data(
 ///
 /// ### Returns
 ///
-/// Matrix of shape (n_samples, dim)
+/// Tuple of (data matrix of shape (n_samples, dim), branch assignments where
+/// 0 = trunk, 1..n_branches = branches)
 pub fn generate_tree_structure(
     n_samples: usize,
     n_branches: usize,
     dim: usize,
     noise: f64,
     seed: u64,
-) -> Mat<f64> {
+) -> (Mat<f64>, Vec<usize>) {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut data = Mat::<f64>::zeros(n_samples, dim);
+    let mut branch_assignments = Vec::with_capacity(n_samples);
 
     // distribute samples: trunk gets 30%, rest split among branches
     let n_trunk = (n_samples as f64 * 0.3) as usize;
@@ -140,7 +142,7 @@ pub fn generate_tree_structure(
 
     let mut idx = 0;
 
-    // generate trunk points
+    // generate trunk points (label = 0)
     for i in 0..n_trunk {
         let t = (i as f64) / (n_trunk as f64) * 5.0;
 
@@ -151,13 +153,14 @@ pub fn generate_tree_structure(
 
             data[(idx, j)] = t * trunk_dir[j] + noise * gauss_noise;
         }
+        branch_assignments.push(0);
         idx += 1;
     }
 
     // generate branch points
-    let branch_start = 2.5; // Branches start halfway along trunk
+    let branch_start = 2.5; // branches start halfway along trunk
 
-    for _ in 0..n_branches {
+    for branch_idx in 0..n_branches {
         // random branch direction (orthogonalised to trunk)
         let mut branch_dir: Vec<f64> = (0..dim).map(|_| rng.random_range(-1.0..1.0)).collect();
 
@@ -187,9 +190,10 @@ pub fn generate_tree_structure(
 
                 data[(idx, j)] = branch_start_point[j] + t * branch_dir[j] + noise * gauss_noise;
             }
+            branch_assignments.push(branch_idx + 1);
             idx += 1;
         }
     }
 
-    data
+    (data, branch_assignments)
 }
