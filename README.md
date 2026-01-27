@@ -16,21 +16,24 @@ implemented in Rust. Contains for now
 ## Description
 
 Rust implementations of various methods to project data onto two dimensions,
-especially [UMAP](https://arxiv.org/abs/1802.03426) and
-[tSNE (Barnes-Hut implementation)](https://arxiv.org/abs/1301.3342).
+i.e, learn low dimensional manifolds from the data. The current crate contains
+the big classic [UMAP](https://arxiv.org/abs/1802.03426) and tSNE (with the 
+[Barnes-Hut implementation](https://arxiv.org/abs/1301.3342) and the 
+[FFT-acceleration version](https://www.nature.com/articles/s41592-018-0308-4)).
 These are typically used methods for visualising high-dimensional biological
 data, but not without [controversy](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1011288).
-The crate also provides via the Burn DL framework [parametric UMAP](https://arxiv.org/abs/2009.12981)
-that can be optionally be used via the prospective feature flag.
+Moreover, the `crate` also provides via the Burn DL framework optionally
+[parametric UMAP](https://arxiv.org/abs/2009.12981) that can be optionally be 
+used via the prospective feature flag. The next one to implement is likely
+[PHATE](https://pmc.ncbi.nlm.nih.gov/articles/PMC7073148/).
 
 ## Features
 
 - **UMAP algorithm**: Complete implementation of the UMAP dimensionality
 reduction algorithm with several optimisations: SGD, Adam and a parallelised
 version of ADAM.
-- **tSNE algorithm**: Implementation of the Barnes-Hut accelerated version.
-A potential future avenue might be to implement the FFT-accelerated tSNE, see
-[Linderman, et al.](https://www.nature.com/articles/s41592-018-0308-4).
+- **tSNE algorithm**: Implementation of the Barnes-Hut accelerated version and
+the FFT-accelerated version.
 - **Multiple ANN backends** via [`ann-search-rs`](https://crates.io/crates/ann-search-rs):
   - Annoy (Approximate Nearest Neighbours Oh Yeah)
   - HNSW (Hierarchical Navigable Small World)
