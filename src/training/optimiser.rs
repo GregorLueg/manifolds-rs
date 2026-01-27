@@ -1,7 +1,7 @@
 use core::f64;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand::{
-    rngs::{SmallRng, StdRng},
+    rngs::SmallRng,
     {Rng, SeedableRng},
 };
 use rayon::prelude::*;
@@ -299,6 +299,17 @@ impl<T: Float + FromPrimitive> OptimConstants<T> {
 // Helpers //
 /////////////
 
+#[inline(always)]
+fn fast_pow<T: Float>(x: T, b: T, b_is_one: bool, b_is_half: bool) -> T {
+    if b_is_one {
+        x
+    } else if b_is_half {
+        x.sqrt()
+    } else {
+        x.powf(b)
+    }
+}
+
 /// Parse the UMAP Optimiser to use
 ///
 /// ### Params
@@ -315,152 +326,6 @@ pub fn parse_umap_optimiser(s: &str) -> Option<UmapOptimiser> {
         "sgd" => Some(UmapOptimiser::Sgd),
         "adam_parallel" => Some(UmapOptimiser::AdamParallel),
         _ => None,
-    }
-}
-
-/// Compute squared Eucliden distance between two points
-///
-/// Assumes a flat structure to better cache locality
-///
-/// ### Params
-///
-/// * `embd` - The flat embedding structure
-/// * `i` - Position of data point i in the embedding
-/// * `j` - Position of data point j in the embedding
-/// * `n_dim` - Number of dimensions in that embedding
-///
-/// ### Returns
-///
-/// Squared distance between two points
-#[inline(always)]
-fn squared_dist_flat<T>(embd: &[T], i: usize, j: usize, n_dim: usize) -> T
-where
-    T: Float,
-{
-    let mut sum = T::zero();
-    let base_i = i * n_dim;
-    let base_j = j * n_dim;
-    for d in 0..n_dim {
-        let diff = embd[base_i + d] - embd[base_j + d];
-        sum = sum + diff * diff;
-    }
-    sum
-}
-
-/// Apply attractive force gradient for a connected edge
-///
-/// Pulls points `i` and `j` together based on their edge weight.
-///
-/// The gradient is derived from the UMAP curve: `phi(d) = (1 + a d^{2b})^{-1}`
-///
-/// ### Params
-///
-/// * `embd` - Current embedding coordinates (modified in place)
-/// * `i` - Source vertex index
-/// * `j` - Target vertex index
-/// * `n_dim` - Number of dimensions
-/// * `lr` - Step size for gradient update
-///
-/// ### Notes
-///
-/// * Updates both points symmetrically: `i` moves towards `j`, and `j` moves
-///   towards `i`.
-/// * Skips update if points are essentially at the same location (dist_square
-///   < 1e-8) to avoid numerical instability.
-#[inline]
-fn apply_attractive_force_flat<T>(
-    embd: &mut [T],
-    i: usize,
-    j: usize,
-    n_dim: usize,
-    consts: &OptimConstants<T>,
-    lr: T,
-) where
-    T: Float,
-{
-    let dist_sq = squared_dist_flat(embd, i, j, n_dim);
-
-    if dist_sq < T::from(1e-8).unwrap() {
-        return;
-    }
-
-    let grad_coeff = if dist_sq > T::zero() {
-        let dist_sq_b = dist_sq.powf(consts.b);
-        let numerator =
-            -consts.a * consts.b * T::from(2.0).unwrap() * dist_sq.powf(consts.b - T::one());
-        let denominator = consts.a * dist_sq_b + T::one();
-        numerator / denominator
-    } else {
-        T::zero()
-    };
-
-    let base_i = i * n_dim;
-    let base_j = j * n_dim;
-
-    for d in 0..n_dim {
-        let grad_d = (grad_coeff * (embd[base_i + d] - embd[base_j + d]))
-            .max(-consts.clip_val)
-            .min(consts.clip_val);
-
-        embd[base_i + d] = embd[base_i + d] + grad_d * lr;
-        embd[base_j + d] = embd[base_j + d] - grad_d * lr;
-    }
-}
-
-/// Apply repulsive force gradient via negative sampling
-///
-/// Pushes point `i` away from randomly sampled point `j` (which is assumed to
-/// be unconnected).
-///
-/// ### Params
-///
-/// * `embd` - Current embedding coordinates (modified in place)
-/// * `i` - Source vertex index
-/// * `j` - Randomly sampled vertex index (negative sample)
-/// * `a` - Curve parameter controlling spread
-/// * `b` - Curve parameter controlling tail behaviour
-/// * `lr` - Step size for gradient update
-///
-/// ### Notes
-///
-/// * Only updates point `i` (not `j`), as this is an asymmetric negative
-///   sampling step.
-/// * Adds a small epsilon (0.001) to the distance to prevent division by zero.
-/// * **Clips gradients** to the range [-4.0, 4.0] to prevent the "exploding
-///   gradient" problem when points are very close to one another.
-#[inline]
-fn apply_repulsive_force_flat<T>(
-    embd: &mut [T],
-    i: usize,
-    k: usize,
-    n_dim: usize,
-    consts: &OptimConstants<T>,
-    lr: T,
-) where
-    T: Float,
-{
-    let dist_sq = squared_dist_flat(embd, i, k, n_dim);
-
-    let grad_coeff = if dist_sq > T::zero() {
-        let dist_sq_b = dist_sq.powf(consts.b);
-        let denominator = (T::from(0.001).unwrap() + dist_sq) * (consts.a * dist_sq_b + T::one());
-        consts.two_gamma_b / denominator
-    } else {
-        T::zero()
-    };
-
-    let base_i = i * n_dim;
-    let base_k = k * n_dim;
-    for d in 0..n_dim {
-        let grad_d = if grad_coeff > T::zero() {
-            (grad_coeff * (embd[base_i + d] - embd[base_k + d]))
-                .max(T::from(-consts.clip_val).unwrap())
-                .min(T::from(consts.clip_val).unwrap())
-        } else {
-            T::zero()
-        };
-
-        embd[base_i + d] = embd[base_i + d] + grad_d * lr;
     }
 }
 
@@ -511,18 +376,32 @@ pub fn optimise_embedding_sgd<T>(
     seed: u64,
     verbose: bool,
 ) where
-    T: Float + FromPrimitive + AddAssign,
+    T: Float + FromPrimitive + AddAssign + SubAssign,
 {
     let n = embd.len();
+    if n == 0 {
+        return;
+    }
     let n_dim = embd[0].len();
 
-    // flatten for cache locality
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
     for point in embd.iter() {
         embd_flat.extend_from_slice(point);
     }
 
-    // build edge list
+    let consts = OptimConstants::new(params.a, params.b, params.gamma);
+
+    let zero = T::zero();
+    let one = T::one();
+    let half = T::from(0.5).unwrap();
+    let dist_sq_threshold = T::from(1e-8).unwrap();
+    let large_epoch = T::from(1e8).unwrap();
+    let rep_eps = T::from(0.001).unwrap();
+
+    // fast paths for common b values
+    let b_is_one = (consts.b - one).abs() < T::from(1e-10).unwrap();
+    let b_is_half = (consts.b - half).abs() < T::from(1e-10).unwrap();
+
     let mut edges: Vec<(usize, usize, T)> = Vec::new();
     for (i, neighbours) in graph.iter().enumerate() {
         for &(j, w) in neighbours {
@@ -534,46 +413,41 @@ pub fn optimise_embedding_sgd<T>(
         return;
     }
 
-    // normalise weights for sampling
-    let max_weight =
-        edges
-            .iter()
-            .map(|(_, _, w)| *w)
-            .fold(T::zero(), |acc, w| if w > acc { w } else { acc });
+    let max_weight = edges
+        .iter()
+        .map(|(_, _, w)| *w)
+        .fold(zero, |acc, w| if w > acc { w } else { acc });
 
     let epochs_per_sample: Vec<T> = edges
         .iter()
         .map(|(_, _, w)| {
             let norm = *w / max_weight;
-            if norm > T::zero() {
-                T::one() / norm
+            if norm > zero {
+                one / norm
             } else {
-                T::from(1e8).unwrap()
+                large_epoch
             }
         })
         .collect();
 
     let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
 
+    let neg_sample_rate_t = T::from(params.neg_sample_rate).unwrap();
     let epochs_per_neg_sample: Vec<T> = epochs_per_sample
         .iter()
-        .map(|eps| *eps / T::from(params.neg_sample_rate).unwrap())
+        .map(|eps| *eps / neg_sample_rate_t)
         .collect();
     let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
 
-    // linear LR decay
+    let n_epochs_f = T::from(params.n_epochs).unwrap();
     let lr_schedule: Vec<T> = (0..params.n_epochs)
-        .map(|e| params.lr * (T::one() - T::from(e).unwrap() / T::from(params.n_epochs).unwrap()))
+        .map(|e| params.lr * (one - T::from(e).unwrap() / n_epochs_f))
         .collect();
 
-    // per-vertex RNG
-    let mut rng_states: Vec<StdRng> = (0..n)
-        .map(|i| StdRng::seed_from_u64(seed + i as u64))
+    let mut rng_states: Vec<SmallRng> = (0..n)
+        .map(|i| SmallRng::seed_from_u64(seed + i as u64))
         .collect();
 
-    let consts = OptimConstants::new(params.a, params.b, params.gamma);
-
-    // main loop
     for epoch in 0..params.n_epochs {
         let lr = lr_schedule[epoch];
         let epoch_t = T::from(epoch).unwrap();
@@ -583,12 +457,38 @@ pub fn optimise_embedding_sgd<T>(
                 continue;
             }
 
-            // apply attractive force
-            apply_attractive_force_flat(&mut embd_flat, i, j, n_dim, &consts, lr);
+            let base_i = i * n_dim;
+            let base_j = j * n_dim;
+
+            // Compute distance squared
+            let mut dist_sq = zero;
+            for d in 0..n_dim {
+                let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
+                dist_sq += diff * diff;
+            }
+
+            // Attractive force - inlined
+            if dist_sq >= dist_sq_threshold {
+                // C++ trick: compute d^(2b) once, then divide by d^2 to get d^(2b-2)
+                // This avoids computing powf twice
+                let dist_sq_b = fast_pow(dist_sq, consts.b, b_is_one, b_is_half);
+                let denom = one + consts.a * dist_sq_b;
+                let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
+
+                for d in 0..n_dim {
+                    let delta = embd_flat[base_j + d] - embd_flat[base_i + d];
+                    let grad_d = (grad_coeff * delta)
+                        .max(-consts.clip_val)
+                        .min(consts.clip_val);
+
+                    embd_flat[base_i + d] += grad_d * lr;
+                    embd_flat[base_j + d] -= grad_d * lr;
+                }
+            }
 
             epoch_of_next_sample[edge_idx] += epochs_per_sample[edge_idx];
 
-            // adaptive negative sampling
+            // Negative sampling
             let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
                 / epochs_per_neg_sample[edge_idx])
                 .floor()
@@ -597,10 +497,31 @@ pub fn optimise_embedding_sgd<T>(
 
             for _ in 0..n_neg_samples {
                 let k = rng_states[i].random_range(0..n);
-                if k == i || k == j {
+                if k == i {
                     continue;
                 }
-                apply_repulsive_force_flat(&mut embd_flat, i, k, n_dim, &consts, lr);
+
+                let base_k = k * n_dim;
+
+                let mut dist_sq = zero;
+                for d in 0..n_dim {
+                    let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
+                    dist_sq += diff * diff;
+                }
+
+                // Repulsive force - inlined
+                let dist_sq_safe = dist_sq + rep_eps;
+                let dist_sq_b = fast_pow(dist_sq_safe, consts.b, b_is_one, b_is_half);
+                let denom = dist_sq_safe * (one + consts.a * dist_sq_b);
+                let grad_coeff = (consts.two_gamma_b / denom)
+                    .max(-consts.clip_val)
+                    .min(consts.clip_val);
+
+                for d in 0..n_dim {
+                    let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
+                    let grad_d = grad_coeff * delta;
+                    embd_flat[base_i + d] += grad_d * lr;
+                }
             }
 
             epoch_of_next_neg_sample[edge_idx] +=
@@ -612,7 +533,6 @@ pub fn optimise_embedding_sgd<T>(
         }
     }
 
-    // unflatten
     for (i, point) in embd.iter_mut().enumerate() {
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
@@ -740,17 +660,6 @@ pub fn optimise_embedding_adam<T>(
     let beta21 = one - params.beta2; // 1 - beta2
     let mut beta1t = params.beta1;
     let mut beta2t = params.beta2;
-
-    #[inline(always)]
-    fn fast_pow<T: Float>(x: T, b: T, b_is_one: bool, b_is_half: bool) -> T {
-        if b_is_one {
-            x
-        } else if b_is_half {
-            x.sqrt()
-        } else {
-            x.powf(b)
-        }
-    }
 
     for epoch in 0..params.n_epochs {
         // Compute bias-corrected learning rate parameters once per epoch (matching C++ epoch_end)
@@ -1729,6 +1638,21 @@ pub fn optimise_fft_tsne<T>(
 mod test_optimiser {
     use super::*;
     use approx::assert_relative_eq;
+
+    #[inline(always)]
+    fn squared_dist_flat<T>(embd: &[T], i: usize, j: usize, n_dim: usize) -> T
+    where
+        T: Float,
+    {
+        let mut sum = T::zero();
+        let base_i = i * n_dim;
+        let base_j = j * n_dim;
+        for d in 0..n_dim {
+            let diff = embd[base_i + d] - embd[base_j + d];
+            sum = sum + diff * diff;
+        }
+        sum
+    }
 
     //////////
     // UMAP //
