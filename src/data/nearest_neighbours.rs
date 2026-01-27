@@ -11,11 +11,11 @@ use std::iter::Sum;
 
 #[derive(Default)]
 pub enum AnnSearch {
-    /// HNSW
     #[default]
-    Hnsw,
     /// Annoy
     Annoy,
+    /// HNSW
+    Hnsw,
     /// NNDescent
     NNDescent,
 }
