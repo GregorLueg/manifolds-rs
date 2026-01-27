@@ -6,6 +6,8 @@ use rand::{
 };
 use rayon::prelude::*;
 use rustc_hash::FxHashSet;
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::iter::Sum;
 use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
 use thousands::*;
@@ -464,6 +466,37 @@ fn apply_repulsive_force_flat<T>(
     }
 }
 
+/// Heap entry for edge scheduling (min-heap by next_epoch)
+#[derive(Clone, Copy)]
+struct EdgeEntry<T> {
+    next_epoch: T,
+    edge_idx: usize,
+}
+
+impl<T: Float> Ord for EdgeEntry<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reversed for min-heap behaviour
+        other
+            .next_epoch
+            .partial_cmp(&self.next_epoch)
+            .unwrap_or(Ordering::Equal)
+    }
+}
+
+impl<T: Float> PartialOrd for EdgeEntry<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T: Float> PartialEq for EdgeEntry<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.edge_idx == other.edge_idx
+    }
+}
+
+impl<T: Float> Eq for EdgeEntry<T> {}
+
 ////////////////
 // Optimisers //
 ////////////////
@@ -680,7 +713,6 @@ pub fn optimise_embedding_adam<T>(
 
     let consts = OptimConstants::new(params.a, params.b, params.gamma);
 
-    // Pre-compute constants to avoid T::from in hot loops
     let zero = T::zero();
     let one = T::one();
     let dist_sq_threshold = T::from(1e-8).unwrap();
@@ -697,9 +729,6 @@ pub fn optimise_embedding_adam<T>(
     if edges.is_empty() {
         return;
     }
-
-    // Sort edges by first vertex for cache locality
-    edges.sort_unstable_by_key(|(i, _, _)| *i);
 
     let max_weight = edges
         .iter()
@@ -718,8 +747,6 @@ pub fn optimise_embedding_adam<T>(
         })
         .collect();
 
-    let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
-
     let neg_sample_rate_t = T::from(params.neg_sample_rate).unwrap();
     let epochs_per_neg_sample: Vec<T> = epochs_per_sample
         .iter()
@@ -735,10 +762,8 @@ pub fn optimise_embedding_adam<T>(
     let mut m: Vec<T> = vec![zero; n * n_dim];
     let mut v: Vec<T> = vec![zero; n * n_dim];
 
-    // Single RNG - no need for n separate states in sequential code
     let mut rng = SmallRng::seed_from_u64(seed);
 
-    // Pre-compute bias corrections per epoch (matches parallel version approach)
     let bias_corrections: Vec<(T, T)> = (0..params.n_epochs)
         .map(|epoch| {
             let t = T::from(epoch + 1).unwrap();
@@ -754,17 +779,37 @@ pub fn optimise_embedding_adam<T>(
     let one_minus_beta1 = one - params.beta1;
     let one_minus_beta2 = one - params.beta2;
 
+    // Initialise min-heap with all edges
+    let mut edge_heap: BinaryHeap<EdgeEntry<T>> = edges
+        .iter()
+        .enumerate()
+        .map(|(idx, _)| EdgeEntry {
+            next_epoch: epochs_per_sample[idx],
+            edge_idx: idx,
+        })
+        .collect();
+
+    // Track which edges need processing this epoch (to batch heap operations)
+    let mut edges_to_process: Vec<usize> = Vec::with_capacity(edges.len() / 10);
+
     for epoch in 0..params.n_epochs {
         let lr = lr_schedule[epoch];
         let epoch_t = T::from(epoch).unwrap();
         let (ad_scale, epsc) = bias_corrections[epoch];
         let lr_scaled = lr * ad_scale;
 
-        for (edge_idx, &(i, j, _)) in edges.iter().enumerate() {
-            if epoch_of_next_sample[edge_idx] > epoch_t {
-                continue;
+        // Extract all edges due this epoch
+        edges_to_process.clear();
+        while let Some(entry) = edge_heap.peek() {
+            if entry.next_epoch > epoch_t {
+                break;
             }
+            edges_to_process.push(edge_heap.pop().unwrap().edge_idx);
+        }
 
+        // Process extracted edges
+        for &edge_idx in &edges_to_process {
+            let (i, j, _) = edges[edge_idx];
             let base_i = i * n_dim;
             let base_j = j * n_dim;
 
@@ -799,8 +844,7 @@ pub fn optimise_embedding_adam<T>(
                 }
             }
 
-            epoch_of_next_sample[edge_idx] += epochs_per_sample[edge_idx];
-
+            // Negative sampling
             let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
                 / epochs_per_neg_sample[edge_idx])
                 .floor()
@@ -845,6 +889,15 @@ pub fn optimise_embedding_adam<T>(
 
             epoch_of_next_neg_sample[edge_idx] +=
                 T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
+        }
+
+        // Re-insert processed edges with updated next_epoch
+        for &edge_idx in &edges_to_process {
+            let current_next = epoch_t + epochs_per_sample[edge_idx];
+            edge_heap.push(EdgeEntry {
+                next_epoch: current_next,
+                edge_idx,
+            });
         }
 
         if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
