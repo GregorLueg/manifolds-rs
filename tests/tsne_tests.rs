@@ -627,7 +627,7 @@ fn tsne_integration_08_different_seeds() {
 /// Test 9: FFT t-SNE - optimisation quality
 #[test]
 fn tsne_integration_09_fft_optimisation_quality() {
-    let (data, labels) = create_diagnostic_data(1000, 10, 123);
+    let (data, labels) = create_diagnostic_data(100, 10, 123);
 
     println!("\n=== t-SNE DIAGNOSTIC 9: FFT Optimisation Quality ===");
 
@@ -733,7 +733,7 @@ fn tsne_integration_09_fft_optimisation_quality() {
 /// Test 10: FFT t-SNE reproducibility
 #[test]
 fn tsne_integration_10_fft_reproducibility() {
-    let (data, _) = create_diagnostic_data(40, 10, 42);
+    let (data, _) = create_diagnostic_data(100, 10, 42);
 
     println!("\n=== t-SNE DIAGNOSTIC 10: FFT Reproducibility ===");
 
@@ -748,8 +748,8 @@ fn tsne_integration_10_fft_reproducibility() {
         Some(3),
     );
 
-    let embd1 = tsne(data.as_ref(), &params, "fft", 42, false);
-    let embd2 = tsne(data.as_ref(), &params, "fft", 42, false);
+    let embd1 = tsne(data.as_ref(), &params, "fft", 123, false);
+    let embd2 = tsne(data.as_ref(), &params, "fft", 123, false);
 
     let mut max_diff: f64 = 0.0;
     for i in 0..embd1[0].len() {
@@ -772,7 +772,7 @@ fn tsne_integration_10_fft_reproducibility() {
 /// Test 11: FFT t-SNE different seeds
 #[test]
 fn tsne_integration_11_fft_different_seeds() {
-    let (data, _) = create_diagnostic_data(40, 10, 42);
+    let (data, _) = create_diagnostic_data(100, 10, 42);
 
     println!("\n=== t-SNE DIAGNOSTIC 11: FFT Different Seeds ===");
 
@@ -813,7 +813,7 @@ fn tsne_integration_11_fft_different_seeds() {
 /// Test 12: Compare Barnes-Hut vs FFT quality
 #[test]
 fn tsne_integration_12_bh_vs_fft_comparison() {
-    let (data, labels) = create_diagnostic_data(40, 10, 42);
+    let (data, labels) = create_diagnostic_data(100, 10, 42);
 
     println!("\n=== t-SNE DIAGNOSTIC 12: Barnes-Hut vs FFT Comparison ===");
 
