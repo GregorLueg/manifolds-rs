@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use rustc_hash::FxHashSet;
 use std::iter::Sum;
 use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
+use thousands::*;
 
 use crate::data::structures::*;
 use crate::utils::bh_tree::*;
@@ -606,7 +607,7 @@ pub fn optimise_embedding_sgd<T>(
                 T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
         }
 
-        if verbose && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
+        if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
@@ -851,7 +852,7 @@ pub fn optimise_embedding_adam<T>(
                 T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
         }
 
-        if verbose && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
+        if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
@@ -1106,7 +1107,7 @@ pub fn optimise_embedding_adam_parallel<T>(
             }
         }
 
-        if verbose && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
+        if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
@@ -1439,7 +1440,7 @@ pub fn optimise_bh_tsne<T>(
                 "Completed Epoch {} out of {} | Z = {}",
                 epoch,
                 params.n_epochs,
-                z_total.to_f32().unwrap()
+                z_total.to_f32().unwrap().separate_with_underscores()
             );
         }
     }
@@ -1682,12 +1683,14 @@ pub fn optimise_fft_tsne<T>(
             p[1] -= mean_y;
         });
 
+        let sum_q_f64 = sum_q.to_f64().unwrap();
+
         if verbose && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
             println!(
-                "Epoch {}/{} | Z = {:.4e}",
+                "Epoch {}/{} | Z = {}",
                 epoch,
                 params.n_epochs,
-                sum_q.to_f64().unwrap()
+                sum_q_f64.separate_with_underscores()
             );
         }
     }
