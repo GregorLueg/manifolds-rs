@@ -1,9 +1,9 @@
 name: Test the package
 on:
   push:
-    branches: [main]
+    branches: [ main, dev-branch ]
   pull_request:
-    branches: [main]
+    branches: [ main, dev-branch ]
 jobs:
   test:
     name: Test on ${{ matrix.os }}

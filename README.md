@@ -31,7 +31,7 @@ used via the prospective feature flag. The next one to implement is likely
 
 - **UMAP algorithm**: Complete implementation of the UMAP dimensionality
 reduction algorithm with several optimisations: SGD, Adam and a parallelised
-version of ADAM.
+version of ADAM for increased optimisation speed.
 - **tSNE algorithm**: Implementation of the Barnes-Hut accelerated version and
 the FFT-accelerated version.
 - **Multiple ANN backends** via [`ann-search-rs`](https://crates.io/crates/ann-search-rs):
