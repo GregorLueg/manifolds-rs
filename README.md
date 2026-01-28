@@ -8,22 +8,23 @@ High-performance manifold learning and dimensionality reduction algorithms
 implemented in Rust. Contains for now
 
 - **UMAP**
-- **Parametric UMAP**
+- **Parametric UMAP** (optional feature)
 - **tSNE**
   - ***Barnes Hut tSNE*** (With a `O(n log n)` complexity).
-  - ***Fast Fourier Transform-accelerated Interpolation-based t-SNE (Flt-SNE)*** (With a `O(n)` complexity).
+  - ***Fast Fourier Transform-accelerated Interpolation-based t-SNE (Flt-SNE)***
+  (optional feature; with a `O(n)` complexity for large datasets).
 
 ## Description
 
 Rust implementations of various methods to project data onto two dimensions,
 i.e, learn low dimensional manifolds from the data. The current crate contains
-the big classic [UMAP](https://arxiv.org/abs/1802.03426) and tSNE (with the 
-[Barnes-Hut implementation](https://arxiv.org/abs/1301.3342) and the 
+the big classic [UMAP](https://arxiv.org/abs/1802.03426) and tSNE (with the
+[Barnes-Hut implementation](https://arxiv.org/abs/1301.3342) and optionally the
 [FFT-acceleration version](https://www.nature.com/articles/s41592-018-0308-4)).
 These are typically used methods for visualising high-dimensional biological
 data, but not without [controversy](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1011288).
 Moreover, the `crate` also provides via the Burn DL framework optionally
-[parametric UMAP](https://arxiv.org/abs/2009.12981) that can be optionally be 
+[parametric UMAP](https://arxiv.org/abs/2009.12981) that can be optionally be
 used via the prospective feature flag. The next one to implement is likely
 [PHATE](https://pmc.ncbi.nlm.nih.gov/articles/PMC7073148/).
 
@@ -33,23 +34,27 @@ used via the prospective feature flag. The next one to implement is likely
 reduction algorithm with several optimisations: SGD, Adam and a parallelised
 version of ADAM for increased optimisation speed.
 - **tSNE algorithm**: Implementation of the Barnes-Hut accelerated version and
-the FFT-accelerated version.
+the FFT-accelerated version (optional).
 - **Multiple ANN backends** via [`ann-search-rs`](https://crates.io/crates/ann-search-rs):
-  - Annoy (Approximate Nearest Neighbours Oh Yeah)
-  - HNSW (Hierarchical Navigable Small World)
-  - NNDescent (Nearest Neighbour Descent)
+  - Annoy (Approximate Nearest Neighbours Oh Yeah) - good for smaller datasets.
+  - HNSW (Hierarchical Navigable Small World) - good for larger datasets.
+  - NNDescent (Nearest Neighbour Descent) - good for larger datasets.
 - **Distance metrics**:
   - Euclidean
   - Cosine
+  - Maybe more to come over time ... ?
 - **Multiple initialisations**:
   - Graph Laplacian eigenvector-based initialisation using Lanczos iteration
   - Random initialisation
   - PCA-based initialisation with randomised SVD for veeery large data sets
 - **Customisable parameters**: Full control over fuzzy simplicial set
-construction, graph symmetrisation, and optimisation.
+construction, graph symmetrisation, and optimisation parameters for tSNE and
+UMAP.
 - **High performance**: Parallel processing with Rayon, efficient sparse matrix
 operations, and optimised SGD and Adam optimisers for UMAP (for the latter also a
 parallelised version...) and rapid optimisations for tSNE.
+- **Synthetic datasets**: Some synthetic datasets are available for testing and
+experimentation: Swiss role, clustered data and a tree-like structure.
 
 ## Installation
 
@@ -65,6 +70,13 @@ If you want to enable parametric UMAP, please use:
 ```toml
 [dependencies]
 manifold-rs = { version = "0.1.5", features = [ "parametric" ] }
+```
+
+If you want to enable the FFT-accelerated version of tSNE, please use:
+
+```toml
+[dependencies]
+manifold-rs = { version = "0.1.5", features = [ "fft_tsne" ] }
 ```
 
 ## Notes

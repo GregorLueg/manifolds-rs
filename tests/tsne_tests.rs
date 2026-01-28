@@ -625,6 +625,7 @@ fn tsne_integration_08_different_seeds() {
 }
 
 /// Test 9: FFT t-SNE - optimisation quality
+#[cfg(feature = "fft_tsne")]
 #[test]
 fn tsne_integration_09_fft_optimisation_quality() {
     let (data, labels) = create_diagnostic_data(100, 10, 123);
@@ -731,6 +732,7 @@ fn tsne_integration_09_fft_optimisation_quality() {
 }
 
 /// Test 10: FFT t-SNE reproducibility
+#[cfg(feature = "fft_tsne")]
 #[test]
 fn tsne_integration_10_fft_reproducibility() {
     let (data, _) = create_diagnostic_data(100, 10, 42);
@@ -770,6 +772,7 @@ fn tsne_integration_10_fft_reproducibility() {
 }
 
 /// Test 11: FFT t-SNE different seeds
+#[cfg(feature = "fft_tsne")]
 #[test]
 fn tsne_integration_11_fft_different_seeds() {
     let (data, _) = create_diagnostic_data(100, 10, 42);
@@ -811,6 +814,7 @@ fn tsne_integration_11_fft_different_seeds() {
 }
 
 /// Test 12: Compare Barnes-Hut vs FFT quality
+#[cfg(feature = "fft_tsne")]
 #[test]
 fn tsne_integration_12_bh_vs_fft_comparison() {
     let (data, labels) = create_diagnostic_data(100, 10, 42);

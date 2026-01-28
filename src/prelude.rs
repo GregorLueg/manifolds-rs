@@ -4,7 +4,8 @@ pub use crate::data::nearest_neighbours::{
 };
 pub use crate::data::structures::SparseGraph;
 pub use crate::data::synthetic::*;
-pub use crate::training::optimiser::{TsneOptimParams, UmapOptimParams};
+pub use crate::training::tsne_optimiser::TsneOptimParams;
+pub use crate::training::umap_optimisers::UmapOptimParams;
 pub use crate::training::UmapGraphParams;
 
 #[cfg(feature = "parametric")]

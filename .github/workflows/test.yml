@@ -1,9 +1,9 @@
 name: Test the package
 on:
   push:
-    branches: [ main, dev-branch ]
+    branches: [main, dev-branch]
   pull_request:
-    branches: [ main, dev-branch ]
+    branches: [main, dev-branch]
 jobs:
   test:
     name: Test on ${{ matrix.os }}
@@ -29,6 +29,6 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ github.sha }}
           restore-keys: |
             ${{ runner.os }}-cargo-
-            
+
       - name: Run tests
-        run: cargo test --no-default-features && cargo test --all-features
+        run: cargo test --release --no-default-features && cargo test --release --all-features
