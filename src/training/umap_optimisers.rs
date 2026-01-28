@@ -1,16 +1,12 @@
 use core::f64;
-use num_traits::{Float, FromPrimitive, ToPrimitive};
+use num_traits::{Float, FromPrimitive};
 use rand::{
-    rngs::StdRng,
+    rngs::SmallRng,
     {Rng, SeedableRng},
 };
 use rayon::prelude::*;
 use rustc_hash::FxHashSet;
-use std::iter::Sum;
-use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
-
-use crate::data::structures::*;
-use crate::utils::bh_tree::*;
+use std::ops::{AddAssign, MulAssign, SubAssign};
 
 //////////
 // UMAP //
@@ -47,7 +43,7 @@ const EPS: f64 = 1e-7;
 /// * `beta2` - beta2 parameter for Adam optimiser
 /// * `eps` - eps for Adam optimiser
 #[derive(Clone, Debug)]
-pub struct OptimParams<T> {
+pub struct UmapOptimParams<T> {
     pub a: T,
     pub b: T,
     pub lr: T,
@@ -60,7 +56,7 @@ pub struct OptimParams<T> {
     pub eps: T,
 }
 
-impl<T> OptimParams<T>
+impl<T> UmapOptimParams<T>
 where
     T: Float + FromPrimitive,
 {
@@ -225,23 +221,23 @@ where
     }
 }
 
-impl<T> Default for OptimParams<T>
+impl<T> Default for UmapOptimParams<T>
 where
     T: Float + FromPrimitive,
 {
     /// Returns sensible defaults for the optimiser (assuming 2D)
     fn default() -> Self {
-        OptimParams::default_2d()
+        UmapOptimParams::default_2d()
     }
 }
 
 #[derive(Default)]
-pub enum Optimiser {
-    /// Adam
-    #[default]
-    Adam,
+pub enum UmapOptimiser {
     /// Parallel version of Adam
+    #[default]
     AdamParallel,
+    /// Adam
+    Adam,
     /// Stochastic gradient descent
     Sgd,
 }
@@ -297,7 +293,18 @@ impl<T: Float + FromPrimitive> OptimConstants<T> {
 // Helpers //
 /////////////
 
-/// Parse the Optimiser to use
+#[inline(always)]
+fn fast_pow<T: Float>(x: T, b: T, b_is_one: bool, b_is_half: bool) -> T {
+    if b_is_one {
+        x
+    } else if b_is_half {
+        x.sqrt()
+    } else {
+        x.powf(b)
+    }
+}
+
+/// Parse the UMAP Optimiser to use
 ///
 /// ### Params
 ///
@@ -307,158 +314,12 @@ impl<T: Float + FromPrimitive> OptimConstants<T> {
 /// ### Return
 ///
 /// Option of Optimiser
-pub fn parse_optimiser(s: &str) -> Option<Optimiser> {
+pub fn parse_umap_optimiser(s: &str) -> Option<UmapOptimiser> {
     match s.to_lowercase().as_str() {
-        "adam" => Some(Optimiser::Adam),
-        "sgd" => Some(Optimiser::Sgd),
-        "adam_parallel" => Some(Optimiser::AdamParallel),
+        "adam" => Some(UmapOptimiser::Adam),
+        "sgd" => Some(UmapOptimiser::Sgd),
+        "adam_parallel" => Some(UmapOptimiser::AdamParallel),
         _ => None,
-    }
-}
-
-/// Compute squared Eucliden distance between two points
-///
-/// Assumes a flat structure to better cache locality
-///
-/// ### Params
-///
-/// * `embd` - The flat embedding structure
-/// * `i` - Position of data point i in the embedding
-/// * `j` - Position of data point j in the embedding
-/// * `n_dim` - Number of dimensions in that embedding
-///
-/// ### Returns
-///
-/// Squared distance between two points
-#[inline(always)]
-fn squared_dist_flat<T>(embd: &[T], i: usize, j: usize, n_dim: usize) -> T
-where
-    T: Float,
-{
-    let mut sum = T::zero();
-    let base_i = i * n_dim;
-    let base_j = j * n_dim;
-    for d in 0..n_dim {
-        let diff = embd[base_i + d] - embd[base_j + d];
-        sum = sum + diff * diff;
-    }
-    sum
-}
-
-/// Apply attractive force gradient for a connected edge
-///
-/// Pulls points `i` and `j` together based on their edge weight.
-///
-/// The gradient is derived from the UMAP curve: `phi(d) = (1 + a d^{2b})^{-1}`
-///
-/// ### Params
-///
-/// * `embd` - Current embedding coordinates (modified in place)
-/// * `i` - Source vertex index
-/// * `j` - Target vertex index
-/// * `n_dim` - Number of dimensions
-/// * `lr` - Step size for gradient update
-///
-/// ### Notes
-///
-/// * Updates both points symmetrically: `i` moves towards `j`, and `j` moves
-///   towards `i`.
-/// * Skips update if points are essentially at the same location (dist_square
-///   < 1e-8) to avoid numerical instability.
-#[inline]
-fn apply_attractive_force_flat<T>(
-    embd: &mut [T],
-    i: usize,
-    j: usize,
-    n_dim: usize,
-    consts: &OptimConstants<T>,
-    lr: T,
-) where
-    T: Float,
-{
-    let dist_sq = squared_dist_flat(embd, i, j, n_dim);
-
-    if dist_sq < T::from(1e-8).unwrap() {
-        return;
-    }
-
-    let grad_coeff = if dist_sq > T::zero() {
-        let dist_sq_b = dist_sq.powf(consts.b);
-        let numerator =
-            -consts.a * consts.b * T::from(2.0).unwrap() * dist_sq.powf(consts.b - T::one());
-        let denominator = consts.a * dist_sq_b + T::one();
-        numerator / denominator
-    } else {
-        T::zero()
-    };
-
-    let base_i = i * n_dim;
-    let base_j = j * n_dim;
-
-    for d in 0..n_dim {
-        let grad_d = (grad_coeff * (embd[base_i + d] - embd[base_j + d]))
-            .max(-consts.clip_val)
-            .min(consts.clip_val);
-
-        embd[base_i + d] = embd[base_i + d] + grad_d * lr;
-        embd[base_j + d] = embd[base_j + d] - grad_d * lr;
-    }
-}
-
-/// Apply repulsive force gradient via negative sampling
-///
-/// Pushes point `i` away from randomly sampled point `j` (which is assumed to
-/// be unconnected).
-///
-/// ### Params
-///
-/// * `embd` - Current embedding coordinates (modified in place)
-/// * `i` - Source vertex index
-/// * `j` - Randomly sampled vertex index (negative sample)
-/// * `a` - Curve parameter controlling spread
-/// * `b` - Curve parameter controlling tail behaviour
-/// * `lr` - Step size for gradient update
-///
-/// ### Notes
-///
-/// * Only updates point `i` (not `j`), as this is an asymmetric negative
-///   sampling step.
-/// * Adds a small epsilon (0.001) to the distance to prevent division by zero.
-/// * **Clips gradients** to the range [-4.0, 4.0] to prevent the "exploding
-///   gradient" problem when points are very close to one another.
-#[inline]
-fn apply_repulsive_force_flat<T>(
-    embd: &mut [T],
-    i: usize,
-    k: usize,
-    n_dim: usize,
-    consts: &OptimConstants<T>,
-    lr: T,
-) where
-    T: Float,
-{
-    let dist_sq = squared_dist_flat(embd, i, k, n_dim);
-
-    let grad_coeff = if dist_sq > T::zero() {
-        let dist_sq_b = dist_sq.powf(consts.b);
-        let denominator = (T::from(0.001).unwrap() + dist_sq) * (consts.a * dist_sq_b + T::one());
-        consts.two_gamma_b / denominator
-    } else {
-        T::zero()
-    };
-
-    let base_i = i * n_dim;
-    let base_k = k * n_dim;
-    for d in 0..n_dim {
-        let grad_d = if grad_coeff > T::zero() {
-            (grad_coeff * (embd[base_i + d] - embd[base_k + d]))
-                .max(T::from(-consts.clip_val).unwrap())
-                .min(T::from(consts.clip_val).unwrap())
-        } else {
-            T::zero()
-        };
-
-        embd[base_i + d] = embd[base_i + d] + grad_d * lr;
     }
 }
 
@@ -505,22 +366,36 @@ fn apply_repulsive_force_flat<T>(
 pub fn optimise_embedding_sgd<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
-    params: &OptimParams<T>,
+    params: &UmapOptimParams<T>,
     seed: u64,
     verbose: bool,
 ) where
-    T: Float + FromPrimitive + AddAssign,
+    T: Float + FromPrimitive + AddAssign + SubAssign,
 {
     let n = embd.len();
+    if n == 0 {
+        return;
+    }
     let n_dim = embd[0].len();
 
-    // flatten for cache locality
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
     for point in embd.iter() {
         embd_flat.extend_from_slice(point);
     }
 
-    // build edge list
+    let consts = OptimConstants::new(params.a, params.b, params.gamma);
+
+    let zero = T::zero();
+    let one = T::one();
+    let half = T::from(0.5).unwrap();
+    let dist_sq_threshold = T::from(1e-8).unwrap();
+    let large_epoch = T::from(1e8).unwrap();
+    let rep_eps = T::from(0.001).unwrap();
+
+    // fast paths for common b values
+    let b_is_one = (consts.b - one).abs() < T::from(1e-10).unwrap();
+    let b_is_half = (consts.b - half).abs() < T::from(1e-10).unwrap();
+
     let mut edges: Vec<(usize, usize, T)> = Vec::new();
     for (i, neighbours) in graph.iter().enumerate() {
         for &(j, w) in neighbours {
@@ -532,46 +407,41 @@ pub fn optimise_embedding_sgd<T>(
         return;
     }
 
-    // normalise weights for sampling
-    let max_weight =
-        edges
-            .iter()
-            .map(|(_, _, w)| *w)
-            .fold(T::zero(), |acc, w| if w > acc { w } else { acc });
+    let max_weight = edges
+        .iter()
+        .map(|(_, _, w)| *w)
+        .fold(zero, |acc, w| if w > acc { w } else { acc });
 
     let epochs_per_sample: Vec<T> = edges
         .iter()
         .map(|(_, _, w)| {
             let norm = *w / max_weight;
-            if norm > T::zero() {
-                T::one() / norm
+            if norm > zero {
+                one / norm
             } else {
-                T::from(1e8).unwrap()
+                large_epoch
             }
         })
         .collect();
 
     let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
 
+    let neg_sample_rate_t = T::from(params.neg_sample_rate).unwrap();
     let epochs_per_neg_sample: Vec<T> = epochs_per_sample
         .iter()
-        .map(|eps| *eps / T::from(params.neg_sample_rate).unwrap())
+        .map(|eps| *eps / neg_sample_rate_t)
         .collect();
     let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
 
-    // linear LR decay
+    let n_epochs_f = T::from(params.n_epochs).unwrap();
     let lr_schedule: Vec<T> = (0..params.n_epochs)
-        .map(|e| params.lr * (T::one() - T::from(e).unwrap() / T::from(params.n_epochs).unwrap()))
+        .map(|e| params.lr * (one - T::from(e).unwrap() / n_epochs_f))
         .collect();
 
-    // per-vertex RNG
-    let mut rng_states: Vec<StdRng> = (0..n)
-        .map(|i| StdRng::seed_from_u64(seed + i as u64))
+    let mut rng_states: Vec<SmallRng> = (0..n)
+        .map(|i| SmallRng::seed_from_u64(seed + i as u64))
         .collect();
 
-    let consts = OptimConstants::new(params.a, params.b, params.gamma);
-
-    // main loop
     for epoch in 0..params.n_epochs {
         let lr = lr_schedule[epoch];
         let epoch_t = T::from(epoch).unwrap();
@@ -581,12 +451,38 @@ pub fn optimise_embedding_sgd<T>(
                 continue;
             }
 
-            // apply attractive force
-            apply_attractive_force_flat(&mut embd_flat, i, j, n_dim, &consts, lr);
+            let base_i = i * n_dim;
+            let base_j = j * n_dim;
+
+            // Compute distance squared
+            let mut dist_sq = zero;
+            for d in 0..n_dim {
+                let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
+                dist_sq += diff * diff;
+            }
+
+            // Attractive force - inlined
+            if dist_sq >= dist_sq_threshold {
+                // C++ trick: compute d^(2b) once, then divide by d^2 to get d^(2b-2)
+                // This avoids computing powf twice
+                let dist_sq_b = fast_pow(dist_sq, consts.b, b_is_one, b_is_half);
+                let denom = one + consts.a * dist_sq_b;
+                let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
+
+                for d in 0..n_dim {
+                    let delta = embd_flat[base_j + d] - embd_flat[base_i + d];
+                    let grad_d = (grad_coeff * delta)
+                        .max(-consts.clip_val)
+                        .min(consts.clip_val);
+
+                    embd_flat[base_i + d] += grad_d * lr;
+                    embd_flat[base_j + d] -= grad_d * lr;
+                }
+            }
 
             epoch_of_next_sample[edge_idx] += epochs_per_sample[edge_idx];
 
-            // adaptive negative sampling
+            // Negative sampling
             let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
                 / epochs_per_neg_sample[edge_idx])
                 .floor()
@@ -595,22 +491,42 @@ pub fn optimise_embedding_sgd<T>(
 
             for _ in 0..n_neg_samples {
                 let k = rng_states[i].random_range(0..n);
-                if k == i || k == j {
+                if k == i {
                     continue;
                 }
-                apply_repulsive_force_flat(&mut embd_flat, i, k, n_dim, &consts, lr);
+
+                let base_k = k * n_dim;
+
+                let mut dist_sq = zero;
+                for d in 0..n_dim {
+                    let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
+                    dist_sq += diff * diff;
+                }
+
+                // Repulsive force - inlined
+                let dist_sq_safe = dist_sq + rep_eps;
+                let dist_sq_b = fast_pow(dist_sq_safe, consts.b, b_is_one, b_is_half);
+                let denom = dist_sq_safe * (one + consts.a * dist_sq_b);
+                let grad_coeff = (consts.two_gamma_b / denom)
+                    .max(-consts.clip_val)
+                    .min(consts.clip_val);
+
+                for d in 0..n_dim {
+                    let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
+                    let grad_d = grad_coeff * delta;
+                    embd_flat[base_i + d] += grad_d * lr;
+                }
             }
 
             epoch_of_next_neg_sample[edge_idx] +=
                 T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
         }
 
-        if verbose && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
+        if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
 
-    // unflatten
     for (i, point) in embd.iter_mut().enumerate() {
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
@@ -659,13 +575,16 @@ pub fn optimise_embedding_sgd<T>(
 pub fn optimise_embedding_adam<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
-    params: &OptimParams<T>,
+    params: &UmapOptimParams<T>,
     seed: u64,
     verbose: bool,
 ) where
-    T: Float + FromPrimitive + Send + Sync + AddAssign,
+    T: Float + FromPrimitive + Send + Sync + AddAssign + MulAssign,
 {
     let n = embd.len();
+    if n == 0 {
+        return;
+    }
     let n_dim = embd[0].len();
 
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
@@ -674,6 +593,15 @@ pub fn optimise_embedding_adam<T>(
     }
 
     let consts = OptimConstants::new(params.a, params.b, params.gamma);
+
+    let zero = T::zero();
+    let one = T::one();
+    let half = T::from(0.5).unwrap();
+    let dist_sq_threshold = T::from(1e-8).unwrap();
+    let large_epoch = T::from(1e8).unwrap();
+
+    let b_is_one = (consts.b - one).abs() < T::from(1e-10).unwrap();
+    let b_is_half = (consts.b - half).abs() < T::from(1e-10).unwrap();
 
     let mut edges: Vec<(usize, usize, T)> = Vec::new();
     for (i, neighbours) in graph.iter().enumerate() {
@@ -686,61 +614,54 @@ pub fn optimise_embedding_adam<T>(
         return;
     }
 
-    let max_weight =
-        edges
-            .iter()
-            .map(|(_, _, w)| *w)
-            .fold(T::zero(), |acc, w| if w > acc { w } else { acc });
+    let max_weight = edges
+        .iter()
+        .map(|(_, _, w)| *w)
+        .fold(zero, |acc, w| if w > acc { w } else { acc });
 
     let epochs_per_sample: Vec<T> = edges
         .iter()
         .map(|(_, _, w)| {
             let norm = *w / max_weight;
-            if norm > T::zero() {
-                T::one() / norm
+            if norm > zero {
+                one / norm
             } else {
-                T::from(1e8).unwrap()
+                large_epoch
             }
         })
         .collect();
 
     let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
 
+    let neg_sample_rate_t = T::from(params.neg_sample_rate).unwrap();
     let epochs_per_neg_sample: Vec<T> = epochs_per_sample
         .iter()
-        .map(|eps| *eps / T::from(params.neg_sample_rate).unwrap())
+        .map(|eps| *eps / neg_sample_rate_t)
         .collect();
     let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
 
     let n_epochs_f = T::from(params.n_epochs).unwrap();
-    let lr_schedule: Vec<T> = (0..params.n_epochs)
-        .map(|e| params.lr * (T::one() - T::from(e).unwrap() / n_epochs_f))
+
+    let mut m: Vec<T> = vec![zero; n * n_dim];
+    let mut v: Vec<T> = vec![zero; n * n_dim];
+
+    let mut rng_states: Vec<SmallRng> = (0..n)
+        .map(|i| SmallRng::seed_from_u64(seed + i as u64))
         .collect();
 
-    let mut m: Vec<T> = vec![T::zero(); n * n_dim];
-    let mut v: Vec<T> = vec![T::zero(); n * n_dim];
-
-    let mut rng_states: Vec<StdRng> = (0..n)
-        .map(|i| StdRng::seed_from_u64(seed + i as u64))
-        .collect();
-
-    // pre-compute bias corrections
-    let max_lookup = 10000;
-    let mut bias_corr_m_lookup: Vec<T> = Vec::with_capacity(max_lookup);
-    let mut bias_corr_v_lookup: Vec<T> = Vec::with_capacity(max_lookup);
-
-    for t in 1..=max_lookup {
-        let t_f = T::from(t).unwrap();
-        bias_corr_m_lookup.push(T::one() / (T::one() - params.beta1.powf(t_f)));
-        bias_corr_v_lookup.push(T::one() / (T::one() - params.beta2.powf(t_f)));
-    }
-
-    let mut global_timestep = 0;
-    let one_minus_beta1 = T::one() - params.beta1;
-    let one_minus_beta2 = T::one() - params.beta2;
+    // Adam parameters matching C++ implementation
+    let beta11 = one - params.beta1; // 1 - beta1
+    let beta21 = one - params.beta2; // 1 - beta2
+    let mut beta1t = params.beta1;
+    let mut beta2t = params.beta2;
 
     for epoch in 0..params.n_epochs {
-        let lr = lr_schedule[epoch];
+        // Compute bias-corrected learning rate parameters once per epoch (matching C++ epoch_end)
+        let alpha = params.lr * (one - T::from(epoch).unwrap() / n_epochs_f);
+        let sqrt_b2t1 = (one - beta2t).sqrt();
+        let ad_scale = alpha * sqrt_b2t1 / (one - beta1t);
+        let epsc = sqrt_b2t1 * params.eps;
+
         let epoch_t = T::from(epoch).unwrap();
 
         for (edge_idx, &(i, j, _weight)) in edges.iter().enumerate() {
@@ -751,46 +672,36 @@ pub fn optimise_embedding_adam<T>(
             let base_i = i * n_dim;
             let base_j = j * n_dim;
 
-            let mut dist_sq = T::zero();
+            let mut dist_sq = zero;
             for d in 0..n_dim {
                 let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
                 dist_sq += diff * diff;
             }
 
-            if dist_sq >= T::from(1e-8).unwrap() {
-                global_timestep += 1;
-
-                let (bias_corr_m, bias_corr_v) = if global_timestep < max_lookup {
-                    (
-                        bias_corr_m_lookup[global_timestep - 1],
-                        bias_corr_v_lookup[global_timestep - 1],
-                    )
-                } else {
-                    (T::one(), T::one())
-                };
-
-                // attractive gradient: -2ab * d^(2b) / (d^2 * (1 + a*d^(2b)))
-                let dist_sq_b = dist_sq.powf(consts.b);
-                let denom = T::one() + consts.a * dist_sq_b;
+            if dist_sq >= dist_sq_threshold {
+                let dist_sq_b = fast_pow(dist_sq, consts.b, b_is_one, b_is_half);
+                let denom = one + consts.a * dist_sq_b;
                 let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
 
                 for d in 0..n_dim {
                     let delta = embd_flat[base_j + d] - embd_flat[base_i + d];
                     let grad = grad_coeff * delta;
 
-                    // Update i
+                    // Update i (matching C++ compact form)
                     let idx_i = base_i + d;
-                    m[idx_i] = params.beta1 * m[idx_i] + one_minus_beta1 * grad;
-                    v[idx_i] = params.beta2 * v[idx_i] + one_minus_beta2 * grad * grad;
-                    embd_flat[idx_i] += lr * (m[idx_i] * bias_corr_m)
-                        / ((v[idx_i] * bias_corr_v).sqrt() + params.eps);
+                    let v_old = v[idx_i];
+                    let m_old = m[idx_i];
+                    v[idx_i] = v_old + beta21 * (grad * grad - v_old);
+                    m[idx_i] = m_old + beta11 * (grad - m_old);
+                    embd_flat[idx_i] += ad_scale * m[idx_i] / (v[idx_i].sqrt() + epsc);
 
-                    // Update j
+                    // Update j (negated gradient)
                     let idx_j = base_j + d;
-                    m[idx_j] = params.beta1 * m[idx_j] - one_minus_beta1 * grad;
-                    v[idx_j] = params.beta2 * v[idx_j] + one_minus_beta2 * grad * grad;
-                    embd_flat[idx_j] += lr * (m[idx_j] * bias_corr_m)
-                        / ((v[idx_j] * bias_corr_v).sqrt() + params.eps);
+                    let v_old = v[idx_j];
+                    let m_old = m[idx_j];
+                    v[idx_j] = v_old + beta21 * (grad * grad - v_old);
+                    m[idx_j] = m_old + beta11 * (-grad - m_old);
+                    embd_flat[idx_j] += ad_scale * m[idx_j] / (v[idx_j].sqrt() + epsc);
                 }
             }
 
@@ -808,28 +719,17 @@ pub fn optimise_embedding_adam<T>(
                     continue;
                 }
 
-                global_timestep += 1;
-                let (bias_corr_m, bias_corr_v) = if global_timestep < max_lookup {
-                    (
-                        bias_corr_m_lookup[global_timestep - 1],
-                        bias_corr_v_lookup[global_timestep - 1],
-                    )
-                } else {
-                    (T::one(), T::one())
-                };
-
                 let base_k = k * n_dim;
 
-                let mut dist_sq = T::zero();
+                let mut dist_sq = zero;
                 for d in 0..n_dim {
                     let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
                     dist_sq += diff * diff;
                 }
 
-                // repulsive gradient: 2 * gamma * b / ((0.001 + d^2) * (1 + a*d^(2b)))
                 let dist_sq_safe = dist_sq + consts.eps;
-                let dist_sq_b = dist_sq_safe.powf(consts.b);
-                let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
+                let dist_sq_b = fast_pow(dist_sq_safe, consts.b, b_is_one, b_is_half);
+                let denom = dist_sq_safe * (one + consts.a * dist_sq_b);
                 let grad_coeff = (consts.two_gamma_b / denom)
                     .max(-consts.clip_val)
                     .min(consts.clip_val);
@@ -839,10 +739,11 @@ pub fn optimise_embedding_adam<T>(
                     let grad = grad_coeff * delta;
 
                     let idx = base_i + d;
-                    m[idx] = params.beta1 * m[idx] + one_minus_beta1 * grad;
-                    v[idx] = params.beta2 * v[idx] + one_minus_beta2 * grad * grad;
-                    embd_flat[idx] +=
-                        lr * (m[idx] * bias_corr_m) / ((v[idx] * bias_corr_v).sqrt() + params.eps);
+                    let v_old = v[idx];
+                    let m_old = m[idx];
+                    v[idx] = v_old + beta21 * (grad * grad - v_old);
+                    m[idx] = m_old + beta11 * (grad - m_old);
+                    embd_flat[idx] += ad_scale * m[idx] / (v[idx].sqrt() + epsc);
                 }
             }
 
@@ -850,7 +751,11 @@ pub fn optimise_embedding_adam<T>(
                 T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
         }
 
-        if verbose && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
+        // Update bias correction factors for next epoch (matching C++ epoch_end)
+        beta1t *= params.beta1;
+        beta2t *= params.beta2;
+
+        if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
@@ -886,7 +791,7 @@ pub fn optimise_embedding_adam<T>(
 pub fn optimise_embedding_adam_parallel<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
-    params: &OptimParams<T>,
+    params: &UmapOptimParams<T>,
     seed: u64,
     verbose: bool,
 ) where
@@ -907,7 +812,6 @@ pub fn optimise_embedding_adam_parallel<T>(
 
     for (i, neighbours) in graph.iter().enumerate() {
         for &(j, w) in neighbours {
-            // only add edge once - keep the one where i < j
             if i < j && !seen.contains(&(i, j)) {
                 edges.push((i, j, w));
                 seen.insert((i, j));
@@ -953,12 +857,10 @@ pub fn optimise_embedding_adam_parallel<T>(
     let mut m: Vec<T> = vec![T::zero(); n * n_dim];
     let mut v: Vec<T> = vec![T::zero(); n * n_dim];
 
-    // Build node-to-edges mapping for BOTH endpoints
-    // Since we only store (i,j) where i<j, node j needs to know about this edge too
     let mut node_edges: Vec<Vec<(usize, bool)>> = vec![Vec::new(); n];
     for (edge_idx, &(i, j, _)) in edges.iter().enumerate() {
-        node_edges[i].push((edge_idx, true)); // i is smaller node
-        node_edges[j].push((edge_idx, false)); // j is larger node
+        node_edges[i].push((edge_idx, true));
+        node_edges[j].push((edge_idx, false));
     }
 
     let bias_corrections: Vec<(T, T)> = (0..params.n_epochs)
@@ -967,10 +869,8 @@ pub fn optimise_embedding_adam_parallel<T>(
             let beta1t = params.beta1.powf(t);
             let beta2t = params.beta2.powf(t);
             let sqrt_b2t1 = (T::one() - beta2t).sqrt();
-
             let ad_scale = sqrt_b2t1 / (T::one() - beta1t);
             let epsc = sqrt_b2t1 * params.eps;
-
             (ad_scale, epsc)
         })
         .collect();
@@ -978,107 +878,135 @@ pub fn optimise_embedding_adam_parallel<T>(
     let one_minus_beta1 = T::one() - params.beta1;
     let one_minus_beta2 = T::one() - params.beta2;
 
+    let mut node_gradients_all: Vec<T> = vec![T::zero(); n * n_dim];
+    let mut node_has_update: Vec<bool> = vec![false; n];
+    let mut edge_was_sampled: Vec<bool> = vec![false; edges.len()];
+
     for epoch in 0..params.n_epochs {
         let lr = lr_schedule[epoch];
         let epoch_t = T::from(epoch).unwrap();
         let (ad_scale, epsc) = bias_corrections[epoch];
 
-        let updates: Vec<(usize, Vec<T>)> = (0..n)
-            .into_par_iter()
-            .filter_map(|node_i| {
-                let mut rng = StdRng::seed_from_u64(
-                    seed.wrapping_mul(6364136223846793005)
-                        .wrapping_add(node_i as u64)
-                        .wrapping_add((epoch as u64) << 32),
-                );
+        node_has_update.fill(false);
+        edge_was_sampled.fill(false);
 
-                let base_i = node_i * n_dim;
-                let mut node_gradients = vec![T::zero(); n_dim];
-                let mut has_updates = false;
+        // HIGHLY unsafe shit
+        let gradients_ptr = node_gradients_all.as_mut_ptr() as usize;
+        let has_update_ptr = node_has_update.as_mut_ptr() as usize;
+        let edge_sampled_ptr = edge_was_sampled.as_mut_ptr() as usize;
 
-                // Process all edges involving this node
-                for &(edge_idx, is_smaller) in &node_edges[node_i] {
-                    if epoch_of_next_sample[edge_idx] > epoch_t {
-                        continue;
+        (0..n).into_par_iter().for_each(|node_i| {
+            let mut rng = SmallRng::seed_from_u64(
+                seed.wrapping_mul(6364136223846793005)
+                    .wrapping_add(node_i as u64)
+                    .wrapping_add((epoch as u64) << 32),
+            );
+
+            let base_i = node_i * n_dim;
+            let node_grad = unsafe {
+                std::slice::from_raw_parts_mut((gradients_ptr as *mut T).add(base_i), n_dim)
+            };
+
+            for g in node_grad.iter_mut() {
+                *g = T::zero();
+            }
+
+            let mut has_updates = false;
+
+            for &(edge_idx, is_smaller) in &node_edges[node_i] {
+                if epoch_of_next_sample[edge_idx] > epoch_t {
+                    continue;
+                }
+
+                has_updates = true;
+
+                if is_smaller {
+                    unsafe {
+                        *((edge_sampled_ptr as *mut bool).add(edge_idx)) = true;
                     }
+                }
 
-                    has_updates = true;
-                    let (i, j, _) = edges[edge_idx];
+                let (i, j, _) = edges[edge_idx];
+                let other_node = if is_smaller { j } else { i };
+                let base_other = other_node * n_dim;
 
-                    // Determine the other endpoint
-                    let other_node = if is_smaller { j } else { i };
-                    let base_other = other_node * n_dim;
+                let mut dist_sq = T::zero();
+                for d in 0..n_dim {
+                    let diff = embd_flat[base_i + d] - embd_flat[base_other + d];
+                    dist_sq += diff * diff;
+                }
 
-                    let mut dist_sq = T::zero();
+                if dist_sq >= T::from(1e-8).unwrap() {
+                    let dist_sq_b = if consts.b == T::one() {
+                        dist_sq
+                    } else {
+                        dist_sq.powf(consts.b)
+                    };
+                    let denom = T::one() + consts.a * dist_sq_b;
+                    let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
+
                     for d in 0..n_dim {
-                        let diff = embd_flat[base_i + d] - embd_flat[base_other + d];
-                        dist_sq += diff * diff;
+                        let delta = embd_flat[base_other + d] - embd_flat[base_i + d];
+                        node_grad[d] += T::from(2.0).unwrap() * grad_coeff * delta;
                     }
+                }
 
-                    // attractive gradient - with *2.0 matching uwot's update_head_grad_vec
-                    if dist_sq >= T::from(1e-8).unwrap() {
-                        let dist_sq_b = dist_sq.powf(consts.b);
-                        let denom = T::one() + consts.a * dist_sq_b;
-                        let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
+                if is_smaller {
+                    let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
+                        / epochs_per_neg_sample[edge_idx])
+                        .floor()
+                        .to_usize()
+                        .unwrap_or(0);
+
+                    for _ in 0..n_neg_samples {
+                        let k = rng.random_range(0..n);
+                        if k == node_i {
+                            continue;
+                        }
+
+                        let base_k = k * n_dim;
+
+                        let mut dist_sq = T::zero();
+                        for d in 0..n_dim {
+                            let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
+                            dist_sq += diff * diff;
+                        }
+
+                        let dist_sq_safe = dist_sq + consts.eps;
+                        let dist_sq_b = if consts.b == T::one() {
+                            dist_sq_safe
+                        } else {
+                            dist_sq_safe.powf(consts.b)
+                        };
+                        let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
+                        let grad_coeff = (consts.two_gamma_b / denom)
+                            .max(-consts.clip_val)
+                            .min(consts.clip_val);
 
                         for d in 0..n_dim {
-                            let delta = embd_flat[base_other + d] - embd_flat[base_i + d];
-                            // Factor of 2 matches uwot's BatchUpdate::attract behavior
-                            node_gradients[d] += T::from(2.0).unwrap() * grad_coeff * delta;
-                        }
-                    }
-
-                    // Negative sampling - only for the smaller node to avoid duplication
-                    if is_smaller {
-                        let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
-                            / epochs_per_neg_sample[edge_idx])
-                            .floor()
-                            .to_usize()
-                            .unwrap_or(0);
-
-                        for _ in 0..n_neg_samples {
-                            let k = rng.random_range(0..n);
-                            if k == node_i {
-                                continue;
-                            }
-
-                            let base_k = k * n_dim;
-
-                            let mut dist_sq = T::zero();
-                            for d in 0..n_dim {
-                                let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
-                                dist_sq += diff * diff;
-                            }
-
-                            let dist_sq_safe = dist_sq + consts.eps;
-                            let dist_sq_b = dist_sq_safe.powf(consts.b);
-                            let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
-                            let grad_coeff = (consts.two_gamma_b / denom)
-                                .max(-consts.clip_val)
-                                .min(consts.clip_val);
-
-                            for d in 0..n_dim {
-                                let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
-                                node_gradients[d] += grad_coeff * delta;
-                            }
+                            let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
+                            node_grad[d] += grad_coeff * delta;
                         }
                     }
                 }
+            }
 
-                if has_updates {
-                    Some((node_i, node_gradients))
-                } else {
-                    None
+            if has_updates {
+                unsafe {
+                    *((has_update_ptr as *mut bool).add(node_i)) = true;
                 }
-            })
-            .collect();
+            }
+        });
 
-        for (node_i, node_gradients) in updates {
+        for node_i in 0..n {
+            if !node_has_update[node_i] {
+                continue;
+            }
+
             let base_i = node_i * n_dim;
-
             for d in 0..n_dim {
                 let idx = base_i + d;
-                let g = node_gradients[d];
+                let g = node_gradients_all[idx];
 
                 let m_old = m[idx];
                 m[idx] += one_minus_beta1 * (g - m_old);
@@ -1090,22 +1018,24 @@ pub fn optimise_embedding_adam_parallel<T>(
             }
         }
 
-        for (edge_idx, &_) in edges.iter().enumerate() {
-            if epoch_of_next_sample[edge_idx] <= epoch_t {
-                epoch_of_next_sample[edge_idx] += epochs_per_sample[edge_idx];
-
-                let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
-                    / epochs_per_neg_sample[edge_idx])
-                    .floor()
-                    .to_usize()
-                    .unwrap_or(0);
-
-                epoch_of_next_neg_sample[edge_idx] +=
-                    T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
+        for (edge_idx, &sampled) in edge_was_sampled.iter().enumerate() {
+            if !sampled {
+                continue;
             }
+
+            epoch_of_next_sample[edge_idx] += epochs_per_sample[edge_idx];
+
+            let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
+                / epochs_per_neg_sample[edge_idx])
+                .floor()
+                .to_usize()
+                .unwrap_or(0);
+
+            epoch_of_next_neg_sample[edge_idx] +=
+                T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
         }
 
-        if verbose && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs) {
+        if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
@@ -1116,296 +1046,37 @@ pub fn optimise_embedding_adam_parallel<T>(
     }
 }
 
-//////////
-// tSNE //
-//////////
-
-////////////////
-// Structures //
-////////////////
-
-/// t-SNE specific optimization parameters
-///
-/// ### Fields
-///
-/// * `n_epochs` - Number of epochs (typically n / 12 or 200 or so)
-/// * `lr` - Learning rate
-/// * `early_exag_iter` - Early exaggeration iters
-/// * `early_exag_factor` - The factor to exaggerate in the early iterations
-/// * `theta` - The Barnes-Hut theta
-#[derive(Clone, Debug)]
-pub struct TsneOptimParams<T> {
-    pub n_epochs: usize,
-    pub lr: T,
-    pub early_exag_iter: usize,
-    pub early_exag_factor: T,
-    pub theta: T,
-}
-
-impl<T> TsneOptimParams<T>
-where
-    T: Float + FromPrimitive,
-{
-    /// Generate a new instance
-    ///
-    /// ### Params
-    ///
-    /// * `n_epochs` - Number of epochs (typically n / 12 or 200 or so)
-    /// * `lr` - Learning rate
-    /// * `early_exag_iter` - Early exaggeration iters
-    /// * `early_exag_factor` - The factor to exaggerate in the early iterations
-    /// * `theta` - The Barnes-Hut theta
-    ///
-    /// ### Returns
-    ///
-    /// Initialised self
-    pub fn new(
-        n_epochs: usize,
-        lr: T,
-        early_exag_iter: usize,
-        early_exag_factor: T,
-        theta: T,
-    ) -> Self {
-        Self {
-            n_epochs,
-            lr,
-            early_exag_iter,
-            early_exag_factor,
-            theta,
-        }
-    }
-}
-
-impl<T: Float + FromPrimitive> Default for TsneOptimParams<T> {
-    fn default() -> Self {
-        Self {
-            n_epochs: 1000,
-            lr: T::from_f64(200.0).unwrap(),
-            early_exag_iter: 250,
-            early_exag_factor: T::from_f64(12.0).unwrap(),
-            theta: T::from_f64(0.5).unwrap(),
-        }
-    }
-}
-
-///////////////
-// Optimiser //
-///////////////
-
-/// Adaptive gain update for t-SNE gradient descent
-///
-/// Implements per-parameter adaptive learning rates: gains increase when
-/// gradient maintains direction, decrease when oscillating.
-///
-/// ### Params
-///
-/// * `val` - Current parameter value to update
-/// * `update` - Accumulated momentum vector for this parameter
-/// * `gain` - Adaptive gain (learning rate multiplier) for this parameter
-/// * `grad` - Current gradient for this parameter
-/// * `lr` - Base learning rate
-/// * `momentum` - Momentum coefficient (typically 0.5 early, 0.8 later)
-/// * `min_gain` - Minimum allowed gain value (typically 0.01)
-#[inline(always)]
-fn update_parameter<T>(
-    val: &mut T,
-    update: &mut T,
-    gain: &mut T,
-    grad: T,
-    lr: T,
-    momentum: T,
-    min_gain: T,
-) where
-    T: Float + FromPrimitive + ToPrimitive,
-{
-    // adjust gain based on gradient-update alignment
-    if (grad > T::zero()) != (*update > T::zero()) {
-        *gain = *gain + T::from_f64(0.2).unwrap();
-    } else {
-        *gain = *gain * T::from_f64(0.8).unwrap();
-    }
-    *gain = (*gain).max(min_gain);
-
-    // momentum update with adaptive gain
-    *update = momentum * *update - lr * *gain * grad;
-    *val = *val + *update;
-}
-
-/// Optimise 2D embedding using Barnes-Hut t-SNE
-///
-/// Minimises KL divergence between high-dimensional affinities (graph) and
-/// low-dimensional Student-t similarities using gradient descent with momentum
-/// and adaptive gains.
-///
-/// ### Params
-///
-/// * `embd` - Mutable 2D embedding to optimise in-place
-/// * `params` - Optimisation parameters (learning rate, epochs, etc.)
-/// * `graph` - Symmetric sparse graph of high-dimensional affinities P_ij
-/// * `verbose` - Print progress every 50 epochs
-///
-/// ### Notes
-///
-/// For each epoch:
-/// 1. Build Barnes-Hut tree from current embedding
-/// 2. Compute gradients: ∇C = 4 * (F_attractive - F_repulsive / Z)
-///    - F_attractive: exact via sparse graph
-///    - F_repulsive: approximated via Barnes-Hut tree
-/// 3. Update positions with momentum and adaptive gains
-/// 4. Centre embedding every 100 epochs to prevent drift
-///
-/// Uses early exaggeration (first 250 iterations) and momentum switching.
-pub fn optimise_bh_tsne<T>(
-    embd: &mut [Vec<T>],
-    params: &TsneOptimParams<T>,
-    graph: &SparseGraph<T>,
-    verbose: bool,
-) where
-    T: Float + FromPrimitive + Send + Sync + AddAssign + SubAssign + MulAssign + DivAssign + Sum,
-{
-    let n = embd.len();
-    let n_dim = embd[0].len();
-
-    let momentum_switch_iter = 250;
-    let initial_momentum = T::from_f64(0.5).unwrap();
-    let final_momentum = T::from_f64(0.8).unwrap();
-    let min_gain = T::from_f64(0.01).unwrap();
-    let eps = T::from_f64(1e-12).unwrap();
-
-    let mut update_flat = vec![T::zero(); n * n_dim];
-    let mut gains_flat = vec![T::one(); n * n_dim];
-
-    // Build adjacency list once (graph is fixed)
-    let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
-    for ((&i, &j), &w) in graph
-        .row_indices
-        .iter()
-        .zip(&graph.col_indices)
-        .zip(&graph.values)
-    {
-        adj[i].push((j, w));
-    }
-
-    for epoch in 0..params.n_epochs {
-        let bh_tree = BarnesHutTree::new(embd);
-
-        let momentum = if epoch < momentum_switch_iter {
-            initial_momentum
-        } else {
-            final_momentum
-        };
-        let exag_factor = if epoch < params.early_exag_iter {
-            params.early_exag_factor
-        } else {
-            T::one()
-        };
-
-        // Compute forces for all points in parallel
-        let results: Vec<(T, T, T, T, T)> = embd
-            .par_iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let px = p[0];
-                let py = p[1];
-
-                // Repulsive forces (Barnes-Hut approximation)
-                let (rep_x, rep_y, partial_z) =
-                    bh_tree.compute_repulsive_force(i, px, py, params.theta);
-
-                // Attractive forces (exact via graph)
-                let mut attr_x = T::zero();
-                let mut attr_y = T::zero();
-                if let Some(neighbors) = adj.get(i) {
-                    for &(j, p_val) in neighbors {
-                        let other = &embd[j];
-                        let dx = px - other[0];
-                        let dy = py - other[1];
-                        let dist_sq = dx * dx + dy * dy;
-                        let q = T::one() / (T::one() + dist_sq);
-                        let force = p_val * exag_factor * q;
-                        attr_x += force * dx;
-                        attr_y += force * dy;
-                    }
-                }
-                (attr_x, attr_y, rep_x, rep_y, partial_z)
-            })
-            .collect();
-
-        // Global normalisation constant Z
-        let z_total: T = results
-            .iter()
-            .map(|t| t.4)
-            .fold(T::zero(), |acc, x| acc + x);
-        let z_inv = if z_total > eps {
-            T::one() / z_total
-        } else {
-            T::zero()
-        };
-
-        // Apply gradient updates (sequential is fine - negligible runtime)
-        for i in 0..n {
-            let (attr_x, attr_y, rep_x, rep_y, _) = results[i];
-            let grad_x = attr_x - rep_x * z_inv;
-            let grad_y = attr_y - rep_y * z_inv;
-
-            update_parameter(
-                &mut embd[i][0],
-                &mut update_flat[i * 2],
-                &mut gains_flat[i * 2],
-                grad_x,
-                params.lr,
-                momentum,
-                min_gain,
-            );
-
-            update_parameter(
-                &mut embd[i][1],
-                &mut update_flat[i * 2 + 1],
-                &mut gains_flat[i * 2 + 1],
-                grad_y,
-                params.lr,
-                momentum,
-                min_gain,
-            );
-        }
-
-        // renormalise to avoid drift
-        let mut mean_x = T::zero();
-        let mut mean_y = T::zero();
-        for p in embd.iter() {
-            mean_x += p[0];
-            mean_y += p[1];
-        }
-        mean_x /= T::from_usize(n).unwrap();
-        mean_y /= T::from_usize(n).unwrap();
-        for p in embd.iter_mut() {
-            p[0] -= mean_x;
-            p[1] -= mean_y;
-        }
-
-        if verbose && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
-            println!(
-                "Completed Epoch {} out of {} | Z = {}",
-                epoch,
-                params.n_epochs,
-                z_total.to_f32().unwrap()
-            );
-        }
-    }
-}
-
 ///////////
 // Tests //
 ///////////
 
 #[cfg(test)]
-mod test_optimiser {
+mod test_umap_optimiser {
     use super::*;
     use approx::assert_relative_eq;
 
+    #[inline(always)]
+    fn squared_dist_flat<T>(embd: &[T], i: usize, j: usize, n_dim: usize) -> T
+    where
+        T: Float,
+    {
+        let mut sum = T::zero();
+        let base_i = i * n_dim;
+        let base_j = j * n_dim;
+        for d in 0..n_dim {
+            let diff = embd[base_i + d] - embd[base_j + d];
+            sum = sum + diff * diff;
+        }
+        sum
+    }
+
+    //////////
+    // UMAP //
+    //////////
+
     #[test]
     fn test_optim_params_default_2d() {
-        let params = OptimParams::<f64>::default_2d();
+        let params = UmapOptimParams::<f64>::default_2d();
 
         assert_relative_eq!(params.a, 1.5, epsilon = 1e-6);
         assert_relative_eq!(params.b, 0.9, epsilon = 1e-6);
@@ -1418,7 +1089,7 @@ mod test_optimiser {
 
     #[test]
     fn test_optim_params_from_min_dist_spread() {
-        let params = OptimParams::<f64>::from_min_dist_spread(
+        let params = UmapOptimParams::<f64>::from_min_dist_spread(
             0.1,
             1.0,
             Some(1.0),
@@ -1441,7 +1112,7 @@ mod test_optimiser {
 
     #[test]
     fn test_fit_params_constraints() {
-        let (a, b) = OptimParams::<f64>::fit_params(0.1, 1.0, None);
+        let (a, b) = UmapOptimParams::<f64>::fit_params(0.1, 1.0, None);
 
         assert!((0.001..=10.0).contains(&a));
         assert!((0.1..=2.0).contains(&b));
@@ -1451,7 +1122,7 @@ mod test_optimiser {
     fn test_fit_params_curve_properties() {
         let min_dist = 0.1;
         let spread = 1.0;
-        let (a, b) = OptimParams::<f64>::fit_params(min_dist, spread, None);
+        let (a, b) = UmapOptimParams::<f64>::fit_params(min_dist, spread, None);
 
         // At min_dist, target is 1.0
         let pred_min = 1.0 / (1.0 + a * min_dist.powf(2.0 * b));
@@ -1500,7 +1171,7 @@ mod test_optimiser {
         let mut embd = vec![vec![0.0, 0.0], vec![5.0, 0.0], vec![0.0, 5.0]];
         let initial_embd = embd.clone();
 
-        let params = OptimParams::default_2d();
+        let params = UmapOptimParams::default_2d();
         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
 
         let total_movement: f64 = embd
@@ -1534,7 +1205,7 @@ mod test_optimiser {
         let mut embd = vec![vec![0.0, 0.0], vec![5.0, 0.0], vec![0.0, 5.0]];
         let initial_embd = embd.clone();
 
-        let params = OptimParams::default_2d();
+        let params = UmapOptimParams::default_2d();
         optimise_embedding_adam_parallel(&mut embd, &graph, &params, 42, false);
 
         let total_movement: f64 = embd
@@ -1562,7 +1233,7 @@ mod test_optimiser {
         let graph: Vec<Vec<(usize, f64)>> = vec![vec![], vec![], vec![]];
         let mut embd = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
 
-        let params = OptimParams::default_2d();
+        let params = UmapOptimParams::default_2d();
         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
 
         for point in &embd {
@@ -1578,7 +1249,7 @@ mod test_optimiser {
         let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
         let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             a: 1.0,
             b: 1.0,
             lr: 0.5,
@@ -1603,7 +1274,7 @@ mod test_optimiser {
         let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
         let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             a: 1.0,
             b: 1.0,
             lr: 0.5,
@@ -1630,7 +1301,7 @@ mod test_optimiser {
         let embd_flat: Vec<f64> = embd.iter().flatten().copied().collect();
         let initial_dist = squared_dist_flat(&embd_flat, 0, 1, 2).sqrt();
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             a: 1.0,
             b: 1.0,
             lr: 1.0,
@@ -1661,7 +1332,7 @@ mod test_optimiser {
 
         let initial_embd = vec![vec![0.0, 0.0], vec![10.0, 0.0], vec![0.0, 10.0]];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             a: 1.0,
             b: 1.0,
             lr: 1.0,
@@ -1722,7 +1393,7 @@ mod test_optimiser {
 
         let initial_embd = vec![vec![0.0, 0.0], vec![10.0, 0.0], vec![0.0, 10.0]];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             a: 1.0,
             b: 1.0,
             lr: 1.0,
@@ -1783,7 +1454,7 @@ mod test_optimiser {
         let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
         let mut embd2 = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             a: 1.0,
             b: 1.0,
             lr: 0.5,
@@ -1822,9 +1493,9 @@ mod test_optimiser {
             vec![15.0, 15.0],
         ];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             n_epochs: 200,
-            ..OptimParams::default_2d()
+            ..UmapOptimParams::default_2d()
         };
 
         optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
@@ -1877,9 +1548,9 @@ mod test_optimiser {
             vec![15.0, 15.0],
         ];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             n_epochs: 200,
-            ..OptimParams::default_2d()
+            ..UmapOptimParams::default_2d()
         };
 
         optimise_embedding_adam_parallel(&mut embd, &graph, &params, 42, false);
@@ -1932,9 +1603,9 @@ mod test_optimiser {
             vec![15.0, 15.0],
         ];
 
-        let params = OptimParams {
+        let params = UmapOptimParams {
             n_epochs: 200,
-            ..OptimParams::default_2d()
+            ..UmapOptimParams::default_2d()
         };
 
         optimise_embedding_sgd(&mut embd, &graph, &params, 42, false);

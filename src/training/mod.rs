@@ -1,4 +1,5 @@
-pub mod optimiser;
+pub mod tsne_optimiser;
+pub mod umap_optimisers;
 
 use num_traits::Float;
 
