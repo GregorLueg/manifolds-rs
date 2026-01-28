@@ -31,14 +31,15 @@ use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
 use crate::data::structures::*;
-use crate::training::optimiser::*;
-use crate::training::*;
-use crate::utils::fft::FftwFloat;
-
 #[cfg(feature = "parametric")]
 use crate::parametric::model::*;
 #[cfg(feature = "parametric")]
 use crate::parametric::parametric_train::*;
+use crate::training::tsne_optimiser::*;
+use crate::training::umap_optimisers::*;
+use crate::training::*;
+#[cfg(feature = "fft_tsne")]
+use crate::utils::fft::FftwFloat;
 
 /////////////
 // Helpers //
@@ -618,12 +619,12 @@ where
     (graph, knn_indices, knn_dist)
 }
 
-/// Run Barnes-Hut t-SNE dimensionality reduction
+/// Run t-SNE dimensionality reduction
 ///
 /// t-Distributed Stochastic Neighbour Embedding (t-SNE) is a technique for
-/// visualising high-dimensional data by reducing it to 2 or 3 dimensions.
-/// This implementation uses the Barnes-Hut approximation for O(N log N)
-/// complexity.
+/// visualising high-dimensional data by reducing it to 2 dimensions. This
+/// version supports both Barnes-Hut approximation and FFT-accelerated
+/// interpolation for repulsive forces.
 ///
 /// ### Algorithm
 ///
@@ -671,6 +672,7 @@ where
 /// - van der Maaten (2014): "Accelerating t-SNE using Tree-Based Algorithms"
 /// - Linderman et al. (2019): " Fast interpolation-based t-SNE for improved
 ///   visualization of single-cell RNA-seq data"
+#[cfg(feature = "fft_tsne")]
 pub fn tsne<T>(
     data: MatRef<T>,
     params: &TsneParams<T>,
@@ -680,7 +682,6 @@ pub fn tsne<T>(
 ) -> Vec<Vec<T>>
 where
     T: Float
-        + FftwFloat
         + Default
         + ComplexField
         + RealField
@@ -689,7 +690,9 @@ where
         + SubAssign
         + MulAssign
         + DivAssign
-        + SimdDistance,
+        + SimdDistance
+        + FromPrimitive
+        + FftwFloat,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -739,18 +742,164 @@ where
                     params.optim_params.n_epochs
                 );
             }
-
             optimise_bh_tsne(&mut embd, &params.optim_params, &graph, verbose);
         }
+        #[cfg(feature = "fft_tsne")]
         TsneOpt::Fft => {
             if verbose {
                 println!(
-                    "Optimising via Fast Fourier transformation Interpolation-based t-SNE ({} epochs)...",
+                    "Optimising via FFT Interpolation-based t-SNE ({} epochs)...",
                     params.optim_params.n_epochs
                 );
             }
-
             optimise_fft_tsne(&mut embd, &params.optim_params, &graph, verbose);
+        }
+    }
+
+    if verbose {
+        println!("Optimisation complete in {:.2?}.", start_optim.elapsed());
+    }
+
+    // 4. transpose output: [n_samples][n_dim] → [n_dim][n_samples]
+    let n_samples = embd.len();
+    let mut transposed = vec![vec![T::zero(); n_samples]; params.n_dim];
+
+    for sample_idx in 0..n_samples {
+        for dim_idx in 0..params.n_dim {
+            transposed[dim_idx][sample_idx] = embd[sample_idx][dim_idx];
+        }
+    }
+
+    transposed
+}
+
+/// Run t-SNE dimensionality reduction
+///
+/// t-Distributed Stochastic Neighbour Embedding (t-SNE) is a technique for
+/// visualising high-dimensional data by reducing it to 2 dimensions. This
+/// version supports both Barnes-Hut approximation and FFT-accelerated
+/// interpolation for repulsive forces.
+///
+/// ### Algorithm
+///
+/// 1. Construct high-dimensional affinity graph via Gaussian kernels
+///    - k-NN search with k = 3 × perplexity
+///    - Binary search for precision to match target perplexity
+///    - Symmetrise to joint probabilities P_ij
+/// 2. Initialise low-dimensional embedding (typically via PCA)
+/// 3. Optimise embedding via gradient descent
+///    - Attractive forces: exact computation from graph
+///    - Repulsive forces: Barnes-Hut approximation or FFT-accelerated
+///      interpolation.
+///    - Early exaggeration (first 250 iterations)
+///    - Momentum switching at iteration 250
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `params` - t-SNE parameters controlling algorithm behaviour
+/// * `approx_type` - Type of approximation to use for repulsive forces.
+///   Options: `"barnes_hut" | "bh"`, `"fft"`
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - Print progress information
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
+/// `n_dim` and inner vectors have length `n_samples`. Each outer element
+/// represents one embedding dimension.
+///
+/// ### Example
+///
+/// ```ignore
+/// use faer::Mat;
+/// let data = Mat::from_fn(1000, 128, |_, _| rand::random::<f32>());
+/// let params = TsneParams::new(None, None, None, None, None, None);
+/// let embedding = tsne(data.as_ref(), &params, 42, true);
+/// // embedding[0] contains x-coordinates for all points
+/// // embedding[1] contains y-coordinates for all points
+/// ```
+///
+/// ### References
+///
+/// - van der Maaten & Hinton (2008): "Visualizing Data using t-SNE"
+/// - van der Maaten (2014): "Accelerating t-SNE using Tree-Based Algorithms"
+/// - Linderman et al. (2019): " Fast interpolation-based t-SNE for improved
+///   visualization of single-cell RNA-seq data"
+#[cfg(not(feature = "fft_tsne"))]
+pub fn tsne<T>(
+    data: MatRef<T>,
+    params: &TsneParams<T>,
+    approx_type: &str,
+    seed: usize,
+    verbose: bool,
+) -> Vec<Vec<T>>
+where
+    T: Float
+        + Default
+        + ComplexField
+        + RealField
+        + Sum
+        + AddAssign
+        + SubAssign
+        + MulAssign
+        + DivAssign
+        + SimdDistance
+        + FromPrimitive,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    assert!(
+        params.n_dim == 2,
+        "At the moment, this tSNE implementation only supports n_dim = 2"
+    );
+
+    // 1. graph construction
+    let (graph, _, _) = construct_tsne_graph(
+        data,
+        params.perplexity,
+        params.ann_type.clone(),
+        &params.nn_params,
+        seed,
+        verbose,
+    );
+
+    // 2. initialise embedding
+    let init_type = parse_initilisation(
+        &params.initialisation,
+        params.randomised_init,
+        params.init_range,
+    )
+    .unwrap_or(EmbdInit::PcaInit {
+        randomised: false,
+        range: Some(T::from_f64(1e-4).unwrap()),
+    });
+
+    if verbose {
+        println!("Initialising embedding via PCA...");
+    }
+
+    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
+
+    // parse the optimisation type
+    let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
+
+    // 3. optimise
+    let start_optim = Instant::now();
+    match tsne_approx {
+        TsneOpt::BarnesHut => {
+            if verbose {
+                println!(
+                    "Optimising via Barnes-Hut t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, verbose);
+        }
+        #[cfg(not(feature = "fft_tsne"))]
+        TsneOpt::Fft => {
+            panic!("FFT-accelerated t-SNE not available. Recompile with 'fft_tsne' feature or use 'barnes_hut' approximation.");
         }
     }
 
