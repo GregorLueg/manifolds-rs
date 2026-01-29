@@ -212,7 +212,7 @@ pub fn compute_smallest_eigenpairs_lanczos<T>(
     seed: u64,
 ) -> (Vec<f32>, Vec<Vec<f32>>)
 where
-    T: Clone + Default + Into<f64> + Sync + Add + PartialEq + Mul,
+    T: Clone + Default + Sync + Add + PartialEq + Mul + Float,
 {
     let n = matrix.shape.0;
     let n_iter = (n_components * 2 + 10).max(n_components).min(n);
@@ -223,7 +223,7 @@ where
         CompressedSparseFormat::Csc => matrix.transform(),
     };
 
-    let data_f64: Vec<f64> = csr.data.iter().map(|v| v.clone().into()).collect();
+    let data_f64: Vec<f64> = csr.data.iter().map(|v| v.clone().to_f64().unwrap()).collect();
 
     let matvec = |x: &[f64], y: &mut [f64]| {
         y.fill(0.0);

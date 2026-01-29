@@ -1,9 +1,14 @@
 use num_traits::Float;
+use rayon::prelude::*;
 use std::ops::{Add, Mul};
 
 /////////////////////
 // Data structures //
 /////////////////////
+
+/////////
+// COO //
+/////////
 
 /// Sparse graph in COO (Coordinate) format - tensor-friendly
 ///
@@ -48,6 +53,10 @@ where
         self.row_indices.len()
     }
 }
+
+/////////////
+// CSR/CSC //
+/////////////
 
 /// Type to describe the CompressedSparseFormat
 #[derive(Debug, Clone)]
@@ -94,7 +103,7 @@ where
 
 impl<T> CompressedSparseData<T>
 where
-    T: Clone + Default + Into<f64> + Sync + Add + PartialEq + Mul,
+    T: Clone + Default + Sync + Add + PartialEq + Mul + Float,
 {
     /// Generate a nes CSC version of the matrix
     ///
@@ -175,7 +184,7 @@ where
 ///
 pub fn csc_to_csr<T>(sparse_data: &CompressedSparseData<T>) -> CompressedSparseData<T>
 where
-    T: Clone + Default + Into<f64> + Sync + Add + PartialEq + Mul,
+    T: Clone + Default + Sync + Add + PartialEq + Mul + Float,
 {
     // early return if already in the desired format
     if sparse_data.cs_type.is_csr() {
@@ -203,7 +212,7 @@ where
             let row = sparse_data.indices[idx];
             let pos = next[row];
 
-            csr_data[pos] = sparse_data.data[idx].clone();
+            csr_data[pos] = sparse_data.data[idx];
             csr_col_ind[pos] = col;
 
             next[row] += 1;
@@ -233,7 +242,7 @@ where
 /// The data in CSC format, i.e., `CompressedSparseData`
 pub fn csr_to_csc<T>(sparse_data: &CompressedSparseData<T>) -> CompressedSparseData<T>
 where
-    T: Clone + Default + Into<f64> + Sync + Add + PartialEq + Mul,
+    T: Clone + Default + Sync + Add + PartialEq + Mul + Float,
 {
     // early return if already in the desired format
     if sparse_data.cs_type.is_csc() {
@@ -264,7 +273,7 @@ where
             let col = sparse_data.indices[idx];
             let pos = next[col];
 
-            csc_data[pos] = sparse_data.data[idx].clone();
+            csc_data[pos] = sparse_data.data[idx];
             csc_row_ind[pos] = row;
 
             next[col] += 1;
@@ -278,6 +287,59 @@ where
         cs_type: CompressedSparseFormat::Csc,
         shape: sparse_data.shape(),
     }
+}
+
+////////////////
+// Conversion //
+////////////////
+
+/// Convert COO SparseGraph to CSR CompressedSparseData
+///
+/// Converts coordinate format to Compressed Sparse Row format. This is required
+/// for efficient row-based operations like normalization and matrix multiplication.
+///
+/// Uses parallel sorting for performance.
+///
+/// ### Params
+///
+/// * `graph` - Input graph in COO format
+///
+/// ### Returns
+///
+/// Matrix in CSR format with shape (n_vertices, n_vertices)
+pub fn coo_to_csr<T>(graph: &SparseGraph<T>) -> CompressedSparseData<T>
+where
+    T: Float + Send + Sync + Default,
+{
+    let n = graph.n_vertices;
+    let nnz = graph.values.len();
+
+    let mut triplets: Vec<(usize, usize, T)> = (0..nnz)
+        .into_par_iter()
+        .map(|i| (graph.row_indices[i], graph.col_indices[i], graph.values[i]))
+        .collect();
+
+    triplets.par_sort_unstable_by(|(r1, c1, _), (r2, c2, _)| r1.cmp(r2).then(c1.cmp(c2)));
+
+    let mut data = Vec::with_capacity(nnz);
+    let mut indices = Vec::with_capacity(nnz);
+
+    for (_, c, v) in triplets.iter() {
+        data.push(*v);
+        indices.push(*c);
+    }
+
+    let mut indptr = vec![0; n + 1];
+
+    for (r, _, _) in triplets.iter() {
+        indptr[r + 1] += 1;
+    }
+
+    for i in 0..n {
+        indptr[i + 1] += indptr[i];
+    }
+
+    CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n))
 }
 
 ///////////
@@ -381,5 +443,58 @@ mod test_data_struct {
 
         let csc = csr.transform();
         assert_eq!(csc.get_nnz(), 0);
+    }
+
+    #[test]
+    fn test_coo_to_csr_sorting_and_structure() {
+        // Construct a COO graph with unsorted entries and mixed row orders
+        // (0,1)=1.0, (1,2)=3.0, (0,2)=2.0
+        let graph = SparseGraph {
+            row_indices: vec![0, 1, 0],
+            col_indices: vec![1, 2, 2],
+            values: vec![1.0, 3.0, 2.0],
+            n_vertices: 3,
+        };
+
+        let csr = coo_to_csr(&graph);
+
+        // 1. Verify Structure
+        assert!(csr.cs_type.is_csr());
+        assert_eq!(csr.shape(), (3, 3));
+        assert_eq!(csr.get_nnz(), 3);
+
+        // 2. Verify Sorting (Row 0 should come before Row 1, and (0,1) before (0,2))
+        // Expected order: (0,1,1.0), (0,2,2.0), (1,2,3.0)
+        // Data: [1.0, 2.0, 3.0]
+        // Indices: [1, 2, 2]
+        // Indptr: [0, 2, 3, 3] (Row 0 has 2 items, Row 1 has 1 item, Row 2 empty)
+
+        assert_eq!(csr.data, vec![1.0, 2.0, 3.0]);
+        assert_eq!(csr.indices, vec![1, 2, 2]);
+        assert_eq!(csr.indptr, vec![0, 2, 3, 3]);
+    }
+
+    #[test]
+    fn test_coo_to_csr_empty_rows_and_gaps() {
+        // Graph with 4 vertices, but only edges on row 0 and row 3
+        let graph = SparseGraph {
+            row_indices: vec![0, 3],
+            col_indices: vec![1, 2],
+            values: vec![10.0, 20.0],
+            n_vertices: 4,
+        };
+
+        let csr = coo_to_csr(&graph);
+
+        // Indptr should reflect empty rows 1 and 2
+        // Row 0: len 1 -> start 0, end 1
+        // Row 1: len 0 -> start 1, end 1
+        // Row 2: len 0 -> start 1, end 1
+        // Row 3: len 1 -> start 1, end 2
+        // Indptr: [0, 1, 1, 1, 2]
+
+        assert_eq!(csr.indptr, vec![0, 1, 1, 1, 2]);
+        assert_eq!(csr.data, vec![10.0, 20.0]);
+        assert_eq!(csr.indices, vec![1, 2]);
     }
 }
