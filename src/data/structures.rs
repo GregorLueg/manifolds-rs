@@ -26,6 +26,10 @@ where
     T: Float,
 {
     /// Generate an edge list from the COO
+    ///
+    /// ### Returns
+    ///
+    /// A vector of tuples representing the edges and their weights
     pub fn to_edge_list(&self) -> Vec<(usize, usize, T)> {
         self.row_indices
             .iter()
@@ -33,6 +37,15 @@ where
             .zip(&self.values)
             .map(|((&r, &c), &v)| (r, c, v))
             .collect()
+    }
+
+    /// Returns the size of the graph
+    ///
+    /// ### Returns
+    ///
+    /// The number of edges in the graph
+    pub fn get_size(&self) -> usize {
+        self.row_indices.len()
     }
 }
 
