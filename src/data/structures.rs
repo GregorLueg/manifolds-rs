@@ -10,23 +10,25 @@ use std::ops::{Add, Mul};
 // COO //
 /////////
 
-/// Sparse graph in COO (Coordinate) format - tensor-friendly
+/// Coordinate list
+///
+/// Represents the graph in COO (Coordinate) format - tensor-friendly
 ///
 /// ### Fields
 ///
 /// * `row_indices` - Row index
 /// * `col_indices` - Column index
 /// * `values` - The value stored here
-/// * `n_vertices` - The number of vertices in the graph
+/// * `n_samples` - The number of vertices in the graph
 #[derive(Clone)]
-pub struct SparseGraph<T> {
+pub struct CoordinateList<T> {
     pub row_indices: Vec<usize>,
     pub col_indices: Vec<usize>,
     pub values: Vec<T>,
-    pub n_vertices: usize,
+    pub n_samples: usize,
 }
 
-impl<T> SparseGraph<T>
+impl<T> CoordinateList<T>
 where
     T: Float,
 {
@@ -92,7 +94,7 @@ impl CompressedSparseFormat {
 #[derive(Debug, Clone)]
 pub struct CompressedSparseData<T>
 where
-    T: Clone + Default,
+    T: Clone + Float,
 {
     pub data: Vec<T>,
     pub indices: Vec<usize>,
@@ -103,7 +105,7 @@ where
 
 impl<T> CompressedSparseData<T>
 where
-    T: Clone + Default + Sync + Add + PartialEq + Mul + Float,
+    T: Clone + Sync + Add + PartialEq + Mul + Float,
 {
     /// Generate a nes CSC version of the matrix
     ///
@@ -171,6 +173,24 @@ where
     pub fn get_nnz(&self) -> usize {
         self.data.len()
     }
+
+    /// Returns the number of rows
+    ///
+    /// ### Returns
+    ///
+    /// The number of rows
+    pub fn nrows(&self) -> usize {
+        self.shape.0
+    }
+
+    /// Returns the number of columns
+    ///
+    /// ### Returns
+    ///
+    /// The number of columns
+    pub fn ncols(&self) -> usize {
+        self.shape.1
+    }
 }
 
 /// Transforms a CompressedSparseData that is CSC to CSR
@@ -184,7 +204,7 @@ where
 ///
 pub fn csc_to_csr<T>(sparse_data: &CompressedSparseData<T>) -> CompressedSparseData<T>
 where
-    T: Clone + Default + Sync + Add + PartialEq + Mul + Float,
+    T: Clone + Sync + Add + PartialEq + Mul + Float,
 {
     // early return if already in the desired format
     if sparse_data.cs_type.is_csr() {
@@ -203,7 +223,7 @@ where
         row_ptr[i + 1] += row_ptr[i];
     }
 
-    let mut csr_data = vec![T::default(); nnz];
+    let mut csr_data = vec![T::zero(); nnz];
     let mut csr_col_ind = vec![0; nnz];
     let mut next = row_ptr[..nrow].to_vec();
 
@@ -242,7 +262,7 @@ where
 /// The data in CSC format, i.e., `CompressedSparseData`
 pub fn csr_to_csc<T>(sparse_data: &CompressedSparseData<T>) -> CompressedSparseData<T>
 where
-    T: Clone + Default + Sync + Add + PartialEq + Mul + Float,
+    T: Clone + Sync + Add + PartialEq + Mul + Float,
 {
     // early return if already in the desired format
     if sparse_data.cs_type.is_csc() {
@@ -263,7 +283,7 @@ where
         col_ptr[i + 1] += col_ptr[i];
     }
 
-    let mut csc_data = vec![T::default(); nnz];
+    let mut csc_data = vec![T::zero(); nnz];
     let mut csc_row_ind = vec![0; nnz];
     let mut next = col_ptr[..ncol].to_vec();
 
@@ -290,10 +310,25 @@ where
 }
 
 ////////////////
+// SparseRows //
+////////////////
+
+/// SparseRow represents a row in a sparse matrix.
+///
+/// ### Fields
+///
+/// * `data` - Vector of non-zero values in the row
+/// * `indices` - Vector of column indices corresponding to non-zero values
+pub struct SparseRow<T> {
+    pub indices: Vec<usize>,
+    pub data: Vec<T>,
+}
+
+////////////////
 // Conversion //
 ////////////////
 
-/// Convert COO SparseGraph to CSR CompressedSparseData
+/// Convert COO CoordinateList to CSR CompressedSparseData
 ///
 /// Converts coordinate format to Compressed Sparse Row format. This is required
 /// for efficient row-based operations like normalization and matrix multiplication.
@@ -306,12 +341,12 @@ where
 ///
 /// ### Returns
 ///
-/// Matrix in CSR format with shape (n_vertices, n_vertices)
-pub fn coo_to_csr<T>(graph: &SparseGraph<T>) -> CompressedSparseData<T>
+/// Matrix in CSR format with shape (n_samples, n_samples)
+pub fn coo_to_csr<T>(graph: &CoordinateList<T>) -> CompressedSparseData<T>
 where
     T: Float + Send + Sync + Default,
 {
-    let n = graph.n_vertices;
+    let n = graph.n_samples;
     let nnz = graph.values.len();
 
     let mut triplets: Vec<(usize, usize, T)> = (0..nnz)
@@ -342,6 +377,37 @@ where
     CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n))
 }
 
+/// Transform a slice of rows into a CSR matrix
+///
+/// ### Params
+///
+/// * `rows` - Slice of sparse rows to convert
+/// * `ncols` - Number of columns in the matrix
+///
+/// ### Returns
+///
+/// A CompressedSparseData structure in CSR format
+pub fn sparse_row_to_csr<T>(rows: &[SparseRow<T>], ncols: usize) -> CompressedSparseData<T>
+where
+    T: Clone + Float + Send + Sync,
+{
+    let nrows = rows.len();
+    let nnz: usize = rows.iter().map(|row| row.data.len()).sum();
+
+    let mut data = Vec::with_capacity(nnz);
+    let mut indices = Vec::with_capacity(nnz);
+    let mut indptr = Vec::with_capacity(nrows + 1);
+
+    indptr.push(0);
+    for row in rows {
+        data.extend_from_slice(&row.data);
+        indices.extend_from_slice(&row.indices);
+        indptr.push(data.len());
+    }
+
+    CompressedSparseData::new_csr(&data, &indices, &indptr, (nrows, ncols))
+}
+
 ///////////
 // Tests //
 ///////////
@@ -352,11 +418,11 @@ mod test_data_struct {
 
     #[test]
     fn test_sparse_graph_to_edge_list() {
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 0, 1, 2],
             col_indices: vec![1, 2, 2, 0],
             values: vec![1.0, 2.0, 3.0, 4.0],
-            n_vertices: 3,
+            n_samples: 3,
         };
 
         let edges = graph.to_edge_list();
@@ -449,11 +515,11 @@ mod test_data_struct {
     fn test_coo_to_csr_sorting_and_structure() {
         // Construct a COO graph with unsorted entries and mixed row orders
         // (0,1)=1.0, (1,2)=3.0, (0,2)=2.0
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 1, 0],
             col_indices: vec![1, 2, 2],
             values: vec![1.0, 3.0, 2.0],
-            n_vertices: 3,
+            n_samples: 3,
         };
 
         let csr = coo_to_csr(&graph);
@@ -477,11 +543,11 @@ mod test_data_struct {
     #[test]
     fn test_coo_to_csr_empty_rows_and_gaps() {
         // Graph with 4 vertices, but only edges on row 0 and row 3
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 3],
             col_indices: vec![1, 2],
             values: vec![10.0, 20.0],
-            n_vertices: 4,
+            n_samples: 4,
         };
 
         let csr = coo_to_csr(&graph);

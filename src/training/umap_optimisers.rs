@@ -350,7 +350,7 @@ pub fn parse_umap_optimiser(s: &str) -> Option<UmapOptimiser> {
 /// ### Params
 ///
 /// * `embd` - Initial embedding coordinates (modified in place), shape
-///   [n_vertices][n_dim]
+///   [n_samples][n_dim]
 /// * `graph` - Adjacency list where graph[i] contains (neighbour_idx, weight)
 ///   pairs
 /// * `params` - Optimisation parameters (n_epochs, lr, a, b, gamma,
@@ -556,7 +556,7 @@ pub fn optimise_embedding_sgd<T>(
 /// ### Params
 ///
 /// * `embd` - Initial embedding coordinates (modified in place), shape
-///   [n_vertices][n_dim]
+///   [n_samples][n_dim]
 /// * `graph` - Adjacency list where graph[i] contains (neighbour_idx, weight)
 ///   pairs
 /// * `params` - Optimisation parameters including Adam hyperparameters (beta1,

@@ -127,7 +127,7 @@ pub fn knn_to_coo<T>(
     knn_dists: &[Vec<T>],
     sigmas: &[T],
     rhos: &[T],
-) -> SparseGraph<T>
+) -> CoordinateList<T>
 where
     T: Float + Send + Sync,
 {
@@ -162,11 +162,11 @@ where
         }
     }
 
-    SparseGraph {
+    CoordinateList {
         row_indices,
         col_indices,
         values,
-        n_vertices: n,
+        n_samples: n,
     }
 }
 
@@ -190,11 +190,11 @@ where
 /// * `mix_weight = 1.0`: Full fuzzy union (standard UMAP, symmetric)
 /// * `mix_weight = 0.5`: Weighted average of union and directed)
 /// * `mix_weight = 0.0`: Use only outgoing edges (directed)
-pub fn symmetrise_graph<T>(graph: SparseGraph<T>, mix_weight: T) -> SparseGraph<T>
+pub fn symmetrise_graph<T>(graph: CoordinateList<T>, mix_weight: T) -> CoordinateList<T>
 where
     T: Float + Send + Sync,
 {
-    let n = graph.n_vertices;
+    let n = graph.n_samples;
 
     // Build adjacency maps for fast lookups
     let mut forward: Vec<FxHashMap<usize, T>> = vec![FxHashMap::default(); n];
@@ -250,11 +250,11 @@ where
         }
     }
 
-    SparseGraph {
+    CoordinateList {
         row_indices,
         col_indices,
         values,
-        n_vertices: n,
+        n_samples: n,
     }
 }
 
@@ -271,11 +271,11 @@ where
 ///
 /// Adjacency list where `result[i]` contains `(neighbour_index, edge_weight)`
 /// pairs for vertex `i`
-pub fn coo_to_adjacency_list<T>(graph: &SparseGraph<T>) -> Vec<Vec<(usize, T)>>
+pub fn coo_to_adjacency_list<T>(graph: &CoordinateList<T>) -> Vec<Vec<(usize, T)>>
 where
     T: Float + Copy,
 {
-    let mut adj = vec![Vec::new(); graph.n_vertices];
+    let mut adj = vec![Vec::new(); graph.n_samples];
 
     for ((&i, &j), &w) in graph
         .row_indices
@@ -303,7 +303,11 @@ where
 /// ### Returns
 ///
 /// Filtered graph with weak edges removed
-pub fn filter_weak_edges<T>(graph: SparseGraph<T>, n_epochs: usize, verbose: bool) -> SparseGraph<T>
+pub fn filter_weak_edges<T>(
+    graph: CoordinateList<T>,
+    n_epochs: usize,
+    verbose: bool,
+) -> CoordinateList<T>
 where
     T: Float + Send + Sync,
 {
@@ -343,11 +347,11 @@ where
         );
     }
 
-    SparseGraph {
+    CoordinateList {
         row_indices: filtered_rows,
         col_indices: filtered_cols,
         values: filtered_vals,
-        n_vertices: graph.n_vertices,
+        n_samples: graph.n_samples,
     }
 }
 
@@ -378,7 +382,7 @@ where
 ///
 /// ### Returns
 ///
-/// A `SparseGraph` containing the asymmetric conditional probabilities p_{j|i}
+/// A `CoordinateList` containing the asymmetric conditional probabilities p_{j|i}
 ///
 /// ### Notes
 ///
@@ -390,7 +394,7 @@ pub fn gaussian_knn_affinities<T>(
     tol: T,
     max_iter: usize,
     distances_squared: bool,
-) -> SparseGraph<T>
+) -> CoordinateList<T>
 where
     T: Float + Send + Sync + FromPrimitive + ToPrimitive,
 {
@@ -481,11 +485,11 @@ where
         }
     }
 
-    SparseGraph {
+    CoordinateList {
         row_indices,
         col_indices,
         values,
-        n_vertices: n,
+        n_samples: n,
     }
 }
 
@@ -500,7 +504,7 @@ where
 ///
 /// ### Returns
 ///
-/// Symmetric `SparseGraph` where:
+/// Symmetric `CoordinateList` where:
 /// - Each edge (i,j) has weight P_ij = (P(j|i) + P(i|j)) / 2N
 /// - P_ij = P_ji (symmetric)
 /// - All weights sum to 1.0
@@ -511,11 +515,11 @@ where
 /// 2. Collect all unique unordered pairs {i,j} from input edges
 /// 3. For each pair: compute P_ij = (P(j|i) + P(i|j)) / 2N
 /// 4. Add both directions (i,j) and (j,i) to output with weight P_ij
-pub fn symmetrise_affinities_tsne<T>(graph: SparseGraph<T>) -> SparseGraph<T>
+pub fn symmetrise_affinities_tsne<T>(graph: CoordinateList<T>) -> CoordinateList<T>
 where
     T: Float + Send + Sync + FromPrimitive,
 {
-    let n = graph.n_vertices;
+    let n = graph.n_samples;
     let n_float = T::from_usize(n).unwrap();
     let two = T::from_f64(2.0).unwrap();
     let normalization = two * n_float;
@@ -585,11 +589,11 @@ where
         }
     }
 
-    SparseGraph {
+    CoordinateList {
         row_indices: rows,
         col_indices: cols,
         values: vals,
-        n_vertices: n,
+        n_samples: n,
     }
 }
 
@@ -644,7 +648,7 @@ pub fn parse_phate_symmetrisation(s: &str) -> Option<PhateGraphSymmetrisation> {
 /// ### Params
 ///
 /// * `graph` - Reference to the graph to symmetrise
-fn symmetrise_additive<T>(graph: &mut SparseGraph<T>)
+fn symmetrise_additive<T>(graph: &mut CoordinateList<T>)
 where
     T: Float + Sync + Send + AddAssign,
 {
@@ -698,7 +702,7 @@ where
 /// ### Params
 ///
 /// * `graph` - Reference to the graph to symmetrise
-fn symmetrise_multiplicative<T>(graph: &mut SparseGraph<T>)
+fn symmetrise_multiplicative<T>(graph: &mut CoordinateList<T>)
 where
     T: Float + Send + Sync,
 {
@@ -761,7 +765,7 @@ where
 /// ### Params
 ///
 /// * `graph` - Reference to the graph to symmetrise
-fn symmetrise_mnn<T>(graph: &mut SparseGraph<T>, theta: T)
+fn symmetrise_mnn<T>(graph: &mut CoordinateList<T>, theta: T)
 where
     T: Float + Send + Sync,
 {
@@ -836,12 +840,12 @@ where
 ///
 /// ### Returns
 ///
-/// The SparseGraph representing the binary connectivity.
+/// The CoordinateList representing the binary connectivity.
 fn binary_knn_connectivity<T>(
     knn_indices: &[Vec<usize>],
     knn: usize,
     symmetrise: PhateGraphSymmetrisation,
-) -> SparseGraph<T>
+) -> CoordinateList<T>
 where
     T: Float + Send + Sync + AddAssign,
 {
@@ -862,11 +866,11 @@ where
         }
     }
 
-    let mut graph = SparseGraph {
+    let mut graph = CoordinateList {
         row_indices,
         col_indices,
         values,
-        n_vertices: n,
+        n_samples: n,
     };
 
     if !matches!(symmetrise, PhateGraphSymmetrisation::None) {
@@ -906,7 +910,7 @@ where
 ///
 /// ### Returns
 ///
-/// A `SparseGraph` containing the (optionally symmetrized) affinities
+/// A `CoordinateList` containing the (optionally symmetrized) affinities
 #[allow(clippy::too_many_arguments)]
 pub fn phate_alpha_decay_affinities<T>(
     knn_indices: &[Vec<usize>],
@@ -917,7 +921,7 @@ pub fn phate_alpha_decay_affinities<T>(
     thresh: T,
     symmetrise: &str,
     distances_squared: bool,
-) -> SparseGraph<T>
+) -> CoordinateList<T>
 where
     T: Float + Send + Sync + FromPrimitive + ToPrimitive + AddAssign,
 {
@@ -1019,11 +1023,11 @@ where
         }
     }
 
-    let mut graph = SparseGraph {
+    let mut graph = CoordinateList {
         row_indices,
         col_indices,
         values,
-        n_vertices: n,
+        n_samples: n,
     };
 
     match symmetrise {
@@ -1090,7 +1094,7 @@ mod test_data_gen {
 
         let graph = knn_to_coo(&knn_indices, &knn_dists, &sigmas, &rhos);
 
-        assert_eq!(graph.n_vertices, 3);
+        assert_eq!(graph.n_samples, 3);
         assert_eq!(graph.row_indices.len(), 6); // 3 points × 2 neighbours
         assert_eq!(graph.col_indices.len(), 6);
         assert_eq!(graph.values.len(), 6);
@@ -1122,16 +1126,16 @@ mod test_data_gen {
 
     #[test]
     fn test_symmetrise_graph_full_union() {
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 1],
             col_indices: vec![1, 0],
             values: vec![0.8, 0.6],
-            n_vertices: 2,
+            n_samples: 2,
         };
 
         let sym_graph = symmetrise_graph(graph, 0.5);
 
-        assert_eq!(sym_graph.n_vertices, 2);
+        assert_eq!(sym_graph.n_samples, 2);
 
         // With mix_weight = 0.5:
         // union = 0.8 + 0.6 - 0.8*0.6 = 0.92
@@ -1151,11 +1155,11 @@ mod test_data_gen {
 
     #[test]
     fn test_symmetrise_graph_directed() {
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 1],
             col_indices: vec![1, 0],
             values: vec![0.8, 0.6],
-            n_vertices: 2,
+            n_samples: 2,
         };
 
         // With mix_weight = 1.0, we get full fuzzy union
@@ -1175,11 +1179,11 @@ mod test_data_gen {
 
     #[test]
     fn test_coo_to_adjacency_list() {
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 0, 1, 2],
             col_indices: vec![1, 2, 2, 0],
             values: vec![0.5, 0.3, 0.8, 0.9],
-            n_vertices: 3,
+            n_samples: 3,
         };
 
         let adj = coo_to_adjacency_list(&graph);
@@ -1197,11 +1201,11 @@ mod test_data_gen {
 
     #[test]
     fn test_coo_to_adjacency_list_empty() {
-        let graph: SparseGraph<f64> = SparseGraph {
+        let graph: CoordinateList<f64> = CoordinateList {
             row_indices: vec![],
             col_indices: vec![],
             values: vec![],
-            n_vertices: 3,
+            n_samples: 3,
         };
 
         let adj = coo_to_adjacency_list(&graph);
@@ -1217,8 +1221,8 @@ mod test_data_gen {
     ////////////////
 
     /// Helper: build adjacency map from sparse graph for easier testing
-    fn graph_to_adj<T: Float + Copy>(graph: &SparseGraph<T>) -> Vec<Vec<(usize, T)>> {
-        let mut adj = vec![Vec::new(); graph.n_vertices];
+    fn graph_to_adj<T: Float + Copy>(graph: &CoordinateList<T>) -> Vec<Vec<(usize, T)>> {
+        let mut adj = vec![Vec::new(); graph.n_samples];
         for ((&i, &j), &w) in graph
             .row_indices
             .iter()
@@ -1484,7 +1488,7 @@ mod test_data_gen {
             true,
         );
 
-        assert_eq!(graph.n_vertices, 4);
+        assert_eq!(graph.n_samples, 4);
         assert!(!graph.row_indices.is_empty());
         assert_eq!(graph.row_indices.len(), graph.col_indices.len());
         assert_eq!(graph.row_indices.len(), graph.values.len());

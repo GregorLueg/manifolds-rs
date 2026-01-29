@@ -188,7 +188,7 @@ fn umap_integration_03_graph_connectivity() {
     println!("Graph has {} edges", graph.values.len());
 
     // Build adjacency list
-    let n = graph.n_vertices;
+    let n = graph.n_samples;
     let mut adj: Vec<Vec<(usize, f64)>> = vec![vec![]; n];
     for ((&i, &j), &w) in graph
         .row_indices
