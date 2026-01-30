@@ -203,7 +203,7 @@ fn update_parameter<T>(
 pub fn optimise_bh_tsne<T>(
     embd: &mut [Vec<T>],
     params: &TsneOptimParams<T>,
-    graph: &SparseGraph<T>,
+    graph: &CoordinateList<T>,
     verbose: bool,
 ) where
     T: Float + FromPrimitive + Send + Sync + AddAssign + SubAssign + MulAssign + DivAssign + Sum,
@@ -363,7 +363,7 @@ pub fn optimise_bh_tsne<T>(
 pub fn optimise_fft_tsne<T>(
     embd: &mut [Vec<T>],
     params: &TsneOptimParams<T>,
-    graph: &SparseGraph<T>,
+    graph: &CoordinateList<T>,
     verbose: bool,
 ) where
     T: FftwFloat + AddAssign + SubAssign + MulAssign + DivAssign + Sum + ToPrimitive + Send + Sync,
@@ -384,7 +384,7 @@ pub fn optimise_fft_tsne<T>(
     // adaptive gains
     let mut gains = vec![vec![T::one(); n_dim]; n];
 
-    // 1. Convert SparseGraph to Adjacency List for efficient parallel row access
+    // 1. Convert CoordinateList to Adjacency List for efficient parallel row access
     // This assumes the graph is symmetric.
     let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
     for ((&i, &j), &w) in graph
@@ -604,7 +604,7 @@ mod test_tsne_optimiser {
     //////////
 
     // Helper to create a symmetric COO graph for t-SNE tests
-    fn create_coo_graph(n: usize, edges: &[(usize, usize, f64)]) -> SparseGraph<f64> {
+    fn create_coo_graph(n: usize, edges: &[(usize, usize, f64)]) -> CoordinateList<f64> {
         let mut row_indices = Vec::new();
         let mut col_indices = Vec::new();
         let mut values = Vec::new();
@@ -623,11 +623,11 @@ mod test_tsne_optimiser {
             }
         }
 
-        SparseGraph {
+        CoordinateList {
             row_indices,
             col_indices,
             values,
-            n_vertices: n,
+            n_samples: n,
         }
     }
 

@@ -73,7 +73,7 @@ pub fn construct_umap_graph<T>(
     n_epochs: usize,
     seed: usize,
     verbose: bool,
-) -> (SparseGraph<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
+) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
 where
     T: Float
         + FromPrimitive
@@ -546,7 +546,7 @@ where
 ///
 /// Tuple of:
 ///
-/// - `SparseGraph<T>` containing symmetric joint probabilities P_ij
+/// - `CoordinateList<T>` containing symmetric joint probabilities P_ij
 /// - `Vec<Vec<usize>>` k-nearest neighbour indices for each point
 /// - `Vec<Vec<T>>` k-nearest neighbour distances for each point
 ///
@@ -561,7 +561,7 @@ pub fn construct_tsne_graph<T>(
     nn_params: &NearestNeighbourParams<T>,
     seed: usize,
     verbose: bool,
-) -> (SparseGraph<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
+) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
 where
     T: Float
         + FromPrimitive

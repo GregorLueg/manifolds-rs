@@ -20,8 +20,8 @@ fn entropy(probs: &[f64]) -> f64 {
 }
 
 /// Helper: build adjacency list from sparse graph
-fn graph_to_adj(graph: &SparseGraph<f64>) -> Vec<Vec<(usize, f64)>> {
-    let mut adj = vec![Vec::new(); graph.n_vertices];
+fn graph_to_adj(graph: &CoordinateList<f64>) -> Vec<Vec<(usize, f64)>> {
+    let mut adj = vec![Vec::new(); graph.n_samples];
     for ((&i, &j), &w) in graph
         .row_indices
         .iter()

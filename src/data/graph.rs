@@ -1,3 +1,5 @@
+use std::ops::AddAssign;
+
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -125,7 +127,7 @@ pub fn knn_to_coo<T>(
     knn_dists: &[Vec<T>],
     sigmas: &[T],
     rhos: &[T],
-) -> SparseGraph<T>
+) -> CoordinateList<T>
 where
     T: Float + Send + Sync,
 {
@@ -160,11 +162,11 @@ where
         }
     }
 
-    SparseGraph {
+    CoordinateList {
         row_indices,
         col_indices,
         values,
-        n_vertices: n,
+        n_samples: n,
     }
 }
 
@@ -188,11 +190,11 @@ where
 /// * `mix_weight = 1.0`: Full fuzzy union (standard UMAP, symmetric)
 /// * `mix_weight = 0.5`: Weighted average of union and directed)
 /// * `mix_weight = 0.0`: Use only outgoing edges (directed)
-pub fn symmetrise_graph<T>(graph: SparseGraph<T>, mix_weight: T) -> SparseGraph<T>
+pub fn symmetrise_graph<T>(graph: CoordinateList<T>, mix_weight: T) -> CoordinateList<T>
 where
     T: Float + Send + Sync,
 {
-    let n = graph.n_vertices;
+    let n = graph.n_samples;
 
     // Build adjacency maps for fast lookups
     let mut forward: Vec<FxHashMap<usize, T>> = vec![FxHashMap::default(); n];
@@ -248,11 +250,11 @@ where
         }
     }
 
-    SparseGraph {
+    CoordinateList {
         row_indices,
         col_indices,
         values,
-        n_vertices: n,
+        n_samples: n,
     }
 }
 
@@ -269,11 +271,11 @@ where
 ///
 /// Adjacency list where `result[i]` contains `(neighbour_index, edge_weight)`
 /// pairs for vertex `i`
-pub fn coo_to_adjacency_list<T>(graph: &SparseGraph<T>) -> Vec<Vec<(usize, T)>>
+pub fn coo_to_adjacency_list<T>(graph: &CoordinateList<T>) -> Vec<Vec<(usize, T)>>
 where
     T: Float + Copy,
 {
-    let mut adj = vec![Vec::new(); graph.n_vertices];
+    let mut adj = vec![Vec::new(); graph.n_samples];
 
     for ((&i, &j), &w) in graph
         .row_indices
@@ -301,7 +303,11 @@ where
 /// ### Returns
 ///
 /// Filtered graph with weak edges removed
-pub fn filter_weak_edges<T>(graph: SparseGraph<T>, n_epochs: usize, verbose: bool) -> SparseGraph<T>
+pub fn filter_weak_edges<T>(
+    graph: CoordinateList<T>,
+    n_epochs: usize,
+    verbose: bool,
+) -> CoordinateList<T>
 where
     T: Float + Send + Sync,
 {
@@ -341,11 +347,11 @@ where
         );
     }
 
-    SparseGraph {
+    CoordinateList {
         row_indices: filtered_rows,
         col_indices: filtered_cols,
         values: filtered_vals,
-        n_vertices: graph.n_vertices,
+        n_samples: graph.n_samples,
     }
 }
 
@@ -376,7 +382,7 @@ where
 ///
 /// ### Returns
 ///
-/// A `SparseGraph` containing the asymmetric conditional probabilities p_{j|i}
+/// A `CoordinateList` containing the asymmetric conditional probabilities p_{j|i}
 ///
 /// ### Notes
 ///
@@ -388,7 +394,7 @@ pub fn gaussian_knn_affinities<T>(
     tol: T,
     max_iter: usize,
     distances_squared: bool,
-) -> SparseGraph<T>
+) -> CoordinateList<T>
 where
     T: Float + Send + Sync + FromPrimitive + ToPrimitive,
 {
@@ -479,11 +485,11 @@ where
         }
     }
 
-    SparseGraph {
+    CoordinateList {
         row_indices,
         col_indices,
         values,
-        n_vertices: n,
+        n_samples: n,
     }
 }
 
@@ -498,7 +504,7 @@ where
 ///
 /// ### Returns
 ///
-/// Symmetric `SparseGraph` where:
+/// Symmetric `CoordinateList` where:
 /// - Each edge (i,j) has weight P_ij = (P(j|i) + P(i|j)) / 2N
 /// - P_ij = P_ji (symmetric)
 /// - All weights sum to 1.0
@@ -509,11 +515,11 @@ where
 /// 2. Collect all unique unordered pairs {i,j} from input edges
 /// 3. For each pair: compute P_ij = (P(j|i) + P(i|j)) / 2N
 /// 4. Add both directions (i,j) and (j,i) to output with weight P_ij
-pub fn symmetrise_affinities_tsne<T>(graph: SparseGraph<T>) -> SparseGraph<T>
+pub fn symmetrise_affinities_tsne<T>(graph: CoordinateList<T>) -> CoordinateList<T>
 where
     T: Float + Send + Sync + FromPrimitive,
 {
-    let n = graph.n_vertices;
+    let n = graph.n_samples;
     let n_float = T::from_usize(n).unwrap();
     let two = T::from_f64(2.0).unwrap();
     let normalization = two * n_float;
@@ -583,12 +589,455 @@ where
         }
     }
 
-    SparseGraph {
+    CoordinateList {
         row_indices: rows,
         col_indices: cols,
         values: vals,
-        n_vertices: n,
+        n_samples: n,
     }
+}
+
+///////////
+// PHATE //
+///////////
+
+///////////
+// Enums //
+///////////
+
+#[derive(Default)]
+pub enum PhateGraphSymmetrisation {
+    /// Additive symmetrisation - used in PHATE
+    #[default]
+    Additive,
+    /// Multiplicative symmetrisation
+    Multiplicative,
+    /// Min-max symmetrisation
+    Mnn,
+    /// No symmetrisation
+    None,
+}
+
+/// Parse a string into a PhateGraphSymmetrisation enum
+///
+/// ### Params
+///
+/// * `s` - String to parse
+///
+/// ### Returns
+///
+/// `Some(PhateGraphSymmetrisation)` pending on parsing.
+pub fn parse_phate_symmetrisation(s: &str) -> Option<PhateGraphSymmetrisation> {
+    match s.to_lowercase().as_str() {
+        "additive" | "add" => Some(PhateGraphSymmetrisation::Additive),
+        "multiplicative" | "mult" | "multiply" => Some(PhateGraphSymmetrisation::Multiplicative),
+        "mnn" => Some(PhateGraphSymmetrisation::Mnn),
+        "none" => Some(PhateGraphSymmetrisation::None),
+        _ => None,
+    }
+}
+
+/////////////
+// Helpers //
+/////////////
+
+/// Additive symmetrisation
+///
+/// K = (K + K^T) / 2
+///
+/// ### Params
+///
+/// * `graph` - Reference to the graph to symmetrise
+fn symmetrise_additive<T>(graph: &mut CoordinateList<T>)
+where
+    T: Float + Sync + Send + AddAssign,
+{
+    let two = T::one() + T::one();
+
+    // do this in parallel
+    // maybe slower for smaller graphs, but for sure much faster for larger ones
+    let edge_map: FxHashMap<(usize, usize), T> = graph
+        .row_indices
+        .par_iter()
+        .zip(&graph.col_indices)
+        .zip(&graph.values)
+        .fold(
+            FxHashMap::default, // Changed here
+            |mut local_map, ((&i, &j), &v)| {
+                *local_map.entry((i, j)).or_insert(T::zero()) += v;
+                *local_map.entry((j, i)).or_insert(T::zero()) += v;
+                local_map
+            },
+        )
+        .reduce(
+            FxHashMap::default, // And here
+            |mut map1, map2| {
+                for (key, val) in map2 {
+                    *map1.entry(key).or_insert(T::zero()) += val;
+                }
+                map1
+            },
+        );
+
+    // Rebuild graph with (K + K^T) / 2
+    graph.row_indices.clear();
+    graph.col_indices.clear();
+    graph.values.clear();
+
+    graph.row_indices.reserve(edge_map.len());
+    graph.col_indices.reserve(edge_map.len());
+    graph.values.reserve(edge_map.len());
+
+    for ((i, j), v) in edge_map {
+        graph.row_indices.push(i);
+        graph.col_indices.push(j);
+        graph.values.push(v / two);
+    }
+}
+
+/// Multiplicative symmetrisation
+///
+/// K = K ⊙ K^T (element-wise product)
+///
+/// ### Params
+///
+/// * `graph` - Reference to the graph to symmetrise
+fn symmetrise_multiplicative<T>(graph: &mut CoordinateList<T>)
+where
+    T: Float + Send + Sync,
+{
+    // forward map
+    let forward_map: FxHashMap<(usize, usize), T> = graph
+        .row_indices
+        .par_iter()
+        .zip(&graph.col_indices)
+        .zip(&graph.values)
+        .fold(FxHashMap::default, |mut map, ((&i, &j), &v)| {
+            map.insert((i, j), v);
+            map
+        })
+        .reduce(FxHashMap::default, |mut map1, map2| {
+            map1.extend(map2);
+            map1
+        });
+
+    // backward map
+    let backward_map: FxHashMap<(usize, usize), T> = graph
+        .row_indices
+        .par_iter()
+        .zip(&graph.col_indices)
+        .zip(&graph.values)
+        .fold(FxHashMap::default, |mut map, ((&i, &j), &v)| {
+            map.insert((j, i), v);
+            map
+        })
+        .reduce(FxHashMap::default, |mut map1, map2| {
+            map1.extend(map2);
+            map1
+        });
+
+    // compute element-wise product (parallel)
+    let products: Vec<(usize, usize, T)> = forward_map
+        .par_iter()
+        .filter_map(|(&(i, j), &v_ij)| backward_map.get(&(i, j)).map(|&v_ji| (i, j, v_ij * v_ji)))
+        .collect();
+
+    // rebuild graph
+    graph.row_indices.clear();
+    graph.col_indices.clear();
+    graph.values.clear();
+
+    graph.row_indices.reserve(products.len());
+    graph.col_indices.reserve(products.len());
+    graph.values.reserve(products.len());
+
+    for (i, j, v) in products {
+        graph.row_indices.push(i);
+        graph.col_indices.push(j);
+        graph.values.push(v);
+    }
+}
+
+/// MNN symmetrisation
+///
+/// K = θ * min(K, K^T) + (1-θ) * max(K, K^T)
+///
+/// ### Params
+///
+/// * `graph` - Reference to the graph to symmetrise
+fn symmetrise_mnn<T>(graph: &mut CoordinateList<T>, theta: T)
+where
+    T: Float + Send + Sync,
+{
+    let edge_map: FxHashMap<(usize, usize), (Option<T>, Option<T>)> = graph
+        .row_indices
+        .par_iter()
+        .zip(&graph.col_indices)
+        .zip(&graph.values)
+        .fold(FxHashMap::default, |mut map, ((&i, &j), &v)| {
+            map.entry((i, j)).or_insert((None, None)).0 = Some(v);
+            map.entry((j, i)).or_insert((None, None)).1 = Some(v);
+            map
+        })
+        .reduce(FxHashMap::default, |mut map1, map2| {
+            for (key, (v_ij, v_ji)) in map2 {
+                let entry = map1.entry(key).or_insert((None, None));
+                if v_ij.is_some() {
+                    entry.0 = v_ij;
+                }
+                if v_ji.is_some() {
+                    entry.1 = v_ji;
+                }
+            }
+            map1
+        });
+
+    let one_minus_theta = T::one() - theta;
+
+    // compute weighted min-max (parallel)
+    let results: Vec<(usize, usize, T)> = edge_map
+        .par_iter()
+        .filter_map(|(&(i, j), &(v_ij, v_ji))| {
+            let v_ij = v_ij.unwrap_or(T::zero());
+            let v_ji = v_ji.unwrap_or(T::zero());
+            let min_val = v_ij.min(v_ji);
+            let max_val = v_ij.max(v_ji);
+            let combined = theta * min_val + one_minus_theta * max_val;
+
+            if combined > T::epsilon() {
+                Some((i, j, combined))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    // Rebuild graph
+    graph.row_indices.clear();
+    graph.col_indices.clear();
+    graph.values.clear();
+
+    graph.row_indices.reserve(results.len());
+    graph.col_indices.reserve(results.len());
+    graph.values.reserve(results.len());
+
+    for (i, j, v) in results {
+        graph.row_indices.push(i);
+        graph.col_indices.push(j);
+        graph.values.push(v);
+    }
+}
+
+/// Binary connectivity
+///
+/// Used for decay = None case
+///
+/// ### Params
+///
+/// * `knn_indices`: The indices of the k-nearest neighbors for each vertex.
+/// * `knn`: The number of nearest neighbors to consider.
+/// * `symmetrise`: The symmetrisation method to use.
+///
+/// ### Returns
+///
+/// The CoordinateList representing the binary connectivity.
+fn binary_knn_connectivity<T>(
+    knn_indices: &[Vec<usize>],
+    knn: usize,
+    symmetrise: PhateGraphSymmetrisation,
+) -> CoordinateList<T>
+where
+    T: Float + Send + Sync + AddAssign,
+{
+    let n = knn_indices.len();
+    let k_actual = knn.min(knn_indices[0].len());
+
+    let mut row_indices = Vec::new();
+    let mut col_indices = Vec::new();
+    let mut values = Vec::new();
+
+    for (i, indices) in knn_indices.iter().enumerate() {
+        for &j in indices.iter().take(k_actual) {
+            if j != i {
+                row_indices.push(i);
+                col_indices.push(j);
+                values.push(T::one());
+            }
+        }
+    }
+
+    let mut graph = CoordinateList {
+        row_indices,
+        col_indices,
+        values,
+        n_samples: n,
+    };
+
+    if !matches!(symmetrise, PhateGraphSymmetrisation::None) {
+        symmetrise_additive(&mut graph);
+    }
+
+    graph
+}
+
+////////////////////////
+// Alpha decay kernel //
+////////////////////////
+
+/// Compute alpha-decay affinities from k-nearest neighbours for PHATE
+///
+/// For each point i, computes affinities using an adaptive Gaussian kernel:
+///
+/// `K(i,j) = exp(-(d(i,j) / σ_i)^α)`
+///
+/// where σ_i is the distance to the kth nearest neighbour.
+///
+/// ### Params
+///
+/// * `knn_indices` - kNN indices (including self)
+/// * `knn_dists` - kNN distances (including self)
+/// * `knn` - Which neighbour to use for bandwidth (e.g., 5 means use 5th
+///   nearest neighbour distance)
+/// * `decay` - Decay exponent alpha (typical: 40). If None, returns binary
+///   connectivity
+/// * `bandwidth_scale` - Multiplicative factor for bandwidth (default: 1.0)
+/// * `thresh` - Threshold below which affinities are set to 0 (default: 1e-4,
+///   for sparsity)
+/// * `distances_squared` - If true, distances are already squared (squared
+///   Euclidean). If false, use as-is (cosine, etc.)
+/// * `symmetrise` - symmetrisation method: "add" for (K+K^T)/2, "multiply" for
+///   K*K^T, "none" for asymmetric.
+///
+/// ### Returns
+///
+/// A `CoordinateList` containing the (optionally symmetrized) affinities
+#[allow(clippy::too_many_arguments)]
+pub fn phate_alpha_decay_affinities<T>(
+    knn_indices: &[Vec<usize>],
+    knn_dists: &[Vec<T>],
+    knn: usize,
+    decay: Option<T>,
+    bandwidth_scale: T,
+    thresh: T,
+    symmetrise: &str,
+    distances_squared: bool,
+) -> CoordinateList<T>
+where
+    T: Float + Send + Sync + FromPrimitive + ToPrimitive + AddAssign,
+{
+    let n = knn_indices.len();
+    let machine_epsilon = T::epsilon();
+
+    let symmetrise = parse_phate_symmetrisation(symmetrise).unwrap_or_default();
+
+    // handle binary connectivity case (decay = None)
+    if decay.is_none() {
+        return binary_knn_connectivity(knn_indices, knn, symmetrise);
+    }
+
+    let decay_val = decay.unwrap();
+
+    // parallel computations of affinities
+    let results: Vec<(Vec<usize>, Vec<T>)> = knn_indices
+        .par_iter()
+        .zip(knn_dists.par_iter())
+        .enumerate()
+        .map(|(i, (indices, dists))| {
+            // bandwidth: dist to kth nearest neighbour
+            // note: indices[0] is self, so indices[knn-1] is the kth neighbour
+            // (excluding self)
+            let bandwidth_dist = if knn > 0 && knn <= dists.len() {
+                // this is needed as the ANN liibraries return squared distances
+                // for speed
+                if distances_squared {
+                    dists[knn - 1].sqrt() // convert squared distance to distance
+                } else {
+                    dists[knn - 1] // already a distance
+                }
+            } else {
+                // Fallback: use last neighbour
+                if distances_squared {
+                    dists[dists.len() - 1].sqrt()
+                } else {
+                    dists[dists.len() - 1]
+                }
+            };
+
+            let bandwidth = bandwidth_dist * bandwidth_scale;
+
+            // handle edge case of zero bandwidth
+            let bandwidth = bandwidth.max(machine_epsilon);
+
+            // pre-allocate
+            let mut neighbor_indices = Vec::with_capacity(indices.len());
+            let mut neighbor_values = Vec::with_capacity(indices.len());
+
+            // compute affinities for each neighbour
+            for (&j, &dist_val) in indices.iter().zip(dists.iter()) {
+                // skip self-loops
+                if j == i {
+                    continue;
+                }
+
+                // handle zero distances
+                if dist_val < machine_epsilon {
+                    neighbor_indices.push(j);
+                    neighbor_values.push(T::one());
+                    continue;
+                }
+
+                // convert to actual distance if needed
+                let d = if distances_squared {
+                    dist_val.sqrt() // convert squared distance to distance
+                } else {
+                    dist_val // already a distance
+                };
+
+                // compute affinity: exp(-(d / σ)^α)
+                let scaled = d / bandwidth;
+                let powered = scaled.powf(decay_val);
+                let affinity = (-powered).exp();
+
+                // apply threshold for sparsity
+                if affinity >= thresh {
+                    neighbor_indices.push(j);
+                    neighbor_values.push(affinity);
+                }
+            }
+
+            (neighbor_indices, neighbor_values)
+        })
+        .collect();
+
+    // Build asymmetric sparse graph
+    let capacity: usize = results.iter().map(|(idx, _)| idx.len()).sum();
+    let mut row_indices = Vec::with_capacity(capacity);
+    let mut col_indices = Vec::with_capacity(capacity);
+    let mut values = Vec::with_capacity(capacity);
+
+    for (i, (indices, vals)) in results.into_iter().enumerate() {
+        for (&j, v) in indices.iter().zip(vals) {
+            row_indices.push(i);
+            col_indices.push(j);
+            values.push(v);
+        }
+    }
+
+    let mut graph = CoordinateList {
+        row_indices,
+        col_indices,
+        values,
+        n_samples: n,
+    };
+
+    match symmetrise {
+        PhateGraphSymmetrisation::Additive => symmetrise_additive(&mut graph),
+        PhateGraphSymmetrisation::Multiplicative => symmetrise_multiplicative(&mut graph),
+        PhateGraphSymmetrisation::Mnn => symmetrise_mnn(&mut graph, T::one()),
+        PhateGraphSymmetrisation::None => {}
+    };
+
+    graph
 }
 
 ///////////
@@ -645,7 +1094,7 @@ mod test_data_gen {
 
         let graph = knn_to_coo(&knn_indices, &knn_dists, &sigmas, &rhos);
 
-        assert_eq!(graph.n_vertices, 3);
+        assert_eq!(graph.n_samples, 3);
         assert_eq!(graph.row_indices.len(), 6); // 3 points × 2 neighbours
         assert_eq!(graph.col_indices.len(), 6);
         assert_eq!(graph.values.len(), 6);
@@ -677,16 +1126,16 @@ mod test_data_gen {
 
     #[test]
     fn test_symmetrise_graph_full_union() {
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 1],
             col_indices: vec![1, 0],
             values: vec![0.8, 0.6],
-            n_vertices: 2,
+            n_samples: 2,
         };
 
         let sym_graph = symmetrise_graph(graph, 0.5);
 
-        assert_eq!(sym_graph.n_vertices, 2);
+        assert_eq!(sym_graph.n_samples, 2);
 
         // With mix_weight = 0.5:
         // union = 0.8 + 0.6 - 0.8*0.6 = 0.92
@@ -706,11 +1155,11 @@ mod test_data_gen {
 
     #[test]
     fn test_symmetrise_graph_directed() {
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 1],
             col_indices: vec![1, 0],
             values: vec![0.8, 0.6],
-            n_vertices: 2,
+            n_samples: 2,
         };
 
         // With mix_weight = 1.0, we get full fuzzy union
@@ -730,11 +1179,11 @@ mod test_data_gen {
 
     #[test]
     fn test_coo_to_adjacency_list() {
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 0, 1, 2],
             col_indices: vec![1, 2, 2, 0],
             values: vec![0.5, 0.3, 0.8, 0.9],
-            n_vertices: 3,
+            n_samples: 3,
         };
 
         let adj = coo_to_adjacency_list(&graph);
@@ -752,11 +1201,11 @@ mod test_data_gen {
 
     #[test]
     fn test_coo_to_adjacency_list_empty() {
-        let graph: SparseGraph<f64> = SparseGraph {
+        let graph: CoordinateList<f64> = CoordinateList {
             row_indices: vec![],
             col_indices: vec![],
             values: vec![],
-            n_vertices: 3,
+            n_samples: 3,
         };
 
         let adj = coo_to_adjacency_list(&graph);
@@ -772,8 +1221,8 @@ mod test_data_gen {
     ////////////////
 
     /// Helper: build adjacency map from sparse graph for easier testing
-    fn graph_to_adj<T: Float + Copy>(graph: &SparseGraph<T>) -> Vec<Vec<(usize, T)>> {
-        let mut adj = vec![Vec::new(); graph.n_vertices];
+    fn graph_to_adj<T: Float + Copy>(graph: &CoordinateList<T>) -> Vec<Vec<(usize, T)>> {
+        let mut adj = vec![Vec::new(); graph.n_samples];
         for ((&i, &j), &w) in graph
             .row_indices
             .iter()
@@ -1005,5 +1454,622 @@ mod test_data_gen {
             entropy_high > entropy_low,
             "Higher perplexity should give higher entropy"
         );
+    }
+
+    ///////////
+    // PHATE //
+    ///////////
+
+    #[test]
+    fn test_phate_basic_affinity_computation() {
+        // 4 points, each has 3 neighbours (including self at position 0)
+        let knn_indices = vec![
+            vec![0, 1, 2, 3],
+            vec![1, 0, 2, 3],
+            vec![2, 0, 1, 3],
+            vec![3, 0, 1, 2],
+        ];
+        // Squared Euclidean distances (self at position 0 with distance 0)
+        let knn_dists = vec![
+            vec![0.0, 1.0, 4.0, 9.0],
+            vec![0.0, 1.0, 4.0, 9.0],
+            vec![0.0, 4.0, 1.0, 9.0],
+            vec![0.0, 9.0, 4.0, 1.0],
+        ];
+
+        let graph = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,          // knn: use 2nd neighbor (indices[1]) for bandwidth
+            Some(40.0), // decay
+            1.0,        // bandwidth_scale
+            1e-4,       // thresh
+            "none",     // no symmetrisation
+            true,
+        );
+
+        assert_eq!(graph.n_samples, 4);
+        assert!(!graph.row_indices.is_empty());
+        assert_eq!(graph.row_indices.len(), graph.col_indices.len());
+        assert_eq!(graph.row_indices.len(), graph.values.len());
+
+        // All affinities should be between 0 and 1
+        for &v in &graph.values {
+            assert!((0.0..=1.0).contains(&v), "Affinity {} out of range", v);
+        }
+        println!("Basic test passed: {} edges created", graph.values.len());
+    }
+
+    #[test]
+    fn test_phate_self_loops_excluded() {
+        // Self is at position 0 in the knn arrays
+        let knn_indices = vec![vec![0, 1, 2], vec![1, 0, 2], vec![2, 0, 1]];
+        let knn_dists = vec![
+            vec![0.0, 1.0, 4.0],
+            vec![0.0, 1.0, 4.0],
+            vec![0.0, 4.0, 1.0],
+        ];
+
+        let graph = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(40.0),
+            1.0,
+            1e-4,
+            "none",
+            true,
+        );
+
+        // Check no self-loops
+        for (&i, &j) in graph.row_indices.iter().zip(&graph.col_indices) {
+            assert_ne!(i, j, "Self-loop found: {} -> {}", i, j);
+        }
+        println!("No self-loops in PHATE graph");
+    }
+
+    #[test]
+    fn test_phate_closer_neighbours_higher_affinity() {
+        // Single point with 4 neighbors at increasing distances
+        let knn_indices = vec![vec![0, 1, 2, 3, 4]];
+        // Squared distances: 0 (self), 1, 4, 9, 16
+        let knn_dists = vec![vec![0.0, 1.0, 4.0, 9.0, 16.0]];
+
+        let graph = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(2.0),
+            1.0,
+            1e-10,
+            "none",
+            true,
+        );
+
+        let adj = graph_to_adj(&graph);
+        let affinities: Vec<(usize, f64)> = adj[0].clone();
+
+        // Get affinities for each neighbor
+        let a1 = affinities.iter().find(|(j, _)| *j == 1).unwrap().1;
+        let a2 = affinities.iter().find(|(j, _)| *j == 2).unwrap().1;
+        let a3 = affinities.iter().find(|(j, _)| *j == 3).unwrap().1;
+        let a4 = affinities.iter().find(|(j, _)| *j == 4).unwrap().1;
+
+        println!(
+            "Affinities: a1={:.6}, a2={:.6}, a3={:.6}, a4={:.6}",
+            a1, a2, a3, a4
+        );
+
+        // closer neighbors should have higher affinities
+        assert!(a1 > a2, "a1={} should be > a2={}", a1, a2);
+        assert!(a2 > a3, "a2={} should be > a3={}", a2, a3);
+        assert!(a3 > a4, "a3={} should be > a4={}", a3, a4);
+    }
+
+    #[test]
+    fn test_phate_bandwidth_from_kth_neighbor() {
+        // Test that bandwidth is correctly computed from the kth neighbor
+        let knn_indices = vec![vec![0, 1, 2, 3]];
+        let knn_dists = vec![vec![0.0, 1.0, 4.0, 16.0]]; // squared distances
+
+        // Use k=2: bandwidth should be sqrt(1.0) = 1.0
+        let graph_k2 = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(2.0),
+            1.0,
+            1e-10,
+            "none",
+            true,
+        );
+
+        // Use k=3: bandwidth should be sqrt(4.0) = 2.0
+        let graph_k3 = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            3,
+            Some(2.0),
+            1.0,
+            1e-10,
+            "none",
+            true,
+        );
+
+        let adj_k2 = graph_to_adj(&graph_k2);
+        let adj_k3 = graph_to_adj(&graph_k3);
+
+        // Get affinities for near and far neighbors
+        let a1_k2 = adj_k2[0].iter().find(|(j, _)| *j == 1).unwrap().1; // near
+        let a2_k2 = adj_k2[0].iter().find(|(j, _)| *j == 2).unwrap().1; // far
+
+        let a1_k3 = adj_k3[0].iter().find(|(j, _)| *j == 1).unwrap().1; // near
+        let a2_k3 = adj_k3[0].iter().find(|(j, _)| *j == 2).unwrap().1; // far
+
+        println!(
+            "k=2: a1={:.6}, a2={:.6}, ratio={:.6}",
+            a1_k2,
+            a2_k2,
+            a1_k2 / a2_k2
+        );
+        println!(
+            "k=3: a1={:.6}, a2={:.6}, ratio={:.6}",
+            a1_k3,
+            a2_k3,
+            a1_k3 / a2_k3
+        );
+
+        // Smaller bandwidth (k=2) should give LARGER ratio between near and far neighbors
+        // (more peaked distribution)
+        let ratio_k2 = a1_k2 / a2_k2;
+        let ratio_k3 = a1_k3 / a2_k3;
+
+        assert!(
+        ratio_k2 > ratio_k3,
+        "Smaller bandwidth should give higher ratio (more peaked): ratio_k2={:.6} vs ratio_k3={:.6}",
+        ratio_k2, ratio_k3
+    );
+
+        // Also verify: larger bandwidth gives higher absolute affinity to nearest neighbor
+        assert!(
+            a1_k3 > a1_k2,
+            "Larger bandwidth should give higher absolute affinity to nearest neighbor"
+        );
+    }
+
+    #[test]
+    fn test_phate_bandwidth_scale_effect() {
+        let knn_indices = vec![vec![0, 1, 2, 3]];
+        let knn_dists = vec![vec![0.0, 1.0, 4.0, 9.0]];
+
+        // Test with bandwidth_scale = 1.0
+        let graph_scale1 = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(2.0),
+            1.0,
+            1e-10,
+            "none",
+            true,
+        );
+
+        // Test with bandwidth_scale = 2.0 (wider kernel)
+        let graph_scale2 = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(2.0),
+            2.0,
+            1e-10,
+            "none",
+            true,
+        );
+
+        let adj1 = graph_to_adj(&graph_scale1);
+        let adj2 = graph_to_adj(&graph_scale2);
+
+        // For a distant neighbor, wider bandwidth should give higher affinity
+        let a3_scale1 = adj1[0].iter().find(|(j, _)| *j == 3).unwrap().1;
+        let a3_scale2 = adj2[0].iter().find(|(j, _)| *j == 3).unwrap().1;
+
+        println!(
+            "scale=1.0: a3={:.6}, scale=2.0: a3={:.6}",
+            a3_scale1, a3_scale2
+        );
+        assert!(
+            a3_scale2 > a3_scale1,
+            "Larger bandwidth scale should give higher affinity to distant neighbors"
+        );
+    }
+
+    #[test]
+    fn test_phate_decay_parameter_effect() {
+        let knn_indices = vec![vec![0, 1, 2, 3, 4]];
+        let knn_dists = vec![vec![0.0, 1.0, 4.0, 9.0, 16.0]];
+
+        // Low decay (α=10): gentler falloff
+        let graph_low = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(1.0),
+            1.0,
+            1e-10,
+            "none",
+            true,
+        );
+
+        // High decay (α=80): sharper falloff
+        let graph_high = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(2.0),
+            1.0,
+            1e-10,
+            "none",
+            true,
+        );
+
+        let adj_low = graph_to_adj(&graph_low);
+        let adj_high = graph_to_adj(&graph_high);
+
+        // For distant neighbor, low decay should give higher affinity
+        if let Some(&(_, a4_low)) = adj_low[0].iter().find(|(j, _)| *j == 4) {
+            if let Some(&(_, a4_high)) = adj_high[0].iter().find(|(j, _)| *j == 4) {
+                println!("decay=10: a4={:.6}, decay=80: a4={:.6}", a4_low, a4_high);
+                assert!(
+                    a4_low > a4_high,
+                    "Lower decay should give higher affinity to distant neighbors"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_phate_thresholding() {
+        let knn_indices = vec![vec![0, 1, 2, 3, 4, 5]];
+        // Create distances that will result in some very small affinities
+        let knn_dists = vec![vec![0.0, 1.0, 4.0, 9.0, 16.0, 25.0]];
+
+        // Strict threshold - should exclude far neighbors
+        let graph_strict = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(2.0),
+            1.0,
+            1e-5, // higher threshold
+            "none",
+            true,
+        );
+
+        // Lenient threshold - should include more neighbors
+        let graph_lenient = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(2.0),
+            1.0,
+            1e-10, // lower threshold
+            "none",
+            true,
+        );
+
+        println!(
+            "Strict threshold edges: {}, Lenient threshold edges: {}",
+            graph_strict.values.len(),
+            graph_lenient.values.len()
+        );
+
+        assert!(
+            graph_lenient.values.len() >= graph_strict.values.len(),
+            "Lenient threshold should produce at least as many edges"
+        );
+    }
+
+    #[test]
+    fn test_phate_binary_connectivity() {
+        let knn_indices = vec![
+            vec![0, 1, 2, 3],
+            vec![1, 0, 2, 3],
+            vec![2, 0, 1, 3],
+            vec![3, 0, 1, 2],
+        ];
+        let knn_dists = vec![
+            vec![0.0, 1.0, 4.0, 9.0],
+            vec![0.0, 1.0, 4.0, 9.0],
+            vec![0.0, 4.0, 1.0, 9.0],
+            vec![0.0, 9.0, 4.0, 1.0],
+        ];
+
+        // decay = None should give binary connectivity
+        let graph = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            None, // binary mode
+            1.0,
+            1e-4,
+            "none",
+            true,
+        );
+
+        // All edges should have weight 1.0
+        for &v in &graph.values {
+            assert_relative_eq!(v, 1.0, epsilon = 1e-10);
+        }
+        println!(
+            "Binary connectivity: all {} edges have weight 1.0",
+            graph.values.len()
+        );
+    }
+
+    #[test]
+    fn test_phate_additive_symmetrisation() {
+        // Create an asymmetric scenario
+        let knn_indices = vec![
+            vec![0, 1, 2],
+            vec![1, 2, 0], // Note: 1 is closer to 2 than to 0
+            vec![2, 1, 0],
+        ];
+        let knn_dists = vec![
+            vec![0.0, 1.0, 4.0],
+            vec![0.0, 1.0, 9.0],
+            vec![0.0, 1.0, 4.0],
+        ];
+
+        let graph = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(2.0),
+            1.0,
+            1e-4,
+            "add", // additive symmetrisation
+            true,
+        );
+
+        // Check symmetry: K[i,j] should equal K[j,i]
+        let edges: std::collections::HashMap<(usize, usize), f64> = graph
+            .row_indices
+            .iter()
+            .zip(&graph.col_indices)
+            .zip(&graph.values)
+            .map(|((&i, &j), &v)| ((i, j), v))
+            .collect();
+
+        for (i, j) in [(0, 1), (0, 2), (1, 2)] {
+            if let (Some(&v_ij), Some(&v_ji)) = (edges.get(&(i, j)), edges.get(&(j, i))) {
+                assert_relative_eq!(v_ij, v_ji, epsilon = 1e-6, max_relative = 1e-6);
+                println!(
+                    "Symmetric edge ({},{}): v_ij={:.6}, v_ji={:.6}",
+                    i, j, v_ij, v_ji
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_phate_multiplicative_symmetrisation() {
+        let knn_indices = vec![vec![0, 1, 2], vec![1, 0, 2], vec![2, 0, 1]];
+        let knn_dists = vec![
+            vec![0.0, 1.0, 4.0],
+            vec![0.0, 1.0, 4.0],
+            vec![0.0, 4.0, 1.0],
+        ];
+
+        // Get asymmetric version first
+        let graph_asym = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(2.0),
+            1.0,
+            1e-10,
+            "none",
+            true,
+        );
+
+        // Get multiplicative symmetrized version
+        let graph_sym = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(2.0),
+            1.0,
+            1e-10,
+            "multiply",
+            true,
+        );
+
+        // Multiplicative should have fewer edges (only mutual neighbors)
+        assert!(
+            graph_sym.values.len() <= graph_asym.values.len(),
+            "Multiplicative symmetrisation should have <= edges"
+        );
+
+        // Check symmetry
+        let edges: std::collections::HashMap<(usize, usize), f64> = graph_sym
+            .row_indices
+            .iter()
+            .zip(&graph_sym.col_indices)
+            .zip(&graph_sym.values)
+            .map(|((&i, &j), &v)| ((i, j), v))
+            .collect();
+
+        for (&(i, j), &v_ij) in &edges {
+            if let Some(&v_ji) = edges.get(&(j, i)) {
+                assert_relative_eq!(v_ij, v_ji, epsilon = 1e-6);
+            }
+        }
+        println!(
+            "Multiplicative symmetrisation: {} edges",
+            graph_sym.values.len()
+        );
+    }
+
+    #[test]
+    fn test_phate_symmetrisation_comparison() {
+        let knn_indices = vec![
+            vec![0, 1, 2, 3],
+            vec![1, 0, 2, 3],
+            vec![2, 1, 0, 3],
+            vec![3, 0, 1, 2],
+        ];
+        let knn_dists = vec![
+            vec![0.0, 1.0, 4.0, 9.0],
+            vec![0.0, 2.0, 3.0, 8.0],
+            vec![0.0, 1.0, 5.0, 7.0],
+            vec![0.0, 6.0, 7.0, 8.0],
+        ];
+
+        let graph_none = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(2.0),
+            1.0,
+            1e-10,
+            "none",
+            true,
+        );
+        let graph_add = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(2.0),
+            1.0,
+            1e-10,
+            "add",
+            true,
+        );
+        let graph_mult = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(2.0),
+            1.0,
+            1e-10,
+            "multiply",
+            true,
+        );
+
+        println!("Asymmetric: {} edges", graph_none.values.len());
+        println!("Additive: {} edges", graph_add.values.len());
+        println!("Multiplicative: {} edges", graph_mult.values.len());
+
+        // Additive should preserve most edges
+        assert!(graph_add.values.len() >= graph_mult.values.len());
+
+        // All methods should produce reasonable number of edges
+        assert!(!graph_add.values.is_empty());
+        assert!(!graph_mult.values.is_empty());
+    }
+
+    #[test]
+    fn test_phate_affinity_formula_verification() {
+        // Manual verification of the affinity formula
+        let knn_indices = vec![vec![0, 1]];
+        let knn_dists = vec![vec![0.0, 4.0]]; // squared distance = 4, actual distance = 2
+
+        let decay = 2.0;
+        let bandwidth_scale = 1.0;
+
+        let graph = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(decay),
+            bandwidth_scale,
+            1e-10,
+            "none",
+            true,
+        );
+
+        // Manual calculation:
+        // bandwidth = sqrt(4.0) * 1.0 = 2.0
+        // distance = sqrt(4.0) = 2.0
+        // scaled = 2.0 / 2.0 = 1.0
+        // powered = 1.0^40 = 1.0
+        // affinity = exp(-1.0) ≈ 0.3678794411714423
+
+        let expected = (-1.0_f64).exp();
+        let actual = graph.values[0];
+
+        println!("Expected affinity: {:.10}", expected);
+        println!("Actual affinity: {:.10}", actual);
+
+        assert_relative_eq!(actual, expected, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn test_phate_zero_distance_handling() {
+        // Test that zero distances (duplicates) are handled correctly
+        let knn_indices = vec![vec![0, 1, 2]];
+        let knn_dists = vec![vec![0.0, 0.0, 1.0]]; // duplicate at distance 0
+
+        let graph = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            2,
+            Some(40.0),
+            1.0,
+            1e-4,
+            "none",
+            true,
+        );
+
+        // Find affinity for the zero-distance neighbor
+        let adj = graph_to_adj(&graph);
+        if let Some(&(j, v)) = adj[0].iter().find(|(j, _)| *j == 1) {
+            println!("Zero-distance neighbor {} has affinity {:.6}", j, v);
+            assert_relative_eq!(v, 1.0, epsilon = 1e-6,);
+        }
+    }
+
+    #[test]
+    fn test_phate_large_dataset_edge_count() {
+        // Test with a larger dataset to ensure edge count is reasonable
+        let n = 100;
+        let k = 10;
+
+        let knn_indices: Vec<Vec<usize>> = (0..n)
+            .map(|i| {
+                let mut indices: Vec<usize> = (0..k).map(|j| (i + j) % n).collect();
+                indices[0] = i; // self at position 0
+                indices
+            })
+            .collect();
+
+        let knn_dists: Vec<Vec<f64>> = (0..n)
+            .map(|_| {
+                let mut dists: Vec<f64> = (0..k).map(|j| (j as f64).powi(2)).collect();
+                dists[0] = 0.0; // self distance
+                dists
+            })
+            .collect();
+
+        let graph = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dists,
+            5,
+            Some(2.0),
+            1.0,
+            1e-10,
+            "add",
+            true,
+        );
+
+        println!(
+            "Large dataset: {} vertices, {} edges",
+            n,
+            graph.values.len()
+        );
+
+        // Should have roughly n * (k-1) edges (minus self-loops and thresholding)
+        assert!(!graph.values.is_empty());
+        assert!(graph.values.len() <= n * (k - 1) * 2); // *2 for symmetrisation
     }
 }
