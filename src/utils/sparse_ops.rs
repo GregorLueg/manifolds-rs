@@ -1,6 +1,7 @@
 //! Various sparse operations on the internal `CompressedSparseData` structure.
 //! These are designed to be highly efficient and use unsafe under the hood.
 
+use faer_traits::ComplexField;
 use num_traits::Float;
 use rayon::prelude::*;
 use rustc_hash::{FxBuildHasher, FxHashMap};
@@ -24,7 +25,7 @@ use crate::data::structures::*;
 /// A sparse row containing the summed columns for the specificied rows
 pub fn sparse_row_sum<T>(mat: &CompressedSparseData<T>, row_indices: &[usize]) -> SparseRow<T>
 where
-    T: Float + Sync + Add + PartialEq + Mul,
+    T: Float + Sync + Add + PartialEq + Mul + ComplexField,
 {
     let mut col_sums: FxHashMap<usize, T> =
         FxHashMap::with_capacity_and_hasher(mat.ncols(), FxBuildHasher);
@@ -62,7 +63,7 @@ where
 /// * `flags` - Boolean flags indicating which indices are active
 struct SparseAccumulator<T>
 where
-    T: Float + AddAssign,
+    T: Float + AddAssign + ComplexField,
 {
     values: Vec<T>,
     indices: Vec<usize>,
@@ -71,7 +72,7 @@ where
 
 impl<T> SparseAccumulator<T>
 where
-    T: Float + AddAssign,
+    T: Float + AddAssign + ComplexField,
 {
     /// Create a new sparse accumulator
     ///
@@ -97,7 +98,7 @@ where
     ///
     /// `idx` must be less than the size specified during construction
     #[inline]
-    unsafe fn add(&mut self, idx: usize, val: T) {
+    unsafe fn add_acc(&mut self, idx: usize, val: T) {
         if !*self.flags.get_unchecked(idx) {
             *self.flags.get_unchecked_mut(idx) = true;
             self.indices.push(idx);
@@ -151,7 +152,7 @@ pub fn csr_matmul_csr<T>(
     b: &CompressedSparseData<T>,
 ) -> CompressedSparseData<T>
 where
-    T: Sync + Send + Float + AddAssign,
+    T: Sync + Send + Float + AddAssign + ComplexField,
 {
     assert!(a.cs_type.is_csr() && b.cs_type.is_csr());
     assert_eq!(a.shape.1, b.shape.0, "Dimension mismatch");
@@ -185,7 +186,7 @@ where
                     for b_idx in b_start..b_end {
                         let j = *b_indices.add(b_idx);
                         let b_val = *b_data.add(b_idx);
-                        acc.add(j, a_val * b_val);
+                        acc.add_acc(j, a_val * b_val);
                     }
                 }
             }
@@ -223,7 +224,7 @@ where
 /// * `csr` - Mutable reference to the CSR matrix (modified in-place)
 pub fn normalise_csr_rows_l1<T>(csr: &mut CompressedSparseData<T>)
 where
-    T: Float + Send + Sync + Default + Copy + std::iter::Sum<T>,
+    T: Float + Send + Sync + Default + Copy + std::iter::Sum<T> + ComplexField,
 {
     assert!(csr.cs_type.is_csr(), "Matrix must be in CSR format");
     let nrows = csr.shape.0;

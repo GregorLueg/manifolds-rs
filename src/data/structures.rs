@@ -1,4 +1,6 @@
-use num_traits::Float;
+use faer::Mat;
+use faer_traits::ComplexField;
+use num_traits::{Float, Zero};
 use rayon::prelude::*;
 use std::ops::{Add, Mul};
 
@@ -94,7 +96,7 @@ impl CompressedSparseFormat {
 #[derive(Debug, Clone)]
 pub struct CompressedSparseData<T>
 where
-    T: Clone + Float,
+    T: Clone + Float + ComplexField,
 {
     pub data: Vec<T>,
     pub indices: Vec<usize>,
@@ -105,7 +107,7 @@ where
 
 impl<T> CompressedSparseData<T>
 where
-    T: Clone + Sync + Add + PartialEq + Mul + Float,
+    T: Clone + Sync + Add + PartialEq + Mul + Float + ComplexField,
 {
     /// Generate a nes CSC version of the matrix
     ///
@@ -156,6 +158,47 @@ where
         }
     }
 
+    /// Transpose the matrix, maintaining the same storage format
+    ///
+    /// * For CSR: creates CSR^T (which is naturally CSC, then converted back to
+    ///   CSR)
+    /// * For CSC: creates CSC^T (which is naturally CSR, then converted back to
+    ///   CSC)
+    ///
+    /// ### Returns
+    ///
+    /// Transposed matrix in the same storage format
+    pub fn transpose(&self) -> Self {
+        match self.cs_type {
+            CompressedSparseFormat::Csr => {
+                // CSR transposed is naturally CSC
+                // Just reinterpret the data with swapped dimensions
+                let as_csc = CompressedSparseData {
+                    data: self.data.clone(),
+                    indices: self.indices.clone(),
+                    indptr: self.indptr.clone(),
+                    cs_type: CompressedSparseFormat::Csc,
+                    shape: (self.shape.1, self.shape.0), // swap dimensions
+                };
+                // Convert back to CSR for consistency
+                csc_to_csr(&as_csc)
+            }
+            CompressedSparseFormat::Csc => {
+                // CSC transposed is naturally CSR
+                // Just reinterpret the data with swapped dimensions
+                let as_csr = CompressedSparseData {
+                    data: self.data.clone(),
+                    indices: self.indices.clone(),
+                    indptr: self.indptr.clone(),
+                    cs_type: CompressedSparseFormat::Csr,
+                    shape: (self.shape.1, self.shape.0), // swap dimensions
+                };
+                // Convert back to CSC for consistency
+                csr_to_csc(&as_csr)
+            }
+        }
+    }
+
     /// Returns the shape of the matrix
     ///
     /// ### Returns
@@ -191,6 +234,43 @@ where
     pub fn ncols(&self) -> usize {
         self.shape.1
     }
+
+    /// Converts the compressed sparse matrix to a dense matrix
+    ///
+    /// ### Returns
+    ///
+    /// The dense matrix
+    pub fn to_dense(&self) -> Mat<T> {
+        let (nrows, ncols) = self.shape;
+        let mut dense: Mat<T> = Mat::zeros(nrows, ncols);
+
+        match self.cs_type {
+            CompressedSparseFormat::Csr => {
+                for i in 0..nrows {
+                    let start = self.indptr[i];
+                    let end = self.indptr[i + 1];
+                    for idx in start..end {
+                        let j = self.indices[idx];
+                        let val = self.data[idx];
+                        dense[(i, j)] = val;
+                    }
+                }
+            }
+            CompressedSparseFormat::Csc => {
+                for j in 0..ncols {
+                    let start = self.indptr[j];
+                    let end = self.indptr[j + 1];
+                    for idx in start..end {
+                        let i = self.indices[idx];
+                        let val = self.data[idx];
+                        dense[(i, j)] = val;
+                    }
+                }
+            }
+        }
+
+        dense
+    }
 }
 
 /// Transforms a CompressedSparseData that is CSC to CSR
@@ -204,7 +284,7 @@ where
 ///
 pub fn csc_to_csr<T>(sparse_data: &CompressedSparseData<T>) -> CompressedSparseData<T>
 where
-    T: Clone + Sync + Add + PartialEq + Mul + Float,
+    T: Clone + Sync + Add + PartialEq + Mul + Float + ComplexField,
 {
     // early return if already in the desired format
     if sparse_data.cs_type.is_csr() {
@@ -262,7 +342,7 @@ where
 /// The data in CSC format, i.e., `CompressedSparseData`
 pub fn csr_to_csc<T>(sparse_data: &CompressedSparseData<T>) -> CompressedSparseData<T>
 where
-    T: Clone + Sync + Add + PartialEq + Mul + Float,
+    T: Clone + Sync + Add + PartialEq + Mul + Float + ComplexField,
 {
     // early return if already in the desired format
     if sparse_data.cs_type.is_csc() {
@@ -309,6 +389,42 @@ where
     }
 }
 
+/// Helper to
+pub fn to_dense<T>(sparse: &CompressedSparseData<T>) -> Mat<T>
+where
+    T: Clone + Float + Zero + ComplexField,
+{
+    let (nrows, ncols) = sparse.shape;
+    let mut dense = Mat::zeros(nrows, ncols);
+
+    match sparse.cs_type {
+        CompressedSparseFormat::Csr => {
+            for i in 0..nrows {
+                let start = sparse.indptr[i];
+                let end = sparse.indptr[i + 1];
+                for idx in start..end {
+                    let j = sparse.indices[idx];
+                    let val = sparse.data[idx];
+                    dense[(i, j)] = val;
+                }
+            }
+        }
+        CompressedSparseFormat::Csc => {
+            for j in 0..ncols {
+                let start = sparse.indptr[j];
+                let end = sparse.indptr[j + 1];
+                for idx in start..end {
+                    let i = sparse.indices[idx];
+                    let val = sparse.data[idx];
+                    dense[(i, j)] = val;
+                }
+            }
+        }
+    }
+
+    dense
+}
+
 ////////////////
 // SparseRows //
 ////////////////
@@ -344,7 +460,7 @@ pub struct SparseRow<T> {
 /// Matrix in CSR format with shape (n_samples, n_samples)
 pub fn coo_to_csr<T>(graph: &CoordinateList<T>) -> CompressedSparseData<T>
 where
-    T: Float + Send + Sync + Default,
+    T: Float + Send + Sync + Default + ComplexField,
 {
     let n = graph.n_samples;
     let nnz = graph.values.len();
@@ -389,7 +505,7 @@ where
 /// A CompressedSparseData structure in CSR format
 pub fn sparse_row_to_csr<T>(rows: &[SparseRow<T>], ncols: usize) -> CompressedSparseData<T>
 where
-    T: Clone + Float + Send + Sync,
+    T: Clone + Float + Send + Sync + ComplexField,
 {
     let nrows = rows.len();
     let nnz: usize = rows.iter().map(|row| row.data.len()).sum();

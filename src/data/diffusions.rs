@@ -1,13 +1,15 @@
 use ann_search_rs::utils::dist::{parse_ann_dist, Dist, SimdDistance};
 use faer::MatRef;
+use faer_traits::{ComplexField, RealField};
 use num_traits::Float;
 use rand::rngs::StdRng;
 use rand::seq::index::sample;
 use rand::SeedableRng;
 use rayon::prelude::*;
-use std::ops::Range;
+use std::ops::{AddAssign, Range};
 
 use crate::data::structures::*;
+use crate::utils::math::*;
 use crate::utils::sparse_ops::*;
 
 /// Build the row-stochastic Diffusion Operator P
@@ -25,7 +27,7 @@ use crate::utils::sparse_ops::*;
 /// Row-normalized CSR matrix
 pub fn build_diffusion_operator<T>(matrix: &CompressedSparseData<T>) -> CompressedSparseData<T>
 where
-    T: Float + Send + Sync + Default,
+    T: Float + Send + Sync + Default + ComplexField,
 {
     if !matrix.cs_type.is_csr() {
         panic!("Diffusion operator requires CSR format input");
@@ -233,7 +235,7 @@ fn build_landmarks_to_data<T>(
     n_landmarks: usize,
 ) -> CompressedSparseData<T>
 where
-    T: Float + Send + Sync,
+    T: Float + Send + Sync + ComplexField,
 {
     let n = assignments.len();
     let mut landmark_pts: Vec<Vec<usize>> = vec![Vec::new(); n_landmarks];
@@ -247,6 +249,154 @@ where
         .collect();
 
     sparse_row_to_csr(&rows, n)
+}
+
+/// Find the knee point in a curve using the method from PHATE
+///
+/// This identifies the "elbow" where the curve transitions from steep to flat.
+///
+/// ### Params
+///
+/// * `y` - The curve values (e.g., entropy at different t)
+///
+/// ### Returns
+///
+/// Index of the knee point
+pub fn find_knee_point<T>(y: &[T]) -> usize
+where
+    T: Float,
+{
+    let n = y.len();
+
+    if n < 3 {
+        panic!("Cannot find knee point on vector of length < 3");
+    }
+
+    // Use indices as x values
+    let x: Vec<T> = (0..n).map(|i| T::from(i).unwrap()).collect();
+
+    // Compute cumulative sums for linear fits
+    let mut sigma_x = Vec::with_capacity(n);
+    let mut sigma_y = Vec::with_capacity(n);
+    let mut sigma_xy = Vec::with_capacity(n);
+    let mut sigma_xx = Vec::with_capacity(n);
+
+    let mut sum_x = T::zero();
+    let mut sum_y = T::zero();
+    let mut sum_xy = T::zero();
+    let mut sum_xx = T::zero();
+
+    for i in 0..n {
+        sum_x = sum_x + x[i];
+        sum_y = sum_y + y[i];
+        sum_xy = sum_xy + x[i] * y[i];
+        sum_xx = sum_xx + x[i] * x[i];
+
+        sigma_x.push(sum_x);
+        sigma_y.push(sum_y);
+        sigma_xy.push(sum_xy);
+        sigma_xx.push(sum_xx);
+    }
+
+    // Compute forward fits (left of knee)
+    let mut mfwd = Vec::with_capacity(n - 1);
+    let mut bfwd = Vec::with_capacity(n - 1);
+
+    for i in 1..n {
+        let n_points = T::from(i + 1).unwrap();
+        let det = n_points * sigma_xx[i] - sigma_x[i] * sigma_x[i];
+
+        if det.abs() > T::epsilon() {
+            let m = (n_points * sigma_xy[i] - sigma_x[i] * sigma_y[i]) / det;
+            let b = (sigma_xx[i] * sigma_y[i] - sigma_x[i] * sigma_xy[i]) / det;
+            mfwd.push(m);
+            bfwd.push(b);
+        } else {
+            mfwd.push(T::zero());
+            bfwd.push(y[0]);
+        }
+    }
+
+    // Compute backward fits (right of knee) by reversing
+    let x_rev: Vec<T> = x.iter().rev().copied().collect();
+    let y_rev: Vec<T> = y.iter().rev().copied().collect();
+
+    let mut sigma_x_rev = Vec::with_capacity(n);
+    let mut sigma_y_rev = Vec::with_capacity(n);
+    let mut sigma_xy_rev = Vec::with_capacity(n);
+    let mut sigma_xx_rev = Vec::with_capacity(n);
+
+    sum_x = T::zero();
+    sum_y = T::zero();
+    sum_xy = T::zero();
+    sum_xx = T::zero();
+
+    for i in 0..n {
+        sum_x = sum_x + x_rev[i];
+        sum_y = sum_y + y_rev[i];
+        sum_xy = sum_xy + x_rev[i] * y_rev[i];
+        sum_xx = sum_xx + x_rev[i] * x_rev[i];
+
+        sigma_x_rev.push(sum_x);
+        sigma_y_rev.push(sum_y);
+        sigma_xy_rev.push(sum_xy);
+        sigma_xx_rev.push(sum_xx);
+    }
+
+    let mut mbck = Vec::with_capacity(n - 1);
+    let mut bbck = Vec::with_capacity(n - 1);
+
+    for i in 1..n {
+        let n_points = T::from(i + 1).unwrap();
+        let det = n_points * sigma_xx_rev[i] - sigma_x_rev[i] * sigma_x_rev[i];
+
+        if det.abs() > T::epsilon() {
+            let m = (n_points * sigma_xy_rev[i] - sigma_x_rev[i] * sigma_y_rev[i]) / det;
+            let b = (sigma_xx_rev[i] * sigma_y_rev[i] - sigma_x_rev[i] * sigma_xy_rev[i]) / det;
+            mbck.push(m);
+            bbck.push(b);
+        } else {
+            mbck.push(T::zero());
+            bbck.push(y_rev[0]);
+        }
+    }
+
+    mbck.reverse();
+    bbck.reverse();
+
+    // Compute error for each potential breakpoint
+    let mut error_curve = vec![T::infinity(); n];
+
+    for breakpt in 1..n - 1 {
+        let mut error = T::zero();
+
+        // Error from left fit
+        for i in 0..=breakpt {
+            let predicted = mfwd[breakpt - 1] * x[i] + bfwd[breakpt - 1];
+            error = error + (predicted - y[i]).abs();
+        }
+
+        // Error from right fit
+        for i in breakpt..n {
+            let predicted = mbck[breakpt - 1] * x[i] + bbck[breakpt - 1];
+            error = error + (predicted - y[i]).abs();
+        }
+
+        error_curve[breakpt] = error;
+    }
+
+    // Find minimum error
+    let mut min_idx = 1;
+    let mut min_error = error_curve[1];
+
+    for (i, &err) in error_curve.iter().enumerate().skip(1).take(n - 2) {
+        if err < min_error {
+            min_error = err;
+            min_idx = i;
+        }
+    }
+
+    min_idx
 }
 
 ////////////////////
@@ -264,7 +414,7 @@ where
 /// * `transitions`: P_nm for interpolation.
 pub struct PhateLandmarks<T>
 where
-    T: Float,
+    T: Float + ComplexField,
 {
     n_landmarks: usize,
     method: LandmarkMethod,
@@ -275,7 +425,15 @@ where
 
 impl<T> PhateLandmarks<T>
 where
-    T: Float + Send + Sync + Default + SimdDistance + std::iter::Sum<T>,
+    T: Float
+        + Send
+        + Sync
+        + Default
+        + SimdDistance
+        + std::iter::Sum<T>
+        + AddAssign
+        + ComplexField
+        + RealField,
 {
     /// Build landmarks from an existing diffusion operator
     ///
@@ -300,7 +458,7 @@ where
         distance: &str,
         seed: Option<usize>,
         n_svd: Option<usize>,
-    ) {
+    ) -> Self {
         let (data, n, dim) = matrix_to_flat(data);
         let landmark_method = parse_landmark_method(method, seed, n_svd).unwrap_or_default();
         let distance = parse_ann_dist(distance).unwrap_or_default();
@@ -352,10 +510,102 @@ where
         };
 
         let mut p_mn = build_landmarks_to_data(diffusion_op, &assignments, n_landmarks);
-        let mut p_nm = p_mn.transform();
+        let mut p_nm = p_mn.transpose();
 
         normalise_csr_rows_l1(&mut p_mn);
         normalise_csr_rows_l1(&mut p_nm);
+
+        let landmark_op = csr_matmul_csr(&p_mn, &p_nm);
+
+        Self {
+            n_landmarks,
+            method: landmark_method,
+            assignments,
+            landmark_op,
+            transitions: p_nm,
+        }
+    }
+
+    /// Power the landmark operator t times
+    ///
+    /// ### Params
+    ///
+    /// * `t` - Number of diffusion steps
+    ///
+    /// ### Returns
+    ///
+    /// L^t (n_landmarks × n_landmarks matrix)
+    pub fn power(&self, t: usize) -> CompressedSparseData<T>
+    where
+        T: AddAssign,
+    {
+        if t == 0 {
+            // Return identity matrix
+            unimplemented!("Return identity for t = 0");
+        } else if t == 1 {
+            return self.landmark_op.clone();
+        }
+
+        let mut result = self.landmark_op.clone();
+        for _ in 1..t {
+            result = csr_matmul_csr(&result, &self.landmark_op);
+        }
+        result
+    }
+
+    /// Compute diffusion at optimal time
+    ///
+    /// ### Params
+    ///
+    /// * `t_max` - Maximum time to search for knee point
+    ///
+    /// ### Returns
+    ///
+    /// P^t at optimal t
+    pub fn power_optimal(&self, t_max: usize) -> CompressedSparseData<T>
+    where
+        T: AddAssign,
+    {
+        let t_opt = self.find_optimal_t(t_max);
+        self.power(t_opt)
+    }
+
+    /// Interpolate landmark diffusion back to full data space
+    ///
+    /// Computes P^t ≈ P_nm × L^t
+    ///
+    /// ### Params
+    ///
+    /// * `landmark_diffusion` - L^t (n_landmarks × n_landmarks)
+    ///
+    /// ### Returns
+    ///
+    /// Full diffusion operator P^t (N × n_landmarks)
+    pub fn interpolate(
+        &self,
+        landmark_diffusion: &CompressedSparseData<T>,
+    ) -> CompressedSparseData<T>
+    where
+        T: AddAssign,
+    {
+        // P^t ≈ P_nm × L^t
+        // (N × n_landmarks) × (n_landmarks × n_landmarks) = (N × n_landmarks)
+        csr_matmul_csr(&self.transitions, landmark_diffusion)
+    }
+
+    /// Determine optimal diffusion time using Von Neumann entropy
+    ///
+    /// ### Params
+    ///
+    /// * `t_max` - Maximum time to search
+    ///
+    /// ### Returns
+    ///
+    /// Optimal t value (knee point of entropy curve)
+    pub fn find_optimal_t(&self, t_max: usize) -> usize {
+        let dense = self.landmark_op.to_dense();
+        let entropy = von_neumann_entropy(dense, t_max);
+        find_knee_point(&entropy)
     }
 }
 
