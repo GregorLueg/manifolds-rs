@@ -31,15 +31,30 @@ use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
 use crate::data::structures::*;
+
+use crate::training::tsne_optimiser::*;
+use crate::training::umap_optimisers::*;
+use crate::training::*;
+
+#[cfg(feature = "fft_tsne")]
+use crate::utils::fft::FftwFloat;
+
 #[cfg(feature = "parametric")]
 use crate::parametric::model::*;
 #[cfg(feature = "parametric")]
 use crate::parametric::parametric_train::*;
-use crate::training::tsne_optimiser::*;
-use crate::training::umap_optimisers::*;
-use crate::training::*;
-#[cfg(feature = "fft_tsne")]
-use crate::utils::fft::FftwFloat;
+
+///////////
+// Types //
+///////////
+
+/// Type for the pre-computed kNN
+///
+/// ### Fields
+///
+/// * `0` - Should be the indices of the nearest neighbours excluding self
+/// * `1` - Should be the distances to the nearest neighbours excluding self
+pub type PreComputedKnn<T> = Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>;
 
 /////////////
 // Helpers //
@@ -50,6 +65,9 @@ use crate::utils::fft::FftwFloat;
 /// ### Params
 ///
 /// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
 /// * `k` - Number of nearest neighbours (typically 15-50).
 /// * `ann_type` - Approximate nearest neighbour method: `"annoy"`, `"hnsw"`, or
 ///   `"nndescent"`. If you provide a weird string, the function will default
@@ -66,6 +84,7 @@ use crate::utils::fft::FftwFloat;
 #[allow(clippy::too_many_arguments)]
 pub fn construct_umap_graph<T>(
     data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
     k: usize,
     ann_type: String,
     umap_params: &UmapGraphParams<T>,
@@ -88,18 +107,30 @@ where
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
-    if verbose {
-        println!(
-            "Running approximate nearest neighbour search using {}...",
-            ann_type
-        );
-    }
+    let (knn_indices, knn_dist) = match precomputed_knn {
+        Some((indices, distances)) => {
+            if verbose {
+                println!("Using precomputed kNN graph...");
+            }
+            (indices, distances)
+        }
+        None => {
+            if verbose {
+                println!(
+                    "Running approximate nearest neighbour search using {}...",
+                    ann_type
+                );
+            }
+            let start_knn = Instant::now();
+            let result = run_ann_search(data, k, ann_type, nn_params, seed);
+            if verbose {
+                println!("kNN search done in: {:.2?}.", start_knn.elapsed());
+            }
+            result
+        }
+    };
 
-    let start_knn = Instant::now();
-    let (knn_indices, knn_dist) = run_ann_search(data, k, ann_type, nn_params, seed);
-
     if verbose {
-        println!("kNN search done in: {:.2?}.", start_knn.elapsed());
         println!("Constructing fuzzy simplicial set...");
     }
 
@@ -288,6 +319,9 @@ where
 /// ### Params
 ///
 /// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
 /// * `umap_params` - The UMAP parameters.
 /// * `seed` - Seed for reproducibility.
 /// * `verbose` - Controls verbosity of the function.
@@ -297,20 +331,9 @@ where
 /// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
 /// `n_dim` and inner vectors have length `n_samples`. Each outer element
 /// represents one embedding dimension.
-///
-/// ### Example
-///
-/// ```ignore
-/// use faer::Mat;
-/// let data = Mat::from_fn(1000, 128, |_, _| rand::random::<f32>());
-/// let embedding = umap(
-///     data.as_ref(),
-/// );
-/// // embedding[0] contains x-coordinates for all points
-/// // embedding[1] contains y-coordinates for all points
-/// ```
 pub fn umap<T>(
     data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
     umap_params: &UmapParams<T>,
     seed: usize,
     verbose: bool,
@@ -351,6 +374,7 @@ where
 
     let (graph, _, _) = construct_umap_graph(
         data,
+        precomputed_knn,
         umap_params.k,
         umap_params.ann_type.clone(),
         &umap_params.umap_graph_params,
@@ -535,6 +559,9 @@ where
 /// ### Params
 ///
 /// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
 /// * `perplexity` - Target perplexity (effective number of neighbours,
 ///   typical: 5-50)
 /// * `ann_type` - ANN algorithm: `"annoy"` (default), `"hnsw"` or `"nndescent"`
@@ -556,6 +583,7 @@ where
 /// n-1. This is standard practice in t-SNE implementations.
 pub fn construct_tsne_graph<T>(
     data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
     perplexity: T,
     ann_type: String,
     nn_params: &NearestNeighbourParams<T>,
@@ -577,36 +605,47 @@ where
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
-    // t-SNE rule of thumb: k = 3 * perplexity
-    let k_float = perplexity * T::from_f64(3.0).unwrap();
-    let k = k_float.to_usize().unwrap().max(5).min(data.nrows() - 1);
+    let (knn_indices, knn_dist) = match precomputed_knn {
+        Some((indices, distances)) => {
+            if verbose {
+                println!("Using precomputed kNN graph...");
+            }
+            (indices, distances)
+        }
+        None => {
+            let k_float = perplexity * T::from_f64(3.0).unwrap();
+            let k = k_float.to_usize().unwrap().max(5).min(data.nrows() - 1);
+
+            if verbose {
+                println!("Running kNN search (k={}) using {}...", k, ann_type);
+            }
+
+            let start_knn = Instant::now();
+            let result = run_ann_search(data, k, ann_type, nn_params, seed);
+
+            if verbose {
+                println!("kNN search done in: {:.2?}.", start_knn.elapsed());
+            }
+
+            result
+        }
+    };
 
     if verbose {
-        println!("Running kNN search (k={}) using {}...", k, ann_type);
-    }
-
-    let start_knn = Instant::now();
-    let (knn_indices, knn_dist) = run_ann_search(data, k, ann_type, nn_params, seed);
-
-    if verbose {
-        println!("kNN search done in: {:.2?}.", start_knn.elapsed());
         println!("Computing Gaussian affinities and symmetrising...");
     }
 
     let start_graph = Instant::now();
 
-    // 1. compute Conditional Probs P(j|i)
     let directed_graph = gaussian_knn_affinities(
         &knn_indices,
         &knn_dist,
         perplexity,
         T::from_f64(1e-5).unwrap(),
         200,
-        // euclidean is already squared; cosine not
         nn_params.dist_metric == "euclidean",
     );
 
-    // 2. symmetrise to Joint Probs P_ij
     let graph = symmetrise_affinities_tsne(directed_graph);
 
     if verbose {
@@ -643,6 +682,9 @@ where
 /// ### Params
 ///
 /// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
 /// * `params` - t-SNE parameters controlling algorithm behaviour
 /// * `approx_type` - Type of approximation to use for repulsive forces.
 ///   Options: `"barnes_hut" | "bh"`, `"fft"`
@@ -655,17 +697,6 @@ where
 /// `n_dim` and inner vectors have length `n_samples`. Each outer element
 /// represents one embedding dimension.
 ///
-/// ### Example
-///
-/// ```ignore
-/// use faer::Mat;
-/// let data = Mat::from_fn(1000, 128, |_, _| rand::random::<f32>());
-/// let params = TsneParams::new(None, None, None, None, None, None);
-/// let embedding = tsne(data.as_ref(), &params, 42, true);
-/// // embedding[0] contains x-coordinates for all points
-/// // embedding[1] contains y-coordinates for all points
-/// ```
-///
 /// ### References
 ///
 /// - van der Maaten & Hinton (2008): "Visualizing Data using t-SNE"
@@ -675,6 +706,7 @@ where
 #[cfg(feature = "fft_tsne")]
 pub fn tsne<T>(
     data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
     params: &TsneParams<T>,
     approx_type: &str,
     seed: usize,
@@ -705,6 +737,7 @@ where
     // 1. graph construction
     let (graph, _, _) = construct_tsne_graph(
         data,
+        precomputed_knn,
         params.perplexity,
         params.ann_type.clone(),
         &params.nn_params,
@@ -797,6 +830,9 @@ where
 /// ### Params
 ///
 /// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
 /// * `params` - t-SNE parameters controlling algorithm behaviour
 /// * `approx_type` - Type of approximation to use for repulsive forces.
 ///   Options: `"barnes_hut" | "bh"`, `"fft"`
@@ -809,17 +845,6 @@ where
 /// `n_dim` and inner vectors have length `n_samples`. Each outer element
 /// represents one embedding dimension.
 ///
-/// ### Example
-///
-/// ```ignore
-/// use faer::Mat;
-/// let data = Mat::from_fn(1000, 128, |_, _| rand::random::<f32>());
-/// let params = TsneParams::new(None, None, None, None, None, None);
-/// let embedding = tsne(data.as_ref(), &params, 42, true);
-/// // embedding[0] contains x-coordinates for all points
-/// // embedding[1] contains y-coordinates for all points
-/// ```
-///
 /// ### References
 ///
 /// - van der Maaten & Hinton (2008): "Visualizing Data using t-SNE"
@@ -829,6 +854,7 @@ where
 #[cfg(not(feature = "fft_tsne"))]
 pub fn tsne<T>(
     data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
     params: &TsneParams<T>,
     approx_type: &str,
     seed: usize,
@@ -858,6 +884,7 @@ where
     // 1. graph construction
     let (graph, _, _) = construct_tsne_graph(
         data,
+        precomputed_knn,
         params.perplexity,
         params.ann_type.clone(),
         &params.nn_params,
@@ -1066,6 +1093,9 @@ where
 /// ### Params
 ///
 /// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
 /// * `umap_params` - Configuration parameters for parametric UMAP
 /// * `device` - Burn backend device for neural network training
 /// * `seed` - Random seed for reproducibility
@@ -1076,30 +1106,9 @@ where
 /// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
 /// `n_dim` and inner vectors have length `n_samples`. Each outer element
 /// represents one embedding dimension.
-///
-/// ### Example
-///
-/// ```ignore
-/// use burn::backend::ndarray::{NdArray, NdArrayDevice};
-/// use burn::backend::Autodiff;
-/// use faer::Mat;
-///
-/// let data = Mat::from_fn(1000, 128, |_, _| rand::random::<f64>());
-/// let params = ParametricUmapParams::default_2d(None, None, None, None, None, None, None);
-/// let device = NdArrayDevice::Cpu;
-///
-/// let embedding = parametric_umap::<f64, Autodiff<NdArray>>(
-///     data.as_ref(),
-///     &params,
-///     &device,
-///     42,
-///     true,
-/// );
-/// // embedding[0] contains x-coordinates for all points
-/// // embedding[1] contains y-coordinates for all points
-/// ```
 pub fn parametric_umap<T, B>(
     data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
     umap_params: &ParametricUmapParams<T>,
     device: &B::Device,
     seed: usize,
@@ -1133,6 +1142,7 @@ where
 
     let (graph, _, _) = construct_umap_graph(
         data,
+        precomputed_knn,
         umap_params.k,
         umap_params.ann_type.clone(),
         &umap_params.umap_graph_params,
@@ -1223,6 +1233,7 @@ where
 
     let (graph, _, _) = construct_umap_graph(
         data,
+        None,
         umap_params.k,
         umap_params.ann_type.clone(),
         &umap_params.umap_graph_params,

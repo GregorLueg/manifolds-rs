@@ -388,6 +388,7 @@ fn tsne_integration_05_initialisation() {
     let nn_params = NearestNeighbourParams::default();
     let (graph, _, _) = construct_tsne_graph(
         data.as_ref(),
+        None,
         30.0,
         "hnsw".to_string(),
         &nn_params,
@@ -454,7 +455,7 @@ fn tsne_integration_06_optimisation_quality() {
         Some(3),
     );
 
-    let embedding = tsne(data.as_ref(), &params, "bh", 42, true);
+    let embedding = tsne(data.as_ref(), None, &params, "bh", 42, true);
 
     // Check finite
     let mut nan_count = 0;
@@ -562,8 +563,8 @@ fn tsne_integration_07_reproducibility() {
         Some(3),
     );
 
-    let embd1 = tsne(data.as_ref(), &params, "bh", 42, false);
-    let embd2 = tsne(data.as_ref(), &params, "bh", 42, false);
+    let embd1 = tsne(data.as_ref(), None, &params, "bh", 42, false);
+    let embd2 = tsne(data.as_ref(), None, &params, "bh", 42, false);
 
     let mut max_diff: f64 = 0.0;
     for i in 0..embd1[0].len() {
@@ -601,8 +602,8 @@ fn tsne_integration_08_different_seeds() {
         Some(3),
     );
 
-    let embd1 = tsne(data.as_ref(), &params, "bh", 42, false);
-    let embd2 = tsne(data.as_ref(), &params, "bh", 123, false);
+    let embd1 = tsne(data.as_ref(), None, &params, "bh", 42, false);
+    let embd2 = tsne(data.as_ref(), None, &params, "bh", 123, false);
 
     let mut max_diff: f64 = 0.0;
     for i in 0..embd1[0].len() {
@@ -643,7 +644,7 @@ fn tsne_integration_09_fft_optimisation_quality() {
         Some(3),
     );
 
-    let embedding = tsne(data.as_ref(), &params, "fft", 42, true);
+    let embedding = tsne(data.as_ref(), None, &params, "fft", 42, true);
 
     // Check finite
     let mut nan_count = 0;
@@ -750,8 +751,8 @@ fn tsne_integration_10_fft_reproducibility() {
         Some(3),
     );
 
-    let embd1 = tsne(data.as_ref(), &params, "fft", 123, false);
-    let embd2 = tsne(data.as_ref(), &params, "fft", 123, false);
+    let embd1 = tsne(data.as_ref(), None, &params, "fft", 123, false);
+    let embd2 = tsne(data.as_ref(), None, &params, "fft", 123, false);
 
     let mut max_diff: f64 = 0.0;
     for i in 0..embd1[0].len() {
@@ -790,8 +791,8 @@ fn tsne_integration_11_fft_different_seeds() {
         Some(3),
     );
 
-    let embd1 = tsne(data.as_ref(), &params, "fft", 42, false);
-    let embd2 = tsne(data.as_ref(), &params, "fft", 123, false);
+    let embd1 = tsne(data.as_ref(), None, &params, "fft", 42, false);
+    let embd2 = tsne(data.as_ref(), None, &params, "fft", 123, false);
 
     let mut max_diff: f64 = 0.0;
     for i in 0..embd1[0].len() {
@@ -832,8 +833,8 @@ fn tsne_integration_12_bh_vs_fft_comparison() {
         Some(3),
     );
 
-    let embd_bh = tsne(data.as_ref(), &params, "bh", 42, false);
-    let embd_fft = tsne(data.as_ref(), &params, "fft", 42, false);
+    let embd_bh = tsne(data.as_ref(), None, &params, "bh", 42, false);
+    let embd_fft = tsne(data.as_ref(), None, &params, "fft", 42, false);
 
     // Helper to compute cluster separation
     let compute_separation = |embedding: &[Vec<f64>]| -> f64 {
@@ -900,4 +901,106 @@ fn tsne_integration_12_bh_vs_fft_comparison() {
         sep_ratio
     );
     println!("✓ Both methods produce comparable quality");
+}
+
+/// Test 13: Verify precomputed kNN produces identical results - tSNE
+#[test]
+fn tsne_integration_13_precomputed_knn() {
+    let (data, labels) = create_diagnostic_data(100, 10, 42);
+    let perplexity = 20.0;
+    let k = (perplexity * 3.0) as usize;
+
+    println!("\n=== t-SNE DIAGNOSTIC 13: Precomputed kNN ===");
+
+    // Run kNN search separately
+    let nn_params = NearestNeighbourParams::default();
+    let (knn_indices, knn_dist) =
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+
+    println!(
+        "Precomputed kNN: {} neighbours per point",
+        knn_indices[0].len()
+    );
+
+    // Run t-SNE with precomputed kNN
+    let params = TsneParams::new(
+        Some(2),
+        Some(perplexity),
+        Some(1e-4),
+        Some(200.0),
+        Some(300),
+        None,
+        Some(0.5),
+        Some(3),
+    );
+
+    let embedding_precomputed = tsne(
+        data.as_ref(),
+        Some((knn_indices.clone(), knn_dist.clone())),
+        &params,
+        "bh",
+        42,
+        false,
+    );
+
+    // Run t-SNE without precomputed kNN (internal computation)
+    let embedding_internal = tsne(data.as_ref(), None, &params, "bh", 42, false);
+
+    // Compare results
+    let mut max_diff: f64 = 0.0;
+    for i in 0..embedding_precomputed[0].len() {
+        for dim in 0..2 {
+            let diff = (embedding_precomputed[dim][i] - embedding_internal[dim][i]).abs();
+            max_diff = max_diff.max(diff);
+        }
+    }
+
+    println!(
+        "Maximum coordinate difference (precomputed vs internal): {:.10}",
+        max_diff
+    );
+
+    assert!(
+        max_diff < 1e-6,
+        "Precomputed kNN should produce identical results to internal kNN, but max diff = {}",
+        max_diff
+    );
+
+    // Verify cluster separation with precomputed kNN
+    let mut cluster_centres: FxHashMap<usize, (f64, f64, usize)> = FxHashMap::default();
+
+    for (i, &label) in labels.iter().enumerate() {
+        let entry = cluster_centres.entry(label).or_insert((0.0, 0.0, 0));
+        entry.0 += embedding_precomputed[0][i];
+        entry.1 += embedding_precomputed[1][i];
+        entry.2 += 1;
+    }
+
+    let mut centroids: Vec<(usize, f64, f64)> = Vec::new();
+    for (label, (sum_x, sum_y, count)) in cluster_centres {
+        centroids.push((label, sum_x / count as f64, sum_y / count as f64));
+    }
+
+    let mut min_inter_dist = f64::INFINITY;
+    for i in 0..centroids.len() {
+        for j in (i + 1)..centroids.len() {
+            let dist = ((centroids[i].1 - centroids[j].1).powi(2)
+                + (centroids[i].2 - centroids[j].2).powi(2))
+            .sqrt();
+            min_inter_dist = min_inter_dist.min(dist);
+        }
+    }
+
+    println!(
+        "Minimum inter-cluster distance with precomputed kNN: {:.3}",
+        min_inter_dist
+    );
+
+    assert!(
+        min_inter_dist > 0.5,
+        "Clusters should be separated with precomputed kNN: min dist = {:.3}",
+        min_inter_dist
+    );
+
+    println!("✓ Precomputed kNN produces identical and valid embeddings");
 }
