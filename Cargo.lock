@@ -3916,7 +3916,7 @@ dependencies = [
 
 [[package]]
 name = "manifolds-rs"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "ann-search-rs",
  "approx",

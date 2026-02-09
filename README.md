@@ -84,6 +84,108 @@ manifold-rs = { version = "0.1.5", features = [ "fft_tsne" ] }
 Please use version `0.1.3` and higher. These ones are not extensively tested
 against real data.
 
+## Usage
+
+### UMAP Example
+```rust
+use manifolds_rs::prelude::*;
+
+// Generate synthetic clustered data
+let (data, labels) = generate_clustered_data(
+    1000,  // n_samples
+    50,    // dimensionality
+    5,     // n_clusters
+    42,    // seed
+);
+
+// Configure UMAP parameters
+let params = UmapParams::default_2d(
+    Some(2),     // n_dim (output dimensions)
+    Some(15),    // k (number of neighbours)
+    Some(0.1),   // min_dist
+    Some(1.0),   // spread
+);
+
+// Run UMAP
+let embedding = umap(
+    data.as_ref(),
+    None,        // precomputed kNN (None = compute internally)
+    &params,
+    42,          // seed
+    true,        // verbose
+);
+
+// embedding[0] contains x-coordinates
+// embedding[1] contains y-coordinates
+```
+
+### t-SNE Example
+```rust
+use manifolds_rs::prelude::*;
+
+// Generate synthetic clustered data
+let (data, labels) = generate_clustered_data(
+    1000,  // n_samples
+    50,    // dimensionality
+    5,     // n_clusters
+    42,    // seed
+);
+
+// Configure t-SNE parameters
+let params = TsneParams::new(
+    Some(2),      // n_dim (output dimensions)
+    Some(30.0),   // perplexity
+    Some(1e-4),   // init_range
+    Some(200.0),  // learning_rate
+    Some(1000),   // n_epochs
+    None,         // ann_type (None = default "hnsw")
+    Some(0.5),    // theta (Barnes-Hut angle)
+    Some(3),      // n_jobs
+);
+
+// Run t-SNE (Barnes-Hut)
+let embedding = tsne(
+    data.as_ref(),
+    None,        // precomputed kNN (None = compute internally)
+    &params,
+    "bh",        // approximation type: "bh" or "fft" (requires fft_tsne feature)
+    42,          // seed
+    true,        // verbose
+);
+
+// embedding[0] contains x-coordinates
+// embedding[1] contains y-coordinates
+```
+
+### Using Precomputed k-NN
+
+Both algorithms support precomputed k-nearest neighbour graphs for efficiency when running multiple embeddings:
+```rust
+use manifolds_rs::prelude::*;
+
+let (data, _) = generate_clustered_data(500, 50, 5, 42);
+
+// Compute k-NN once
+let nn_params = NearestNeighbourParams::default();
+let (knn_indices, knn_dist) = run_ann_search(
+    data.as_ref(),
+    15,              // k
+    "hnsw".to_string(),
+    &nn_params,
+    42,              // seed
+);
+
+// Use precomputed k-NN for UMAP
+let params = UmapParams::default_2d(None, Some(15), None, None);
+let embedding = umap(
+    data.as_ref(),
+    Some((knn_indices.clone(), knn_dist.clone())),
+    &params,
+    42,
+    false,
+);
+```
+
 ## Licence
 
 MIT Licence
