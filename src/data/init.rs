@@ -76,11 +76,11 @@ where
 /// ### Returns
 ///
 /// Normalised Laplacian as CSR matrix
-fn graph_to_normalised_laplacian<T>(graph: &SparseGraph<T>) -> CompressedSparseData<f64>
+fn graph_to_normalised_laplacian<T>(graph: &CoordinateList<T>) -> CompressedSparseData<f64>
 where
     T: Float,
 {
-    let n = graph.n_vertices;
+    let n = graph.n_samples;
 
     // Build adjacency list and compute degrees in one pass
     let mut adj: Vec<Vec<(usize, f64)>> = vec![vec![]; n];
@@ -141,11 +141,11 @@ where
 /// ### Returns
 ///
 /// Vector of components, where each component is a vector of vertex indices
-fn find_connected_components<T>(graph: &SparseGraph<T>) -> Vec<Vec<usize>>
+fn find_connected_components<T>(graph: &CoordinateList<T>) -> Vec<Vec<usize>>
 where
     T: Float,
 {
-    let n = graph.n_vertices;
+    let n = graph.n_samples;
 
     // Build adjacency list
     let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
@@ -200,7 +200,7 @@ where
 ///
 /// Initial embedding coordinates
 fn multi_component_init<T>(
-    graph: &SparseGraph<T>,
+    graph: &CoordinateList<T>,
     components: &[Vec<usize>],
     n_comp: usize,
     seed: u64,
@@ -209,7 +209,7 @@ fn multi_component_init<T>(
 where
     T: Float + FromPrimitive + Send + Sync + Sum,
 {
-    let n = graph.n_vertices;
+    let n = graph.n_samples;
     let n_components = components.len();
     let mut embedding = vec![vec![T::zero(); n_comp]; n];
     let mut rng = StdRng::seed_from_u64(seed);
@@ -279,11 +279,11 @@ where
 /// ### Returns
 ///
 /// Subgraph with locally indexed vertices
-fn extract_subgraph<T>(graph: &SparseGraph<T>, component: &[usize]) -> SparseGraph<T>
+fn extract_subgraph<T>(graph: &CoordinateList<T>, component: &[usize]) -> CoordinateList<T>
 where
     T: Float,
 {
-    let n = graph.n_vertices;
+    let n = graph.n_samples;
 
     // Use Vec for O(1) lookup - faster than HashMap for dense component indices
     let mut global_to_local = vec![None; n];
@@ -308,11 +308,11 @@ where
         }
     }
 
-    SparseGraph {
+    CoordinateList {
         row_indices,
         col_indices,
         values,
-        n_vertices: component.len(),
+        n_samples: component.len(),
     }
 }
 
@@ -333,7 +333,7 @@ where
 ///
 /// Initial embedding coordinates
 fn single_component_spectral<T>(
-    graph: &SparseGraph<T>,
+    graph: &CoordinateList<T>,
     n_comp: usize,
     seed: u64,
     range: T,
@@ -341,7 +341,7 @@ fn single_component_spectral<T>(
 where
     T: Float + FromPrimitive + Send + Sync + Sum,
 {
-    let n = graph.n_vertices;
+    let n = graph.n_samples;
 
     // Handle trivially small graphs
     if n <= n_comp + 1 {
@@ -470,7 +470,7 @@ where
 ///
 /// Initial embedding coordinates for each vertex
 pub fn spectral_layout<T>(
-    graph: &SparseGraph<T>,
+    graph: &CoordinateList<T>,
     n_comp: usize,
     seed: u64,
     range: Option<T>,
@@ -654,7 +654,7 @@ pub fn initialise_embedding<T>(
     init_method: &EmbdInit<T>,
     n_comp: usize,
     seed: u64,
-    graph: &SparseGraph<T>,
+    graph: &CoordinateList<T>,
     data: MatRef<T>,
 ) -> Vec<Vec<T>>
 where
@@ -735,11 +735,11 @@ mod test_init {
     #[test]
     fn test_graph_to_normalised_laplacian_simple() {
         // Simple graph: 0 <-> 1 with equal weights
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 1],
             col_indices: vec![1, 0],
             values: vec![1.0, 1.0],
-            n_vertices: 2,
+            n_samples: 2,
         };
 
         let laplacian = graph_to_normalised_laplacian(&graph);
@@ -754,11 +754,11 @@ mod test_init {
     #[test]
     fn test_graph_to_normalised_laplacian_isolated_vertex() {
         // Graph with isolated vertex
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0],
             col_indices: vec![1],
             values: vec![1.0],
-            n_vertices: 3,
+            n_samples: 3,
         };
 
         let laplacian = graph_to_normalised_laplacian(&graph);
@@ -770,11 +770,11 @@ mod test_init {
     #[test]
     fn test_spectral_layout_basic() {
         // Create a simple connected graph
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 0, 1, 1, 2, 2],
             col_indices: vec![1, 2, 0, 2, 0, 1],
             values: vec![1.0, 0.5, 1.0, 1.0, 0.5, 1.0],
-            n_vertices: 3,
+            n_samples: 3,
         };
 
         let embedding = spectral_layout(&graph, 2, 42, None);
@@ -799,11 +799,11 @@ mod test_init {
     #[test]
     fn test_spectral_layout_range_bound() {
         // Create a simple connected graph
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 0, 1, 1, 2, 2],
             col_indices: vec![1, 2, 0, 2, 0, 1],
             values: vec![1.0, 0.5, 1.0, 1.0, 0.5, 1.0],
-            n_vertices: 3,
+            n_samples: 3,
         };
 
         let embedding = spectral_layout(&graph, 2, 42, Some(1.0));
@@ -827,11 +827,11 @@ mod test_init {
 
     #[test]
     fn test_spectral_layout_reproducibility() {
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 1, 2],
             col_indices: vec![1, 2, 0],
             values: vec![1.0, 1.0, 1.0],
-            n_vertices: 3,
+            n_samples: 3,
         };
 
         let embd1 = spectral_layout(&graph, 2, 42, None);
@@ -842,11 +842,11 @@ mod test_init {
 
     #[test]
     fn test_spectral_layout_higher_dimensions() {
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 1, 2, 3],
             col_indices: vec![1, 2, 3, 0],
             values: vec![1.0; 4],
-            n_vertices: 4,
+            n_samples: 4,
         };
 
         let embedding = spectral_layout(&graph, 3, 42, None);
@@ -911,11 +911,11 @@ mod test_init {
 
     #[test]
     fn test_spectral_layout_single_vertex() {
-        let graph: SparseGraph<f32> = SparseGraph {
+        let graph: CoordinateList<f32> = CoordinateList {
             row_indices: vec![],
             col_indices: vec![],
             values: vec![],
-            n_vertices: 1,
+            n_samples: 1,
         };
 
         let embedding = spectral_layout(&graph, 2, 42, None);
@@ -1006,11 +1006,11 @@ mod test_init {
 
     #[test]
     fn test_initialise_embedding_spectral() {
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 1],
             col_indices: vec![1, 0],
             values: vec![1.0, 1.0],
-            n_vertices: 2,
+            n_samples: 2,
         };
         let data = faer::mat![[1.0, 2.0], [3.0, 4.0],];
 
@@ -1028,11 +1028,11 @@ mod test_init {
 
     #[test]
     fn test_initialise_embedding_random() {
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![],
             col_indices: vec![],
             values: vec![],
-            n_vertices: 3,
+            n_samples: 3,
         };
         let data = faer::mat![[1.0, 2.0], [3.0, 4.0], [5.0, 6.0],];
 
@@ -1050,11 +1050,11 @@ mod test_init {
 
     #[test]
     fn test_initialise_embedding_pca() {
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![],
             col_indices: vec![],
             values: vec![],
-            n_vertices: 3,
+            n_samples: 3,
         };
         let data = faer::mat![[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0],];
 
