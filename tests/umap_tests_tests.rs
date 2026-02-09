@@ -175,6 +175,7 @@ fn umap_integration_03_graph_connectivity() {
 
     let (graph, _, _) = construct_umap_graph(
         data.as_ref(),
+        None,
         k,
         "hnsw".to_string(),
         &umap_params,
@@ -298,6 +299,7 @@ fn umap_integration_04_initialisation() {
 
     let (graph, _, _) = construct_umap_graph(
         data.as_ref(),
+        None,
         15,
         "hnsw".to_string(),
         &umap_params,
@@ -441,7 +443,7 @@ fn umap_integration_05_optimisation_quality() {
             None,
         );
 
-        let embedding = umap(data.as_ref(), &params, 42, false);
+        let embedding = umap(data.as_ref(), None, &params, 42, false);
 
         // Check that coordinates are finite
         let mut has_nan = false;
@@ -617,8 +619,8 @@ fn umap_integration_06_reproducibility() {
         None,
     );
 
-    let embedding1 = umap(data.as_ref(), &params, 42, false);
-    let embedding2 = umap(data.as_ref(), &params, 42, false);
+    let embedding1 = umap(data.as_ref(), None, &params, 42, false);
+    let embedding2 = umap(data.as_ref(), None, &params, 42, false);
 
     // Check if embeddings are identical
     let mut max_diff: f64 = 0.0;
@@ -641,4 +643,106 @@ fn umap_integration_06_reproducibility() {
     );
 
     println!("✓ UMAP is reproducible with same seed");
+}
+
+/// Test 7: Verify precomputed kNN produces identical results
+#[test]
+fn umap_integration_07_precomputed_knn() {
+    let (data, labels) = create_diagnostic_data(50, 10, 42);
+    let k = 15;
+
+    println!("\n=== DIAGNOSTIC 7: Precomputed kNN ===");
+
+    // First, run kNN search separately
+    let nn_params = NearestNeighbourParams::default();
+    let (knn_indices, knn_dist) =
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+
+    println!(
+        "Precomputed kNN: {} neighbours per point",
+        knn_indices[0].len()
+    );
+
+    // Run UMAP with precomputed kNN
+    let params = UmapParams::new(
+        Some(2),
+        Some(k),
+        Some("adam_parallel".to_string()),
+        None,
+        Some("spectral".to_string()),
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+
+    let embedding_precomputed = umap(
+        data.as_ref(),
+        Some((knn_indices.clone(), knn_dist.clone())),
+        &params,
+        42,
+        false,
+    );
+
+    // Run UMAP without precomputed kNN (should compute internally)
+    let embedding_internal = umap(data.as_ref(), None, &params, 42, false);
+
+    // Compare results
+    let mut max_diff: f64 = 0.0;
+    for i in 0..embedding_precomputed[0].len() {
+        for dim in 0..2 {
+            let diff = (embedding_precomputed[dim][i] - embedding_internal[dim][i]).abs();
+            max_diff = max_diff.max(diff);
+        }
+    }
+
+    println!(
+        "Maximum coordinate difference (precomputed vs internal): {:.10}",
+        max_diff
+    );
+
+    assert!(
+        max_diff < 1e-6,
+        "Precomputed kNN should produce identical results to internal kNN, but max diff = {}",
+        max_diff
+    );
+
+    // Verify cluster separation with precomputed kNN
+    let mut cluster_centres: FxHashMap<usize, (f64, f64, usize)> = FxHashMap::default();
+
+    for (i, &label) in labels.iter().enumerate() {
+        let entry = cluster_centres.entry(label).or_insert((0.0, 0.0, 0));
+        entry.0 += embedding_precomputed[0][i];
+        entry.1 += embedding_precomputed[1][i];
+        entry.2 += 1;
+    }
+
+    let mut centroids: Vec<(usize, f64, f64)> = Vec::new();
+    for (label, (sum_x, sum_y, count)) in cluster_centres {
+        centroids.push((label, sum_x / count as f64, sum_y / count as f64));
+    }
+
+    let mut min_inter_dist = f64::INFINITY;
+    for i in 0..centroids.len() {
+        for j in (i + 1)..centroids.len() {
+            let dist = ((centroids[i].1 - centroids[j].1).powi(2)
+                + (centroids[i].2 - centroids[j].2).powi(2))
+            .sqrt();
+            min_inter_dist = min_inter_dist.min(dist);
+        }
+    }
+
+    println!(
+        "Minimum inter-cluster distance with precomputed kNN: {:.3}",
+        min_inter_dist
+    );
+
+    assert!(
+        min_inter_dist > 0.5,
+        "Clusters should be separated with precomputed kNN: min dist = {:.3}",
+        min_inter_dist
+    );
+
+    println!("✓ Precomputed kNN produces identical and valid embeddings");
 }
