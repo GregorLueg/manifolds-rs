@@ -818,6 +818,9 @@ where
 /// ### Params
 ///
 /// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
 /// * `params` - t-SNE parameters controlling algorithm behaviour
 /// * `approx_type` - Type of approximation to use for repulsive forces.
 ///   Options: `"barnes_hut" | "bh"`, `"fft"`
@@ -1078,6 +1081,9 @@ where
 /// ### Params
 ///
 /// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
 /// * `umap_params` - Configuration parameters for parametric UMAP
 /// * `device` - Burn backend device for neural network training
 /// * `seed` - Random seed for reproducibility
@@ -1088,30 +1094,9 @@ where
 /// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
 /// `n_dim` and inner vectors have length `n_samples`. Each outer element
 /// represents one embedding dimension.
-///
-/// ### Example
-///
-/// ```ignore
-/// use burn::backend::ndarray::{NdArray, NdArrayDevice};
-/// use burn::backend::Autodiff;
-/// use faer::Mat;
-///
-/// let data = Mat::from_fn(1000, 128, |_, _| rand::random::<f64>());
-/// let params = ParametricUmapParams::default_2d(None, None, None, None, None, None, None);
-/// let device = NdArrayDevice::Cpu;
-///
-/// let embedding = parametric_umap::<f64, Autodiff<NdArray>>(
-///     data.as_ref(),
-///     &params,
-///     &device,
-///     42,
-///     true,
-/// );
-/// // embedding[0] contains x-coordinates for all points
-/// // embedding[1] contains y-coordinates for all points
-/// ```
 pub fn parametric_umap<T, B>(
     data: MatRef<T>,
+    precomputed_knn: Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>,
     umap_params: &ParametricUmapParams<T>,
     device: &B::Device,
     seed: usize,
@@ -1145,7 +1130,7 @@ where
 
     let (graph, _, _) = construct_umap_graph(
         data,
-        None,
+        precomputed_knn,
         umap_params.k,
         umap_params.ann_type.clone(),
         &umap_params.umap_graph_params,
