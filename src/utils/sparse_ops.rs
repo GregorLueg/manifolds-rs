@@ -9,6 +9,39 @@ use std::ops::{Add, AddAssign, Mul};
 
 use crate::data::structures::*;
 
+////////////////////
+// Row extraction //
+////////////////////
+
+/// Extracts a row from a compressed sparse matrix and returns it as a dense
+/// vector.
+///
+/// ### Params
+///
+/// * `matrix` - The compressed sparse matrix to extract the row from
+/// * `row` - The index of the row to extract
+///
+/// ### Returns
+///
+/// A dense vector containing the values of the specified row
+pub fn csr_row_to_dense<T>(matrix: &CompressedSparseData<T>, row: usize) -> Vec<T>
+where
+    T: Float + Clone + ComplexField,
+{
+    let ncols = matrix.shape.1;
+    let mut dense = vec![T::zero(); ncols];
+
+    let start = matrix.indptr[row];
+    let end = matrix.indptr[row + 1];
+
+    for idx in start..end {
+        let col = matrix.indices[idx];
+        dense[col] = matrix.data[idx];
+    }
+
+    dense
+}
+
 /////////////////////
 // Sparse row sums //
 /////////////////////
@@ -242,5 +275,260 @@ where
                 *val = *val * inv_sum;
             }
         }
+    }
+}
+
+//////////////////////////////
+// Powering sparse matrices //
+/////////////////////////////
+
+/// Raise a CSR matrix to an integer power (naive repeated multiplication)
+///
+/// Computes P^t by multiplying P by itself t times.
+/// Simple but inefficient for large t. Use for small t or when memory is tight.
+///
+/// ### Params
+///
+/// * `matrix` - CSR matrix to power
+/// * `t` - Exponent (must be > 0)
+///
+/// ### Returns
+///
+/// P^t in CSR format
+pub fn matrix_power_naive<T>(matrix: &CompressedSparseData<T>, t: usize) -> CompressedSparseData<T>
+where
+    T: Float + Send + Sync + AddAssign + ComplexField,
+{
+    assert!(matrix.cs_type.is_csr(), "Matrix must be CSR format");
+    assert!(matrix.shape.0 == matrix.shape.1, "Matrix must be square");
+    assert!(t > 0, "Power must be positive");
+
+    if t == 1 {
+        return matrix.clone();
+    }
+
+    let mut result = matrix.clone();
+    for _ in 1..t {
+        result = csr_matmul_csr(&result, matrix);
+    }
+    result
+}
+
+/// Raise a CSR matrix to an integer power (binary exponentiation)
+///
+/// Computes P^t using exponentiation by squaring.
+/// Much faster than naive: O(log t) multiplications instead of O(t).
+///
+/// Examples:
+/// - P^8 = ((P^2)^2)^2 (3 multiplications vs 7)
+/// - P^15 = P × ((P^2)^2)^2 × P (5 multiplications vs 14)
+///
+/// ### Params
+///
+/// * `matrix` - CSR matrix to power
+/// * `t` - Exponent (must be > 0)
+///
+/// ### Returns
+///
+/// P^t in CSR format
+pub fn matrix_power<T>(matrix: &CompressedSparseData<T>, t: usize) -> CompressedSparseData<T>
+where
+    T: Float + Send + Sync + AddAssign + ComplexField,
+{
+    assert!(matrix.cs_type.is_csr(), "Matrix must be CSR format");
+    assert!(matrix.shape.0 == matrix.shape.1, "Matrix must be square");
+    assert!(t > 0, "Power must be positive");
+
+    if t == 1 {
+        return matrix.clone();
+    }
+
+    // Binary exponentiation
+    let mut base = matrix.clone();
+    let mut result = None;
+    let mut exp = t;
+
+    while exp > 0 {
+        if exp & 1 == 1 {
+            // Odd exponent - multiply result by base
+            result = Some(match result {
+                None => base.clone(),
+                Some(r) => csr_matmul_csr(&r, &base),
+            });
+        }
+        exp >>= 1;
+        if exp > 0 {
+            // Square the base for next iteration
+            base = csr_matmul_csr(&base, &base);
+        }
+    }
+
+    result.unwrap()
+}
+
+///////////
+// Tests //
+///////////
+
+#[cfg(test)]
+mod test_matrix_power {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    fn create_simple_stochastic_matrix() -> CompressedSparseData<f64> {
+        // Simple 3x3 row-stochastic matrix
+        // Row 0: [0.5, 0.5, 0.0]
+        // Row 1: [0.3, 0.4, 0.3]
+        // Row 2: [0.0, 0.6, 0.4]
+        let data = vec![0.5, 0.5, 0.3, 0.4, 0.3, 0.6, 0.4];
+        let indices = vec![0, 1, 0, 1, 2, 1, 2];
+        let indptr = vec![0, 2, 5, 7];
+
+        CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3))
+    }
+
+    #[test]
+    fn test_matrix_power_t1() {
+        let mat = create_simple_stochastic_matrix();
+        let result = matrix_power(&mat, 1);
+
+        // Should be identical
+        assert_eq!(result.data, mat.data);
+        assert_eq!(result.indices, mat.indices);
+        assert_eq!(result.indptr, mat.indptr);
+    }
+
+    #[test]
+    fn test_matrix_power_t2_manual() {
+        let mat = create_simple_stochastic_matrix();
+        let result = matrix_power(&mat, 2);
+
+        // Manually compute P^2 for row 0:
+        // [0.5, 0.5, 0.0] × [[0.5, 0.5, 0.0], [0.3, 0.4, 0.3], [0.0, 0.6, 0.4]]
+        // = [0.5*0.5 + 0.5*0.3, 0.5*0.5 + 0.5*0.4, 0.5*0.0 + 0.5*0.3]
+        // = [0.4, 0.45, 0.15]
+
+        // Extract row 0 from result
+        let row0_start = result.indptr[0];
+        let row0_end = result.indptr[1];
+        let row0_indices: Vec<usize> = result.indices[row0_start..row0_end].to_vec();
+        let row0_data: Vec<f64> = result.data[row0_start..row0_end].to_vec();
+
+        // Should have 3 non-zero entries in row 0
+        assert_eq!(row0_indices, vec![0, 1, 2]);
+        assert_relative_eq!(row0_data[0], 0.4, epsilon = 1e-10);
+        assert_relative_eq!(row0_data[1], 0.45, epsilon = 1e-10);
+        assert_relative_eq!(row0_data[2], 0.15, epsilon = 1e-10);
+    }
+
+    #[test]
+    fn test_matrix_power_preserves_row_stochastic() {
+        let mat = create_simple_stochastic_matrix();
+
+        for t in [2, 5, 10, 20] {
+            let result = matrix_power(&mat, t);
+
+            // Check each row sums to 1.0
+            for i in 0..result.shape.0 {
+                let start = result.indptr[i];
+                let end = result.indptr[i + 1];
+                let row_sum: f64 = result.data[start..end].iter().sum();
+                assert_relative_eq!(row_sum, 1.0, epsilon = 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn test_matrix_power_vs_naive() {
+        let mat = create_simple_stochastic_matrix();
+
+        for t in [2, 3, 5, 7, 15] {
+            let result_binary = matrix_power(&mat, t);
+            let result_naive = matrix_power_naive(&mat, t);
+
+            // Both should produce identical results
+            assert_eq!(result_binary.data.len(), result_naive.data.len());
+
+            for (binary_val, naive_val) in result_binary.data.iter().zip(&result_naive.data) {
+                assert_relative_eq!(binary_val, naive_val, epsilon = 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn test_matrix_power_large_t() {
+        let mat = create_simple_stochastic_matrix();
+        let result = matrix_power(&mat, 100);
+
+        // Should still be valid and row-stochastic
+        assert!(!result.data.is_empty());
+
+        for i in 0..result.shape.0 {
+            let start = result.indptr[i];
+            let end = result.indptr[i + 1];
+            let row_sum: f64 = result.data[start..end].iter().sum();
+            assert_relative_eq!(row_sum, 1.0, epsilon = 1e-8);
+        }
+    }
+
+    #[test]
+    fn test_matrix_power_identity() {
+        // Create 3x3 identity matrix
+        let data = vec![1.0, 1.0, 1.0];
+        let indices = vec![0, 1, 2];
+        let indptr = vec![0, 1, 2, 3];
+        let identity = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
+
+        // I^t = I for any t
+        for t in [1, 2, 5, 100] {
+            let result = matrix_power(&identity, t);
+            assert_eq!(result.data, vec![1.0, 1.0, 1.0]);
+            assert_eq!(result.indices, vec![0, 1, 2]);
+        }
+    }
+
+    #[test]
+    fn test_matrix_power_convergence() {
+        // For a strongly connected stochastic matrix,
+        // P^t should converge to a rank-1 matrix as t → ∞
+        let mat = create_simple_stochastic_matrix();
+
+        let p100 = matrix_power(&mat, 100);
+        let p200 = matrix_power(&mat, 200);
+
+        // Rows should become increasingly similar (convergence)
+        // Just check that we don't diverge
+        for i in 0..p100.shape.0 {
+            let start = p100.indptr[i];
+            let end = p100.indptr[i + 1];
+            let sum100: f64 = p100.data[start..end].iter().sum();
+            assert_relative_eq!(sum100, 1.0, epsilon = 1e-8);
+        }
+
+        for i in 0..p200.shape.0 {
+            let start = p200.indptr[i];
+            let end = p200.indptr[i + 1];
+            let sum200: f64 = p200.data[start..end].iter().sum();
+            assert_relative_eq!(sum200, 1.0, epsilon = 1e-8);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Power must be positive")]
+    fn test_matrix_power_zero_t() {
+        let mat = create_simple_stochastic_matrix();
+        matrix_power(&mat, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Matrix must be square")]
+    fn test_matrix_power_non_square() {
+        // Create a 2x3 matrix
+        let data = vec![1.0, 2.0, 3.0];
+        let indices = vec![0, 1, 2];
+        let indptr = vec![0, 2, 3];
+        let mat = CompressedSparseData::new_csr(&data, &indices, &indptr, (2, 3));
+
+        matrix_power(&mat, 2);
     }
 }

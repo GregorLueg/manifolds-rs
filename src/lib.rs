@@ -56,111 +56,9 @@ use crate::parametric::parametric_train::*;
 /// * `1` - Should be the distances to the nearest neighbours excluding self
 pub type PreComputedKnn<T> = Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>;
 
-/////////////
-// Helpers //
-/////////////
-
-/// Helper function to generate the UMAP graph
-///
-/// ### Params
-///
-/// * `data` - Input data matrix (samples × features)
-/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
-///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
-///   distances excluding self.
-/// * `k` - Number of nearest neighbours (typically 15-50).
-/// * `ann_type` - Approximate nearest neighbour method: `"annoy"`, `"hnsw"`, or
-///   `"nndescent"`. If you provide a weird string, the function will default
-///   to `"hnsw"`
-/// * `umap_params` - UMAP-specific parameters (bandwidth, local_connectivity,
-///   mix_weight)
-/// * `nn_params` - Nearest neighbour parameters for nearest neighbour search.
-/// * `seed` - Random seed
-/// * `verbose` - Controls verbosity
-///
-/// ### Returns
-///
-/// Tuple of (graph, knn_indices, knn_dist) for use in optimisation
-#[allow(clippy::too_many_arguments)]
-pub fn construct_umap_graph<T>(
-    data: MatRef<T>,
-    precomputed_knn: PreComputedKnn<T>,
-    k: usize,
-    ann_type: String,
-    umap_params: &UmapGraphParams<T>,
-    nn_params: &NearestNeighbourParams<T>,
-    n_epochs: usize,
-    seed: usize,
-    verbose: bool,
-) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
-where
-    T: Float
-        + FromPrimitive
-        + Send
-        + Sync
-        + Default
-        + ComplexField
-        + RealField
-        + Sum
-        + AddAssign
-        + SimdDistance,
-    HnswIndex<T>: HnswState<T>,
-    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
-{
-    let (knn_indices, knn_dist) = match precomputed_knn {
-        Some((indices, distances)) => {
-            if verbose {
-                println!("Using precomputed kNN graph...");
-            }
-            (indices, distances)
-        }
-        None => {
-            if verbose {
-                println!(
-                    "Running approximate nearest neighbour search using {}...",
-                    ann_type
-                );
-            }
-            let start_knn = Instant::now();
-            let result = run_ann_search(data, k, ann_type, nn_params, seed);
-            if verbose {
-                println!("kNN search done in: {:.2?}.", start_knn.elapsed());
-            }
-            result
-        }
-    };
-
-    if verbose {
-        println!("Constructing fuzzy simplicial set...");
-    }
-
-    let start_graph = Instant::now();
-
-    let (sigma, rho) = smooth_knn_dist(
-        &knn_dist,
-        knn_dist[0].len(),
-        umap_params.local_connectivity,
-        umap_params.bandwidth,
-        64,
-    );
-
-    let graph = knn_to_coo(&knn_indices, &knn_dist, &sigma, &rho);
-    let graph = symmetrise_graph(graph, umap_params.mix_weight);
-    let graph = filter_weak_edges(graph, n_epochs, verbose);
-
-    if verbose {
-        println!(
-            "Finalised graph generation in {:.2?}.",
-            start_graph.elapsed()
-        );
-    }
-
-    (graph, knn_indices, knn_dist)
-}
-
-////////////////////////
-// Main "normal" UMAP //
-////////////////////////
+//////////
+// Umap //
+//////////
 
 /// Main Config structure with all of the possible sub configurations
 ///
@@ -302,6 +200,104 @@ where
             randomised: false,
         }
     }
+}
+
+/// Helper function to generate the UMAP graph
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
+/// * `k` - Number of nearest neighbours (typically 15-50).
+/// * `ann_type` - Approximate nearest neighbour method: `"annoy"`, `"hnsw"`, or
+///   `"nndescent"`. If you provide a weird string, the function will default
+///   to `"hnsw"`
+/// * `umap_params` - UMAP-specific parameters (bandwidth, local_connectivity,
+///   mix_weight)
+/// * `nn_params` - Nearest neighbour parameters for nearest neighbour search.
+/// * `seed` - Random seed
+/// * `verbose` - Controls verbosity
+///
+/// ### Returns
+///
+/// Tuple of (graph, knn_indices, knn_dist) for use in optimisation
+#[allow(clippy::too_many_arguments)]
+pub fn construct_umap_graph<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    k: usize,
+    ann_type: String,
+    umap_params: &UmapGraphParams<T>,
+    nn_params: &NearestNeighbourParams<T>,
+    n_epochs: usize,
+    seed: usize,
+    verbose: bool,
+) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
+where
+    T: Float
+        + FromPrimitive
+        + Send
+        + Sync
+        + Default
+        + ComplexField
+        + RealField
+        + Sum
+        + AddAssign
+        + SimdDistance,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let (knn_indices, knn_dist) = match precomputed_knn {
+        Some((indices, distances)) => {
+            if verbose {
+                println!("Using precomputed kNN graph...");
+            }
+            (indices, distances)
+        }
+        None => {
+            if verbose {
+                println!(
+                    "Running approximate nearest neighbour search using {}...",
+                    ann_type
+                );
+            }
+            let start_knn = Instant::now();
+            let result = run_ann_search(data, k, ann_type, nn_params, seed);
+            if verbose {
+                println!("kNN search done in: {:.2?}.", start_knn.elapsed());
+            }
+            result
+        }
+    };
+
+    if verbose {
+        println!("Constructing fuzzy simplicial set...");
+    }
+
+    let start_graph = Instant::now();
+
+    let (sigma, rho) = smooth_knn_dist(
+        &knn_dist,
+        knn_dist[0].len(),
+        umap_params.local_connectivity,
+        umap_params.bandwidth,
+        64,
+    );
+
+    let graph = knn_to_coo(&knn_indices, &knn_dist, &sigma, &rho);
+    let graph = symmetrise_graph(graph, umap_params.mix_weight);
+    let graph = filter_weak_edges(graph, n_epochs, verbose);
+
+    if verbose {
+        println!(
+            "Finalised graph generation in {:.2?}.",
+            start_graph.elapsed()
+        );
+    }
+
+    (graph, knn_indices, knn_dist)
 }
 
 /// Run UMAP dimensionality reduction
@@ -946,6 +942,10 @@ where
 
     transposed
 }
+
+///////////
+// PHATE //
+///////////
 
 /////////////////////
 // Parametric UMAP //

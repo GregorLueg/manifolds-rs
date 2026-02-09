@@ -80,6 +80,29 @@ where
 // Landmark diffusion //
 ////////////////////////
 
+///////////
+// Enums //
+///////////
+
+/// Enum representing different landmark diffusion methods.
+pub enum PhateDiffusion<T>
+where
+    T: ComplexField + Float,
+{
+    /// Full diffusion using all nodes.
+    Full { operator: CompressedSparseData<T> },
+    /// Landmark diffusion using a subset of nodes.
+    Landmark { landmarks: PhateLandmarks<T> },
+}
+
+/// Enum representing different time diffusion methods.
+pub enum PhateTime {
+    /// Find optimal via VNE (default: 100)
+    Auto { t_max: usize },
+    /// Use specific t
+    Fixed(usize),
+}
+
 /////////////
 // Helpers //
 /////////////
