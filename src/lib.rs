@@ -854,7 +854,7 @@ where
 #[cfg(not(feature = "fft_tsne"))]
 pub fn tsne<T>(
     data: MatRef<T>,
-    precomputed_knn: PreComputedKnn,
+    precomputed_knn: PreComputedKnn<T>,
     params: &TsneParams<T>,
     approx_type: &str,
     seed: usize,
