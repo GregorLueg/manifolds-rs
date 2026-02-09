@@ -6,6 +6,7 @@ use commons::*;
 
 use burn::backend::ndarray::{NdArray, NdArrayDevice};
 use burn::backend::Autodiff;
+use burn::prelude::Backend;
 use faer::Mat;
 use rustc_hash::FxHashMap;
 
@@ -64,7 +65,8 @@ fn parametric_01_comprehensive_quality() {
     println!("Training: 10 epochs, 32 hidden units, batch size 50");
 
     let params = fast_test_params();
-    let embedding = parametric_umap::<f64, TestBackend>(data.as_ref(), &params, &device, 42, false);
+    let embedding =
+        parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false);
 
     // Basic shape checks
     assert_eq!(embedding.len(), 2, "Should have 2 dimensions");
@@ -247,7 +249,7 @@ fn parametric_02_different_dimensions() {
 
         let params = fast_test_params_custom(Some(n_dim), None, None, None, vec![32], None);
         let embedding =
-            parametric_umap::<f64, TestBackend>(data.as_ref(), &params, &device, 42, false);
+            parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false);
 
         assert_eq!(embedding.len(), n_dim, "Should have {} dimensions", n_dim);
 
@@ -282,7 +284,7 @@ fn parametric_03_different_architectures() {
         let params = fast_test_params_custom(None, None, None, None, hidden_layers.clone(), None);
 
         let embedding =
-            parametric_umap::<f64, TestBackend>(data.as_ref(), &params, &device, 42, false);
+            parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false);
 
         assert_eq!(embedding.len(), 2);
         assert_eq!(embedding[0].len(), 75);
@@ -309,7 +311,8 @@ fn parametric_04_correlation_loss() {
     println!("\n=== PARAMETRIC TEST 4: Correlation Loss ===");
 
     let params = fast_test_params_custom(None, None, None, None, vec![32], Some(0.5));
-    let embedding = parametric_umap::<f64, TestBackend>(data.as_ref(), &params, &device, 42, false);
+    let embedding =
+        parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false);
 
     assert_eq!(embedding.len(), 2);
     assert_eq!(embedding[0].len(), 75);
@@ -342,7 +345,7 @@ fn parametric_05_min_dist_spread() {
             fast_test_params_custom(None, None, Some(min_dist), Some(spread), vec![32], None);
 
         let embedding =
-            parametric_umap::<f64, TestBackend>(data.as_ref(), &params, &device, 42, false);
+            parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false);
 
         let has_non_finite = embedding[0]
             .iter()
@@ -368,7 +371,8 @@ fn parametric_06_small_dataset() {
 
     let params = fast_test_params_custom(None, Some(5), None, None, vec![32], None);
 
-    let embedding = parametric_umap::<f64, TestBackend>(data.as_ref(), &params, &device, 42, false);
+    let embedding =
+        parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false);
 
     assert_eq!(embedding.len(), 2);
     assert_eq!(embedding[0].len(), 10);
@@ -380,4 +384,102 @@ fn parametric_06_small_dataset() {
     assert!(!has_non_finite, "Small dataset produced non-finite values");
 
     println!("  ✓ Small dataset (10 samples): all finite");
+}
+
+#[test]
+fn parametric_07_precomputed_knn() {
+    let (data, labels) = create_diagnostic_data(15, 10, 42);
+    let device = NdArrayDevice::Cpu;
+
+    println!("\n=== PARAMETRIC TEST 7: Precomputed kNN ===");
+
+    NdArray::<f32>::seed(&device, 42);
+
+    let k = 15;
+
+    // Run kNN search separately
+    let nn_params = NearestNeighbourParams::default();
+    let (knn_indices, knn_dist) =
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+
+    println!(
+        "Precomputed kNN: {} neighbours per point",
+        knn_indices[0].len()
+    );
+
+    let params = fast_test_params();
+
+    // Run with precomputed kNN
+    let embedding_precomputed = parametric_umap::<f64, TestBackend>(
+        data.as_ref(),
+        Some((knn_indices.clone(), knn_dist.clone())),
+        &params,
+        &device,
+        42,
+        false,
+    );
+
+    NdArray::<f32>::seed(&device, 42);
+
+    // Run without precomputed kNN (internal computation)
+    let embedding_internal =
+        parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false);
+
+    // Compare results
+    let mut max_diff: f64 = 0.0;
+    for i in 0..embedding_precomputed[0].len() {
+        for dim in 0..2 {
+            let diff = (embedding_precomputed[dim][i] - embedding_internal[dim][i]).abs();
+            max_diff = max_diff.max(diff);
+        }
+    }
+
+    println!(
+        "Maximum coordinate difference (precomputed vs internal): {:.10}",
+        max_diff
+    );
+
+    assert!(
+        max_diff < 1e-6,
+        "Precomputed kNN should produce identical results to internal kNN, but max diff = {}",
+        max_diff
+    );
+
+    // Verify cluster separation with precomputed kNN
+    let mut cluster_centres: FxHashMap<usize, (f64, f64, usize)> = FxHashMap::default();
+
+    for (i, &label) in labels.iter().enumerate() {
+        let entry = cluster_centres.entry(label).or_insert((0.0, 0.0, 0));
+        entry.0 += embedding_precomputed[0][i];
+        entry.1 += embedding_precomputed[1][i];
+        entry.2 += 1;
+    }
+
+    let mut centroids: Vec<(usize, f64, f64)> = Vec::new();
+    for (label, (sum_x, sum_y, count)) in cluster_centres {
+        centroids.push((label, sum_x / count as f64, sum_y / count as f64));
+    }
+
+    let mut min_inter_dist = f64::INFINITY;
+    for i in 0..centroids.len() {
+        for j in (i + 1)..centroids.len() {
+            let dist = ((centroids[i].1 - centroids[j].1).powi(2)
+                + (centroids[i].2 - centroids[j].2).powi(2))
+            .sqrt();
+            min_inter_dist = min_inter_dist.min(dist);
+        }
+    }
+
+    println!(
+        "Minimum inter-cluster distance with precomputed kNN: {:.3}",
+        min_inter_dist
+    );
+
+    assert!(
+        min_inter_dist > 0.5,
+        "Clusters should be separated with precomputed kNN: min dist = {:.3}",
+        min_inter_dist
+    );
+
+    println!("✓ Precomputed kNN produces identical and valid embeddings");
 }

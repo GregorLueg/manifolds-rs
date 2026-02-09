@@ -62,21 +62,21 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-manifold-rs = "0.1.5"
+manifold-rs = "*"
 ```
 
 If you want to enable parametric UMAP, please use:
 
 ```toml
 [dependencies]
-manifold-rs = { version = "0.1.5", features = [ "parametric" ] }
+manifold-rs = { version = "*", features = [ "parametric" ] }
 ```
 
 If you want to enable the FFT-accelerated version of tSNE, please use:
 
 ```toml
 [dependencies]
-manifold-rs = { version = "0.1.5", features = [ "fft_tsne" ] }
+manifold-rs = { version = "*", features = [ "fft_tsne" ] }
 ```
 
 ## Notes
@@ -87,6 +87,9 @@ against real data.
 ## Usage
 
 ### UMAP Example
+
+Below are examples of how to use UMAP.
+
 ```rust
 use manifolds_rs::prelude::*;
 
@@ -120,6 +123,9 @@ let embedding = umap(
 ```
 
 ### t-SNE Example
+
+Below are examples of how to use t-SNE.
+
 ```rust
 use manifolds_rs::prelude::*;
 
@@ -159,7 +165,9 @@ let embedding = tsne(
 
 ### Using Precomputed k-NN
 
-Both algorithms support precomputed k-nearest neighbour graphs for efficiency when running multiple embeddings:
+Both algorithms support precomputed k-nearest neighbour graphs for efficiency
+when running multiple embeddings:
+
 ```rust
 use manifolds_rs::prelude::*;
 
@@ -184,6 +192,64 @@ let embedding = umap(
     42,
     false,
 );
+```
+
+### Parametric UMAP Example (requires `parametric` feature)
+
+Parametric UMAP learns a neural network encoder that can transform new data
+points:
+
+```rust
+use manifolds_rs::prelude::*;
+use burn::backend::ndarray::{NdArray, NdArrayDevice};
+use burn::backend::Autodiff;
+
+type Backend = Autodiff<NdArray<f64>>;
+
+// Generate synthetic clustered data
+let (data, labels) = generate_clustered_data(
+    1000,  // n_samples
+    50,    // dimensionality
+    5,     // n_clusters
+    42,    // seed
+);
+
+// Configure parametric UMAP
+let fit_params = TrainParametricParams::from_min_dist_spread(
+    0.1,       // min_dist
+    1.0,       // spread
+    0.0,       // correlation_weight
+    None,      // negative_sample_rate
+    Some(16),  // batch_size
+    Some(100), // n_epochs
+    None,      // learning_rate
+);
+
+let params = ParametricUmapParams::new(
+    Some(2),              // n_dim (output dimensions)
+    Some(15),             // n_neighbours
+    Some("hnsw".into()),  // ann_type
+    Some(vec![128, 64]),  // hidden_layers (neural network architecture)
+    None,                 // nn_params
+    None,                 // umap_graph_params
+    Some(fit_params),     // training parameters
+);
+
+// Set up device
+let device = NdArrayDevice::Cpu;
+
+// Train parametric UMAP
+let embedding = parametric_umap::<f64, Backend>(
+    data.as_ref(),
+    None,        // precomputed kNN (None = compute internally)
+    &params,
+    &device,
+    42,          // seed
+    true,        // verbose
+);
+
+// embedding[0] contains x-coordinates
+// embedding[1] contains y-coordinates
 ```
 
 ## Licence
