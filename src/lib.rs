@@ -44,6 +44,18 @@ use crate::parametric::model::*;
 #[cfg(feature = "parametric")]
 use crate::parametric::parametric_train::*;
 
+///////////
+// Types //
+///////////
+
+/// Type for the pre-computed kNN
+///
+/// ### Fields
+///
+/// * `0` - Should be the indices of the nearest neighbours excluding self
+/// * `1` - Should be the distances to the nearest neighbours excluding self
+pub type PreComputedKnn<T> = Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>;
+
 /////////////
 // Helpers //
 /////////////
@@ -72,7 +84,7 @@ use crate::parametric::parametric_train::*;
 #[allow(clippy::too_many_arguments)]
 pub fn construct_umap_graph<T>(
     data: MatRef<T>,
-    precomputed_knn: Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>,
+    precomputed_knn: PreComputedKnn<T>,
     k: usize,
     ann_type: String,
     umap_params: &UmapGraphParams<T>,
@@ -321,7 +333,7 @@ where
 /// represents one embedding dimension.
 pub fn umap<T>(
     data: MatRef<T>,
-    precomputed_knn: Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>,
+    precomputed_knn: PreComputedKnn<T>,
     umap_params: &UmapParams<T>,
     seed: usize,
     verbose: bool,
@@ -571,7 +583,7 @@ where
 /// n-1. This is standard practice in t-SNE implementations.
 pub fn construct_tsne_graph<T>(
     data: MatRef<T>,
-    precomputed_knn: Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>,
+    precomputed_knn: PreComputedKnn<T>,
     perplexity: T,
     ann_type: String,
     nn_params: &NearestNeighbourParams<T>,
@@ -694,7 +706,7 @@ where
 #[cfg(feature = "fft_tsne")]
 pub fn tsne<T>(
     data: MatRef<T>,
-    precomputed_knn: Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>,
+    precomputed_knn: PreComputedKnn<T>,
     params: &TsneParams<T>,
     approx_type: &str,
     seed: usize,
@@ -842,7 +854,7 @@ where
 #[cfg(not(feature = "fft_tsne"))]
 pub fn tsne<T>(
     data: MatRef<T>,
-    precomputed_knn: Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>,
+    precomputed_knn: PreComputedKnn,
     params: &TsneParams<T>,
     approx_type: &str,
     seed: usize,
@@ -1096,7 +1108,7 @@ where
 /// represents one embedding dimension.
 pub fn parametric_umap<T, B>(
     data: MatRef<T>,
-    precomputed_knn: Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>,
+    precomputed_knn: PreComputedKnn<T>,
     umap_params: &ParametricUmapParams<T>,
     device: &B::Device,
     seed: usize,
