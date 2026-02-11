@@ -31,7 +31,7 @@ use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
 use crate::data::structures::*;
-
+use crate::prelude::*;
 use crate::training::tsne_optimiser::*;
 use crate::training::umap_optimisers::*;
 use crate::training::*;
@@ -946,6 +946,75 @@ where
 ///////////
 // PHATE //
 ///////////
+
+/// PHATE parameters
+///
+/// ### Fields
+///
+/// * `n_components` - Output dimensions (default: 2)
+/// * `k` - Number of neighbours
+/// * `decay` - Alpha decay (default: Some(40.0), None = binary)
+/// * `bandwidth_scale` - Bandwidth scale (default: 1.0)
+#[derive(Debug, Clone)]
+pub struct PhateParams<T> {
+    pub n_components: usize,
+    pub k: usize,
+    pub ann_type: String,
+    pub thresh: T,
+    pub decay: Option<T>,
+    pub bandwidth_scale: T,
+    pub time: PhateTime,
+    pub gamma: T,
+    pub n_landmarks: Option<usize>,
+    pub landmark_mode: LandmarkMethod,
+    pub ann_params: NearestNeighbourParams<T>,
+}
+
+pub fn construct_phate_diffusion<T>(
+    data: MatRef<T>,
+    k: usize,
+    precomputed_knn: PreComputedKnn<T>,
+    ann_type: String,
+    nn_params: &NearestNeighbourParams<T>,
+    seed: usize,
+    verbose: bool,
+) where
+    T: Float
+        + Send
+        + Sync
+        + SimdDistance
+        + ComplexField
+        + RealField
+        + AddAssign
+        + std::iter::Sum
+        + Default
+        + FromPrimitive,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let (knn_indices, knn_dist) = match precomputed_knn {
+        Some((indices, distances)) => {
+            if verbose {
+                println!("Using precomputed kNN graph...");
+            }
+            (indices, distances)
+        }
+        None => {
+            if verbose {
+                println!(
+                    "Running approximate nearest neighbour search using {}...",
+                    ann_type
+                );
+            }
+            let start_knn = Instant::now();
+            let result = run_ann_search(data, k, ann_type, nn_params, seed);
+            if verbose {
+                println!("kNN search done in: {:.2?}.", start_knn.elapsed());
+            }
+            result
+        }
+    };
+}
 
 /////////////////////
 // Parametric UMAP //

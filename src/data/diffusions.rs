@@ -96,6 +96,7 @@ where
 }
 
 /// Enum representing different time diffusion methods.
+#[derive(Debug, Clone)]
 pub enum PhateTime {
     /// Find optimal via VNE (default: 100)
     Auto { t_max: usize },
@@ -103,11 +104,37 @@ pub enum PhateTime {
     Fixed(usize),
 }
 
+/// Default implementation for PhateTime.
+impl Default for PhateTime {
+    fn default() -> Self {
+        PhateTime::Auto { t_max: 100 }
+    }
+}
+
+/// Parse the time diffusion method from a string.
+///
+/// ### Params
+///
+/// * `s` - String to parse. One of `auto`, `fixed`.
+/// * `t` - Maximum time for auto-diffusion or the fixed number of time to use.
+///
+/// ### Returns
+///
+/// Option<PhateTime>
+pub fn parse_phate_time(s: &str, t: usize) -> Option<PhateTime> {
+    match s.to_lowercase().as_str() {
+        "auto" => Some(PhateTime::Auto { t_max: t }),
+        "fixed" => Some(PhateTime::Fixed(t)),
+        _ => None,
+    }
+}
+
 /////////////
 // Helpers //
 /////////////
 
 /// Enum representing different landmark diffusion methods.
+#[derive(Debug, Clone)]
 pub enum LandmarkMethod {
     /// Randomly select landmarks.
     Random { seed: u64 },

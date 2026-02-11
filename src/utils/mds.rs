@@ -344,7 +344,7 @@ where
         // update positions
         for i in 0..n {
             for k in 0..n_dim {
-                y[i][k] = y[i][k] - lr * gradients[i][k];
+                y[i][k] = y[i][k] - lr_i * gradients[i][k];
             }
         }
 
@@ -531,7 +531,7 @@ where
 
     // Main SGD loop
     for iteration in 0..n_iter {
-        let lr = eta_max * (-lambda * T::from(iteration).unwrap()).exp();
+        let lr_i = eta_max * (-lambda * T::from(iteration).unwrap()).exp();
 
         let mut gradients = vec![vec![T::zero(); n_dim]; n];
 
@@ -586,7 +586,7 @@ where
         // update
         for i in 0..n {
             for k in 0..n_dim {
-                y[i][k] = y[i][k] - lr * gradients[i][k];
+                y[i][k] = y[i][k] - lr_i * gradients[i][k];
             }
         }
 

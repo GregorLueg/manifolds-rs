@@ -1,12 +1,15 @@
+pub use crate::data::diffusions::{parse_landmark_method, LandmarkMethod, PhateTime};
 pub use crate::data::init::{initialise_embedding, parse_initilisation};
 pub use crate::data::nearest_neighbours::{
     parse_ann_search, run_ann_search, NearestNeighbourParams,
 };
 pub use crate::data::structures::CoordinateList;
 pub use crate::data::synthetic::*;
+pub use crate::data::PhateDiffusionParams;
 pub use crate::training::tsne_optimiser::TsneOptimParams;
 pub use crate::training::umap_optimisers::UmapOptimParams;
 pub use crate::training::UmapGraphParams;
+pub use crate::utils::mds::{parse_mds_method, MdsMethod};
 
 #[cfg(feature = "parametric")]
 pub use crate::parametric::parametric_train::TrainParametricParams;
