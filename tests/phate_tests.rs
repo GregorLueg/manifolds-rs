@@ -410,6 +410,7 @@ fn phate_integration_07_full_phate_quality() {
         None,     // default gamma (1.0)
         None,     // no landmarks
         None,     // default mds_method
+        None,     // randomised SVD
         None,     // default ann_type
     );
 
@@ -462,6 +463,7 @@ fn phate_integration_08_landmark_phate_quality() {
         Some(20), // use 20 landmarks
         None,
         None,
+        None,
     );
 
     let embedding = phate(data.as_ref(), None, params, 42, true);
@@ -508,6 +510,7 @@ fn phate_integration_09_reproducibility() {
         None,
         None,
         None,
+        None,
     );
 
     let embd1 = phate(data.as_ref(), None, params.clone(), 42, false);
@@ -542,6 +545,7 @@ fn phate_integration_10_different_seeds() {
         None,
         None,
         Some(50),
+        None,
         None,
         None,
         None,
@@ -584,6 +588,7 @@ fn phate_integration_11_precomputed_knn() {
         None,
         None,
         Some(50),
+        None,
         None,
         None,
         None,
@@ -633,6 +638,7 @@ fn phate_integration_12_fixed_vs_auto_t() {
         None,
         None,
         None,
+        None,
     );
     params_auto.time = PhateTime::Auto { t_max: 50 };
 
@@ -642,6 +648,7 @@ fn phate_integration_12_fixed_vs_auto_t() {
         None,
         None,
         Some(50),
+        None,
         None,
         None,
         None,

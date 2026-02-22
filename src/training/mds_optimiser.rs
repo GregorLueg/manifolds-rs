@@ -5,10 +5,12 @@ use num_traits::Float;
 use rand::prelude::*;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
+use rand_distr::{Distribution, StandardNormal};
 use rayon::prelude::*;
 use thousands::*;
 
 use crate::data::structures::CompressedSparseData;
+use crate::utils::math::randomised_svd;
 use crate::utils::sparse_ops::csr_row_to_dense;
 
 /////////////
@@ -132,13 +134,18 @@ where
 /// ### Returns
 ///
 /// N × n_components embedding
-pub fn classic_mds<T>(dist: &[Vec<T>], n_components: usize) -> Vec<Vec<T>>
+pub fn classic_mds<T>(
+    dist: &[Vec<T>],
+    n_components: usize,
+    randomised: bool,
+    seed: usize,
+) -> Vec<Vec<T>>
 where
     T: Float + ComplexField + RealField + Send + Sync + std::iter::Sum,
+    StandardNormal: Distribution<T>,
 {
     let n = dist.len();
 
-    // square distances
     let mut d_sq = Mat::zeros(n, n);
     for i in 0..n {
         for j in 0..n {
@@ -146,7 +153,6 @@ where
         }
     }
 
-    // double centre: H = I - 1/n * 11^T
     let mean_row: Vec<T> = (0..n)
         .map(|j| {
             let sum: T = (0..n).map(|i| d_sq[(i, j)]).sum();
@@ -169,18 +175,28 @@ where
         }
     }
 
-    // SVD
-    let svd = d_sq.svd().unwrap();
-    let s = svd.S();
-    let u = svd.U();
-
-    // Y = U * sqrt(S)
     let mut embedding = vec![vec![T::zero(); n_components]; n];
-    for i in 0..n {
-        for k in 0..n_components {
-            let singular_val = s[k];
-            if singular_val > T::zero() {
-                embedding[i][k] = u[(i, k)] * singular_val.sqrt();
+
+    if randomised {
+        let rsvd = randomised_svd(d_sq.as_ref(), n_components, seed, None, None);
+        for i in 0..n {
+            for k in 0..n_components {
+                let singular_val = rsvd.s[k];
+                if singular_val > T::zero() {
+                    embedding[i][k] = rsvd.u[(i, k)] * singular_val.sqrt();
+                }
+            }
+        }
+    } else {
+        let svd = d_sq.svd().unwrap();
+        let s = svd.S();
+        let u = svd.U();
+        for i in 0..n {
+            for k in 0..n_components {
+                let singular_val = s[k];
+                if singular_val > T::zero() {
+                    embedding[i][k] = u[(i, k)] * singular_val.sqrt();
+                }
             }
         }
     }
@@ -230,7 +246,6 @@ where
         .copied()
         .fold(T::zero(), |acc, x| if x > acc { x } else { acc });
 
-    // normalise the distances for stability
     let d_norm: Vec<Vec<T>> = if d_max > T::zero() {
         dist.iter()
             .map(|row| row.iter().map(|&d| d / d_max).collect())
@@ -239,9 +254,7 @@ where
         dist.to_vec()
     };
 
-    // initialise embedding
     let mut y = if let Some(init_y) = init {
-        // normalise init to match distance scale
         let y_std = compute_std(&init_y);
         if y_std > T::zero() {
             init_y
@@ -252,7 +265,6 @@ where
             init_y
         }
     } else {
-        // random init
         (0..n)
             .map(|_| {
                 (0..n_dim)
@@ -262,7 +274,6 @@ where
             .collect()
     };
 
-    // auto-tune parameters if not provided
     let (n_iter, pairs_per_iter) = if let Some(iters) = n_iter {
         let (_, pairs) = auto_tune_params(n);
         (iters, pairs)
@@ -272,12 +283,7 @@ where
 
     let lr = lr.unwrap_or_else(|| T::from(DEFAULT_LR).unwrap());
 
-    // lr schedule (exponential decay)
-    let total_pairs = n * (n - 1) / 2;
-    let sampling_ratio = pairs_per_iter as f64 / total_pairs as f64;
-    let batch_scale = (1.0 / sampling_ratio).sqrt();
-
-    let eta_max = lr * T::from(batch_scale).unwrap();
+    let eta_max = lr;
     let eta_min = eta_max * T::from(0.01).unwrap();
     let lambda = if n_iter > 1 {
         ((eta_max / eta_min).ln()) / T::from(n_iter - 1).unwrap()
@@ -344,16 +350,9 @@ where
             }
         }
 
-        let mut counts = vec![0usize; n];
-        for (&i, &j) in i_samples.iter().zip(&j_samples) {
-            counts[i] += 1;
-            counts[j] += 1;
-        }
-
         for i in 0..n {
-            let c = T::from(counts[i].max(1)).unwrap();
             for k in 0..n_dim {
-                y[i][k] = y[i][k] - lr_i * gradients[i][k] / c;
+                y[i][k] = y[i][k] - lr_i * gradients[i][k];
             }
         }
 
@@ -364,7 +363,7 @@ where
                 "Iter {}: stress={:.6}, lr={:.6}",
                 iteration.separate_with_underscores(),
                 stress.to_f64().unwrap(),
-                lr.to_f64().unwrap()
+                lr_i.to_f64().unwrap()
             );
         }
 
@@ -384,7 +383,6 @@ where
         prev_stress = Some(stress);
     }
 
-    // Rescale back to original distance scale
     if d_max > T::zero() {
         for i in 0..n {
             for k in 0..n_dim {
@@ -430,13 +428,11 @@ where
 {
     let n = potential.shape().0;
 
-    // pre-extract all rows as dense (O(N × d) memory)
     let dense_rows: Vec<Vec<T>> = (0..n)
         .into_par_iter()
         .map(|i| csr_row_to_dense(potential, i))
         .collect();
 
-    // pre-compute norms for cosine
     let norms: Vec<T> = if matches!(metric, Dist::Cosine) {
         dense_rows
             .par_iter()
@@ -446,12 +442,10 @@ where
         Vec::new()
     };
 
-    // distance computation closure
     let compute_distance = |i: usize, j: usize| -> T {
         if i == j {
             return T::zero();
         }
-
         match metric {
             Dist::Euclidean => {
                 let squared = T::euclidean_simd(&dense_rows[i], &dense_rows[j]);
@@ -469,7 +463,6 @@ where
         }
     };
 
-    // find max distance for normalisation (sample subset to avoid O(N²))
     let mut rng = StdRng::seed_from_u64(seed as u64);
     let sample_size = (n as f64).sqrt() as usize * 100;
     let mut d_max = T::zero();
@@ -484,7 +477,6 @@ where
         }
     }
 
-    // initialise embedding
     let mut y = if let Some(init_y) = init {
         let y_std = compute_std(&init_y);
         if y_std > T::zero() {
@@ -505,7 +497,6 @@ where
             .collect()
     };
 
-    // auto-tune parameters
     let (n_iter, pairs_per_iter) = if let Some(iters) = n_iter {
         let pairs = (n as f64 * (n as f64).ln()) as usize;
         (iters, pairs)
@@ -515,12 +506,7 @@ where
 
     let lr = lr.unwrap_or_else(|| T::from(DEFAULT_LR).unwrap());
 
-    // lr schedule
-    let total_pairs = n * (n - 1) / 2;
-    let sampling_ratio = pairs_per_iter as f64 / total_pairs as f64;
-    let batch_scale = (1.0 / sampling_ratio).sqrt();
-
-    let eta_max = lr * T::from(batch_scale).unwrap();
+    let eta_max = lr;
     let eta_min = eta_max * T::from(0.01).unwrap();
     let lambda = if n_iter > 1 {
         ((eta_max / eta_min).ln()) / T::from(n_iter - 1).unwrap()
@@ -537,7 +523,6 @@ where
 
     let mut prev_stress = None;
 
-    // SGD loop
     for iteration in 0..n_iter {
         let lr_i = eta_max * (-lambda * T::from(iteration).unwrap()).exp();
 
@@ -587,16 +572,9 @@ where
             }
         }
 
-        let mut counts = vec![0usize; n];
-        for &(i, j) in &pairs {
-            counts[i] += 1;
-            counts[j] += 1;
-        }
-
         for i in 0..n {
-            let c = T::from(counts[i].max(1)).unwrap();
             for k in 0..n_dim {
-                y[i][k] = y[i][k] - lr_i * gradients[i][k] / c;
+                y[i][k] = y[i][k] - lr_i * gradients[i][k];
             }
         }
 
@@ -607,7 +585,7 @@ where
                 "Iter {}: stress={:.6}, lr={:.6}",
                 iteration,
                 stress.to_f64().unwrap(),
-                lr.to_f64().unwrap()
+                lr_i.to_f64().unwrap()
             );
         }
 
@@ -623,7 +601,6 @@ where
         prev_stress = Some(stress);
     }
 
-    // Rescale
     if d_max > T::zero() {
         for i in 0..n {
             for k in 0..n_dim {
@@ -791,7 +768,7 @@ mod test_mds {
             vec![1.0, 1.0, 0.0],
         ];
 
-        let embedding = classic_mds(&distances, 2);
+        let embedding = classic_mds(&distances, 2, true, 42);
 
         // Check shape
         assert_eq!(embedding.len(), 3);

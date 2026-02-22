@@ -976,6 +976,7 @@ where
 ///   `"kmeans"`)
 /// * `mds_method` - MDS algorithm: `"sgd_dense"`, `"sgd_streaming"`, or
 ///   `"classic"` (default: `"sgd_dense"`)
+/// * `randomised` - Shall randomised SVD be used for the `"classic"` MDS.
 /// * `ann_params` - Nearest neighbour search parameters
 #[derive(Debug, Clone)]
 pub struct PhateParams<T> {
@@ -991,6 +992,7 @@ pub struct PhateParams<T> {
     pub n_landmarks: Option<usize>,
     pub landmark_mode: String,
     pub mds_method: String,
+    pub randomised: bool,
     pub ann_params: NearestNeighbourParams<T>,
 }
 
@@ -1028,6 +1030,7 @@ where
         gamma: Option<T>,
         n_landmarks: Option<usize>,
         mds_method: Option<String>,
+        randomised: Option<bool>,
         ann_type: Option<String>,
     ) -> Self {
         Self {
@@ -1045,6 +1048,7 @@ where
             n_landmarks,
             landmark_mode: "kmeans".to_string(),
             mds_method: mds_method.unwrap_or_else(|| "sgd_dense".to_string()),
+            randomised: randomised.unwrap_or_else(|| true),
             ann_params: NearestNeighbourParams::default(),
         }
     }
@@ -1246,6 +1250,7 @@ where
         + FromPrimitive,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+    StandardNormal: Distribution<T>,
 {
     let start_phate = Instant::now();
 
@@ -1365,7 +1370,7 @@ where
             if verbose {
                 println!("Running classic MDS...");
             }
-            classic_mds(&distances, phate_params.n_dim)
+            classic_mds(&distances, phate_params.n_dim, true, 42)
         }
     };
 
