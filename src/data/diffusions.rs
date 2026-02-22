@@ -80,11 +80,61 @@ where
 // Landmark diffusion //
 ////////////////////////
 
+///////////
+// Enums //
+///////////
+
+/// Enum representing different landmark diffusion methods.
+pub enum PhateDiffusion<T>
+where
+    T: ComplexField + Float,
+{
+    /// Full diffusion using all nodes.
+    Full { operator: CompressedSparseData<T> },
+    /// Landmark diffusion using a subset of nodes.
+    Landmark { landmarks: PhateLandmarks<T> },
+}
+
+/// Enum representing different time diffusion methods.
+#[derive(Debug, Clone)]
+pub enum PhateTime {
+    /// Find optimal via VNE (default: 100)
+    Auto { t_max: usize },
+    /// Use specific t
+    Fixed(usize),
+}
+
+/// Default implementation for PhateTime.
+impl Default for PhateTime {
+    fn default() -> Self {
+        PhateTime::Auto { t_max: 100 }
+    }
+}
+
+/// Parse the time diffusion method from a string.
+///
+/// ### Params
+///
+/// * `s` - String to parse. One of `auto`, `fixed`.
+/// * `t` - Maximum time for auto-diffusion or the fixed number of time to use.
+///
+/// ### Returns
+///
+/// Option<PhateTime>
+pub fn parse_phate_time(s: &str, t: usize) -> Option<PhateTime> {
+    match s.to_lowercase().as_str() {
+        "auto" => Some(PhateTime::Auto { t_max: t }),
+        "fixed" => Some(PhateTime::Fixed(t)),
+        _ => None,
+    }
+}
+
 /////////////
 // Helpers //
 /////////////
 
 /// Enum representing different landmark diffusion methods.
+#[derive(Debug, Clone)]
 pub enum LandmarkMethod {
     /// Randomly select landmarks.
     Random { seed: u64 },
@@ -235,7 +285,7 @@ fn build_landmarks_to_data<T>(
     n_landmarks: usize,
 ) -> CompressedSparseData<T>
 where
-    T: Float + Send + Sync + ComplexField,
+    T: Float + Send + Sync + ComplexField + std::ops::AddAssign,
 {
     let n = assignments.len();
     let mut landmark_pts: Vec<Vec<usize>> = vec![Vec::new(); n_landmarks];
@@ -412,6 +462,7 @@ where
 /// * `assignments`: Data point → landmark mapping.
 /// * `landmark_op`: Small L matrix.
 /// * `transitions`: P_nm for interpolation.
+#[allow(dead_code)]
 pub struct PhateLandmarks<T>
 where
     T: Float + ComplexField,
@@ -433,7 +484,8 @@ where
         + std::iter::Sum<T>
         + AddAssign
         + ComplexField
-        + RealField,
+        + RealField
+        + std::ops::AddAssign,
 {
     /// Build landmarks from an existing diffusion operator
     ///
@@ -469,7 +521,7 @@ where
 
                 let landmark_data: Vec<T> = landmark_indices
                     .iter()
-                    .flat_map(|&i| data[i * dim..(i + 1) + dim].iter().copied())
+                    .flat_map(|&i| data[i * dim..(i + 1) * dim].iter().copied())
                     .collect();
 
                 // calculate norms if distance is cosine
@@ -491,9 +543,14 @@ where
                 (0..n)
                     .into_par_iter()
                     .map(|i| {
+                        let norm = if matches!(distance, Dist::Euclidean) {
+                            T::zero() // unused by assign_to_landmark for Euclidean
+                        } else {
+                            norm_data[i]
+                        };
                         assign_to_landmark(
                             &data[i * dim..(i + 1) * dim],
-                            &norm_data[i],
+                            &norm,
                             &landmark_data,
                             &norm_landmark,
                             &distance,

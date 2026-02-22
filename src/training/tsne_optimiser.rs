@@ -89,6 +89,7 @@ where
     }
 }
 
+/// Default implementation for TsneOptimParams
 impl<T: Float + FromPrimitive> Default for TsneOptimParams<T> {
     fn default() -> Self {
         Self {
