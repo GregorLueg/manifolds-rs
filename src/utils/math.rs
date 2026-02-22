@@ -265,6 +265,14 @@ where
             }
         }
 
+        // full reorthogonalisation
+        for k in 0..=j {
+            let coeff = dot(&w, &v_matrix[k]);
+            for i in 0..n {
+                w[i] -= coeff * v_matrix[k][i];
+            }
+        }
+
         beta[j] = norm(&w);
         if beta[j] < 1e-12 {
             break;
