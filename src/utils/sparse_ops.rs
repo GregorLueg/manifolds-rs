@@ -58,7 +58,7 @@ where
 /// A sparse row containing the summed columns for the specificied rows
 pub fn sparse_row_sum<T>(mat: &CompressedSparseData<T>, row_indices: &[usize]) -> SparseRow<T>
 where
-    T: Float + Sync + Add + PartialEq + Mul + ComplexField,
+    T: Float + Sync + Add + PartialEq + Mul + ComplexField + std::ops::AddAssign,
 {
     let mut col_sums: FxHashMap<usize, T> =
         FxHashMap::with_capacity_and_hasher(mat.ncols(), FxBuildHasher);
@@ -70,7 +70,7 @@ where
         for col_idx in start..end {
             let col = mat.indices[col_idx];
             let val = mat.data[col_idx];
-            *col_sums.entry(col).or_insert(T::zero()) = *col_sums.get(&col).unwrap() + val;
+            *col_sums.entry(col).or_insert(T::zero()) += val;
         }
     }
 
@@ -300,12 +300,13 @@ where
     T: Float + Send + Sync + AddAssign + ComplexField,
 {
     assert!(matrix.cs_type.is_csr(), "Matrix must be CSR format");
-    assert!(matrix.shape.0 == matrix.shape.1, "Matrix must be square");
     assert!(t > 0, "Power must be positive");
 
     if t == 1 {
         return matrix.clone();
     }
+
+    assert!(matrix.shape.0 == matrix.shape.1, "Matrix must be square");
 
     let mut result = matrix.clone();
     for _ in 1..t {
@@ -336,21 +337,22 @@ where
     T: Float + Send + Sync + AddAssign + ComplexField,
 {
     assert!(matrix.cs_type.is_csr(), "Matrix must be CSR format");
-    assert!(matrix.shape.0 == matrix.shape.1, "Matrix must be square");
     assert!(t > 0, "Power must be positive");
 
     if t == 1 {
         return matrix.clone();
     }
 
-    // Binary exponentiation
+    assert!(matrix.shape.0 == matrix.shape.1, "Matrix must be square");
+
+    // binary exponentiation
     let mut base = matrix.clone();
     let mut result = None;
     let mut exp = t;
 
     while exp > 0 {
         if exp & 1 == 1 {
-            // Odd exponent - multiply result by base
+            // odd exponent - multiply result by base
             result = Some(match result {
                 None => base.clone(),
                 Some(r) => csr_matmul_csr(&r, &base),
@@ -358,7 +360,7 @@ where
         }
         exp >>= 1;
         if exp > 0 {
-            // Square the base for next iteration
+            // square the base for next iteration
             base = csr_matmul_csr(&base, &base);
         }
     }

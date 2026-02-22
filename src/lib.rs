@@ -10,7 +10,7 @@ pub mod parametric;
 
 use ann_search_rs::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
-use ann_search_rs::utils::dist::SimdDistance;
+use ann_search_rs::utils::dist::{parse_ann_dist, SimdDistance};
 use faer::traits::{ComplexField, RealField};
 use faer::MatRef;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
@@ -36,6 +36,8 @@ use crate::prelude::*;
 use crate::training::tsne_optimiser::*;
 use crate::training::umap_optimisers::*;
 use crate::training::*;
+use crate::utils::mds::*;
+use crate::utils::potentials::compute_potential_distances;
 use crate::utils::sparse_ops::matrix_power;
 
 #[cfg(feature = "fft_tsne")]
@@ -953,10 +955,28 @@ where
 ///
 /// ### Fields
 ///
-/// * `n_components` - Output dimensions (default: 2)
-/// * `k` - Number of neighbours
-/// * `decay` - Alpha decay (default: Some(40.0), None = binary)
-/// * `bandwidth_scale` - Bandwidth scale (default: 1.0)
+/// * `n_dim` - Number of output dimensions (default: 2)
+/// * `k` - Number of nearest neighbours for graph construction (default: 5)
+/// * `ann_type` - Approximate nearest neighbour method: `"hnsw"` or
+///   `"nndescent"` (default: `"hnsw"`)
+/// * `thresh` - Threshold below which affinities are set to zero (default:
+///   `1e-4`)
+/// * `symmetrise` - Affinity symmetrisation method: `"average"` or `"maximum"`
+///   (default: `"average"`)
+/// * `decay` - Alpha decay exponent. `Some(alpha)` applies alpha decay kernel;
+///   `None` uses a binary (unweighted) kernel (default: `Some(40.0)`)
+/// * `bandwidth_scale` - Scales the kernel bandwidth (default: `1.0`)
+/// * `time` - Diffusion time selection: `PhateTime::Auto { t_max }` or
+///   `PhateTime::Fixed(t)` (default: `PhateTime::Auto { t_max: 100 }`)
+/// * `gamma` - Informational distance parameter. `1.0` gives Von Neumann
+///   entropy, `0.0` gives classic PHATE (default: `1.0`)
+/// * `n_landmarks` - Number of landmarks for landmark PHATE. `None` uses the
+///   full diffusion operator (default: `None`)
+/// * `landmark_mode` - Method for landmark selection: `"kmeans"` (default:
+///   `"kmeans"`)
+/// * `mds_method` - MDS algorithm: `"sgd_dense"`, `"sgd_streaming"`, or
+///   `"classic"` (default: `"sgd_dense"`)
+/// * `ann_params` - Nearest neighbour search parameters
 #[derive(Debug, Clone)]
 pub struct PhateParams<T> {
     pub n_dim: usize,
@@ -970,13 +990,96 @@ pub struct PhateParams<T> {
     pub gamma: T,
     pub n_landmarks: Option<usize>,
     pub landmark_mode: String,
+    pub mds_method: String,
     pub ann_params: NearestNeighbourParams<T>,
+}
+
+impl<T> PhateParams<T>
+where
+    T: Float + FromPrimitive,
+{
+    /// Create new PHATE parameters with sensible defaults
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - Number of output dimensions. Default: 2
+    /// * `k` - Number of nearest neighbours. Default: 5
+    /// * `decay` - Alpha decay exponent. `None` uses binary kernel. Default:
+    ///   `Some(40.0)`
+    /// * `bandwidth_scale` - Kernel bandwidth scaling factor. Default: `1.0`
+    /// * `t_max` - Maximum diffusion time for automatic t selection. Default:
+    ///   `100`
+    /// * `gamma` - Informational distance parameter. Default: `1.0`
+    /// * `n_landmarks` - Number of landmarks. `None` uses full operator.
+    ///   Default: `None`
+    /// * `mds_method` - MDS algorithm. Default: `"sgd_dense"`
+    /// * `ann_type` - ANN algorithm. Default: `"hnsw"`
+    ///
+    /// ### Returns
+    ///
+    /// `PhateParams` with sensible defaults for standard PHATE
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        n_dim: Option<usize>,
+        k: Option<usize>,
+        decay: Option<Option<T>>,
+        bandwidth_scale: Option<T>,
+        t_max: Option<usize>,
+        gamma: Option<T>,
+        n_landmarks: Option<usize>,
+        mds_method: Option<String>,
+        ann_type: Option<String>,
+    ) -> Self {
+        Self {
+            n_dim: n_dim.unwrap_or(2),
+            k: k.unwrap_or(5),
+            ann_type: ann_type.unwrap_or_else(|| "hnsw".to_string()),
+            thresh: T::from_f64(1e-4).unwrap(),
+            symmetrise: "average".to_string(),
+            decay: decay.unwrap_or_else(|| Some(T::from_f64(40.0).unwrap())),
+            bandwidth_scale: bandwidth_scale.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
+            time: PhateTime::Auto {
+                t_max: t_max.unwrap_or(100),
+            },
+            gamma: gamma.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
+            n_landmarks,
+            landmark_mode: "kmeans".to_string(),
+            mds_method: mds_method.unwrap_or_else(|| "sgd_dense".to_string()),
+            ann_params: NearestNeighbourParams::default(),
+        }
+    }
 }
 
 /////////////////////
 // PHATE diffusion //
 /////////////////////
 
+/// Build the PHATE diffusion operator from high-dimensional data
+///
+/// Runs kNN search (or uses precomputed results), computes alpha decay
+/// affinities, and constructs either a full or landmark diffusion operator
+/// depending on `phate_params.n_landmarks`.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `k` - Number of nearest neighbours for graph construction
+/// * `precomputed_knn` - Precomputed kNN indices and distances as
+///   `Some((Vec<Vec<usize>>, Vec<Vec<T>>))`, or `None` to run search
+///   internally. Indices and distances must exclude self.
+/// * `ann_type` - ANN algorithm: `"hnsw"` or `"nndescent"`
+/// * `nn_params` - Nearest neighbour search parameters
+/// * `phate_params` - Full PHATE parameter struct (uses `k`, `decay`,
+///   `bandwidth_scale`, `thresh`, `symmetrise`, `n_landmarks`,
+///   `landmark_mode`)
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - Print progress information
+///
+/// ### Returns
+///
+/// `PhateDiffusion::Full { operator }` when `n_landmarks` is `None` or
+/// >= N, otherwise `PhateDiffusion::Landmark { landmarks }` containing
+/// the compressed landmark operator and interpolation matrices.
 pub fn construct_phate_diffusion<T>(
     data: MatRef<T>,
     k: usize,
@@ -1082,13 +1185,55 @@ where
     }
 }
 
+/// Run PHATE dimensionality reduction
+///
+/// Potential of Heat-diffusion for Affinity-based Transition Embedding
+/// (PHATE) learns a low-dimensional embedding that preserves the
+/// diffusion geometry of the data.
+///
+/// ### Algorithm
+///
+/// 1. Build affinity graph via alpha decay kernel on kNN distances
+/// 2. Construct row-stochastic diffusion operator P = D^{-1} K
+/// 3. Determine diffusion time t (knee of Von Neumann entropy, or fixed)
+/// 4. Compute diffusion potential: log transformation of P^t by default
+/// 5. Embed via MDS on pairwise potential distances
+///
+/// Steps 2–4 optionally operate on a compressed landmark representation
+/// (N × L instead of N × N) when `phate_params.n_landmarks` is set.
+/// Pairwise distances and MDS (step 5) always run in the full N × N space;
+/// however, to avoid holding the full N x N matrix in memory, you can
+/// use a streaming version of MDS that computes the distances on the fly.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed kNN indices and distances as
+///   `Some((Vec<Vec<usize>>, Vec<Vec<T>>))`, or `None` to run search
+///   internally. Indices and distances must exclude self.
+/// * `phate_params` - PHATE parameters. See `PhateParams` for full
+///   documentation of each field.
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - Print progress information
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has
+/// length `n_dim` and each inner vector has length `n_samples`. Each
+/// outer element represents one embedding dimension.
+///
+/// ### References
+///
+/// - Moon et al. (2019): "Visualizing Structure and Transitions in
+///   High-Dimensional Biological Data" (Nature Biotechnology)
 pub fn phate<T>(
     data: MatRef<T>,
     precomputed_knn: PreComputedKnn<T>,
     phate_params: PhateParams<T>,
     seed: usize,
     verbose: bool,
-) where
+) -> Vec<Vec<T>>
+where
     T: Float
         + Send
         + Sync
@@ -1117,6 +1262,7 @@ pub fn phate<T>(
     );
 
     // stage 2: determine optimal t
+    let start_t = Instant::now();
     let t = match phate_params.time {
         PhateTime::Auto { t_max } => {
             if verbose {
@@ -1133,12 +1279,13 @@ pub fn phate<T>(
         }
         PhateTime::Fixed(t) => t,
     };
-
+    let end_t = start_t.elapsed();
     if verbose {
-        println!("Using t = {}", t);
+        println!("Identified t = {} in {:.2?}.", t, end_t);
     }
 
     // stage 3: calculate potential at time t
+    let start_diffusion = Instant::now();
     let potential = match &phate_diffusion {
         PhateDiffusion::Full { operator } => {
             if verbose {
@@ -1156,14 +1303,89 @@ pub fn phate<T>(
             calculate_potential(&interpolated, 1, phate_params.gamma)
         }
     };
+    let end_diffusion = start_diffusion.elapsed();
 
     if verbose {
         println!(
-            "Potential shape: {} × {}",
+            "Potential shape: {} × {} - calculated in {:.2?}.",
             potential.shape().0,
-            potential.shape().1
+            potential.shape().1,
+            end_diffusion
         );
     }
+
+    // stage 4: multi-dimensional scaling
+    let start_mds = Instant::now();
+
+    let mds_method = parse_mds_method(&phate_params.mds_method).unwrap_or_default();
+    let dist = parse_ann_dist(&phate_params.ann_params.dist_metric).unwrap_or_default();
+
+    let embedding = match mds_method {
+        MdsMethod::SgdDense => {
+            if verbose {
+                println!("Computing pairwise distances...");
+            }
+            let distances = compute_potential_distances(&potential, &dist);
+
+            if verbose {
+                println!("Running SGD-MDS...");
+            }
+            sgd_mds(
+                &distances,
+                phate_params.n_dim,
+                None,
+                None,
+                None,
+                seed,
+                verbose,
+            )
+        }
+        MdsMethod::SgdStreaming => {
+            if verbose {
+                println!("Running streaming SGD-MDS...");
+            }
+
+            sgd_mds_streaming(
+                &potential,
+                phate_params.n_dim,
+                &dist,
+                None,
+                None,
+                None,
+                seed,
+                verbose,
+            )
+        }
+        MdsMethod::ClassicMds => {
+            if verbose {
+                println!("Computing pairwise distances...");
+            }
+            let distances = compute_potential_distances(&potential, &dist);
+
+            if verbose {
+                println!("Running classic MDS...");
+            }
+            classic_mds(&distances, phate_params.n_dim)
+        }
+    };
+
+    let end_mds = start_mds.elapsed();
+    let end_phate = start_phate.elapsed();
+
+    if verbose {
+        println!("Ran MDS in {:.2?}.", end_mds);
+        println!("Finished running PHATE in {:.2?}.", end_phate)
+    }
+
+    let n_samples = embedding.len();
+    let mut transposed = vec![vec![T::zero(); n_samples]; phate_params.n_dim];
+    for i in 0..n_samples {
+        for d in 0..phate_params.n_dim {
+            transposed[d][i] = embedding[i][d];
+        }
+    }
+
+    transposed
 }
 
 /////////////////////

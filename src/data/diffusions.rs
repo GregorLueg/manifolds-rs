@@ -285,7 +285,7 @@ fn build_landmarks_to_data<T>(
     n_landmarks: usize,
 ) -> CompressedSparseData<T>
 where
-    T: Float + Send + Sync + ComplexField,
+    T: Float + Send + Sync + ComplexField + std::ops::AddAssign,
 {
     let n = assignments.len();
     let mut landmark_pts: Vec<Vec<usize>> = vec![Vec::new(); n_landmarks];
@@ -462,6 +462,7 @@ where
 /// * `assignments`: Data point → landmark mapping.
 /// * `landmark_op`: Small L matrix.
 /// * `transitions`: P_nm for interpolation.
+#[allow(dead_code)]
 pub struct PhateLandmarks<T>
 where
     T: Float + ComplexField,
@@ -483,7 +484,8 @@ where
         + std::iter::Sum<T>
         + AddAssign
         + ComplexField
-        + RealField,
+        + RealField
+        + std::ops::AddAssign,
 {
     /// Build landmarks from an existing diffusion operator
     ///
@@ -519,7 +521,7 @@ where
 
                 let landmark_data: Vec<T> = landmark_indices
                     .iter()
-                    .flat_map(|&i| data[i * dim..(i + 1) + dim].iter().copied())
+                    .flat_map(|&i| data[i * dim..(i + 1) * dim].iter().copied())
                     .collect();
 
                 // calculate norms if distance is cosine
@@ -541,9 +543,14 @@ where
                 (0..n)
                     .into_par_iter()
                     .map(|i| {
+                        let norm = if matches!(distance, Dist::Euclidean) {
+                            T::zero() // unused by assign_to_landmark for Euclidean
+                        } else {
+                            norm_data[i]
+                        };
                         assign_to_landmark(
                             &data[i * dim..(i + 1) * dim],
-                            &norm_data[i],
+                            &norm,
                             &landmark_data,
                             &norm_landmark,
                             &distance,

@@ -421,7 +421,7 @@ pub fn sgd_mds_streaming<T>(
     lr: Option<T>,
     init: Option<Vec<Vec<T>>>,
     seed: usize,
-    verbose: usize,
+    verbose: bool,
 ) -> Vec<Vec<T>>
 where
     T: Float + Send + Sync + SimdDistance + std::iter::Sum + ComplexField,
@@ -526,7 +526,7 @@ where
         T::zero()
     };
 
-    if verbose > 0 {
+    if verbose {
         println!(
             "Streaming SGD-MDS: n={}, pairs_per_iter={}, n_iter={}",
             n, pairs_per_iter, n_iter
@@ -598,7 +598,7 @@ where
 
         let stress = total_error / T::from(pairs.len()).unwrap();
 
-        if verbose > 0 && iteration % 100 == 0 {
+        if verbose && iteration % 100 == 0 {
             println!(
                 "Iter {}: stress={:.6}, lr={:.6}",
                 iteration,
@@ -611,7 +611,7 @@ where
         if let Some(prev) = prev_stress {
             let rel_change = ((stress - prev) / (prev + T::from(1e-10).unwrap())).abs();
             if rel_change < T::from(1e-6).unwrap() && iteration > 50 {
-                if verbose > 0 {
+                if verbose {
                     println!("Converged at iteration {}", iteration);
                 }
                 break;
@@ -724,7 +724,7 @@ mod test_mds {
             None,
             None,
             42,
-            0,
+            false,
         );
 
         // Basic sanity checks
@@ -756,8 +756,16 @@ mod test_mds {
 
         let potential = CompressedSparseData::new_csr(&data, &indices, &indptr, shape);
 
-        let embedding =
-            sgd_mds_streaming(&potential, 2, &Dist::Cosine, Some(500), None, None, 42, 0);
+        let embedding = sgd_mds_streaming(
+            &potential,
+            2,
+            &Dist::Cosine,
+            Some(500),
+            None,
+            None,
+            42,
+            false,
+        );
 
         // Basic sanity checks
         assert_eq!(embedding.len(), 3);
