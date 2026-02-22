@@ -27,6 +27,7 @@ use thousands::*;
 #[cfg(feature = "parametric")]
 use burn::tensor::{backend::AutodiffBackend, Element};
 
+use crate::data::diffusions::*;
 use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
@@ -35,6 +36,7 @@ use crate::prelude::*;
 use crate::training::tsne_optimiser::*;
 use crate::training::umap_optimisers::*;
 use crate::training::*;
+use crate::utils::sparse_ops::matrix_power;
 
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::FftwFloat;
@@ -957,28 +959,35 @@ where
 /// * `bandwidth_scale` - Bandwidth scale (default: 1.0)
 #[derive(Debug, Clone)]
 pub struct PhateParams<T> {
-    pub n_components: usize,
+    pub n_dim: usize,
     pub k: usize,
     pub ann_type: String,
     pub thresh: T,
+    pub symmetrise: String,
     pub decay: Option<T>,
     pub bandwidth_scale: T,
     pub time: PhateTime,
     pub gamma: T,
     pub n_landmarks: Option<usize>,
-    pub landmark_mode: LandmarkMethod,
+    pub landmark_mode: String,
     pub ann_params: NearestNeighbourParams<T>,
 }
+
+/////////////////////
+// PHATE diffusion //
+/////////////////////
 
 pub fn construct_phate_diffusion<T>(
     data: MatRef<T>,
     k: usize,
     precomputed_knn: PreComputedKnn<T>,
-    ann_type: String,
+    ann_type: &str,
     nn_params: &NearestNeighbourParams<T>,
+    phate_params: &PhateParams<T>,
     seed: usize,
     verbose: bool,
-) where
+) -> PhateDiffusion<T>
+where
     T: Float
         + Send
         + Sync
@@ -1007,13 +1016,154 @@ pub fn construct_phate_diffusion<T>(
                 );
             }
             let start_knn = Instant::now();
-            let result = run_ann_search(data, k, ann_type, nn_params, seed);
+            let result = run_ann_search(data, k, ann_type.to_string(), nn_params, seed);
             if verbose {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
             }
             result
         }
     };
+
+    if verbose {
+        println!("Calculating alpha decay affinities");
+    }
+    let start_alpha_affinities = Instant::now();
+
+    let graph = phate_alpha_decay_affinities(
+        &knn_indices,
+        &knn_dist,
+        phate_params.k,
+        phate_params.decay,
+        phate_params.bandwidth_scale,
+        phate_params.thresh,
+        &phate_params.symmetrise,
+        nn_params.dist_metric == "euclidean",
+    );
+
+    if verbose {
+        println!(
+            "Alpha decay affinity calculations done in: {:.2?}.",
+            start_alpha_affinities.elapsed()
+        );
+    }
+
+    let kernel_csr = coo_to_csr(&graph);
+    let diffusion_op = build_diffusion_operator(&kernel_csr);
+
+    match phate_params.n_landmarks {
+        None => PhateDiffusion::Full {
+            operator: diffusion_op,
+        },
+        Some(n_landmarks) if n_landmarks >= data.nrows() => PhateDiffusion::Full {
+            operator: diffusion_op,
+        },
+        Some(n_landmarks) => {
+            if verbose {
+                println!(" Building {} landmarks...", n_landmarks);
+            }
+            let start_landmarks = Instant::now();
+            let landmarks = PhateLandmarks::build(
+                data,
+                &diffusion_op,
+                n_landmarks,
+                &phate_params.landmark_mode,
+                &nn_params.dist_metric,
+                Some(seed),
+                Some(100),
+            );
+            if verbose {
+                println!(
+                    " Landmarks generated in : {:.2?}.",
+                    start_landmarks.elapsed()
+                );
+            }
+            PhateDiffusion::Landmark { landmarks }
+        }
+    }
+}
+
+pub fn phate<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    phate_params: PhateParams<T>,
+    seed: usize,
+    verbose: bool,
+) where
+    T: Float
+        + Send
+        + Sync
+        + SimdDistance
+        + ComplexField
+        + RealField
+        + AddAssign
+        + std::iter::Sum
+        + Default
+        + FromPrimitive,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let start_phate = Instant::now();
+
+    // stage 1: generate the diffusion operator
+    let phate_diffusion = construct_phate_diffusion(
+        data,
+        phate_params.k,
+        precomputed_knn,
+        &phate_params.ann_type,
+        &phate_params.ann_params,
+        &phate_params,
+        seed,
+        verbose,
+    );
+
+    // stage 2: determine optimal t
+    let t = match phate_params.time {
+        PhateTime::Auto { t_max } => {
+            if verbose {
+                println!("Finding optimal t (t_max={})...", t_max);
+            }
+            match &phate_diffusion {
+                PhateDiffusion::Landmark { landmarks } => landmarks.find_optimal_t(t_max),
+                PhateDiffusion::Full { operator } => {
+                    let dense = operator.to_dense();
+                    let entropy = von_neumann_entropy(dense, t_max);
+                    find_knee_point(&entropy)
+                }
+            }
+        }
+        PhateTime::Fixed(t) => t,
+    };
+
+    if verbose {
+        println!("Using t = {}", t);
+    }
+
+    // stage 3: calculate potential at time t
+    let potential = match &phate_diffusion {
+        PhateDiffusion::Full { operator } => {
+            if verbose {
+                println!("Powering diffusion operator...");
+            }
+            let powered = matrix_power(operator, t);
+            calculate_potential(&powered, 1, phate_params.gamma) // Already powered, so t=1
+        }
+        PhateDiffusion::Landmark { landmarks } => {
+            if verbose {
+                println!("Powering landmark operator...");
+            }
+            let landmark_powered = landmarks.power(t);
+            let interpolated = landmarks.interpolate(&landmark_powered);
+            calculate_potential(&interpolated, 1, phate_params.gamma)
+        }
+    };
+
+    if verbose {
+        println!(
+            "Potential shape: {} × {}",
+            potential.shape().0,
+            potential.shape().1
+        );
+    }
 }
 
 /////////////////////
