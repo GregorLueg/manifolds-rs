@@ -9,7 +9,9 @@ pub use crate::data::PhateDiffusionParams;
 pub use crate::training::tsne_optimiser::TsneOptimParams;
 pub use crate::training::umap_optimisers::UmapOptimParams;
 pub use crate::training::UmapGraphParams;
+pub use crate::utils::math::von_neumann_entropy;
 pub use crate::utils::mds::{parse_mds_method, MdsMethod};
+pub use crate::utils::potentials::calculate_potential;
 
 #[cfg(feature = "parametric")]
 pub use crate::parametric::parametric_train::TrainParametricParams;

@@ -15,13 +15,13 @@ use crate::utils::sparse_ops::csr_row_to_dense;
 // Globals //
 /////////////
 
-pub const DEFAULT_LR: f64 = 0.001;
+pub const DEFAULT_LR: f64 = 0.01;
 
 /////////////
 // Helpers //
 /////////////
 
-/// Represents the different methods for performing multidimensional scaling
+/// Represents the different methods for performing multi-dimensional scaling
 /// (MDS).
 #[derive(Default, Clone, Debug)]
 pub enum MdsMethod {
@@ -67,7 +67,8 @@ pub fn parse_mds_method(s: &str) -> Option<MdsMethod> {
 fn auto_tune_params(n: usize) -> (usize, usize) {
     if n < 1000 {
         let n_iter = 300;
-        let pairs_per_iter = n * n / 10;
+        let all_pairs = n * (n - 1) / 2;
+        let pairs_per_iter = (n * n / 10).max(all_pairs);
         (n_iter, pairs_per_iter)
     } else if n < 5000 {
         let n_iter = 500;
@@ -137,7 +138,7 @@ where
 {
     let n = dist.len();
 
-    // Square distances
+    // square distances
     let mut d_sq = Mat::zeros(n, n);
     for i in 0..n {
         for j in 0..n {
@@ -145,7 +146,7 @@ where
         }
     }
 
-    // Double centre: H = I - 1/n * 11^T
+    // double centre: H = I - 1/n * 11^T
     let mean_row: Vec<T> = (0..n)
         .map(|j| {
             let sum: T = (0..n).map(|i| d_sq[(i, j)]).sum();
@@ -238,9 +239,9 @@ where
         dist.to_vec()
     };
 
-    // Initialise embedding
+    // initialise embedding
     let mut y = if let Some(init_y) = init {
-        // Normalise init to match distance scale
+        // normalise init to match distance scale
         let y_std = compute_std(&init_y);
         if y_std > T::zero() {
             init_y
@@ -251,7 +252,7 @@ where
             init_y
         }
     } else {
-        // Random initialization
+        // random init
         (0..n)
             .map(|_| {
                 (0..n_dim)
@@ -263,7 +264,7 @@ where
 
     // auto-tune parameters if not provided
     let (n_iter, pairs_per_iter) = if let Some(iters) = n_iter {
-        let pairs = (n as f64 * (n as f64).ln()) as usize;
+        let (_, pairs) = auto_tune_params(n);
         (iters, pairs)
     } else {
         auto_tune_params(n)
@@ -271,7 +272,7 @@ where
 
     let lr = lr.unwrap_or_else(|| T::from(DEFAULT_LR).unwrap());
 
-    // learning rate schedule (exponential decay)
+    // lr schedule (exponential decay)
     let total_pairs = n * (n - 1) / 2;
     let sampling_ratio = pairs_per_iter as f64 / total_pairs as f64;
     let batch_scale = (1.0 / sampling_ratio).sqrt();
@@ -302,14 +303,19 @@ where
 
         let mut i_samples = Vec::with_capacity(pairs_per_iter);
         let mut j_samples = Vec::with_capacity(pairs_per_iter);
-
-        for _ in 0..pairs_per_iter {
+        let mut attempts = 0;
+        while i_samples.len() < pairs_per_iter && attempts < pairs_per_iter * 10 {
             let i = rng.random_range(0..n);
             let j = rng.random_range(0..n);
             if i != j {
                 i_samples.push(i);
                 j_samples.push(j);
             }
+            attempts += 1;
+        }
+
+        if i_samples.is_empty() {
+            continue;
         }
 
         let mut gradients = vec![vec![T::zero(); n_dim]; n];
@@ -507,7 +513,7 @@ where
 
     let lr = lr.unwrap_or_else(|| T::from(DEFAULT_LR).unwrap());
 
-    // Learning rate schedule
+    // lr schedule
     let total_pairs = n * (n - 1) / 2;
     let sampling_ratio = pairs_per_iter as f64 / total_pairs as f64;
     let batch_scale = (1.0 / sampling_ratio).sqrt();
@@ -529,7 +535,7 @@ where
 
     let mut prev_stress = None;
 
-    // Main SGD loop
+    // SGD loop
     for iteration in 0..n_iter {
         let lr_i = eta_max * (-lambda * T::from(iteration).unwrap()).exp();
 
