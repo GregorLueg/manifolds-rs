@@ -33,10 +33,10 @@ use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
 use crate::data::structures::*;
 use crate::prelude::*;
+use crate::training::mds_optimiser::*;
 use crate::training::tsne_optimiser::*;
 use crate::training::umap_optimisers::*;
 use crate::training::*;
-use crate::utils::mds::*;
 use crate::utils::potentials::compute_potential_distances;
 use crate::utils::sparse_ops::matrix_power;
 

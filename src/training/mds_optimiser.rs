@@ -324,7 +324,6 @@ where
         for (&i, &j) in i_samples.iter().zip(&j_samples) {
             let target_dist = d_norm[i][j];
 
-            // current distance
             let mut current_dist_sq = T::zero();
             for k in 0..n_dim {
                 let diff = y[i][k] - y[j][k];
@@ -332,11 +331,9 @@ where
             }
             let current_dist = current_dist_sq.sqrt().max(T::from(1e-10).unwrap());
 
-            // error
             let error = target_dist - current_dist;
             total_err = total_err + error * error;
 
-            // gradient: -2 * error * (y_i - y_j) / current_dist
             let weight = T::from(-2.0).unwrap() * error / current_dist;
 
             for k in 0..n_dim {
@@ -347,10 +344,16 @@ where
             }
         }
 
-        // update positions
+        let mut counts = vec![0usize; n];
+        for (&i, &j) in i_samples.iter().zip(&j_samples) {
+            counts[i] += 1;
+            counts[j] += 1;
+        }
+
         for i in 0..n {
+            let c = T::from(counts[i].max(1)).unwrap();
             for k in 0..n_dim {
-                y[i][k] = y[i][k] - lr_i * gradients[i][k];
+                y[i][k] = y[i][k] - lr_i * gradients[i][k] / c;
             }
         }
 
@@ -365,7 +368,6 @@ where
             );
         }
 
-        // check convergence / early termination
         if let Some(prev) = prev_stress {
             let rel_change = ((stress - prev) / (prev + T::from(1e-10).unwrap())).abs();
             if rel_change < T::from(1e-6).unwrap() && iteration > 50 {
@@ -541,7 +543,6 @@ where
 
         let mut gradients = vec![vec![T::zero(); n_dim]; n];
 
-        // generate pairs upfront
         let pairs: Vec<(usize, usize)> = (0..(pairs_per_iter * 2))
             .map(|_| {
                 let i = rng.random_range(0..n);
@@ -552,7 +553,6 @@ where
             .take(pairs_per_iter)
             .collect();
 
-        // compute target distances in parallel
         let target_dists: Vec<T> = pairs
             .par_iter()
             .map(|&(i, j)| {
@@ -565,10 +565,8 @@ where
             })
             .collect();
 
-        // apply gradients sequentially
         let mut total_error = T::zero();
         for (&(i, j), &target_dist) in pairs.iter().zip(target_dists.iter()) {
-            // current embedding distance
             let mut current_dist_sq = T::zero();
             for k in 0..n_dim {
                 let diff = y[i][k] - y[j][k];
@@ -589,10 +587,16 @@ where
             }
         }
 
-        // update
+        let mut counts = vec![0usize; n];
+        for &(i, j) in &pairs {
+            counts[i] += 1;
+            counts[j] += 1;
+        }
+
         for i in 0..n {
+            let c = T::from(counts[i].max(1)).unwrap();
             for k in 0..n_dim {
-                y[i][k] = y[i][k] - lr_i * gradients[i][k];
+                y[i][k] = y[i][k] - lr_i * gradients[i][k] / c;
             }
         }
 
@@ -607,7 +611,6 @@ where
             );
         }
 
-        // convergence check
         if let Some(prev) = prev_stress {
             let rel_change = ((stress - prev) / (prev + T::from(1e-10).unwrap())).abs();
             if rel_change < T::from(1e-6).unwrap() && iteration > 50 {
