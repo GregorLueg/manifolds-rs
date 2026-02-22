@@ -1022,7 +1022,7 @@ where
     pub fn new(
         n_dim: Option<usize>,
         k: Option<usize>,
-        decay: Option<Option<T>>,
+        decay: Option<T>,
         bandwidth_scale: Option<T>,
         t_max: Option<usize>,
         gamma: Option<T>,
@@ -1036,7 +1036,7 @@ where
             ann_type: ann_type.unwrap_or_else(|| "hnsw".to_string()),
             thresh: T::from_f64(1e-4).unwrap(),
             symmetrise: "average".to_string(),
-            decay: decay.unwrap_or_else(|| Some(T::from_f64(40.0).unwrap())),
+            decay: Some(decay.unwrap_or_else(|| T::from_f64(40.0).unwrap())),
             bandwidth_scale: bandwidth_scale.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
             time: PhateTime::Auto {
                 t_max: t_max.unwrap_or(100),
