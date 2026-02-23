@@ -27,7 +27,6 @@ use thousands::*;
 #[cfg(feature = "parametric")]
 use burn::tensor::{backend::AutodiffBackend, Element};
 
-use crate::data::diffusions::*;
 use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
@@ -37,6 +36,7 @@ use crate::training::mds_optimiser::*;
 use crate::training::tsne_optimiser::*;
 use crate::training::umap_optimisers::*;
 use crate::training::*;
+use crate::utils::diffusions::*;
 use crate::utils::potentials::compute_potential_distances;
 use crate::utils::sparse_ops::matrix_power;
 
@@ -976,6 +976,8 @@ where
 ///   `"kmeans"`)
 /// * `mds_method` - MDS algorithm: `"sgd_dense"`, `"sgd_streaming"`, or
 ///   `"classic"` (default: `"sgd_dense"`)
+/// * `n_threads` - Set this to ≥1 if you are happy with Hogwild parallel SGD
+///   for MDS. Faster, but not determistic anymore.
 /// * `randomised` - Shall randomised SVD be used for the `"classic"` MDS.
 /// * `ann_params` - Nearest neighbour search parameters
 #[derive(Debug, Clone)]
@@ -992,6 +994,7 @@ pub struct PhateParams<T> {
     pub n_landmarks: Option<usize>,
     pub landmark_mode: String,
     pub mds_method: String,
+    pub n_threads: usize,
     pub randomised: bool,
     pub ann_params: NearestNeighbourParams<T>,
 }
@@ -1030,9 +1033,12 @@ where
         gamma: Option<T>,
         n_landmarks: Option<usize>,
         mds_method: Option<String>,
+        n_threads: Option<usize>,
         randomised: Option<bool>,
         ann_type: Option<String>,
     ) -> Self {
+        let n_threads = n_threads.unwrap_or(1);
+
         Self {
             n_dim: n_dim.unwrap_or(2),
             k: k.unwrap_or(5),
@@ -1048,6 +1054,7 @@ where
             n_landmarks,
             landmark_mode: "kmeans".to_string(),
             mds_method: mds_method.unwrap_or_else(|| "sgd_dense".to_string()),
+            n_threads: n_threads,
             randomised: randomised.unwrap_or_else(|| true),
             ann_params: NearestNeighbourParams::default(),
         }
@@ -1324,6 +1331,13 @@ where
 
     let mds_method = parse_mds_method(&phate_params.mds_method).unwrap_or_default();
     let dist = parse_ann_dist(&phate_params.ann_params.dist_metric).unwrap_or_default();
+    let mds_params = MdsOptimParams::new(
+        potential.shape().0,
+        phate_params.randomised,
+        None,
+        None,
+        Some(phate_params.n_threads),
+    );
 
     let embedding = match mds_method {
         MdsMethod::SgdDense => {
@@ -1338,8 +1352,7 @@ where
             sgd_mds(
                 &distances,
                 phate_params.n_dim,
-                None,
-                None,
+                &mds_params,
                 None,
                 seed,
                 verbose,
@@ -1354,8 +1367,7 @@ where
                 &potential,
                 phate_params.n_dim,
                 &dist,
-                None,
-                None,
+                &mds_params,
                 None,
                 seed,
                 verbose,
@@ -1370,7 +1382,7 @@ where
             if verbose {
                 println!("Running classic MDS...");
             }
-            classic_mds(&distances, phate_params.n_dim, true, 42)
+            classic_mds(&distances, phate_params.n_dim, mds_params.randomised, seed)
         }
     };
 

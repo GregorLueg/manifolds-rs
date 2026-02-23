@@ -369,6 +369,9 @@ where
     }
 }
 
+/// Fast power version
+///
+/// For specific versions of b, return quickly the value
 #[inline(always)]
 fn fast_pow<T: Float>(x: T, b: T, b_is_one: bool, b_is_half: bool) -> T {
     if b_is_one {

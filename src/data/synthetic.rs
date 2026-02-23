@@ -26,13 +26,13 @@ pub fn generate_swiss_roll(n_samples: usize, noise: f64, seed: u64) -> Mat<f64> 
     let mut data = Mat::<f64>::zeros(n_samples, 3);
 
     for i in 0..n_samples {
-        // Parameter t controls position along the roll
+        // parameter t controls position along the roll
         let t = 1.5 * std::f64::consts::PI * (1.0 + 2.0 * rng.random::<f64>());
 
-        // Height along the roll
+        // height along the roll
         let height = 21.0 * rng.random::<f64>();
 
-        // Generate noise
+        // generate noise
         let noise_x = rng.random_range(-noise..noise);
         let noise_y = rng.random_range(-noise..noise);
         let noise_z = rng.random_range(-noise..noise);
@@ -239,7 +239,7 @@ pub fn generate_trajectory(
     let mut dirs: Vec<Vec<f64>> = Vec::with_capacity(n_branches);
     let mut starts: Vec<Vec<f64>> = Vec::with_capacity(n_branches);
 
-    for (i, spec) in branches.iter().enumerate() {
+    for (_, spec) in branches.iter().enumerate() {
         // random direction, orthogonalised against ALL previous directions
         let mut dir: Vec<f64> = (0..dim).map(|_| rng.random_range(-1.0..1.0)).collect();
         for prev in &dirs {

@@ -3,10 +3,10 @@
 mod commons;
 use commons::*;
 
-use manifolds_rs::data::diffusions::build_diffusion_operator;
 use manifolds_rs::data::graph::phate_alpha_decay_affinities;
 use manifolds_rs::data::structures::{coo_to_csr, CompressedSparseData};
 use manifolds_rs::prelude::*;
+use manifolds_rs::utils::diffusions::build_diffusion_operator;
 use manifolds_rs::utils::potentials::calculate_potential;
 use manifolds_rs::utils::sparse_ops::matrix_power;
 use manifolds_rs::*;
@@ -411,7 +411,8 @@ fn phate_integration_07_full_phate_quality() {
         None,     // no landmarks
         None,     // default mds_method
         None,     // randomised SVD
-        None,     // default ann_type
+        None,
+        None, // default ann_type
     );
 
     let embedding = phate(data.as_ref(), None, params, 42, true);
@@ -464,6 +465,7 @@ fn phate_integration_08_landmark_phate_quality() {
         None,
         None,
         None,
+        None,
     );
 
     let embedding = phate(data.as_ref(), None, params, 42, true);
@@ -511,6 +513,7 @@ fn phate_integration_09_reproducibility() {
         None,
         None,
         None,
+        None,
     );
 
     let embd1 = phate(data.as_ref(), None, params.clone(), 42, false);
@@ -545,6 +548,7 @@ fn phate_integration_10_different_seeds() {
         None,
         None,
         Some(50),
+        None,
         None,
         None,
         None,
@@ -588,6 +592,7 @@ fn phate_integration_11_precomputed_knn() {
         None,
         None,
         Some(50),
+        None,
         None,
         None,
         None,
@@ -639,6 +644,7 @@ fn phate_integration_12_fixed_vs_auto_t() {
         None,
         None,
         None,
+        None,
     );
     params_auto.time = PhateTime::Auto { t_max: 50 };
 
@@ -648,6 +654,7 @@ fn phate_integration_12_fixed_vs_auto_t() {
         None,
         None,
         Some(50),
+        None,
         None,
         None,
         None,
