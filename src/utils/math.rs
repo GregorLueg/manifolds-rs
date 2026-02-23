@@ -239,9 +239,9 @@ where
     let b = b_t.transpose().to_owned();
 
     let svd = b.thin_svd().unwrap();
-    let u = &q * svd.U();
-    let s: Vec<T> = svd.S().column_vector().iter().copied().collect();
-    let v = svd.V().to_owned();
+    let u = (&q * svd.U()).get(.., ..rank).to_owned();
+    let s: Vec<T> = svd.S().column_vector().iter().copied().take(rank).collect();
+    let v = svd.V().get(.., ..rank).to_owned();
 
     RandomSvdResults { u, s, v }
 }

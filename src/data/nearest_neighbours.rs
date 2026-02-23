@@ -1,13 +1,12 @@
 use ann_search_rs::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
-use ann_search_rs::utils::dist::SimdDistance;
+use ann_search_rs::prelude::*;
 
 use ann_search_rs::*;
 use faer::MatRef;
-use num_traits::{Float, FromPrimitive, ToPrimitive};
+use num_traits::Float;
 use rayon::prelude::*;
 use std::default::Default;
-use std::iter::Sum;
 
 #[derive(Default)]
 pub enum AnnSearch {
@@ -171,7 +170,7 @@ pub fn run_ann_search<T>(
     seed: usize,
 ) -> (Vec<Vec<usize>>, Vec<Vec<T>>)
 where
-    T: Float + FromPrimitive + ToPrimitive + Send + Sync + Default + Sum + SimdDistance,
+    T: AnnSearchFloat,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {

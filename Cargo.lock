@@ -84,9 +84,8 @@ dependencies = [
 
 [[package]]
 name = "ann-search-rs"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "694802a0386266bfa95195ff9d198afef5a270cc31ec4af7af4583a9ca18e052"
+version = "0.2.4"
+source = "git+https://github.com/GregorLueg/ann-search-rs?branch=docs-updated-benchmarks#b4c506b6baa85662c5d3e33381b9a121fa91f811"
 dependencies = [
  "approx",
  "clap",

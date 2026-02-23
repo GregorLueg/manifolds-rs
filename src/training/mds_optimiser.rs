@@ -485,7 +485,7 @@ where
     let norms: Vec<T> = if matches!(metric, Dist::Cosine) {
         (0..n)
             .into_par_iter()
-            .map(|i| T::calculate_norm(&dense[i * n_cols..(i + 1) * n_cols]))
+            .map(|i| T::calculate_l2_norm(&dense[i * n_cols..(i + 1) * n_cols]))
             .collect()
     } else {
         Vec::new()
@@ -551,7 +551,10 @@ where
     if verbose {
         println!(
             "Streaming SGD-MDS: n={}, pairs_per_iter={}, n_iter={}, n_threads={}",
-            n, pairs_per_iter, n_iter, params.n_threads
+            n.separate_with_underscores(),
+            pairs_per_iter.separate_with_underscores(),
+            n_iter.separate_with_underscores(),
+            params.n_threads
         );
     }
 

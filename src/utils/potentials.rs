@@ -185,7 +185,7 @@ where
     let norms: Vec<T> = if matches!(metric, Dist::Cosine) {
         dense_rows
             .par_iter()
-            .map(|row| T::calculate_norm(row))
+            .map(|row| T::calculate_l2_norm(row))
             .collect()
     } else {
         Vec::new()

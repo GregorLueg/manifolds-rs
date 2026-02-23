@@ -413,10 +413,10 @@ where
         panic!("Cannot find knee point on vector of length < 3");
     }
 
-    // Use indices as x values
+    // use indices as x values
     let x: Vec<T> = (0..n).map(|i| T::from(i).unwrap()).collect();
 
-    // Compute cumulative sums for linear fits
+    // compute cumulative sums for linear fits
     let mut sigma_x = Vec::with_capacity(n);
     let mut sigma_y = Vec::with_capacity(n);
     let mut sigma_xy = Vec::with_capacity(n);
@@ -439,7 +439,7 @@ where
         sigma_xx.push(sum_xx);
     }
 
-    // Compute forward fits (left of knee)
+    // compute forward fits (left of knee)
     let mut mfwd = Vec::with_capacity(n - 1);
     let mut bfwd = Vec::with_capacity(n - 1);
 
@@ -458,7 +458,7 @@ where
         }
     }
 
-    // Compute backward fits (right of knee) by reversing
+    // compute backward fits (right of knee) by reversing
     let x_rev: Vec<T> = x.iter().rev().copied().collect();
     let y_rev: Vec<T> = y.iter().rev().copied().collect();
 
@@ -517,7 +517,7 @@ where
             error = error + (predicted - y[i]).abs();
         }
 
-        // Error from right fit
+        // error from right fit
         for i in breakpt..n {
             let predicted = mbck[breakpt - 1] * x[i] + bbck[breakpt - 1];
             error = error + (predicted - y[i]).abs();
@@ -526,7 +526,7 @@ where
         error_curve[breakpt] = error;
     }
 
-    // Find minimum error
+    // find minimum error
     let mut min_idx = 1;
     let mut min_error = error_curve[1];
 
@@ -627,14 +627,14 @@ where
                 let norm_data = match distance {
                     Dist::Cosine => (0..n)
                         .into_par_iter()
-                        .map(|i| T::calculate_norm(&data[i * dim..(i + 1) * dim]))
+                        .map(|i| T::calculate_l2_norm(&data[i * dim..(i + 1) * dim]))
                         .collect::<Vec<_>>(),
                     Dist::Euclidean => Vec::new(),
                 };
                 let norm_landmark = match distance {
                     Dist::Cosine => (0..n_landmarks)
                         .into_par_iter()
-                        .map(|i| T::calculate_norm(&landmark_data[i * dim..(i + 1) * dim]))
+                        .map(|i| T::calculate_l2_norm(&landmark_data[i * dim..(i + 1) * dim]))
                         .collect::<Vec<_>>(),
                     Dist::Euclidean => Vec::new(),
                 };
@@ -694,9 +694,9 @@ where
                     n,
                     n_landmarks,
                     &Dist::Euclidean,
-                    300,
+                    100,
                     seed.unwrap_or(42),
-                    false,
+                    verbose,
                 );
 
                 if verbose {
