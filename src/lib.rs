@@ -959,44 +959,26 @@ where
 /// * `k` - Number of nearest neighbours for graph construction (default: 5)
 /// * `ann_type` - Approximate nearest neighbour method: `"hnsw"` or
 ///   `"nndescent"` (default: `"hnsw"`)
-/// * `thresh` - Threshold below which affinities are set to zero (default:
-///   `1e-4`)
-/// * `symmetrise` - Affinity symmetrisation method: `"average"` or `"maximum"`
-///   (default: `"average"`)
-/// * `decay` - Alpha decay exponent. `Some(alpha)` applies alpha decay kernel;
-///   `None` uses a binary (unweighted) kernel (default: `Some(40.0)`)
-/// * `bandwidth_scale` - Scales the kernel bandwidth (default: `1.0`)
-/// * `time` - Diffusion time selection: `PhateTime::Auto { t_max }` or
-///   `PhateTime::Fixed(t)` (default: `PhateTime::Auto { t_max: 100 }`)
-/// * `gamma` - Informational distance parameter. `1.0` gives Von Neumann
-///   entropy, `0.0` gives classic PHATE (default: `1.0`)
-/// * `n_landmarks` - Number of landmarks for landmark PHATE. `None` uses the
-///   full diffusion operator (default: `None`)
-/// * `landmark_mode` - Method for landmark selection: `"kmeans"` (default:
-///   `"kmeans"`)
 /// * `mds_method` - MDS algorithm: `"sgd_dense"`, `"sgd_streaming"`, or
 ///   `"classic"` (default: `"sgd_dense"`)
 /// * `n_threads` - Set this to ≥1 if you are happy with Hogwild parallel SGD
 ///   for MDS. Faster, but not determistic anymore.
 /// * `randomised` - Shall randomised SVD be used for the `"classic"` MDS.
+/// * `phate_diffusion_params` - Structure with all of the diffuion parameters.
 /// * `ann_params` - Nearest neighbour search parameters
 #[derive(Debug, Clone)]
 pub struct PhateParams<T> {
     pub n_dim: usize,
+    // knn
     pub k: usize,
     pub ann_type: String,
-    pub thresh: T,
-    pub symmetrise: String,
-    pub decay: Option<T>,
-    pub bandwidth_scale: T,
-    pub time: PhateTime,
-    pub gamma: T,
-    pub n_landmarks: Option<usize>,
-    pub landmark_mode: String,
+    pub ann_params: NearestNeighbourParams<T>,
+    // diffusion
+    pub diffusion_params: PhateDiffusionParams<T>,
+    // mds
     pub mds_method: String,
     pub n_threads: usize,
     pub randomised: bool,
-    pub ann_params: NearestNeighbourParams<T>,
 }
 
 impl<T> PhateParams<T>
@@ -1007,18 +989,6 @@ where
     ///
     /// ### Params
     ///
-    /// * `n_dim` - Number of output dimensions. Default: 2
-    /// * `k` - Number of nearest neighbours. Default: 5
-    /// * `decay` - Alpha decay exponent. `None` uses binary kernel. Default:
-    ///   `Some(40.0)`
-    /// * `bandwidth_scale` - Kernel bandwidth scaling factor. Default: `1.0`
-    /// * `t_max` - Maximum diffusion time for automatic t selection. Default:
-    ///   `100`
-    /// * `gamma` - Informational distance parameter. Default: `1.0`
-    /// * `n_landmarks` - Number of landmarks. `None` uses full operator.
-    ///   Default: `None`
-    /// * `mds_method` - MDS algorithm. Default: `"sgd_dense"`
-    /// * `ann_type` - ANN algorithm. Default: `"hnsw"`
     ///
     /// ### Returns
     ///
@@ -1027,36 +997,47 @@ where
     pub fn new(
         n_dim: Option<usize>,
         k: Option<usize>,
+        ann_type: Option<String>,
         decay: Option<T>,
         bandwidth_scale: Option<T>,
+        graph_symmetry: Option<String>,
         t_max: Option<usize>,
         gamma: Option<T>,
         n_landmarks: Option<usize>,
+        landmark_method: Option<String>,
+        n_svd: Option<usize>,
+        t_custom: Option<usize>,
         mds_method: Option<String>,
         n_threads: Option<usize>,
         randomised: Option<bool>,
-        ann_type: Option<String>,
     ) -> Self {
         let n_threads = n_threads.unwrap_or(1);
 
+        let phate_diffusion_params = PhateDiffusionParams::new(
+            Some(decay.unwrap_or_else(|| T::from_f64(40.0).unwrap())),
+            bandwidth_scale.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
+            T::from_f64(1e-4).unwrap(),
+            graph_symmetry.unwrap_or("average".to_string()),
+            n_landmarks,
+            landmark_method.unwrap_or("spectral".to_string()),
+            n_svd,
+            t_max,
+            t_custom,
+            gamma.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
+        );
+
         Self {
             n_dim: n_dim.unwrap_or(2),
+            // knn
             k: k.unwrap_or(5),
             ann_type: ann_type.unwrap_or_else(|| "hnsw".to_string()),
-            thresh: T::from_f64(1e-4).unwrap(),
-            symmetrise: "average".to_string(),
-            decay: Some(decay.unwrap_or_else(|| T::from_f64(40.0).unwrap())),
-            bandwidth_scale: bandwidth_scale.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
-            time: PhateTime::Auto {
-                t_max: t_max.unwrap_or(100),
-            },
-            gamma: gamma.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
-            n_landmarks,
-            landmark_mode: "kmeans".to_string(),
+            ann_params: NearestNeighbourParams::default(),
+            // diffusion
+            diffusion_params: phate_diffusion_params,
+            // mds
             mds_method: mds_method.unwrap_or_else(|| "sgd_dense".to_string()),
             n_threads: n_threads,
             randomised: randomised.unwrap_or_else(|| true),
-            ann_params: NearestNeighbourParams::default(),
         }
     }
 }
@@ -1147,10 +1128,10 @@ where
         &knn_indices,
         &knn_dist,
         phate_params.k,
-        phate_params.decay,
-        phate_params.bandwidth_scale,
-        phate_params.thresh,
-        &phate_params.symmetrise,
+        phate_params.diffusion_params.decay,
+        phate_params.diffusion_params.bandwidth_scale,
+        phate_params.diffusion_params.thresh,
+        &phate_params.diffusion_params.graph_symmetry,
         nn_params.dist_metric == "euclidean",
     );
 
@@ -1164,7 +1145,7 @@ where
     let affinity = coo_to_csr(&graph);
     let diffusion_op = build_diffusion_operator(&affinity);
 
-    match phate_params.n_landmarks {
+    match phate_params.diffusion_params.n_landmarks {
         None => PhateDiffusion::Full {
             operator: diffusion_op,
         },
@@ -1181,7 +1162,7 @@ where
                 &affinity,
                 &diffusion_op,
                 n_landmarks,
-                &phate_params.landmark_mode,
+                &phate_params.diffusion_params.landmark_method,
                 &nn_params.dist_metric,
                 Some(seed),
                 Some(100),
@@ -1276,7 +1257,7 @@ where
 
     // stage 2: determine optimal t
     let start_t = Instant::now();
-    let t = match phate_params.time {
+    let t = match phate_params.diffusion_params.t {
         PhateTime::Auto { t_max } => {
             if verbose {
                 println!("Finding optimal t (t_max={})...", t_max);
@@ -1305,7 +1286,8 @@ where
                 println!("Powering diffusion operator...");
             }
             let powered = matrix_power(operator, t);
-            calculate_potential(&powered, 1, phate_params.gamma) // Already powered, so t=1
+            calculate_potential(&powered, 1, phate_params.diffusion_params.gamma)
+            // Already powered, so t=1
         }
         PhateDiffusion::Landmark { landmarks } => {
             if verbose {
@@ -1313,7 +1295,7 @@ where
             }
             let landmark_powered = landmarks.power(t);
             let interpolated = landmarks.interpolate(&landmark_powered);
-            calculate_potential(&interpolated, 1, phate_params.gamma)
+            calculate_potential(&interpolated, 1, phate_params.diffusion_params.gamma)
         }
     };
     let end_diffusion = start_diffusion.elapsed();

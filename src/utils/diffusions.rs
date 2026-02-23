@@ -13,6 +13,12 @@ use crate::data::structures::*;
 use crate::utils::math::*;
 use crate::utils::sparse_ops::*;
 
+/////////////
+// Globals //
+/////////////
+
+pub const PHATE_MAX_T: usize = 100;
+
 ////////////
 // Params //
 ////////////
@@ -31,14 +37,71 @@ use crate::utils::sparse_ops::*;
 /// * `n_landmarks` - Option to use landmarks. Set to something.
 /// * `landmark_method` - String definining which landmark method to use.
 /// * `n_svd` - Number of SVDs to use for the spectral clustering
+/// * `t_max` - to be written
+/// * `gamma` - to be written
+#[derive(Debug, Clone)]
 pub struct PhateDiffusionParams<T> {
     pub decay: Option<T>,
-    pub bandwith_scale: T,
+    pub bandwidth_scale: T,
     pub thresh: T,
     pub graph_symmetry: String,
     pub n_landmarks: Option<usize>,
     pub landmark_method: String,
     pub n_svd: Option<usize>,
+    pub t: PhateTime,
+    pub gamma: T,
+}
+
+impl<T> PhateDiffusionParams<T> {
+    /// Generate new PhateDiffusionParams
+    ///
+    /// ### Params
+    ///
+    /// * `decay` - Decay exponent alpha (typical: 40). If None, returns binary
+    ///   connectivity.
+    /// * `bandwidth_scale` - Multiplicative factor for bandwidth (default: 1.0)
+    /// * `thresh` - Threshold below which affinities are set to 0 (default: 1e-4,
+    ///   for sparsity)
+    /// * `graph_symmetry` - symmetrisation method: "add" for (K+K^T)/2,
+    ///   "multiply"
+    ///   for K*K^T, "none" for asymmetric.
+    /// * `n_landmarks` - Option to use landmarks. Set to something.
+    /// * `landmark_method` - String definining which landmark method to use.
+    /// * `n_svd` - Number of SVDs to use for the spectral clustering.
+    /// * `gamma` - To be written
+    /// * `t_detection` -
+    ///
+    /// ### Returns
+    ///
+    /// Initialised self
+    pub fn new(
+        decay: Option<T>,
+        bandwidth_scale: T,
+        thresh: T,
+        graph_symmetry: String,
+        n_landmarks: Option<usize>,
+        landmark_method: String,
+        n_svd: Option<usize>,
+        t_max: Option<usize>,
+        t_custom: Option<usize>,
+        gamma: T,
+    ) -> Self {
+        let t_max = t_max.unwrap_or(PHATE_MAX_T);
+
+        let t = parse_phate_time(t_custom, t_max);
+
+        Self {
+            decay,
+            bandwidth_scale,
+            thresh,
+            graph_symmetry,
+            n_landmarks,
+            landmark_method,
+            n_svd,
+            t,
+            gamma,
+        }
+    }
 }
 
 /// Build the row-stochastic Diffusion Operator P
@@ -140,21 +203,20 @@ impl Default for PhateTime {
     }
 }
 
-/// Parse the time diffusion method from a string.
+/// Parse the Phate t value based on the provided values
 ///
 /// ### Params
 ///
-/// * `s` - String to parse. One of `auto`, `fixed`.
-/// * `t` - Maximum time for auto-diffusion or the fixed number of time to use.
+/// * `t_custom` - If provided, it will use this value.
+/// * `t_max` - Maximum number for auto-detection
 ///
 /// ### Returns
 ///
-/// Option<PhateTime>
-pub fn parse_phate_time(s: &str, t: usize) -> Option<PhateTime> {
-    match s.to_lowercase().as_str() {
-        "auto" => Some(PhateTime::Auto { t_max: t }),
-        "fixed" => Some(PhateTime::Fixed(t)),
-        _ => None,
+/// PhateTime
+pub fn parse_phate_time(t_custom: Option<usize>, t_max: usize) -> PhateTime {
+    match t_custom {
+        Some(t) => PhateTime::Fixed(t),
+        None => PhateTime::Auto { t_max },
     }
 }
 
