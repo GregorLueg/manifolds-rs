@@ -1,7 +1,7 @@
 use ann_search_rs::utils::dist::SimdDistance;
 use faer::traits::{ComplexField, RealField};
-use faer::{Mat, MatRef};
-use num_traits::{Float, ToPrimitive};
+use faer::{Mat, MatMut, MatRef};
+use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal, StandardNormal};
@@ -106,6 +106,144 @@ where
         v: svd.V().cloned(), // Use clone instead of manual copying
         s: svd.S().column_vector().iter().copied().collect(),
     }
+}
+
+///////////////////////////
+// Sparse randomised SVD //
+///////////////////////////
+
+/// Sparse randomised SVD
+///
+/// Calculates the sparse randomised SVD.
+///
+/// ### Params
+///
+/// * `matrix` - Sparse matrix (CSR or CSC)
+/// * `rank` - Target rank
+/// * `seed` - For reproducibility
+/// * `oversampling` - Additional samples (default 10)
+/// * `n_power_iter` - Power iterations for accuracy (default 2)
+///
+/// ### Returns
+///
+/// The RandomSvdResults
+pub fn sparse_randomised_svd<T>(
+    matrix: &CompressedSparseData<T>,
+    rank: usize,
+    seed: u64,
+    oversampling: Option<usize>,
+    n_power_iter: Option<usize>,
+) -> RandomSvdResults<T>
+where
+    T: Into<T> + ComplexField + Float + FromPrimitive + ToPrimitive,
+{
+    let (n, m) = matrix.shape;
+    let os = oversampling.unwrap_or(10);
+    let sample_size = (rank + os).min(m).min(n);
+    let n_iter = n_power_iter.unwrap_or(2);
+
+    let csr_owned;
+    let csr: &CompressedSparseData<T> = match matrix.cs_type {
+        CompressedSparseFormat::Csr => matrix,
+        CompressedSparseFormat::Csc => {
+            csr_owned = matrix.transform();
+            &csr_owned
+        }
+    };
+
+    let data_f: Vec<T> = csr.data.iter().map(|&v| v.into()).collect();
+
+    let matvec_a = |x: MatRef<T>, y: MatMut<T>| {
+        let ncols = x.ncols();
+        let y_ptr = y.as_ptr_mut() as usize;
+        let y_row_stride = y.row_stride();
+        let y_col_stride = y.col_stride();
+
+        (0..n).into_par_iter().for_each(|i| {
+            let base = y_ptr as *mut T;
+            for col in 0..ncols {
+                unsafe {
+                    *base.offset(i as isize * y_row_stride + col as isize * y_col_stride) =
+                        T::zero();
+                }
+            }
+            for idx in csr.indptr[i]..csr.indptr[i + 1] {
+                let j = csr.indices[idx];
+                let a_val = data_f[idx];
+                for col in 0..ncols {
+                    unsafe {
+                        let ptr =
+                            base.offset(i as isize * y_row_stride + col as isize * y_col_stride);
+                        *ptr = *ptr + a_val * x[(j, col)];
+                    }
+                }
+            }
+        });
+    };
+
+    let matvec_at = |x: MatRef<T>, mut y: MatMut<T>| {
+        let ncols = x.ncols();
+        let result = (0..n)
+            .into_par_iter()
+            .fold(
+                || vec![T::zero(); m * ncols],
+                |mut acc, i| {
+                    for idx in csr.indptr[i]..csr.indptr[i + 1] {
+                        let j = csr.indices[idx];
+                        let a_val = data_f[idx];
+                        for col in 0..ncols {
+                            acc[j * ncols + col] = acc[j * ncols + col] + a_val * x[(i, col)];
+                        }
+                    }
+                    acc
+                },
+            )
+            .reduce(
+                || vec![T::zero(); m * ncols],
+                |mut a, b| {
+                    for i in 0..a.len() {
+                        a[i] = a[i] + b[i];
+                    }
+                    a
+                },
+            );
+
+        for j in 0..m {
+            for col in 0..ncols {
+                y[(j, col)] = result[j * ncols + col];
+            }
+        }
+    };
+
+    let mut rng = StdRng::seed_from_u64(seed);
+    let normal = Normal::new(0.0, 1.0).unwrap();
+    let omega = Mat::from_fn(m, sample_size, |_, _| {
+        T::from_f64(normal.sample(&mut rng)).unwrap()
+    });
+
+    let mut y = Mat::<T>::zeros(n, sample_size);
+    matvec_a(omega.as_ref(), y.as_mut());
+    let mut q = y.qr().compute_thin_Q();
+
+    let mut z = Mat::<T>::zeros(m, sample_size);
+    let mut y_new = Mat::<T>::zeros(n, sample_size);
+
+    for _ in 0..n_iter {
+        matvec_at(q.as_ref(), z.as_mut());
+        matvec_a(z.as_ref(), y_new.as_mut());
+        q = y_new.qr().compute_thin_Q();
+    }
+
+    let mut b_t = Mat::<T>::zeros(m, sample_size);
+    matvec_at(q.as_ref(), b_t.as_mut());
+    let b = b_t.transpose().to_owned();
+
+    let svd = b.thin_svd().unwrap();
+    let u = &q * svd.U();
+    let s: Vec<T> = svd.S().column_vector().iter().copied().collect();
+    let v = svd.V().to_owned();
+
+    RandomSvdResults { u, s, v }
 }
 
 /////////////////////////////////////

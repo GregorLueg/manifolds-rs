@@ -228,7 +228,7 @@ where
         })
         .collect();
 
-    // Direct CSR construction
+    // direct CSR construction
     let total_nnz: usize = row_results.iter().map(|r| r.len()).sum();
     let mut data = Vec::with_capacity(total_nnz);
     let mut indices = Vec::with_capacity(total_nnz);

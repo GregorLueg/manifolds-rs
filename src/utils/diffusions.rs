@@ -1,7 +1,8 @@
 use ann_search_rs::utils::dist::{parse_ann_dist, Dist, SimdDistance};
+use ann_search_rs::utils::ivf_utils::{assign_all_parallel, train_centroids};
 use faer::MatRef;
 use faer_traits::{ComplexField, RealField};
-use num_traits::Float;
+use num_traits::{Float, FromPrimitive};
 use rand::rngs::StdRng;
 use rand::seq::index::sample;
 use rand::SeedableRng;
@@ -16,6 +17,20 @@ use crate::utils::sparse_ops::*;
 // Params //
 ////////////
 
+/// Parameters for the diffusion process
+///
+/// ### Fields
+///
+/// * `decay` - Decay exponent alpha (typical: 40). If None, returns binary
+///   connectivity.
+/// * `bandwidth_scale` - Multiplicative factor for bandwidth (default: 1.0)
+/// * `thresh` - Threshold below which affinities are set to 0 (default: 1e-4,
+///   for sparsity)
+/// * `graph_symmetry` - symmetrisation method: "add" for (K+K^T)/2, "multiply"
+///   for K*K^T, "none" for asymmetric.
+/// * `n_landmarks` - Option to use landmarks. Set to something.
+/// * `landmark_method` - String definining which landmark method to use.
+/// * `n_svd` - Number of SVDs to use for the spectral clustering
 pub struct PhateDiffusionParams<T> {
     pub decay: Option<T>,
     pub bandwith_scale: T,
@@ -23,6 +38,7 @@ pub struct PhateDiffusionParams<T> {
     pub graph_symmetry: String,
     pub n_landmarks: Option<usize>,
     pub landmark_method: String,
+    pub n_svd: Option<usize>,
 }
 
 /// Build the row-stochastic Diffusion Operator P
@@ -156,9 +172,9 @@ pub enum LandmarkMethod {
 }
 
 impl Default for LandmarkMethod {
-    /// Default to random landmark selection with a fixed seed.
+    /// Default to spectral with 100 PCs to calculate
     fn default() -> Self {
-        LandmarkMethod::Random { seed: 42 }
+        LandmarkMethod::Spectral { n_svd: 100 }
     }
 }
 
@@ -498,14 +514,16 @@ where
         + AddAssign
         + ComplexField
         + RealField
-        + std::ops::AddAssign,
+        + std::ops::AddAssign
+        + FromPrimitive,
 {
     /// Build landmarks from an existing diffusion operator
     ///
     /// ### Params
     ///
     /// * `data` - Original data (N × features)
-    /// * `diffusion_op` - The P matrix (N × N) already built and normalized
+    /// * `affinity` - Original affinity matrix (N x N) - not yet normalised.
+    /// * `diffusion_op` - The P matrix (N × N) already built and normalised.
     /// * `n_landmarks` - Number of landmarks to use
     /// * `method` - Random or Spectral
     /// * `distance` - Distance metric used
@@ -517,6 +535,7 @@ where
     /// PhateLandmarks structure ready for powering
     pub fn build(
         data: MatRef<T>,
+        affinity: &CompressedSparseData<T>,
         diffusion_op: &CompressedSparseData<T>,
         n_landmarks: usize,
         method: &str,
@@ -575,7 +594,49 @@ where
             }
             #[allow(unused_variables)]
             LandmarkMethod::Spectral { n_svd } => {
-                unimplemented!("Spectral clustering not yet implemented")
+                let svd =
+                    sparse_randomised_svd(affinity, n_svd, seed.unwrap_or(42) as u64, None, None);
+
+                let v = &svd.v;
+                let k = v.ncols();
+                let mut embedding_flat: Vec<T> = vec![T::zero(); n * k];
+
+                for i in 0..n {
+                    for idx in diffusion_op.indptr[i]..diffusion_op.indptr[i + 1] {
+                        let j = diffusion_op.indices[idx];
+                        let a_val = diffusion_op.data[idx];
+                        for col in 0..k {
+                            embedding_flat[i * k + col] =
+                                embedding_flat[i * k + col] + a_val * v[(j, col)];
+                        }
+                    }
+                }
+
+                // use ann-search-rs k-means-clustering
+                let centroids = train_centroids(
+                    &embedding_flat,
+                    k,
+                    n,
+                    n_landmarks,
+                    &Dist::Euclidean,
+                    300,
+                    seed.unwrap_or(42),
+                    false,
+                );
+
+                let centroid_norms = vec![T::one(); n_landmarks]; // Euclidean, unused
+                let data_norms = vec![T::one(); n];
+
+                assign_all_parallel(
+                    &embedding_flat,
+                    &data_norms,
+                    k,
+                    n,
+                    &centroids,
+                    &centroid_norms,
+                    n_landmarks,
+                    &Dist::Euclidean,
+                )
             }
         };
 

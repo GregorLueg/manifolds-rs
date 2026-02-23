@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use thousands::*;
 
 use crate::data::structures::CompressedSparseData;
-use crate::utils::math::randomised_svd;
+use crate::utils::math::*;
 use crate::utils::sparse_ops::csr_row_to_dense;
 
 /////////////

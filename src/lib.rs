@@ -1161,8 +1161,8 @@ where
         );
     }
 
-    let kernel_csr = coo_to_csr(&graph);
-    let diffusion_op = build_diffusion_operator(&kernel_csr);
+    let affinity = coo_to_csr(&graph);
+    let diffusion_op = build_diffusion_operator(&affinity);
 
     match phate_params.n_landmarks {
         None => PhateDiffusion::Full {
@@ -1178,6 +1178,7 @@ where
             let start_landmarks = Instant::now();
             let landmarks = PhateLandmarks::build(
                 data,
+                &affinity,
                 &diffusion_op,
                 n_landmarks,
                 &phate_params.landmark_mode,
