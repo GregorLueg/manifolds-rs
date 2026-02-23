@@ -604,6 +604,7 @@ where
         distance: &str,
         seed: Option<usize>,
         n_svd: Option<usize>,
+        verbose: bool,
     ) -> Self {
         let (data, n, dim) = matrix_to_flat(data);
         let landmark_method = parse_landmark_method(method, seed, n_svd).unwrap_or_default();
@@ -611,6 +612,10 @@ where
 
         let assignments: Vec<usize> = match landmark_method {
             LandmarkMethod::Random { seed } => {
+                if verbose {
+                    println!(" Using random selection of landmarks.")
+                }
+
                 let landmark_indices = random_sample(0..n, n_landmarks, seed);
 
                 let landmark_data: Vec<T> = landmark_indices
@@ -656,8 +661,16 @@ where
             }
             #[allow(unused_variables)]
             LandmarkMethod::Spectral { n_svd } => {
+                if verbose {
+                    println!(" Using spectral detection of landmarks.")
+                }
+
                 let svd =
                     sparse_randomised_svd(affinity, n_svd, seed.unwrap_or(42) as u64, None, None);
+
+                if verbose {
+                    println!(" Finished calculation of randomised SVD on the affinity matrix.")
+                }
 
                 let v = &svd.v;
                 let k = v.ncols();
@@ -686,10 +699,14 @@ where
                     false,
                 );
 
+                if verbose {
+                    println!(" Centroids identified.")
+                }
+
                 let centroid_norms = vec![T::one(); n_landmarks]; // Euclidean, unused
                 let data_norms = vec![T::one(); n];
 
-                assign_all_parallel(
+                let assignemnts = assign_all_parallel(
                     &embedding_flat,
                     &data_norms,
                     k,
@@ -698,7 +715,13 @@ where
                     &centroid_norms,
                     n_landmarks,
                     &Dist::Euclidean,
-                )
+                );
+
+                if verbose {
+                    println!(" Landmark assignments done.")
+                }
+
+                assignemnts
             }
         };
 

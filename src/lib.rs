@@ -1166,6 +1166,7 @@ where
                 &nn_params.dist_metric,
                 Some(seed),
                 Some(100),
+                verbose,
             );
             if verbose {
                 println!(
