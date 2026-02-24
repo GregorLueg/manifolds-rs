@@ -1164,7 +1164,7 @@ where
                 n_landmarks,
                 &phate_params.diffusion_params.landmark_method,
                 &nn_params.dist_metric,
-                Some(seed),
+                seed,
                 Some(100),
                 verbose,
             );
@@ -1244,7 +1244,6 @@ where
 {
     let start_phate = Instant::now();
 
-    // stage 1: generate the diffusion operator
     let phate_diffusion = construct_phate_diffusion(
         data,
         phate_params.k,
@@ -1256,7 +1255,6 @@ where
         verbose,
     );
 
-    // stage 2: determine optimal t
     let start_t = Instant::now();
     let t = match phate_params.diffusion_params.t {
         PhateTime::Auto { t_max } => {
@@ -1274,108 +1272,139 @@ where
         }
         PhateTime::Fixed(t) => t,
     };
-    let end_t = start_t.elapsed();
     if verbose {
-        println!("Identified t = {} in {:.2?}.", t, end_t);
+        println!("Identified t = {} in {:.2?}.", t, start_t.elapsed());
     }
-
-    // stage 3: calculate potential at time t
-    let start_diffusion = Instant::now();
-    let potential = match &phate_diffusion {
-        PhateDiffusion::Full { operator } => {
-            if verbose {
-                println!("Powering diffusion operator...");
-            }
-            let powered = matrix_power(operator, t);
-            calculate_potential(&powered, 1, phate_params.diffusion_params.gamma)
-            // Already powered, so t=1
-        }
-        PhateDiffusion::Landmark { landmarks } => {
-            if verbose {
-                println!("Powering landmark operator...");
-            }
-            let landmark_powered = landmarks.power(t);
-            let interpolated = landmarks.interpolate(&landmark_powered);
-            calculate_potential(&interpolated, 1, phate_params.diffusion_params.gamma)
-        }
-    };
-    let end_diffusion = start_diffusion.elapsed();
-
-    if verbose {
-        println!(
-            "Potential shape: {} × {} - calculated in {:.2?}.",
-            potential.shape().0,
-            potential.shape().1,
-            end_diffusion
-        );
-    }
-
-    // stage 4: multi-dimensional scaling
-    let start_mds = Instant::now();
 
     let mds_method = parse_mds_method(&phate_params.mds_method).unwrap_or_default();
     let dist = parse_ann_dist(&phate_params.ann_params.dist_metric).unwrap_or_default();
     let mds_params = MdsOptimParams::new(
-        potential.shape().0,
+        data.nrows(),
         phate_params.randomised,
         None,
         None,
         Some(phate_params.n_threads),
     );
 
-    let embedding = match mds_method {
-        MdsMethod::SgdDense => {
+    let start_embed = Instant::now();
+
+    let embedding = match phate_diffusion {
+        PhateDiffusion::Full { operator } => {
             if verbose {
-                println!("Computing pairwise distances...");
+                println!("Powering diffusion operator...");
             }
-            let distances = compute_potential_distances(&potential, &dist);
+            let powered = matrix_power(&operator, t);
+            let potential = calculate_potential(&powered, 1, phate_params.diffusion_params.gamma);
 
             if verbose {
-                println!("Running SGD-MDS...");
+                println!(
+                    "Potential shape: {} × {} - calculated in {:.2?}.",
+                    potential.shape().0,
+                    potential.shape().1,
+                    start_embed.elapsed()
+                );
             }
-            sgd_mds(
-                &distances,
-                phate_params.n_dim,
-                &mds_params,
-                None,
-                seed,
-                verbose,
-            )
+
+            match mds_method {
+                MdsMethod::SgdStreaming => {
+                    if verbose {
+                        println!("Running streaming SGD-MDS...");
+                    }
+                    sgd_mds_streaming(
+                        &potential,
+                        phate_params.n_dim,
+                        &dist,
+                        &mds_params,
+                        None,
+                        seed,
+                        verbose,
+                    )
+                }
+                MdsMethod::ClassicMds => {
+                    if verbose {
+                        println!("Computing pairwise distances, running classic MDS...");
+                    }
+                    let distances = compute_potential_distances(&potential, &dist);
+                    classic_mds(&distances, phate_params.n_dim, mds_params.randomised, seed)
+                }
+                MdsMethod::SgdDense => {
+                    if verbose {
+                        println!("Computing pairwise distances, running SGD-MDS...");
+                    }
+                    let distances = compute_potential_distances(&potential, &dist);
+                    sgd_mds(
+                        &distances,
+                        phate_params.n_dim,
+                        &mds_params,
+                        None,
+                        seed,
+                        verbose,
+                    )
+                }
+            }
         }
-        MdsMethod::SgdStreaming => {
+        PhateDiffusion::Landmark { landmarks } => {
             if verbose {
-                println!("Running streaming SGD-MDS...");
+                println!(
+                    "Powering landmark operator ({} landmarks)...",
+                    landmarks.get_n_landmarks()
+                );
+            }
+            let landmark_powered = landmarks.power(t);
+            let landmark_potential =
+                calculate_potential(&landmark_powered, 1, phate_params.diffusion_params.gamma);
+
+            if verbose {
+                println!(
+                    "Landmark potential shape: {} × {} - calculated in {:.2?}.",
+                    landmark_potential.shape().0,
+                    landmark_potential.shape().1,
+                    start_embed.elapsed()
+                );
+                println!("Computing landmark pairwise distances...");
             }
 
-            sgd_mds_streaming(
-                &potential,
-                phate_params.n_dim,
-                &dist,
-                &mds_params,
+            let landmark_distances = compute_potential_distances(&landmark_potential, &dist);
+
+            let landmark_mds_params = MdsOptimParams::new(
+                landmarks.get_n_landmarks(),
+                phate_params.randomised,
                 None,
-                seed,
-                verbose,
-            )
-        }
-        MdsMethod::ClassicMds => {
-            if verbose {
-                println!("Computing pairwise distances...");
-            }
-            let distances = compute_potential_distances(&potential, &dist);
+                None,
+                Some(phate_params.n_threads),
+            );
 
             if verbose {
-                println!("Running classic MDS...");
+                println!("Running MDS on landmarks...");
             }
-            classic_mds(&distances, phate_params.n_dim, mds_params.randomised, seed)
+
+            let landmark_embedding = match mds_method {
+                MdsMethod::ClassicMds => classic_mds(
+                    &landmark_distances,
+                    phate_params.n_dim,
+                    landmark_mds_params.randomised,
+                    seed,
+                ),
+                _ => sgd_mds(
+                    &landmark_distances,
+                    phate_params.n_dim,
+                    &landmark_mds_params,
+                    None,
+                    seed,
+                    verbose,
+                ),
+            };
+
+            if verbose {
+                println!("Interpolating to full N points via Nyström...");
+            }
+            landmarks.interpolate_embedding(&landmark_embedding)
         }
     };
 
-    let end_mds = start_mds.elapsed();
-    let end_phate = start_phate.elapsed();
-
     if verbose {
-        println!("Ran MDS in {:.2?}.", end_mds);
-        println!("Finished running PHATE in {:.2?}.", end_phate)
+        println!("Ran MDS in {:.2?}.", start_embed.elapsed());
+        println!("Finished running PHATE in {:.2?}.", start_phate.elapsed());
     }
 
     let n_samples = embedding.len();

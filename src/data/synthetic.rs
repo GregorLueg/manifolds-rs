@@ -277,7 +277,18 @@ pub fn generate_trajectory(
         for i in 0..count {
             let t = (i as f64) / (count as f64) * spec.length;
             for j in 0..dim {
-                data[(idx, j)] = starts[b][j] + t * dirs[b][j] + noise * box_muller(&mut rng);
+                let noise_val = noise * box_muller(&mut rng);
+                // project noise onto the plane perpendicular to dirs[b]
+                data[(idx, j)] = starts[b][j] + t * dirs[b][j] + noise_val;
+            }
+            // subtract the noise component along the branch direction
+            let dot: f64 = (0..dim)
+                .map(|j| data[(idx, j)] - starts[b][j] - t * dirs[b][j])
+                .zip(&dirs[b])
+                .map(|(n, d)| n * d)
+                .sum();
+            for j in 0..dim {
+                data[(idx, j)] -= dot * dirs[b][j];
             }
             assignments.push(b);
             idx += 1;

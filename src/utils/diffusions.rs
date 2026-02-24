@@ -3,9 +3,9 @@ use ann_search_rs::utils::ivf_utils::{assign_all_parallel, train_centroids};
 use faer::MatRef;
 use faer_traits::{ComplexField, RealField};
 use num_traits::{Float, FromPrimitive};
-use rand::rngs::StdRng;
 use rand::seq::index::sample;
 use rand::SeedableRng;
+use rand::{rngs::StdRng, Rng};
 use rayon::prelude::*;
 use std::ops::{AddAssign, Range};
 
@@ -231,6 +231,8 @@ pub enum LandmarkMethod {
     Random { seed: u64 },
     /// Use spectral clustering to select landmarks.
     Spectral { n_svd: usize },
+    /// MinMax
+    MinMax,
 }
 
 impl Default for LandmarkMethod {
@@ -266,6 +268,7 @@ pub fn parse_landmark_method(
     match s.to_lowercase().as_str() {
         "random" => Some(LandmarkMethod::Random { seed: seed as u64 }),
         "spectral" => Some(LandmarkMethod::Spectral { n_svd }),
+        "minmax" => Some(LandmarkMethod::MinMax),
         _ => None,
     }
 }
@@ -602,12 +605,12 @@ where
         n_landmarks: usize,
         method: &str,
         distance: &str,
-        seed: Option<usize>,
+        seed: usize,
         n_svd: Option<usize>,
         verbose: bool,
     ) -> Self {
         let (data, n, dim) = matrix_to_flat(data);
-        let landmark_method = parse_landmark_method(method, seed, n_svd).unwrap_or_default();
+        let landmark_method = parse_landmark_method(method, Some(seed), n_svd).unwrap_or_default();
         let distance = parse_ann_dist(distance).unwrap_or_default();
 
         let assignments: Vec<usize> = match landmark_method {
@@ -665,8 +668,7 @@ where
                     println!(" Using spectral detection of landmarks.")
                 }
 
-                let svd =
-                    sparse_randomised_svd(affinity, n_svd, seed.unwrap_or(42) as u64, None, None);
+                let svd = sparse_randomised_svd(affinity, n_svd, seed as u64, None, None);
 
                 if verbose {
                     println!(" Finished calculation of randomised SVD on the affinity matrix.")
@@ -695,7 +697,7 @@ where
                     n_landmarks,
                     &Dist::Euclidean,
                     100,
-                    seed.unwrap_or(42),
+                    seed,
                     verbose,
                 );
 
@@ -722,6 +724,75 @@ where
                 }
 
                 assignemnts
+            }
+            LandmarkMethod::MinMax => {
+                let mut rng = StdRng::seed_from_u64(seed as u64);
+                let mut landmarks = Vec::with_capacity(n_landmarks);
+                let first = rng.random_range(0..n);
+                landmarks.push(first);
+
+                let norms: Vec<T> = if matches!(distance, Dist::Cosine) {
+                    (0..n)
+                        .into_par_iter()
+                        .map(|i| T::calculate_l2_norm(&data[i * dim..(i + 1) * dim]))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+                let point_dist = |i: usize, j: usize| -> T {
+                    let pi = &data[i * dim..(i + 1) * dim];
+                    let pj = &data[j * dim..(j + 1) * dim];
+                    match distance {
+                        Dist::Euclidean => T::euclidean_simd(pi, pj).sqrt(),
+                        Dist::Cosine => {
+                            let dot = T::dot_simd(pi, pj);
+                            let denom = norms[i] * norms[j];
+                            if denom > T::zero() {
+                                T::one() - dot / denom
+                            } else {
+                                T::zero()
+                            }
+                        }
+                    }
+                };
+
+                // initialise min distances to first landmark
+                let mut min_dists: Vec<T> = (0..n)
+                    .into_par_iter()
+                    .map(|i| point_dist(i, first))
+                    .collect();
+                min_dists[first] = T::zero();
+
+                for _ in 1..n_landmarks {
+                    // next landmark is the point furthest from all current landmarks
+                    let next = min_dists
+                        .iter()
+                        .enumerate()
+                        .max_by(|(_, a), (_, b)| {
+                            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|(i, _)| i)
+                        .unwrap();
+
+                    landmarks.push(next);
+
+                    // update min distances in parallel
+                    min_dists = (0..n)
+                        .into_par_iter()
+                        .map(|i| {
+                            let d = point_dist(i, next);
+                            if d < min_dists[i] {
+                                d
+                            } else {
+                                min_dists[i]
+                            }
+                        })
+                        .collect();
+                    min_dists[next] = T::zero();
+                }
+
+                landmarks
             }
         };
 
@@ -822,6 +893,44 @@ where
         let dense = self.landmark_op.to_dense();
         let entropy = von_neumann_entropy(dense, t_max);
         find_knee_point(&entropy)
+    }
+
+    /// Interpolate embedding from landmark embedding
+    ///
+    /// ### Params
+    ///
+    /// * `landmark_embedding` - The embedding calculated on the landmark
+    ///   transition matrix
+    ///
+    /// ### Returns
+    ///
+    /// Interpolated embedding
+    pub fn interpolate_embedding(&self, landmark_embedding: &[Vec<T>]) -> Vec<Vec<T>>
+    where
+        T: AddAssign,
+    {
+        let n = self.transitions.shape().0;
+        let n_dim = landmark_embedding[0].len();
+        let mut embedding = vec![vec![T::zero(); n_dim]; n];
+
+        for i in 0..n {
+            let start = self.transitions.indptr[i];
+            let end = self.transitions.indptr[i + 1];
+            for idx in start..end {
+                let l = self.transitions.indices[idx];
+                let w = self.transitions.data[idx];
+                for d in 0..n_dim {
+                    embedding[i][d] = embedding[i][d] + w * landmark_embedding[l][d];
+                }
+            }
+        }
+
+        embedding
+    }
+
+    /// Get the numbers of landmarks
+    pub fn get_n_landmarks(&self) -> usize {
+        self.n_landmarks
     }
 }
 

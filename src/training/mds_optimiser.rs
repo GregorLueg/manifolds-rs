@@ -353,26 +353,23 @@ where
 
         let ptr = HogwildPtr(y.as_mut_ptr());
 
-        // Stress accumulated with a small race risk on the float sum, which is
-        // acceptable: it is only used for convergence checking.
         let total_err: T = pool.install(|| {
             pairs
                 .par_iter()
                 .map(|&(i, j)| {
                     let target_dist = d_norm[i * n + j];
 
-                    // Force the closure to capture the struct via the getter
+                    // force the closure to capture the struct via the getter
                     let raw = ptr.as_ptr();
 
                     let mut current_dist_sq = T::zero();
 
-                    // SAFETY: Hogwild racy reads/writes. By avoiding slices, we prevent
-                    // LLVM from making strict aliasing assumptions and caching reads.
+                    // Hogwild! updates...
                     unsafe {
                         let pi_base = raw.add(i * n_dim);
                         let pj_base = raw.add(j * n_dim);
 
-                        // 1. Compute distance directly from raw pointers
+                        // compute dist directly from raw pointers
                         for k in 0..n_dim {
                             let a = *pi_base.add(k);
                             let b = *pj_base.add(k);
@@ -383,7 +380,7 @@ where
                         let error = target_dist - current_dist;
                         let weight = T::from(-2.0).unwrap() * error / current_dist;
 
-                        // 2. Online update: read fresh values and write immediately
+                        // read fresh values and write immediately
                         for k in 0..n_dim {
                             let pi = pi_base.add(k);
                             let pj = pj_base.add(k);
