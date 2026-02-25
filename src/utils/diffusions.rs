@@ -74,6 +74,7 @@ impl<T> PhateDiffusionParams<T> {
     /// ### Returns
     ///
     /// Initialised self
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         decay: Option<T>,
         bandwidth_scale: T,
@@ -598,6 +599,7 @@ where
     /// ### Returns
     ///
     /// PhateLandmarks structure ready for powering
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         data: MatRef<T>,
         affinity: &CompressedSparseData<T>,
@@ -683,8 +685,7 @@ where
                         let j = diffusion_op.indices[idx];
                         let a_val = diffusion_op.data[idx];
                         for col in 0..k {
-                            embedding_flat[i * k + col] =
-                                embedding_flat[i * k + col] + a_val * v[(j, col)];
+                            embedding_flat[i * k + col] += a_val * v[(j, col)];
                         }
                     }
                 }
@@ -920,7 +921,7 @@ where
                 let l = self.transitions.indices[idx];
                 let w = self.transitions.data[idx];
                 for d in 0..n_dim {
-                    embedding[i][d] = embedding[i][d] + w * landmark_embedding[l][d];
+                    embedding[i][d] += w * landmark_embedding[l][d];
                 }
             }
         }

@@ -239,7 +239,7 @@ pub fn generate_trajectory(
     let mut dirs: Vec<Vec<f64>> = Vec::with_capacity(n_branches);
     let mut starts: Vec<Vec<f64>> = Vec::with_capacity(n_branches);
 
-    for (_, spec) in branches.iter().enumerate() {
+    for spec in branches.iter() {
         // random direction, orthogonalised against ALL previous directions
         let mut dir: Vec<f64> = (0..dim).map(|_| rng.random_range(-1.0..1.0)).collect();
         for prev in &dirs {

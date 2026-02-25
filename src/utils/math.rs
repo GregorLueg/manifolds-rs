@@ -151,7 +151,7 @@ where
         }
     };
 
-    let data_f: Vec<T> = csr.data.iter().map(|&v| v.into()).collect();
+    let data_f: Vec<T> = csr.data.to_vec();
 
     let matvec_a = |x: MatRef<T>, y: MatMut<T>| {
         let ncols = x.ncols();

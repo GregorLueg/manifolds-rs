@@ -1036,8 +1036,8 @@ where
             diffusion_params: phate_diffusion_params,
             // mds
             mds_method: mds_method.unwrap_or_else(|| "sgd_dense".to_string()),
-            n_threads: n_threads,
-            randomised: randomised.unwrap_or_else(|| true),
+            n_threads,
+            randomised: randomised.unwrap_or(true),
         }
     }
 }
@@ -1070,8 +1070,9 @@ where
 /// ### Returns
 ///
 /// `PhateDiffusion::Full { operator }` when `n_landmarks` is `None` or
-/// >= N, otherwise `PhateDiffusion::Landmark { landmarks }` containing
+/// \>= N, otherwise `PhateDiffusion::Landmark { landmarks }` containing
 /// the compressed landmark operator and interpolation matrices.
+#[allow(clippy::too_many_arguments)]
 pub fn construct_phate_diffusion<T>(
     data: MatRef<T>,
     k: usize,

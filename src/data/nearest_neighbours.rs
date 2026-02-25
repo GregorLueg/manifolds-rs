@@ -10,13 +10,17 @@ use std::default::Default;
 
 #[derive(Default)]
 pub enum AnnSearch {
-    #[default]
     /// Annoy
     Annoy,
     /// HNSW
+    #[default]
     Hnsw,
     /// NNDescent
     NNDescent,
+    /// BallTree
+    BallTree,
+    /// Exhaustive
+    Exhaustive,
 }
 
 /// Parameters for the nearest neighbour search
@@ -143,6 +147,8 @@ pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
         "annoy" => Some(AnnSearch::Annoy),
         "hnsw" => Some(AnnSearch::Hnsw),
         "nndescent" => Some(AnnSearch::NNDescent),
+        "balltree" => Some(AnnSearch::BallTree),
+        "exhaustive" => Some(AnnSearch::Exhaustive),
         _ => None,
     }
 }
@@ -154,7 +160,7 @@ pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
 /// * `data` - The data with samples x features
 /// * `k` - Number of neighbours to return
 /// * `ann_type` - Which approximate nearest neighbour search to use. One of
-///   `"annoy"`, `"hnsw"` or `"nndesccent"`.
+///   `"annoy"`, `"hnsw"`, `"balltree"` or `"nndesccent"`.
 /// * `params_nn` - The parameters for the approximate nearest neighbour search.
 /// * `seed` - Seed for reproducibility.
 /// * `verbose` - Controls verbosity of the function
@@ -210,6 +216,16 @@ where
             );
 
             query_nndescent_index(data, &index, k + 1, params_nn.ef_budget, true, false)
+        }
+        AnnSearch::BallTree => {
+            let index = build_balltree_index(data, params_nn.dist_metric.clone(), seed);
+
+            query_balltree_index(data, &index, k + 1, None, true, false)
+        }
+        AnnSearch::Exhaustive => {
+            let index = build_exhaustive_index(data, &params_nn.dist_metric);
+
+            query_exhaustive_index(data, &index, k + 1, true, false)
         }
     };
 
