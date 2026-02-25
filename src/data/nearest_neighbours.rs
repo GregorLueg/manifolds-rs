@@ -64,6 +64,8 @@ pub struct NearestNeighbourParams<T> {
     pub diversify_prob: T,
     pub delta: T,
     pub ef_budget: Option<usize>,
+    // balltree
+    pub bt_budget: T,
 }
 
 impl<T> NearestNeighbourParams<T> {
@@ -71,12 +73,35 @@ impl<T> NearestNeighbourParams<T> {
     ///
     /// ### Params
     ///
+    /// General parameters
+    ///
+    /// * `dist_metric` - One of `"euclidean"` or `"cosine"`
+    ///
+    /// **Annoy**
+    ///
     /// * `dist_metric` - One of `"euclidean"` or `"cosine"`
     /// * `n_trees` - Number of trees to use to build the index. Defaults to `50`
     ///   like the `uwot` package.
     /// * `search_budget` - Optional search budget. The algorithm will set the
     ///   search budget to `10 * k * n_trees` if not provided.
     ///
+    /// **HNSW**
+    ///
+    /// * `m` - Number of edges to generate per layer.
+    /// * `ef_construction` - Budget during the construction of the index.
+    /// * `ef_search` - Budget during the search of the index.
+    ///
+    /// **NN Descent**
+    ///
+    /// * `delta` - Early termination criterium.
+    /// * `diversify_prob` - Diversifying probability at the end of the index
+    ///   generation. Generates additional random edges which can improve the
+    ///   Recall.
+    /// * `ef_budget` - Optional query budget.
+    ///
+    /// **BallTree**
+    ///
+    /// * `bt_budget` - Budget to use for BallTree
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         dist_metric: String,
@@ -91,6 +116,8 @@ impl<T> NearestNeighbourParams<T> {
         diversify_prob: T,
         delta: T,
         ef_budget: Option<usize>,
+        // balltree
+        bt_budget: T,
     ) -> Self {
         Self {
             dist_metric,
@@ -102,6 +129,7 @@ impl<T> NearestNeighbourParams<T> {
             diversify_prob,
             delta,
             ef_budget,
+            bt_budget,
         }
     }
 }
@@ -129,6 +157,8 @@ where
             diversify_prob: T::from(0.0).unwrap(),
             delta: T::from(0.001).unwrap(),
             ef_budget: None,
+            // balltree
+            bt_budget: T::from(0.1).unwrap(),
         }
     }
 }
@@ -220,7 +250,9 @@ where
         AnnSearch::BallTree => {
             let index = build_balltree_index(data, params_nn.dist_metric.clone(), seed);
 
-            query_balltree_index(data, &index, k + 1, None, true, false)
+            let budget = (data.nrows() as f32 * params_nn.bt_budget.to_f32().unwrap()) as usize;
+
+            query_balltree_index(data, &index, k + 1, Some(budget), true, false)
         }
         AnnSearch::Exhaustive => {
             let index = build_exhaustive_index(data, &params_nn.dist_metric);

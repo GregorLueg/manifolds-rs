@@ -39,6 +39,8 @@ the FFT-accelerated version (optional).
   - Annoy (Approximate Nearest Neighbours Oh Yeah) - good for smaller datasets.
   - HNSW (Hierarchical Navigable Small World) - good for larger datasets.
   - NNDescent (Nearest Neighbour Descent) - good for larger datasets.
+  - BallTree - a small, fast index for smaller data sets.
+  - Exhaustive - if you want precise results and have too much time.
 - **Distance metrics**:
   - Euclidean
   - Cosine
