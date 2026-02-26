@@ -128,11 +128,20 @@ pub struct BranchSpec {
     pub length: f64,
 }
 
-/// Generates an example trajectory, mimicking
+/// Generates an example haematopoiesis trajectory with 9 branches,
+/// mimicking the differentiation hierarchy from HSC through myeloid
+/// (CMP → Monocyte, Granulocyte, Erythroid) and lymphoid
+/// (CLP → B cell, T cell, NK cell) lineages.
+///
+/// All branches split at the tip of their parent (`split_at: 1.0`).
+/// Branch lengths are scaled loosely to reflect biological distance
+/// from the progenitor state.
 ///
 /// ### Returns
 ///
-/// A vector of 8 `BranchSpec`
+/// A vector of 9 [`BranchSpec`], ordered so that each parent index
+/// refers to an earlier entry in the vector, as required by
+/// [`generate_trajectory`].
 pub fn generate_example_branches() -> Vec<BranchSpec> {
     let branches = vec![
         BranchSpec {
@@ -203,20 +212,29 @@ fn box_muller(rng: &mut StdRng) -> f64 {
 /// Generate a synthetic single-cell differentiation trajectory in
 /// high-dimensional space.
 ///
-/// Points are distributed evenly across branches and embedded along
-/// orthogonalised directions with additive Gaussian noise. Branch directions
-/// are sequentially orthogonalised against all previously generated directions,
-/// ensuring clean separation regardless of tree depth or topology.
+/// Points are sampled along branches with pseudotime biased toward the branch
+/// origin, mimicking progenitor accumulation. Branch directions are partially
+/// rotated toward their parent direction so that related lineages share
+/// variance rather than being fully orthogonal. Cells near a bifurcation are
+/// blended back toward the parent trajectory over a short transition window.
+/// Noise amplitude grows with pseudotime, reflecting increased transcriptional
+/// heterogeneity in mature cell types. A small shared low-rank background
+/// (3 components) is added to every cell to simulate global variation such as
+/// cell cycle or stress response.
+///
+/// Branch directions are sequentially orthogonalised against all previously
+/// generated directions before the parent-mixing step, so the base geometry
+/// remains well-conditioned.
 ///
 /// ### Params
 ///
 /// * `n_samples` - Total number of points, distributed evenly across branches
-/// * `branches` - Slice of `BranchSpec` defining the tree topology. Branch `i`
-///   may reference any `j < i` as its parent; forward references are not
+/// * `branches` - Slice of [`BranchSpec`] defining the tree topology. Branch
+///   `i` may reference any `j < i` as its parent; forward references are not
 ///   allowed. The first entry must have `parent: None`.
 /// * `dim` - Dimensionality of the ambient space. Must be >= `branches.len()`
-/// * `noise` - Standard deviation of isotropic Gaussian noise added to each
-///   point.
+/// * `noise` - Base standard deviation of Gaussian noise; scales up along
+///   pseudotime as `noise * (1.0 + t / branch_length)`
 /// * `seed` - Random seed for reproducibility
 ///
 /// ### Returns

@@ -268,7 +268,7 @@ where
                 );
             }
             let start_knn = Instant::now();
-            let result = run_ann_search(data, k, ann_type, nn_params, seed);
+            let result = run_ann_search(data, k, ann_type, nn_params, seed, verbose);
             if verbose {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
             }
@@ -621,7 +621,7 @@ where
             }
 
             let start_knn = Instant::now();
-            let result = run_ann_search(data, k, ann_type, nn_params, seed);
+            let result = run_ann_search(data, k, ann_type, nn_params, seed, verbose);
 
             if verbose {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
@@ -1112,7 +1112,7 @@ where
                 );
             }
             let start_knn = Instant::now();
-            let result = run_ann_search(data, k, ann_type.to_string(), nn_params, seed);
+            let result = run_ann_search(data, k, ann_type.to_string(), nn_params, seed, verbose);
             if verbose {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
             }

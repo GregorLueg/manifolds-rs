@@ -50,6 +50,10 @@ pub enum AnnSearch {
 ///   generation.
 /// * `delta` - Early termination criterium
 /// * `ef_budget` - Optional query budget.
+///
+/// **BallTree**-specific parameter
+///
+/// * `ef_budget` - Optional query budget.
 #[derive(Debug, Clone)]
 pub struct NearestNeighbourParams<T> {
     pub dist_metric: String,
@@ -204,6 +208,7 @@ pub fn run_ann_search<T>(
     ann_type: String,
     params_nn: &NearestNeighbourParams<T>,
     seed: usize,
+    verbose: bool,
 ) -> (Vec<Vec<usize>>, Vec<Vec<T>>)
 where
     T: AnnSearchFloat,
@@ -217,7 +222,7 @@ where
             let index =
                 build_annoy_index(data, params_nn.dist_metric.clone(), params_nn.n_tree, seed);
 
-            query_annoy_index(data, &index, k + 1, params_nn.search_budget, true, false)
+            query_annoy_index(data, &index, k + 1, params_nn.search_budget, true, verbose)
         }
         AnnSearch::Hnsw => {
             let index = build_hnsw_index(
@@ -226,10 +231,10 @@ where
                 params_nn.ef_construction,
                 &params_nn.dist_metric,
                 seed,
-                false,
+                verbose,
             );
 
-            query_hnsw_index(data, &index, k + 1, params_nn.ef_search, true, false)
+            query_hnsw_index(data, &index, k + 1, params_nn.ef_search, true, verbose)
         }
         AnnSearch::NNDescent => {
             let index = build_nndescent_index(
@@ -242,22 +247,22 @@ where
                 None,
                 None,
                 seed,
-                false,
+                verbose,
             );
 
-            query_nndescent_index(data, &index, k + 1, params_nn.ef_budget, true, false)
+            query_nndescent_index(data, &index, k + 1, params_nn.ef_budget, true, verbose)
         }
         AnnSearch::BallTree => {
             let index = build_balltree_index(data, params_nn.dist_metric.clone(), seed);
 
             let budget = (data.nrows() as f32 * params_nn.bt_budget.to_f32().unwrap()) as usize;
 
-            query_balltree_index(data, &index, k + 1, Some(budget), true, false)
+            query_balltree_index(data, &index, k + 1, Some(budget), true, verbose)
         }
         AnnSearch::Exhaustive => {
             let index = build_exhaustive_index(data, &params_nn.dist_metric);
 
-            query_exhaustive_index(data, &index, k + 1, true, false)
+            query_exhaustive_index(data, &index, k + 1, true, verbose)
         }
     };
 

@@ -43,7 +43,7 @@ fn tsne_integration_01_knn_correctness() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!("\n=== t-SNE DIAGNOSTIC 1: kNN Search ===");
     println!("Points per cluster: 100, k = {} neighbours", k);
@@ -115,7 +115,7 @@ fn tsne_integration_02_gaussian_affinities() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!("\n=== t-SNE DIAGNOSTIC 2: Gaussian Affinities ===");
 
@@ -188,7 +188,7 @@ fn tsne_integration_03_symmetrisation() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     let directed = gaussian_knn_affinities(&knn_indices, &knn_dist, perplexity, 1e-5, 200, true);
     let symmetric = symmetrise_affinities_tsne(directed);
@@ -915,7 +915,7 @@ fn tsne_integration_13_precomputed_knn() {
     // Run kNN search separately
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!(
         "Precomputed kNN: {} neighbours per point",
