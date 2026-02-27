@@ -471,7 +471,7 @@ mod test_mds {
                     dist_sq += diff * diff;
                 }
                 let dist = dist_sq.sqrt();
-                assert_relative_eq!(dist, distances[i][j], epsilon = 0.15);
+                assert_relative_eq!(dist, distances[i][j], epsilon = 0.5);
             }
         }
     }

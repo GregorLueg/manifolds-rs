@@ -344,15 +344,19 @@ pub fn optimise_bh_tsne<T>(
 // FTT //
 /////////
 
-/// Optimise 2D embedding using FFT-accelerated t-SNE
+/// Optimise 2D embedding using FFT-accelerated t-SNE.
 ///
 /// ### Notes
 ///
-/// Refactored to match the C++ "FIt-SNE" implementation logic.
+/// Refactored to match the C++ FIt-SNE implementation logic.
 ///
 /// - Re-calculates grid bounds every iteration for optimal resolution.
-/// - Computes Attractive and Repulsive forces in parallel.
+/// - Caches the FFT workspace (plans and aligned buffers) across iterations;
+///   rebuilds only when the grid dimension changes.
+/// - Computes attractive and repulsive forces in parallel.
 /// - Applies momentum and gains in the same parallel pass.
+/// - Pre-allocates charges, potentials, and adjacency list outside the
+///   epoch loop to avoid per-iteration allocation overhead.
 ///
 /// ### Params
 ///
@@ -375,18 +379,14 @@ pub fn optimise_fft_tsne<T>(
 
     let n_terms = 4;
 
-    // constants matches C++ defaults
     let initial_momentum = T::from_f64(TSNE_INITIAL_MOMENTUM).unwrap();
     let final_momentum = T::from_f64(TSNE_FINAL_MOMENTUM).unwrap();
     let min_gain = T::from_f64(TSNE_MIN_GAIN).unwrap();
 
-    // momentum / update buffer
     let mut uy = vec![vec![T::zero(); n_dim]; n];
-    // adaptive gains
     let mut gains = vec![vec![T::one(); n_dim]; n];
 
-    // 1. Convert CoordinateList to Adjacency List for efficient parallel row access
-    // This assumes the graph is symmetric.
+    // build adjacency list ONCE... makes it faster...
     let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
     for ((&i, &j), &w) in graph
         .row_indices
@@ -399,16 +399,18 @@ pub fn optimise_fft_tsne<T>(
         }
     }
 
-    // temp buffers for FFT input to avoid repeated allocation overhead if
-    // possible
+    // pre-allocation
     let mut charges = vec![T::zero(); n * n_terms];
+    let mut potentials = vec![T::zero(); n * n_terms];
+
+    // cached grid and workspace
+    let mut cached_n_boxes: usize = 0;
+    // for pre-allocation - needs to be allowed
+    #[allow(unused_assignments)]
+    let mut grid: Option<FftGrid<T>> = None;
+    let mut workspace: Option<FftWorkspace<T>> = None;
 
     for epoch in 0..params.n_epochs {
-        // step 1: Dynamic Grid Setup (Matches C++ computeFftGradient logic)
-
-        // extract X and Y for FFT and bounds calculation. we do this copy to
-        // satisfy the borrow checker (who doesn't like to satisfy...) and data
-        // layout for n_body_fft_2d
         let (xs, ys): (Vec<T>, Vec<T>) = embd.iter().map(|p| (p[0], p[1])).unzip();
 
         let mut min_val = xs[0];
@@ -422,7 +424,6 @@ pub fn optimise_fft_tsne<T>(
             }
         }
 
-        // determine grid size based on spread
         let n_boxes = choose_grid_size(
             min_val.to_f64().unwrap(),
             max_val.to_f64().unwrap(),
@@ -430,10 +431,28 @@ pub fn optimise_fft_tsne<T>(
             50,
         );
 
-        // create grid
-        let grid = FftGrid::new(min_val, max_val, n_boxes, params.n_interp_points);
+        // only rebuild grid and workspace when grid size changes
+        if n_boxes != cached_n_boxes {
+            let g = FftGrid::new(min_val, max_val, n_boxes, params.n_interp_points);
+            workspace = Some(FftWorkspace::new(g.n_fft));
+            grid = Some(g);
+            cached_n_boxes = n_boxes;
+        } else {
+            // grid size unchanged, but bounds shifted — rebuild grid, reuse workspace
+            // (kernel depends on relative spacings which are determined by box_width,
+            // and box_width = (max-min)/n_boxes, so if n_boxes is the same but
+            // min/max changed, we still need a new grid + kernel)
+            let g = FftGrid::new(min_val, max_val, n_boxes, params.n_interp_points);
+            if g.n_fft != workspace.as_ref().unwrap().n_fft {
+                workspace = Some(FftWorkspace::new(g.n_fft));
+            }
+            grid = Some(g);
+        }
 
-        // step 2: FFT potentials (repulsive term pre-calc) - with rayon!
+        let grid_ref = grid.as_ref().unwrap();
+        let ws = workspace.as_mut().unwrap();
+
+        // fill charges
         charges
             .par_chunks_mut(n_terms)
             .enumerate()
@@ -446,11 +465,13 @@ pub fn optimise_fft_tsne<T>(
                 chunk[3] = x * x + y * y;
             });
 
-        // compute potentials using the refactored function
-        let potentials = n_body_fft_2d(&xs, &ys, &charges, n_terms, &grid);
+        // zero and compute potentials (buffer reused across epochs)
+        for v in potentials.iter_mut() {
+            *v = T::zero();
+        }
+        n_body_fft_2d(&xs, &ys, &charges, n_terms, grid_ref, ws, &mut potentials);
 
-        // compute norm Z (Sum Q)
-        // C++: sum_Q += (1 + x^2 + y^2)*phi1 - 2*(x*phi2 + y*phi3) + phi4
+        // compute Z
         let sum_q: T = (0..n)
             .map(|i| {
                 let idx = i * n_terms;
@@ -466,9 +487,6 @@ pub fn optimise_fft_tsne<T>(
             .sum::<T>()
             - T::from_usize(n).unwrap();
 
-        // step 3: compute forces & updates
-        // matches C++ PARALLEL_FOR logic for attractive forces + gradient update
-
         let momentum = if epoch < TSNE_MOMENTUM_SWITCH_ITER {
             initial_momentum
         } else {
@@ -480,13 +498,8 @@ pub fn optimise_fft_tsne<T>(
             T::one()
         };
         let learning_rate = params.lr;
-
-        // C++ uses max_step_norm to prevent explosions
         let max_step_norm = T::from_f64(5.0).unwrap();
 
-        // update embd in place, but need to read xs/ys (which are copies
-        // of old embd) uy and gains are updated in place. bit of magic
-        // with rayon.
         embd.par_iter_mut()
             .zip(uy.par_iter_mut())
             .zip(gains.par_iter_mut())
@@ -496,8 +509,6 @@ pub fn optimise_fft_tsne<T>(
                 let y = ys[i];
 
                 // attractive forces
-                // F_attr = Sum_j P_ij * Q_ij * (y_i - y_j)
-                // where Q_ij = 1 / (1 + dist^2)
                 let mut attr_x = T::zero();
                 let mut attr_y = T::zero();
 
@@ -508,17 +519,12 @@ pub fn optimise_fft_tsne<T>(
                     let dy = y - other_y;
                     let dist_sq = dx * dx + dy * dy;
                     let q_ij = T::one() / (T::one() + dist_sq);
-
-                    // apply exaggeration here
                     let force = p_val * exag_factor * q_ij;
-
                     attr_x += force * dx;
                     attr_y += force * dy;
                 }
 
-                // repulsive forces (approximated via FFT)
-                // F_rep_x = (x * phi1 - phi2) / Z
-                // F_rep_y = (y * phi1 - phi3) / Z
+                // repulsive forces (FFT-approximated)
                 let pot_idx = i * n_terms;
                 let phi1 = potentials[pot_idx];
                 let phi2 = potentials[pot_idx + 1];
@@ -527,8 +533,9 @@ pub fn optimise_fft_tsne<T>(
                 let rep_x = (x * phi1 - phi2) / sum_q;
                 let rep_y = (y * phi1 - phi3) / sum_q;
 
-                let grad_x = (attr_x - rep_x) * T::from_f64(4.0).unwrap();
-                let grad_y = (attr_y - rep_y) * T::from_f64(4.0).unwrap();
+                // no factor of 4 — matches C++
+                let grad_x = attr_x - rep_x;
+                let grad_y = attr_y - rep_y;
 
                 update_parameter(
                     &mut point[0],
@@ -539,7 +546,6 @@ pub fn optimise_fft_tsne<T>(
                     momentum,
                     min_gain,
                 );
-
                 update_parameter(
                     &mut point[1],
                     &mut u_i[1],
@@ -550,7 +556,6 @@ pub fn optimise_fft_tsne<T>(
                     min_gain,
                 );
 
-                // clipping logic (in the C++ code)
                 let step_sq = u_i[0] * u_i[0] + u_i[1] * u_i[1];
                 let max_sq = max_step_norm * max_step_norm;
 
@@ -558,29 +563,26 @@ pub fn optimise_fft_tsne<T>(
                     let scale = max_step_norm / step_sq.sqrt();
                     u_i[0] *= scale;
                     u_i[1] *= scale;
-
                     point[0] = xs[i] + u_i[0];
                     point[1] = ys[i] + u_i[1];
                 }
             });
 
-        // step 4 - recentring
+        // recentring
         let (sum_x, sum_y) = embd
-            .iter() // Serial iter
+            .iter()
             .fold((T::zero(), T::zero()), |(ax, ay), p| (ax + p[0], ay + p[1]));
 
         let mean_x = sum_x / T::from_usize(n).unwrap();
         let mean_y = sum_y / T::from_usize(n).unwrap();
 
-        // Parallel subtract is fine (no reduction involved)
         embd.par_iter_mut().for_each(|p| {
             p[0] -= mean_x;
             p[1] -= mean_y;
         });
 
-        let sum_q_f64 = sum_q.to_f64().unwrap();
-
         if verbose && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
+            let sum_q_f64 = sum_q.to_f64().unwrap();
             println!(
                 "Epoch {}/{} | Z = {}",
                 epoch,
