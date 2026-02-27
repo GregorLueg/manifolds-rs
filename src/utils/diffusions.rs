@@ -793,6 +793,7 @@ where
                     min_dists[next] = T::zero();
                 }
 
+                // assign points to landmarks
                 let landmark_data: Vec<T> = landmarks
                     .iter()
                     .flat_map(|&i| data[i * dim..(i + 1) * dim].iter().copied())

@@ -248,7 +248,8 @@ pub fn sgd_mds<T>(
     verbose: bool,
 ) -> Vec<Vec<T>>
 where
-    T: Float + Send + Sync + std::iter::Sum + FromPrimitive,
+    T: Float + Send + Sync + std::iter::Sum + FromPrimitive + RealField,
+    StandardNormal: Distribution<T>,
 {
     let n = dist.len();
     assert!(n > 0, "Empty distance matrix");
@@ -278,9 +279,15 @@ where
             init_y
         }
     } else {
-        (0..n * n_dim)
-            .map(|_| T::from(rng.random::<f64>() * 0.01).unwrap())
-            .collect()
+        // using classic MDS to initialise
+        let init_embedding = classic_mds(dist, n_dim, true, seed);
+        let flat: Vec<T> = init_embedding.into_iter().flatten().collect();
+        let y_std = compute_std(&flat);
+        if y_std > T::zero() {
+            flat.iter().map(|&v| v / y_std).collect()
+        } else {
+            flat
+        }
     };
 
     let n_iter = params.n_iter;
