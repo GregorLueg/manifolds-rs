@@ -753,7 +753,7 @@ where
     )
     .unwrap_or(EmbdInit::PcaInit {
         randomised: false,
-        range: Some(T::from_f64(1e-4).unwrap()),
+        range: Some(T::from_f64(1e-2).unwrap()),
     });
 
     if verbose {
@@ -900,7 +900,7 @@ where
     )
     .unwrap_or(EmbdInit::PcaInit {
         randomised: false,
-        range: Some(T::from_f64(1e-4).unwrap()),
+        range: Some(T::from_f64(1e-2).unwrap()),
     });
 
     if verbose {
