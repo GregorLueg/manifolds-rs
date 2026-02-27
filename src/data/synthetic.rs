@@ -234,11 +234,22 @@ pub fn generate_trajectory(
     let n_branches = branches.len();
     let n_per_branch = n_samples / n_branches;
 
+    // shared low-rank background (cell cycle, stress response, etc.)
+    let n_bg = 3usize;
+    let bg_weight = 0.15;
+    let bg_dirs: Vec<Vec<f64>> = (0..n_bg)
+        .map(|_| {
+            let mut v: Vec<f64> = (0..dim).map(|_| rng.random_range(-1.0..1.0)).collect();
+            let norm = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+            v.iter_mut().for_each(|x| *x /= norm);
+            v
+        })
+        .collect();
+
     let mut dirs: Vec<Vec<f64>> = Vec::with_capacity(n_branches);
     let mut starts: Vec<Vec<f64>> = Vec::with_capacity(n_branches);
 
     for spec in branches.iter() {
-        // random direction, orthogonalised against ALL previous directions
         let mut dir: Vec<f64> = (0..dim).map(|_| rng.random_range(-1.0..1.0)).collect();
         for prev in &dirs {
             let dot: f64 = dir.iter().zip(prev).map(|(a, b)| a * b).sum();
@@ -247,7 +258,17 @@ pub fn generate_trajectory(
             }
         }
         let norm = dir.iter().map(|x| x * x).sum::<f64>().sqrt();
-        let dir: Vec<f64> = dir.iter().map(|x| x / norm).collect();
+        let mut dir: Vec<f64> = dir.iter().map(|x| x / norm).collect();
+
+        // rotate child direction partly toward parent so related lineages share variance
+        if let Some(p) = spec.parent {
+            let alpha = 0.4f64;
+            for j in 0..dim {
+                dir[j] = alpha * dirs[p][j] + (1.0 - alpha) * dir[j];
+            }
+            let norm = dir.iter().map(|x| x * x).sum::<f64>().sqrt();
+            dir = dir.iter().map(|x| x / norm).collect();
+        }
 
         let start = match spec.parent {
             None => vec![0.0; dim],
@@ -265,6 +286,7 @@ pub fn generate_trajectory(
     let mut data = Mat::<f64>::zeros(n_samples, dim);
     let mut assignments = Vec::with_capacity(n_samples);
     let mut idx = 0;
+    let transition_window = 0.3f64;
 
     for (b, spec) in branches.iter().enumerate() {
         let count = if b == n_branches - 1 {
@@ -272,14 +294,33 @@ pub fn generate_trajectory(
         } else {
             n_per_branch
         };
-        for i in 0..count {
-            let t = (i as f64) / (count as f64) * spec.length;
+
+        for _ in 0..count {
+            // bias sampling toward branch start (progenitors accumulate)
+            let u: f64 = rng.random();
+            let t = spec.length * u.powf(0.6);
+
+            // how much to blend back toward the parent near the bifurcation
+            let blend = if spec.parent.is_some() {
+                let frac = t / spec.length;
+                if frac < transition_window {
+                    1.0 - frac / transition_window
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+
+            // noise grows with pseudotime (mature cells are noisier)
+            let local_noise = noise * (1.0 + t / spec.length);
+
             for j in 0..dim {
-                let noise_val = noise * box_muller(&mut rng);
-                // project noise onto the plane perpendicular to dirs[b]
+                let noise_val = local_noise * box_muller(&mut rng);
                 data[(idx, j)] = starts[b][j] + t * dirs[b][j] + noise_val;
             }
-            // subtract the noise component along the branch direction
+
+            // remove noise component along the branch direction
             let dot: f64 = (0..dim)
                 .map(|j| data[(idx, j)] - starts[b][j] - t * dirs[b][j])
                 .zip(&dirs[b])
@@ -288,6 +329,26 @@ pub fn generate_trajectory(
             for j in 0..dim {
                 data[(idx, j)] -= dot * dirs[b][j];
             }
+
+            // blend transitional cells toward the parent trajectory
+            if blend > 0.0 {
+                if let Some(p) = spec.parent {
+                    let t_parent = spec.split_at * branches[p].length;
+                    for j in 0..dim {
+                        let parent_pos = starts[p][j] + t_parent * dirs[p][j];
+                        data[(idx, j)] = blend * parent_pos + (1.0 - blend) * data[(idx, j)];
+                    }
+                }
+            }
+
+            // add shared low-rank background variation
+            for bg in &bg_dirs {
+                let coeff = bg_weight * box_muller(&mut rng);
+                for j in 0..dim {
+                    data[(idx, j)] += coeff * bg[j];
+                }
+            }
+
             assignments.push(b);
             idx += 1;
         }
