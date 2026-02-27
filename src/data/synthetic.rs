@@ -115,6 +115,36 @@ pub fn generate_clustered_data(
 // Trajectory //
 ////////////////
 
+/// Defines the biological topology for the synthetic trajectory.
+#[derive(Default, Clone, Debug)]
+pub enum TrajectoryTopology {
+    #[default]
+    /// A hierarchical tree with cascading lineage commitments.
+    DeepBifurcation,
+    /// A single continuous lineage without bifurcations.
+    Linear,
+    /// A main progenitor backbone with mature cell types splitting off mid-way.
+    Comb,
+}
+
+/// Parse the toplogy
+///
+/// ### Params
+///
+/// * `s` - Topology to create
+///
+/// ### Returns
+///
+/// The option of the `TrajectoryTopology`
+pub fn parse_topology(s: &str) -> Option<TrajectoryTopology> {
+    match s.to_lowercase().as_str() {
+        "bifurcation" => Some(TrajectoryTopology::DeepBifurcation),
+        "linear" => Some(TrajectoryTopology::Linear),
+        "combination" => Some(TrajectoryTopology::Comb),
+        _ => None,
+    }
+}
+
 /// Structure for branch specification
 ///
 /// ### Fields
@@ -132,46 +162,88 @@ pub struct BranchSpec {
 
 /// Generates a trajectory of differentiation example
 ///
+/// ### Params
+///
+/// * `topology` - The desired Topology
+///
 /// ### Returns
 ///
-/// A vector of 6 [`BranchSpec`], ordered so that each parent index
-/// refers to an earlier entry in the vector, as required by
-/// [`generate_trajectory`].
-pub fn generate_example_branches() -> Vec<BranchSpec> {
-    let branches = vec![
-        BranchSpec {
-            parent: None,
-            split_at: 0.0,
-            length: 0.75,
-        }, // 0: Stem
-        BranchSpec {
-            parent: Some(0),
-            split_at: 1.0,
-            length: 0.5,
-        }, // 1: Progenitor
-        BranchSpec {
-            parent: Some(1),
-            split_at: 1.0,
-            length: 3.0,
-        }, // 2: Type A
-        BranchSpec {
-            parent: Some(1),
-            split_at: 1.0,
-            length: 1.0,
-        }, // 3: Type B
-        BranchSpec {
-            parent: Some(3),
-            split_at: 1.0,
-            length: 1.5,
-        }, // 4: Type C
-        BranchSpec {
-            parent: Some(3),
-            split_at: 1.0,
-            length: 2.5,
-        }, // 5: Type D
-    ];
-
-    branches
+/// A vector of `BranchSpec`s for the desired topology
+pub fn generate_example_branches(topology: &TrajectoryTopology) -> Vec<BranchSpec> {
+    match topology {
+        TrajectoryTopology::DeepBifurcation => vec![
+            BranchSpec {
+                parent: None,
+                split_at: 0.0,
+                length: 0.75,
+            }, // 0: Stem
+            BranchSpec {
+                parent: Some(0),
+                split_at: 1.0,
+                length: 0.5,
+            }, // 1: Progenitor
+            BranchSpec {
+                parent: Some(1),
+                split_at: 1.0,
+                length: 3.0,
+            }, // 2: Type A
+            BranchSpec {
+                parent: Some(1),
+                split_at: 1.0,
+                length: 1.0,
+            }, // 3: Type B
+            BranchSpec {
+                parent: Some(3),
+                split_at: 1.0,
+                length: 1.5,
+            }, // 4: Type C
+            BranchSpec {
+                parent: Some(3),
+                split_at: 1.0,
+                length: 2.5,
+            }, // 5: Type D
+        ],
+        TrajectoryTopology::Linear => vec![
+            BranchSpec {
+                parent: None,
+                split_at: 0.0,
+                length: 1.0,
+            }, // 0: Early
+            BranchSpec {
+                parent: Some(0),
+                split_at: 1.0,
+                length: 2.0,
+            }, // 1: Intermediate
+            BranchSpec {
+                parent: Some(1),
+                split_at: 1.0,
+                length: 3.0,
+            }, // 2: Late
+        ],
+        TrajectoryTopology::Comb => vec![
+            BranchSpec {
+                parent: None,
+                split_at: 0.0,
+                length: 5.0,
+            }, // 0: Main Stem Backbone
+            // Notice split_at < 1.0: peeling off along the backbone!
+            BranchSpec {
+                parent: Some(0),
+                split_at: 0.2,
+                length: 2.0,
+            }, // 1: Early exit fate
+            BranchSpec {
+                parent: Some(0),
+                split_at: 0.5,
+                length: 2.5,
+            }, // 2: Mid exit fate
+            BranchSpec {
+                parent: Some(0),
+                split_at: 0.8,
+                length: 3.0,
+            }, // 3: Late exit fate
+        ],
+    }
 }
 
 /// Generate Gaussian independent variables
@@ -190,21 +262,26 @@ fn box_muller(rng: &mut StdRng) -> f64 {
 }
 
 /// Generate a synthetic single-cell differentiation trajectory in
-/// high-dimensional space.
+/// high-dimensional space with non-linear manifolds.
 ///
-/// Points are sampled along branches with pseudotime biased toward the branch
-/// origin, mimicking progenitor accumulation. Branch directions are partially
-/// rotated toward their parent direction so that related lineages share
-/// variance rather than being fully orthogonal. Cells near a bifurcation are
-/// blended back toward the parent trajectory over a short transition window.
-/// Noise amplitude grows with pseudotime, reflecting increased transcriptional
-/// heterogeneity in mature cell types. A small shared low-rank background
-/// (3 components) is added to every cell to simulate global variation such as
-/// cell cycle or stress response.
+/// Points are sampled along branches with pseudotime heavily biased toward the
+/// branch origin, mimicking progenitor accumulation (critical slowing down).
 ///
-/// Branch directions are sequentially orthogonalised against all previously
-/// generated directions before the parent-mixing step, so the base geometry
-/// remains well-conditioned.
+/// **Geometry & Curvature:**
+///
+/// Branch directions are partially rotated toward  their parent direction so
+/// related lineages share variance. Furthermore, each branch exhibits
+/// non-linear curvature via a sinusoidal drift along a secondary, orthogonal
+/// axis. This creates complex, non-linear manifolds to test embedding
+/// algorithms.
+///
+/// **Bifurcations & Noise:**
+///
+/// Cells near a bifurcation are smoothly blended back toward the parent's curved
+/// trajectory over a transition window. Noise amplitude grows heteroskedastically
+/// with pseudotime, reflecting increased transcriptional heterogeneity in mature
+/// cell types. A shared low-rank background (3 components) is added to every
+/// cell to simulate global variation such as cell cycle or stress response.
 ///
 /// ### Params
 ///
@@ -234,7 +311,7 @@ pub fn generate_trajectory(
     let n_branches = branches.len();
     let n_per_branch = n_samples / n_branches;
 
-    // shared low-rank background (cell cycle, stress response, etc.)
+    // Shared low-rank background (cell cycle, stress response, etc.)
     let n_bg = 3usize;
     let bg_weight = 0.15;
     let bg_dirs: Vec<Vec<f64>> = (0..n_bg)
@@ -247,9 +324,11 @@ pub fn generate_trajectory(
         .collect();
 
     let mut dirs: Vec<Vec<f64>> = Vec::with_capacity(n_branches);
+    let mut curve_dirs: Vec<Vec<f64>> = Vec::with_capacity(n_branches);
     let mut starts: Vec<Vec<f64>> = Vec::with_capacity(n_branches);
 
     for spec in branches.iter() {
+        // 1. Generate primary branch direction
         let mut dir: Vec<f64> = (0..dim).map(|_| rng.random_range(-1.0..1.0)).collect();
         for prev in &dirs {
             let dot: f64 = dir.iter().zip(prev).map(|(a, b)| a * b).sum();
@@ -260,7 +339,7 @@ pub fn generate_trajectory(
         let norm = dir.iter().map(|x| x * x).sum::<f64>().sqrt();
         let mut dir: Vec<f64> = dir.iter().map(|x| x / norm).collect();
 
-        // rotate child direction partly toward parent so related lineages share variance
+        // rotate child direction partly toward parent to share biological variance
         if let Some(p) = spec.parent {
             let alpha = 0.4f64;
             for j in 0..dim {
@@ -270,16 +349,33 @@ pub fn generate_trajectory(
             dir = dir.iter().map(|x| x / norm).collect();
         }
 
+        // generate a curvature direction strictly orthogonal to the primary direction
+        let mut c_dir: Vec<f64> = (0..dim).map(|_| rng.random_range(-1.0..1.0)).collect();
+        let dot_c: f64 = c_dir.iter().zip(&dir).map(|(c, d)| c * d).sum();
+        for j in 0..dim {
+            c_dir[j] -= dot_c * dir[j];
+        }
+        let norm_c = c_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let c_dir: Vec<f64> = c_dir.iter().map(|x| x / norm_c).collect();
+
+        // calculate starting position (accounting for parent's curvature)
         let start = match spec.parent {
             None => vec![0.0; dim],
-            Some(p) => starts[p]
-                .iter()
-                .zip(&dirs[p])
-                .map(|(s, d)| s + spec.split_at * branches[p].length * d)
-                .collect(),
+            Some(p) => {
+                let t_parent = spec.split_at * branches[p].length;
+                let parent_curve_amt = (t_parent / branches[p].length * std::f64::consts::PI).sin()
+                    * (branches[p].length * 0.3);
+
+                (0..dim)
+                    .map(|j| {
+                        starts[p][j] + t_parent * dirs[p][j] + parent_curve_amt * curve_dirs[p][j]
+                    })
+                    .collect()
+            }
         };
 
         dirs.push(dir);
+        curve_dirs.push(c_dir);
         starts.push(start);
     }
 
@@ -296,15 +392,15 @@ pub fn generate_trajectory(
         };
 
         for _ in 0..count {
-            // bias sampling toward branch start (progenitors accumulate)
+            // power > 1.0 creates heavy-tailed accumulation at the root (progenitors)
             let u: f64 = rng.random();
-            let t = spec.length * u.powf(0.6);
+            let t = spec.length * u.powf(2.5);
 
-            // how much to blend back toward the parent near the bifurcation
+            // calculate smooth blending weight near the bifurcation
             let blend = if spec.parent.is_some() {
                 let frac = t / spec.length;
                 if frac < transition_window {
-                    1.0 - frac / transition_window
+                    (1.0 - frac / transition_window).powi(2)
                 } else {
                     0.0
                 }
@@ -312,36 +408,49 @@ pub fn generate_trajectory(
                 0.0
             };
 
-            // noise grows with pseudotime (mature cells are noisier)
-            let local_noise = noise * (1.0 + t / spec.length);
+            // calculate clean, noiseless manifold position with non-linear
+            // curvature
+            let mut clean_pos = vec![0.0; dim];
+            let curve_amt = (t / spec.length * std::f64::consts::PI).sin() * (spec.length * 0.3);
 
             for j in 0..dim {
-                let noise_val = local_noise * box_muller(&mut rng);
-                data[(idx, j)] = starts[b][j] + t * dirs[b][j] + noise_val;
+                clean_pos[j] = starts[b][j] + t * dirs[b][j] + curve_amt * curve_dirs[b][j];
             }
 
-            // remove noise component along the branch direction
+            // blend back toward the parent's true curved position
+            if blend > 0.0 {
+                if let Some(p) = spec.parent {
+                    let t_parent = spec.split_at * branches[p].length;
+                    let parent_curve_amt = (t_parent / branches[p].length * std::f64::consts::PI)
+                        .sin()
+                        * (branches[p].length * 0.3);
+
+                    for j in 0..dim {
+                        let parent_pos = starts[p][j]
+                            + t_parent * dirs[p][j]
+                            + parent_curve_amt * curve_dirs[p][j];
+                        clean_pos[j] = blend * parent_pos + (1.0 - blend) * clean_pos[j];
+                    }
+                }
+            }
+
+            // add heteroskedastic noise
+            let local_noise = noise * (1.0 + t / spec.length);
+            for j in 0..dim {
+                let noise_val = local_noise * box_muller(&mut rng);
+                data[(idx, j)] = clean_pos[j] + noise_val;
+            }
+
+            // flatten noise along the base directional axis to maintain
+            // trajectory shape
             let dot: f64 = (0..dim)
-                .map(|j| data[(idx, j)] - starts[b][j] - t * dirs[b][j])
-                .zip(&dirs[b])
-                .map(|(n, d)| n * d)
+                .map(|j| (data[(idx, j)] - clean_pos[j]) * dirs[b][j])
                 .sum();
             for j in 0..dim {
                 data[(idx, j)] -= dot * dirs[b][j];
             }
 
-            // blend transitional cells toward the parent trajectory
-            if blend > 0.0 {
-                if let Some(p) = spec.parent {
-                    let t_parent = spec.split_at * branches[p].length;
-                    for j in 0..dim {
-                        let parent_pos = starts[p][j] + t_parent * dirs[p][j];
-                        data[(idx, j)] = blend * parent_pos + (1.0 - blend) * data[(idx, j)];
-                    }
-                }
-            }
-
-            // add shared low-rank background variation
+            // 5. Add shared low-rank background variation (e.g., cell cycle)
             for bg in &bg_dirs {
                 let coeff = bg_weight * box_muller(&mut rng);
                 for j in 0..dim {

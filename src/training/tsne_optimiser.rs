@@ -332,7 +332,7 @@ pub fn optimise_bh_tsne<T>(
 
         if verbose && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
             println!(
-                "Epoch {}/{} | Z = {}",
+                " Epoch {}/{} | Z = {}",
                 epoch,
                 params.n_epochs,
                 z_total.to_f32().unwrap().separate_with_underscores()
@@ -585,7 +585,7 @@ pub fn optimise_fft_tsne<T>(
         if verbose && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
             let sum_q_f64 = sum_q.to_f64().unwrap();
             println!(
-                "Epoch {}/{} | Z = {}",
+                " Epoch {}/{} | Z = {}",
                 epoch,
                 params.n_epochs,
                 sum_q_f64.separate_with_underscores()

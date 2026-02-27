@@ -365,7 +365,7 @@ where
 
         if verbose && iteration % 100 == 0 {
             println!(
-                "Iter {}: stress={:.6}, lr={:.6}",
+                " Iter {}: stress={:.6}, lr={:.6}",
                 iteration.separate_with_underscores(),
                 stress.to_f64().unwrap(),
                 lr_i.to_f64().unwrap(),
@@ -377,7 +377,7 @@ where
             if rel_change < T::from(1e-6).unwrap() && iteration > 50 {
                 if verbose {
                     println!(
-                        "Converged at iteration {} (rel_change={:.2e})",
+                        " Converged at iteration {} (rel_change={:.2e})",
                         iteration,
                         rel_change.to_f64().unwrap()
                     );
