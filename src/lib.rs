@@ -977,7 +977,6 @@ pub struct PhateParams<T> {
     pub diffusion_params: PhateDiffusionParams<T>,
     // mds
     pub mds_method: String,
-    pub n_threads: usize,
     pub randomised: bool,
 }
 
@@ -1008,11 +1007,8 @@ where
         n_svd: Option<usize>,
         t_custom: Option<usize>,
         mds_method: Option<String>,
-        n_threads: Option<usize>,
         randomised: Option<bool>,
     ) -> Self {
-        let n_threads = n_threads.unwrap_or(1);
-
         let phate_diffusion_params = PhateDiffusionParams::new(
             Some(decay.unwrap_or_else(|| T::from_f64(40.0).unwrap())),
             bandwidth_scale.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
@@ -1036,7 +1032,6 @@ where
             diffusion_params: phate_diffusion_params,
             // mds
             mds_method: mds_method.unwrap_or_else(|| "sgd_dense".to_string()),
-            n_threads,
             randomised: randomised.unwrap_or(true),
         }
     }
@@ -1279,13 +1274,7 @@ where
 
     let mds_method = parse_mds_method(&phate_params.mds_method).unwrap_or_default();
     let dist = parse_ann_dist(&phate_params.ann_params.dist_metric).unwrap_or_default();
-    let mds_params = MdsOptimParams::new(
-        data.nrows(),
-        phate_params.randomised,
-        None,
-        None,
-        Some(phate_params.n_threads),
-    );
+    let mds_params = MdsOptimParams::new(data.nrows(), phate_params.randomised, None, None);
 
     let start_embed = Instant::now();
 
@@ -1372,7 +1361,6 @@ where
                 phate_params.randomised,
                 None,
                 None,
-                Some(phate_params.n_threads),
             );
 
             if verbose {

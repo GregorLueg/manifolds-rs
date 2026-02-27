@@ -173,15 +173,13 @@ where
 {
     assert!(potential.cs_type.is_csr(), "Matrix must be CSR format");
 
-    let n_samples = potential.shape().0;
+    let n = potential.shape().0;
 
-    // convert all rows to dense (parallel for memory bandwidth)
-    let dense_rows: Vec<Vec<T>> = (0..n_samples)
+    let dense_rows: Vec<Vec<T>> = (0..n)
         .into_par_iter()
         .map(|i| csr_row_to_dense(potential, i))
         .collect();
 
-    // precompute norms for cosine distance
     let norms: Vec<T> = if matches!(metric, Dist::Cosine) {
         dense_rows
             .par_iter()
@@ -191,36 +189,35 @@ where
         Vec::new()
     };
 
-    // compute pairwise distances (parallel over rows)
-    (0..n_samples)
-        .into_par_iter()
-        .map(|i| {
-            let mut row_dists = vec![T::zero(); n_samples];
+    // enumerate all upper-triangle pairs and compute in parallel
+    let pairs: Vec<(usize, usize)> = (0..n)
+        .flat_map(|i| (i + 1..n).map(move |j| (i, j)))
+        .collect();
 
-            for j in 0..n_samples {
-                if i == j {
-                    row_dists[j] = T::zero();
+    let computed: Vec<T> = pairs
+        .par_iter()
+        .map(|&(i, j)| match metric {
+            Dist::Euclidean => T::euclidean_simd(&dense_rows[i], &dense_rows[j]).sqrt(),
+            Dist::Cosine => {
+                let dot = T::dot_simd(&dense_rows[i], &dense_rows[j]);
+                let denom = norms[i] * norms[j];
+                if denom > T::zero() {
+                    T::one() - (dot / denom)
                 } else {
-                    row_dists[j] = match metric {
-                        Dist::Euclidean => {
-                            let squared = T::euclidean_simd(&dense_rows[i], &dense_rows[j]);
-                            squared.sqrt()
-                        }
-                        Dist::Cosine => {
-                            let dot = T::dot_simd(&dense_rows[i], &dense_rows[j]);
-                            let denom = norms[i] * norms[j];
-                            if denom > T::zero() {
-                                T::one() - (dot / denom)
-                            } else {
-                                T::zero()
-                            }
-                        }
-                    };
+                    T::zero()
                 }
             }
-            row_dists
         })
-        .collect()
+        .collect();
+
+    // fill both triangles sequentially
+    let mut dist = vec![vec![T::zero(); n]; n];
+    for ((i, j), d) in pairs.iter().zip(computed.iter()) {
+        dist[*i][*j] = *d;
+        dist[*j][*i] = *d;
+    }
+
+    dist
 }
 
 ///////////

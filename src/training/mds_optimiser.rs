@@ -76,7 +76,6 @@ pub struct MdsOptimParams<T> {
     pub n_iter: usize,
     pub pairs_per_iter: usize,
     pub lr: T,
-    pub n_threads: usize,
 }
 
 impl<T> MdsOptimParams<T>
@@ -98,24 +97,16 @@ where
     /// ### Returns
     ///
     /// Initialised `Self`
-    pub fn new(
-        n: usize,
-        randomised: bool,
-        n_iter: Option<usize>,
-        lr: Option<T>,
-        n_threads: Option<usize>,
-    ) -> Self {
+    pub fn new(n: usize, randomised: bool, n_iter: Option<usize>, lr: Option<T>) -> Self {
         let lr = lr.unwrap_or(T::from_f64(DEFAULT_LR).unwrap());
         let n_iter = n_iter.unwrap_or(1000);
         let pairs_per_iter = (n as f64 * (n as f64).ln() * 2.0) as usize;
-        let n_threads = n_threads.unwrap_or(1);
 
         Self {
             randomised,
             n_iter,
             pairs_per_iter,
             lr,
-            n_threads,
         }
     }
 }
@@ -123,24 +114,6 @@ where
 /////////////
 // Helpers //
 /////////////
-
-/// Wrapper to share a raw mutable pointer across threads.
-/// Safe in the Hogwild sense: concurrent writes to distinct indices are benign
-/// data races on floating-point values, giving the standard Hogwild convergence
-/// behaviour. Writes to the same index from different threads are racy but
-/// bounded in harm: the worst case is a stale gradient step, not corruption.
-#[derive(Copy, Clone)]
-struct HogwildPtr<T>(*mut T);
-
-unsafe impl<T: Send> Send for HogwildPtr<T> {}
-unsafe impl<T: Send> Sync for HogwildPtr<T> {}
-
-impl<T> HogwildPtr<T> {
-    #[inline(always)]
-    pub fn as_ptr(&self) -> *mut T {
-        self.0
-    }
-}
 
 /// Compute standard deviation of embedding
 ///
@@ -248,18 +221,15 @@ where
     embedding
 }
 
-/// SGD-based Metric MDS with Hogwild parallel online updates.
+/// SGD-based Metric MDS
 ///
-/// With params.n_threads = 1, updates are sequential and deterministic.
-/// With params.n_threads > 1, pairs within each iteration are processed in
-/// parallel with unsynchronised writes to the embedding (Hogwild). Collision
-/// probability per pair is ~2 * n_threads / n; negligible for large n.
+/// Leverages SGD under the hood to optimise the SGD.
 ///
 /// ### Params
 ///
 /// * `dist` - N × N distance matrix
 /// * `n_dim` - Number of embedding dimensions
-/// * `params` - Optimisation parameters (includes n_threads)
+/// * `params` - Optimisation parameters
 /// * `init` - Optional flat initial embedding (n * n_dim, row-major)
 /// * `seed` - Random seed
 /// * `verbose` - Controls verbosity
@@ -325,20 +295,14 @@ where
 
     if verbose {
         println!(
-            "SGD-MDS: n={}, pairs_per_iter={}, n_iter={}, eta_max={:.6}, eta_min={:.6}, n_threads={}",
+            "SGD-MDS: n={}, pairs_per_iter={}, n_iter={}, eta_max={:.6}, eta_min={:.6}",
             n.separate_with_underscores(),
             pairs_per_iter.separate_with_underscores(),
             n_iter.separate_with_underscores(),
             eta_max.to_f64().unwrap(),
             eta_min.to_f64().unwrap(),
-            params.n_threads,
         );
     }
-
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(params.n_threads)
-        .build()
-        .expect("Failed to build thread pool");
 
     let mut prev_stress = None;
 
@@ -351,54 +315,59 @@ where
                 .take(pairs_per_iter)
                 .collect();
 
-        let ptr = HogwildPtr(y.as_mut_ptr());
+        // parallel: compute per-pair gradient contributions, read-only on y
+        let contribs: Vec<(usize, usize, Vec<T>, T)> = pairs
+            .par_iter()
+            .map(|&(i, j)| {
+                let target_dist = d_norm[i * n + j];
 
-        let total_err: T = pool.install(|| {
-            pairs
-                .par_iter()
-                .map(|&(i, j)| {
-                    let target_dist = d_norm[i * n + j];
+                let mut dist_sq = T::zero();
+                for k in 0..n_dim {
+                    let diff = y[i * n_dim + k] - y[j * n_dim + k];
+                    dist_sq = dist_sq + diff * diff;
+                }
 
-                    // force the closure to capture the struct via the getter
-                    let raw = ptr.as_ptr();
+                let current_dist = dist_sq.sqrt().max(T::from(1e-10).unwrap());
+                let error = target_dist - current_dist;
+                let weight = T::from(-2.0).unwrap() * error / current_dist;
 
-                    let mut current_dist_sq = T::zero();
+                let contrib: Vec<T> = (0..n_dim)
+                    .map(|k| (y[i * n_dim + k] - y[j * n_dim + k]) * weight)
+                    .collect();
 
-                    // Hogwild! updates...
-                    unsafe {
-                        let pi_base = raw.add(i * n_dim);
-                        let pj_base = raw.add(j * n_dim);
+                (i, j, contrib, error * error)
+            })
+            .collect();
 
-                        // compute dist directly from raw pointers
-                        for k in 0..n_dim {
-                            let a = *pi_base.add(k);
-                            let b = *pj_base.add(k);
-                            current_dist_sq = current_dist_sq + (a - b) * (a - b);
-                        }
+        // sequential: accumulate into gradient buffer
+        let mut gradients = vec![T::zero(); n * n_dim];
+        let mut total_err = T::zero();
 
-                        let current_dist = current_dist_sq.sqrt().max(T::from(1e-10).unwrap());
-                        let error = target_dist - current_dist;
-                        let weight = T::from(-2.0).unwrap() * error / current_dist;
+        for (i, j, contrib, sq_err) in &contribs {
+            for k in 0..n_dim {
+                gradients[i * n_dim + k] = gradients[i * n_dim + k] + contrib[k];
+                gradients[j * n_dim + k] = gradients[j * n_dim + k] - contrib[k];
+            }
+            total_err = total_err + *sq_err;
+        }
 
-                        // read fresh values and write immediately
-                        for k in 0..n_dim {
-                            let pi = pi_base.add(k);
-                            let pj = pj_base.add(k);
+        // apply gradients
+        for idx in 0..n * n_dim {
+            y[idx] = y[idx] - lr_i * gradients[idx];
+        }
 
-                            let diff = *pi - *pj;
-                            let grad = diff * weight;
+        // re-centre to prevent translation drift
+        let mean: Vec<T> = (0..n_dim)
+            .map(|k| (0..n).map(|i| y[i * n_dim + k]).sum::<T>() / T::from(n).unwrap())
+            .collect();
 
-                            *pi = *pi - lr_i * grad;
-                            *pj = *pj + lr_i * grad;
-                        }
+        for i in 0..n {
+            for k in 0..n_dim {
+                y[i * n_dim + k] = y[i * n_dim + k] - mean[k];
+            }
+        }
 
-                        error * error
-                    }
-                })
-                .sum()
-        });
-
-        let stress = total_err / T::from(pairs.len()).unwrap();
+        let stress = total_err / T::from(contribs.len()).unwrap();
 
         if verbose && iteration % 100 == 0 {
             println!(
@@ -440,11 +409,11 @@ where
     embedding
 }
 
-/// Streaming SGD-MDS with Hogwild parallel online updates.
+/// Streaming SGD-MDS with on-the-fly distance calculation.
 ///
 /// Memory: O(N × d) instead of O(N²).
 /// Distance computation is parallelised cleanly (read-only on dense rows).
-/// Embedding updates use Hogwild unsynchronised writes; see sgd_mds for notes.
+/// The embeddings gradients are accumulated in parallel and applied sequential.
 ///
 /// ### Params
 ///
@@ -547,18 +516,12 @@ where
 
     if verbose {
         println!(
-            "Streaming SGD-MDS: n={}, pairs_per_iter={}, n_iter={}, n_threads={}",
+            "Streaming SGD-MDS: n={}, pairs_per_iter={}, n_iter={}",
             n.separate_with_underscores(),
             pairs_per_iter.separate_with_underscores(),
             n_iter.separate_with_underscores(),
-            params.n_threads
         );
     }
-
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(params.n_threads)
-        .build()
-        .expect("Failed to build thread pool");
 
     let mut prev_stress = None;
 
@@ -571,67 +534,65 @@ where
                 .take(pairs_per_iter)
                 .collect();
 
-        // Read-only distance computation: clean parallel, no unsafety needed.
-        let target_dists: Vec<T> = pairs
+        // parallel: compute distances and gradient contributions, read-only on y
+        let contribs: Vec<(usize, usize, Vec<T>, T)> = pairs
             .par_iter()
             .map(|&(i, j)| {
                 let d = compute_distance(i, j);
-                if d_max > T::zero() {
-                    d / d_max
-                } else {
-                    d
+                let target_dist = if d_max > T::zero() { d / d_max } else { d };
+
+                let mut dist_sq = T::zero();
+                for k in 0..n_dim {
+                    let diff = y[i * n_dim + k] - y[j * n_dim + k];
+                    dist_sq = dist_sq + diff * diff;
                 }
+
+                let current_dist = dist_sq.sqrt().max(T::from(1e-10).unwrap());
+                let error = target_dist - current_dist;
+                let weight = T::from(-2.0).unwrap() * error / current_dist;
+
+                let contrib: Vec<T> = (0..n_dim)
+                    .map(|k| (y[i * n_dim + k] - y[j * n_dim + k]) * weight)
+                    .collect();
+
+                (i, j, contrib, error * error)
             })
             .collect();
 
-        let ptr = HogwildPtr(y.as_mut_ptr());
+        // sequential: accumulate into gradient buffer
+        let mut gradients = vec![T::zero(); n * n_dim];
+        let mut total_err = T::zero();
 
-        let total_error: T = pool.install(|| {
-            pairs
-                .par_iter()
-                .zip(target_dists.par_iter())
-                .map(|(&(i, j), &target_dist)| {
-                    let raw = ptr.as_ptr();
-                    let mut current_dist_sq = T::zero();
+        for (i, j, contrib, sq_err) in &contribs {
+            for k in 0..n_dim {
+                gradients[i * n_dim + k] = gradients[i * n_dim + k] + contrib[k];
+                gradients[j * n_dim + k] = gradients[j * n_dim + k] - contrib[k];
+            }
+            total_err = total_err + *sq_err;
+        }
 
-                    // SAFETY: Hogwild racy writes using raw pointers.
-                    unsafe {
-                        let pi_base = raw.add(i * n_dim);
-                        let pj_base = raw.add(j * n_dim);
+        // apply gradients
+        for idx in 0..n * n_dim {
+            y[idx] = y[idx] - lr_i * gradients[idx];
+        }
 
-                        for k in 0..n_dim {
-                            let a = *pi_base.add(k);
-                            let b = *pj_base.add(k);
-                            current_dist_sq = current_dist_sq + (a - b) * (a - b);
-                        }
+        // re-centre to prevent translation drift
+        let mean: Vec<T> = (0..n_dim)
+            .map(|k| (0..n).map(|i| y[i * n_dim + k]).sum::<T>() / T::from(n).unwrap())
+            .collect();
 
-                        let current_dist = current_dist_sq.sqrt().max(T::from(1e-10).unwrap());
-                        let error = target_dist - current_dist;
-                        let weight = T::from(-2.0).unwrap() * error / current_dist;
+        for i in 0..n {
+            for k in 0..n_dim {
+                y[i * n_dim + k] = y[i * n_dim + k] - mean[k];
+            }
+        }
 
-                        for k in 0..n_dim {
-                            let pi = pi_base.add(k);
-                            let pj = pj_base.add(k);
-
-                            let diff = *pi - *pj;
-                            let grad = diff * weight;
-
-                            *pi = *pi - lr_i * grad;
-                            *pj = *pj + lr_i * grad;
-                        }
-
-                        error * error
-                    }
-                })
-                .sum()
-        });
-
-        let stress = total_error / T::from(pairs.len()).unwrap();
+        let stress = total_err / T::from(contribs.len()).unwrap();
 
         if verbose && iteration % 100 == 0 {
             println!(
                 "Iter {}: stress={:.6}, lr={:.6}",
-                iteration,
+                iteration.separate_with_underscores(),
                 stress.to_f64().unwrap(),
                 lr_i.to_f64().unwrap(),
             );
@@ -641,7 +602,11 @@ where
             let rel_change = ((stress - prev) / (prev + T::from(1e-10).unwrap())).abs();
             if rel_change < T::from(1e-6).unwrap() && iteration > 50 {
                 if verbose {
-                    println!("Converged at iteration {}", iteration);
+                    println!(
+                        "Converged at iteration {} (rel_change={:.2e})",
+                        iteration,
+                        rel_change.to_f64().unwrap()
+                    );
                 }
                 break;
             }
@@ -682,7 +647,7 @@ mod test_mds {
             vec![1.0, 1.0, 0.0],
         ];
 
-        let mds_params = MdsOptimParams::new(distances.len(), true, None, None, None);
+        let mds_params = MdsOptimParams::new(distances.len(), true, None, None);
 
         let embedding = sgd_mds(&distances, 2, &mds_params, None, 42, false);
 
@@ -719,7 +684,7 @@ mod test_mds {
             vec![1.0, 1.414, 1.0, 0.0],
         ];
 
-        let mds_params = MdsOptimParams::new(distances.len(), true, None, None, None);
+        let mds_params = MdsOptimParams::new(distances.len(), true, None, None);
 
         let embedding = sgd_mds(&distances, 2, &mds_params, None, 42, false);
 
@@ -752,7 +717,7 @@ mod test_mds {
 
         let potential = CompressedSparseData::new_csr(&data, &indices, &indptr, shape);
 
-        let mds_params = MdsOptimParams::new(potential.nrows(), true, None, None, None);
+        let mds_params = MdsOptimParams::new(potential.nrows(), true, None, None);
 
         let embedding = sgd_mds_streaming(
             &potential,
@@ -793,7 +758,7 @@ mod test_mds {
 
         let potential = CompressedSparseData::new_csr(&data, &indices, &indptr, shape);
 
-        let mds_params = MdsOptimParams::new(potential.nrows(), true, None, None, None);
+        let mds_params = MdsOptimParams::new(potential.nrows(), true, None, None);
 
         let embedding =
             sgd_mds_streaming(&potential, 2, &Dist::Cosine, &mds_params, None, 42, false);
