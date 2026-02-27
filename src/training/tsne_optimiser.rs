@@ -177,11 +177,26 @@ fn update_parameter<T>(
     *val = *val + *update;
 }
 
-/// Optimise 2D embedding using Barnes-Hut t-SNE
+/// Optimise 2D embedding using Barnes-Hut t-SNE.
 ///
 /// Minimises KL divergence between high-dimensional affinities (graph) and
 /// low-dimensional Student-t similarities using gradient descent with momentum
 /// and adaptive gains.
+///
+/// ### Notes
+///
+/// For each epoch:
+/// 1. Build Barnes-Hut tree from current embedding
+/// 2. Compute gradient: attractive - repulsive / Z
+///    - Attractive: exact via sparse graph
+///    - Repulsive: approximated via Barnes-Hut tree
+/// 3. Update positions with momentum and adaptive gains
+/// 4. Centre embedding to prevent drift
+///
+/// Force computation is split into two parallel passes: first the repulsive
+/// forces (which must be summed to get Z), then the attractive forces fused
+/// with the parameter update. The adjacency list and update/gains buffers
+/// are allocated once outside the epoch loop.
 ///
 /// ### Params
 ///
@@ -189,18 +204,6 @@ fn update_parameter<T>(
 /// * `params` - Optimisation parameters (learning rate, epochs, etc.)
 /// * `graph` - Symmetric sparse graph of high-dimensional affinities P_ij
 /// * `verbose` - Print progress every 50 epochs
-///
-/// ### Notes
-///
-/// For each epoch:
-/// 1. Build Barnes-Hut tree from current embedding
-/// 2. Compute gradients: ∇C = 4 * (F_attractive - F_repulsive / Z)
-///    - F_attractive: exact via sparse graph
-///    - F_repulsive: approximated via Barnes-Hut tree
-/// 3. Update positions with momentum and adaptive gains
-/// 4. Centre embedding every 100 epochs to prevent drift
-///
-/// Uses early exaggeration (first 250 iterations) and momentum switching.
 pub fn optimise_bh_tsne<T>(
     embd: &mut [Vec<T>],
     params: &TsneOptimParams<T>,
@@ -212,16 +215,16 @@ pub fn optimise_bh_tsne<T>(
     let n = embd.len();
     let n_dim = embd[0].len();
 
-    // main paramters
     let initial_momentum = T::from_f64(TSNE_INITIAL_MOMENTUM).unwrap();
     let final_momentum = T::from_f64(TSNE_FINAL_MOMENTUM).unwrap();
     let min_gain = T::from_f64(TSNE_MIN_GAIN).unwrap();
     let eps = T::from_f64(TSNE_EPS).unwrap();
 
+    // --- pre-allocate update and gains buffers ---
     let mut update_flat = vec![T::zero(); n * n_dim];
     let mut gains_flat = vec![T::one(); n * n_dim];
 
-    // Build adjacency list once (graph is fixed)
+    // --- build adjacency list ONCE ---
     let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
     for ((&i, &j), &w) in graph
         .row_indices
@@ -246,84 +249,82 @@ pub fn optimise_bh_tsne<T>(
             T::one()
         };
 
-        // Compute forces for all points in parallel
-        let results: Vec<(T, T, T, T, T)> = embd
-            .par_iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let px = p[0];
-                let py = p[1];
+        // step 1: compute repulsive forces and partial Z in parallel
+        // snapshot positions for gradient computation (cannot read embd
+        // while updating it in the same pass)
+        let xs: Vec<T> = embd.iter().map(|p| p[0]).collect();
+        let ys: Vec<T> = embd.iter().map(|p| p[1]).collect();
 
-                // Repulsive forces (Barnes-Hut approximation)
-                let (rep_x, rep_y, partial_z) =
-                    bh_tree.compute_repulsive_force(i, px, py, params.theta);
-
-                // Attractive forces (exact via graph)
-                let mut attr_x = T::zero();
-                let mut attr_y = T::zero();
-                if let Some(neighbors) = adj.get(i) {
-                    for &(j, p_val) in neighbors {
-                        let other = &embd[j];
-                        let dx = px - other[0];
-                        let dy = py - other[1];
-                        let dist_sq = dx * dx + dy * dy;
-                        let q = T::one() / (T::one() + dist_sq);
-                        let force = p_val * exag_factor * q;
-                        attr_x += force * dx;
-                        attr_y += force * dy;
-                    }
-                }
-                (attr_x, attr_y, rep_x, rep_y, partial_z)
-            })
+        // compute all repulsive forces in one parallel pass, storing
+        // (rep_x, rep_y, partial_z) per point
+        let rep_forces: Vec<(T, T, T)> = (0..n)
+            .into_par_iter()
+            .map(|i| bh_tree.compute_repulsive_force(i, xs[i], ys[i], params.theta))
             .collect();
 
-        // Global normalisation constant Z
-        let z_total: T = results
-            .iter()
-            .map(|t| t.4)
-            .fold(T::zero(), |acc, x| acc + x);
+        // global normalisation constant
+        let z_total: T = rep_forces.iter().map(|r| r.2).fold(T::zero(), |a, b| a + b);
         let z_inv = if z_total > eps {
             T::one() / z_total
         } else {
             T::zero()
         };
 
-        // Apply gradient updates (sequential is fine - negligible runtime)
-        for i in 0..n {
-            let (attr_x, attr_y, rep_x, rep_y, _) = results[i];
-            let grad_x = attr_x - rep_x * z_inv;
-            let grad_y = attr_y - rep_y * z_inv;
+        // step 2: compute attractive forces and update in parallel
+        embd.par_iter_mut()
+            .zip(update_flat.par_chunks_mut(n_dim))
+            .zip(gains_flat.par_chunks_mut(n_dim))
+            .enumerate()
+            .for_each(|(i, ((point, u_i), g_i))| {
+                let px = xs[i];
+                let py = ys[i];
 
-            update_parameter(
-                &mut embd[i][0],
-                &mut update_flat[i * 2],
-                &mut gains_flat[i * 2],
-                grad_x,
-                params.lr,
-                momentum,
-                min_gain,
-            );
+                let (rep_x, rep_y, _) = rep_forces[i];
 
-            update_parameter(
-                &mut embd[i][1],
-                &mut update_flat[i * 2 + 1],
-                &mut gains_flat[i * 2 + 1],
-                grad_y,
-                params.lr,
-                momentum,
-                min_gain,
-            );
-        }
+                // attractive forces (exact via graph)
+                let mut attr_x = T::zero();
+                let mut attr_y = T::zero();
+                for &(j, p_val) in &adj[i] {
+                    let dx = px - xs[j];
+                    let dy = py - ys[j];
+                    let dist_sq = dx * dx + dy * dy;
+                    let q = T::one() / (T::one() + dist_sq);
+                    let force = p_val * exag_factor * q;
+                    attr_x += force * dx;
+                    attr_y += force * dy;
+                }
 
-        // renormalise to avoid drift (also made parallel)
+                let grad_x = attr_x - rep_x * z_inv;
+                let grad_y = attr_y - rep_y * z_inv;
+
+                update_parameter(
+                    &mut point[0],
+                    &mut u_i[0],
+                    &mut g_i[0],
+                    grad_x,
+                    params.lr,
+                    momentum,
+                    min_gain,
+                );
+                update_parameter(
+                    &mut point[1],
+                    &mut u_i[1],
+                    &mut g_i[1],
+                    grad_y,
+                    params.lr,
+                    momentum,
+                    min_gain,
+                );
+            });
+
+        // step 3: recentring
         let (sum_x, sum_y) = embd
-            .iter() // Serial iter
+            .iter()
             .fold((T::zero(), T::zero()), |(ax, ay), p| (ax + p[0], ay + p[1]));
 
         let mean_x = sum_x / T::from_usize(n).unwrap();
         let mean_y = sum_y / T::from_usize(n).unwrap();
 
-        // Parallel subtract is fine (no reduction involved)
         embd.par_iter_mut().for_each(|p| {
             p[0] -= mean_x;
             p[1] -= mean_y;
@@ -331,7 +332,7 @@ pub fn optimise_bh_tsne<T>(
 
         if verbose && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
             println!(
-                "Completed Epoch {} out of {} | Z = {}",
+                "Epoch {}/{} | Z = {}",
                 epoch,
                 params.n_epochs,
                 z_total.to_f32().unwrap().separate_with_underscores()
