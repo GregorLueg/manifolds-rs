@@ -339,8 +339,10 @@ where
             })
             .collect();
 
-        // sequential: accumulate into gradient buffer
+        // sequential: accumulate into gradient buffer and use mean
+        // to avoid big gradients on often sampled points
         let mut gradients = vec![T::zero(); n * n_dim];
+        let mut counts = vec![0usize; n];
         let mut total_err = T::zero();
 
         for (i, j, contrib, sq_err) in &contribs {
@@ -348,12 +350,18 @@ where
                 gradients[i * n_dim + k] = gradients[i * n_dim + k] + contrib[k];
                 gradients[j * n_dim + k] = gradients[j * n_dim + k] - contrib[k];
             }
+            counts[*i] += 1;
+            counts[*j] += 1;
             total_err = total_err + *sq_err;
         }
 
-        // apply gradients
-        for idx in 0..n * n_dim {
-            y[idx] = y[idx] - lr_i * gradients[idx];
+        for i in 0..n {
+            if counts[i] > 0 {
+                let c = T::from(counts[i]).unwrap();
+                for k in 0..n_dim {
+                    gradients[i * n_dim + k] = gradients[i * n_dim + k] / c;
+                }
+            }
         }
 
         // re-centre to prevent translation drift
@@ -559,8 +567,10 @@ where
             })
             .collect();
 
-        // sequential: accumulate into gradient buffer
+        // sequential: accumulate into gradient buffer and use mean
+        // to avoid big gradients on often sampled points
         let mut gradients = vec![T::zero(); n * n_dim];
+        let mut counts = vec![0usize; n];
         let mut total_err = T::zero();
 
         for (i, j, contrib, sq_err) in &contribs {
@@ -568,12 +578,18 @@ where
                 gradients[i * n_dim + k] = gradients[i * n_dim + k] + contrib[k];
                 gradients[j * n_dim + k] = gradients[j * n_dim + k] - contrib[k];
             }
+            counts[*i] += 1;
+            counts[*j] += 1;
             total_err = total_err + *sq_err;
         }
 
-        // apply gradients
-        for idx in 0..n * n_dim {
-            y[idx] = y[idx] - lr_i * gradients[idx];
+        for i in 0..n {
+            if counts[i] > 0 {
+                let c = T::from(counts[i]).unwrap();
+                for k in 0..n_dim {
+                    gradients[i * n_dim + k] = gradients[i * n_dim + k] / c;
+                }
+            }
         }
 
         // re-centre to prevent translation drift
