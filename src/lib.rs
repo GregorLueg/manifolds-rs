@@ -1296,20 +1296,6 @@ where
             }
 
             match mds_method {
-                MdsMethod::SgdStreaming => {
-                    if verbose {
-                        println!("Running streaming SGD-MDS...");
-                    }
-                    sgd_mds_streaming(
-                        &potential,
-                        phate_params.n_dim,
-                        &dist,
-                        &mds_params,
-                        None,
-                        seed,
-                        verbose,
-                    )
-                }
                 MdsMethod::ClassicMds => {
                     if verbose {
                         println!("Computing pairwise distances, running classic MDS...");

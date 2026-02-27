@@ -1,4 +1,3 @@
-use ann_search_rs::utils::dist::{Dist, SimdDistance};
 use faer::Mat;
 use faer_traits::{ComplexField, RealField};
 use num_traits::{Float, FromPrimitive};
@@ -9,9 +8,7 @@ use rand_distr::{Distribution, StandardNormal};
 use rayon::prelude::*;
 use thousands::*;
 
-use crate::data::structures::CompressedSparseData;
 use crate::utils::math::*;
-use crate::utils::sparse_ops::csr_row_to_dense;
 
 /////////////
 // Globals //
@@ -30,9 +27,6 @@ pub enum MdsMethod {
     /// Works on a dense distance matrix of size n x n.
     #[default]
     SgdDense,
-    /// Generates the distance calculations on the fly to avoid materialising
-    /// the n x n distance matrix.
-    SgdStreaming,
     /// Uses the classic MDS algorithm.
     ClassicMds,
 }
@@ -49,7 +43,6 @@ pub enum MdsMethod {
 pub fn parse_mds_method(s: &str) -> Option<MdsMethod> {
     match s.to_lowercase().as_str() {
         "sgd_dense" | "dense" => Some(MdsMethod::SgdDense),
-        "sgd_streaming" | "streaming" => Some(MdsMethod::SgdStreaming),
         "classic" => Some(MdsMethod::ClassicMds),
         _ => None,
     }
@@ -221,7 +214,7 @@ where
     embedding
 }
 
-/// SGD-based Metric MDS
+/// SGD-MDS
 ///
 /// Leverages SGD under the hood to optimise the SGD.
 ///
@@ -403,213 +396,6 @@ where
     embedding
 }
 
-/// Streaming SGD-MDS with on-the-fly distance calculation.
-///
-/// Memory: O(N × d) instead of O(N²).
-/// Distance computation is parallelised cleanly (read-only on dense rows).
-/// The embeddings gradients are accumulated in parallel and applied sequential.
-///
-/// ### Params
-///
-/// * `potential` - Diffusion potential (N × n_landmarks) CSR matrix
-/// * `n_dim` - Embedding dimensions
-/// * `metric` - Distance metric
-/// * `params` - Optimisation parameters (includes n_threads)
-/// * `init` - Optional flat initial embedding (n * n_dim, row-major)
-/// * `seed` - Random seed
-/// * `verbose` - Verbosity
-///
-/// ### Returns
-///
-/// Flat N × n_dim embedding (row-major)
-pub fn sgd_mds_streaming<T>(
-    potential: &CompressedSparseData<T>,
-    n_dim: usize,
-    metric: &Dist,
-    params: &MdsOptimParams<T>,
-    init: Option<Vec<T>>,
-    seed: usize,
-    verbose: bool,
-) -> Vec<Vec<T>>
-where
-    T: Float + Send + Sync + SimdDistance + std::iter::Sum + ComplexField + FromPrimitive,
-{
-    let n = potential.shape().0;
-    let n_cols = potential.shape().1;
-
-    let dense: Vec<T> = (0..n)
-        .into_par_iter()
-        .flat_map(|i| csr_row_to_dense(potential, i))
-        .collect();
-
-    let norms: Vec<T> = if matches!(metric, Dist::Cosine) {
-        (0..n)
-            .into_par_iter()
-            .map(|i| T::calculate_l2_norm(&dense[i * n_cols..(i + 1) * n_cols]))
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    let compute_distance = |i: usize, j: usize| -> T {
-        if i == j {
-            return T::zero();
-        }
-        let row_i = &dense[i * n_cols..(i + 1) * n_cols];
-        let row_j = &dense[j * n_cols..(j + 1) * n_cols];
-        match metric {
-            Dist::Euclidean => T::euclidean_simd(row_i, row_j).sqrt(),
-            Dist::Cosine => {
-                let dot = T::dot_simd(row_i, row_j);
-                let denom = norms[i] * norms[j];
-                if denom > T::zero() {
-                    T::one() - (dot / denom)
-                } else {
-                    T::zero()
-                }
-            }
-        }
-    };
-
-    let mut rng = StdRng::seed_from_u64(seed as u64);
-    let sample_size = (n as f64).sqrt() as usize * 100;
-    let mut d_max = T::zero();
-    for _ in 0..sample_size.min(n * n / 2) {
-        let i = rng.random_range(0..n);
-        let j = rng.random_range(0..n);
-        if i != j {
-            let d = compute_distance(i, j);
-            if d > d_max {
-                d_max = d;
-            }
-        }
-    }
-
-    let mut y = if let Some(init_y) = init {
-        let y_std = compute_std(&init_y);
-        if y_std > T::zero() {
-            init_y.iter().map(|&v| v / y_std).collect()
-        } else {
-            init_y
-        }
-    } else {
-        (0..n * n_dim)
-            .map(|_| T::from(rng.random::<f64>() * 0.01).unwrap())
-            .collect()
-    };
-
-    let n_iter = params.n_iter;
-    let pairs_per_iter = params.pairs_per_iter;
-    let eta_max = params.lr;
-    let eta_min = eta_max * T::from(0.01).unwrap();
-    let lambda = if n_iter > 1 {
-        (eta_max / eta_min).ln() / T::from(n_iter - 1).unwrap()
-    } else {
-        T::zero()
-    };
-
-    if verbose {
-        println!(
-            "Streaming SGD-MDS: n={}, pairs_per_iter={}, n_iter={}",
-            n.separate_with_underscores(),
-            pairs_per_iter.separate_with_underscores(),
-            n_iter.separate_with_underscores(),
-        );
-    }
-
-    let mut prev_stress = None;
-
-    for iteration in 0..n_iter {
-        let lr_i = eta_max * (-lambda * T::from(iteration).unwrap()).exp();
-
-        let pairs: Vec<(usize, usize)> =
-            std::iter::from_fn(|| Some((rng.random_range(0..n), rng.random_range(0..n))))
-                .filter(|(i, j)| i != j)
-                .take(pairs_per_iter)
-                .collect();
-
-        // parallel: compute distances and gradient contributions, read-only on y
-        let contribs: Vec<(usize, usize, Vec<T>, T)> = pairs
-            .par_iter()
-            .map(|&(i, j)| {
-                let d = compute_distance(i, j);
-                let target_dist = if d_max > T::zero() { d / d_max } else { d };
-
-                let mut dist_sq = T::zero();
-                for k in 0..n_dim {
-                    let diff = y[i * n_dim + k] - y[j * n_dim + k];
-                    dist_sq = dist_sq + diff * diff;
-                }
-
-                let current_dist = dist_sq.sqrt().max(T::from(1e-10).unwrap());
-                let error = target_dist - current_dist;
-                let weight = T::from(-2.0).unwrap() * error / current_dist;
-
-                let contrib: Vec<T> = (0..n_dim)
-                    .map(|k| (y[i * n_dim + k] - y[j * n_dim + k]) * weight)
-                    .collect();
-
-                (i, j, contrib, error * error)
-            })
-            .collect();
-
-        let mut gradients = vec![T::zero(); n * n_dim];
-        let mut total_err = T::zero();
-
-        for (i, j, contrib, sq_err) in &contribs {
-            for k in 0..n_dim {
-                gradients[i * n_dim + k] = gradients[i * n_dim + k] + contrib[k];
-                gradients[j * n_dim + k] = gradients[j * n_dim + k] - contrib[k];
-            }
-            total_err = total_err + *sq_err;
-        }
-
-        for idx in 0..n * n_dim {
-            y[idx] = y[idx] - lr_i * gradients[idx];
-        }
-
-        let stress = total_err / T::from(contribs.len()).unwrap();
-
-        if verbose && iteration % 100 == 0 {
-            println!(
-                "Iter {}: stress={:.6}, lr={:.6}",
-                iteration.separate_with_underscores(),
-                stress.to_f64().unwrap(),
-                lr_i.to_f64().unwrap(),
-            );
-        }
-
-        if let Some(prev) = prev_stress {
-            let rel_change = ((stress - prev) / (prev + T::from(1e-10).unwrap())).abs();
-            if rel_change < T::from(1e-6).unwrap() && iteration > 50 {
-                if verbose {
-                    println!(
-                        "Converged at iteration {} (rel_change={:.2e})",
-                        iteration,
-                        rel_change.to_f64().unwrap()
-                    );
-                }
-                break;
-            }
-        }
-        prev_stress = Some(stress);
-    }
-
-    if d_max > T::zero() {
-        y.iter_mut().for_each(|v| *v = *v * d_max);
-    }
-
-    let mut embedding = vec![vec![T::zero(); n_dim]; n];
-
-    for i in 0..n {
-        for j in 0..n_dim {
-            embedding[i][j] = y[i * n_dim + j];
-        }
-    }
-
-    embedding
-}
-
 ///////////
 // Tests //
 ///////////
@@ -679,79 +465,6 @@ mod test_mds {
                 }
                 let dist = dist_sq.sqrt();
                 assert_relative_eq!(dist, distances[i][j], epsilon = 0.15);
-            }
-        }
-    }
-
-    #[test]
-    fn test_sgd_mds_streaming_basic() {
-        // Create a simple 4x3 CSR potential matrix
-        // Row structure:
-        // [1.0, 0.0, 0.5]
-        // [0.0, 1.0, 0.0]
-        // [0.5, 0.0, 1.0]
-        // [0.0, 0.5, 0.0]
-        let data = vec![1.0, 0.5, 1.0, 1.0, 0.5, 0.5];
-        let indices = vec![0, 2, 1, 0, 2, 1];
-        let indptr = vec![0, 2, 3, 5, 6];
-        let shape = (4, 3);
-
-        let potential = CompressedSparseData::new_csr(&data, &indices, &indptr, shape);
-
-        let mds_params = MdsOptimParams::new(potential.nrows(), true, None, None);
-
-        let embedding = sgd_mds_streaming(
-            &potential,
-            2,
-            &Dist::Euclidean,
-            &mds_params,
-            None,
-            42,
-            false,
-        );
-
-        // Basic sanity checks
-        assert_eq!(embedding.len(), 4);
-        assert_eq!(embedding[0].len(), 2);
-
-        // Check that similar rows end up close together
-        let mut dist_01_sq = 0.0;
-        let mut dist_02_sq = 0.0;
-        for k in 0..2 {
-            let diff_01 = embedding[0][k] - embedding[1][k];
-            let diff_02 = embedding[0][k] - embedding[2][k];
-            dist_01_sq += diff_01 * diff_01;
-            dist_02_sq += diff_02 * diff_02;
-        }
-
-        // Rows 0 and 2 are more similar (both have [1.0, 0.0, 0.5] pattern)
-        // than rows 0 and 1, so they should be closer
-        assert!(dist_02_sq < dist_01_sq * 1.5);
-    }
-
-    #[test]
-    fn test_sgd_mds_streaming_cosine() {
-        // Create a simple 3x2 CSR potential matrix for cosine distance
-        let data = vec![1.0, 1.0, 0.0, 1.0, 1.0];
-        let indices = vec![0, 1, 1, 0, 1];
-        let indptr = vec![0, 2, 3, 5];
-        let shape = (3, 2);
-
-        let potential = CompressedSparseData::new_csr(&data, &indices, &indptr, shape);
-
-        let mds_params = MdsOptimParams::new(potential.nrows(), true, None, None);
-
-        let embedding =
-            sgd_mds_streaming(&potential, 2, &Dist::Cosine, &mds_params, None, 42, false);
-
-        // Basic sanity checks
-        assert_eq!(embedding.len(), 3);
-        assert_eq!(embedding[0].len(), 2);
-
-        // All points should be finite
-        for i in 0..3 {
-            for k in 0..2 {
-                assert!(embedding[i][k].is_finite());
             }
         }
     }
