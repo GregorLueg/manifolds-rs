@@ -153,6 +153,7 @@ pub fn parse_topology(s: &str) -> Option<TrajectoryTopology> {
 /// * `split_at` - Fraction along the parent where this branch starts (0.0 or
 ///   1.0)
 /// * `length` - The length of this branch
+#[derive(Clone, Debug)]
 pub struct BranchSpec {
     pub parent: Option<usize>,
     // Fraction along parent where this branch starts (0.0–1.0)
