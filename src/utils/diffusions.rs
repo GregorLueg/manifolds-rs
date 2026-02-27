@@ -793,7 +793,46 @@ where
                     min_dists[next] = T::zero();
                 }
 
-                landmarks
+                let landmark_data: Vec<T> = landmarks
+                    .iter()
+                    .flat_map(|&i| data[i * dim..(i + 1) * dim].iter().copied())
+                    .collect();
+
+                let norm_landmark = match distance {
+                    Dist::Cosine => (0..n_landmarks)
+                        .into_par_iter()
+                        .map(|i| T::calculate_l2_norm(&landmark_data[i * dim..(i + 1) * dim]))
+                        .collect::<Vec<_>>(),
+                    Dist::Euclidean => Vec::new(),
+                };
+
+                let norm_data_mm = match distance {
+                    Dist::Cosine => (0..n)
+                        .into_par_iter()
+                        .map(|i| T::calculate_l2_norm(&data[i * dim..(i + 1) * dim]))
+                        .collect::<Vec<_>>(),
+                    Dist::Euclidean => Vec::new(),
+                };
+
+                (0..n)
+                    .into_par_iter()
+                    .map(|i| {
+                        let norm = if matches!(distance, Dist::Euclidean) {
+                            T::zero()
+                        } else {
+                            norm_data_mm[i]
+                        };
+                        assign_to_landmark(
+                            &data[i * dim..(i + 1) * dim],
+                            &norm,
+                            &landmark_data,
+                            &norm_landmark,
+                            &distance,
+                            n_landmarks,
+                            dim,
+                        )
+                    })
+                    .collect()
             }
         };
 
