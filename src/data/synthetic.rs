@@ -128,18 +128,11 @@ pub struct BranchSpec {
     pub length: f64,
 }
 
-/// Generates an example haematopoiesis trajectory with 9 branches,
-/// mimicking the differentiation hierarchy from HSC through myeloid
-/// (CMP → Monocyte, Granulocyte, Erythroid) and lymphoid
-/// (CLP → B cell, T cell, NK cell) lineages.
-///
-/// All branches split at the tip of their parent (`split_at: 1.0`).
-/// Branch lengths are scaled loosely to reflect biological distance
-/// from the progenitor state.
+/// Generates a trajectory of differentiation example
 ///
 /// ### Returns
 ///
-/// A vector of 9 [`BranchSpec`], ordered so that each parent index
+/// A vector of 6 [`BranchSpec`], ordered so that each parent index
 /// refers to an earlier entry in the vector, as required by
 /// [`generate_trajectory`].
 pub fn generate_example_branches() -> Vec<BranchSpec> {
@@ -148,47 +141,32 @@ pub fn generate_example_branches() -> Vec<BranchSpec> {
             parent: None,
             split_at: 0.0,
             length: 2.0,
-        }, // 0: HSC
+        }, // 0: Stem
         BranchSpec {
             parent: Some(0),
             split_at: 1.0,
             length: 3.0,
-        }, // 1: CMP
-        BranchSpec {
-            parent: Some(0),
-            split_at: 1.0,
-            length: 2.0,
-        }, // 2: CLP
+        }, // 1: Progenitor
         BranchSpec {
             parent: Some(1),
             split_at: 1.0,
             length: 3.0,
-        }, // 3: Monocyte
+        }, // 2: Type A
         BranchSpec {
             parent: Some(1),
-            split_at: 1.0,
-            length: 4.0,
-        }, // 4: Granulocyte
-        BranchSpec {
-            parent: Some(1),
-            split_at: 1.0,
-            length: 4.0,
-        }, // 5: Erythroid
-        BranchSpec {
-            parent: Some(2),
-            split_at: 1.0,
-            length: 5.0,
-        }, // 6: B cell
-        BranchSpec {
-            parent: Some(2),
-            split_at: 1.0,
-            length: 4.0,
-        }, // 7: T cell
-        BranchSpec {
-            parent: Some(2),
             split_at: 1.0,
             length: 3.0,
-        }, // 8: NK cell
+        }, // 3: Type B
+        BranchSpec {
+            parent: Some(3),
+            split_at: 1.0,
+            length: 3.0,
+        }, // 4: Type C
+        BranchSpec {
+            parent: Some(3),
+            split_at: 1.0,
+            length: 3.0,
+        }, // 5: Type D
     ];
 
     branches
