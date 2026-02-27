@@ -74,6 +74,7 @@ pub fn generate_clustered_data(
 ) -> (Mat<f64>, Vec<usize>) {
     let mut rng = StdRng::seed_from_u64(seed);
     let mut data = Mat::<f64>::zeros(n_samples, dim);
+
     // variable cluster sizes and std deviations
     let mut centres = Vec::with_capacity(n_clusters);
     let mut cluster_stds = Vec::new();
@@ -124,7 +125,8 @@ pub fn generate_clustered_data(
 /// * `length` - The length of this branch
 pub struct BranchSpec {
     pub parent: Option<usize>,
-    pub split_at: f64, // fraction along parent where this branch starts (0.0–1.0)
+    // Fraction along parent where this branch starts (0.0–1.0)
+    pub split_at: f64,
     pub length: f64,
 }
 
@@ -140,12 +142,12 @@ pub fn generate_example_branches() -> Vec<BranchSpec> {
         BranchSpec {
             parent: None,
             split_at: 0.0,
-            length: 2.0,
+            length: 0.75,
         }, // 0: Stem
         BranchSpec {
             parent: Some(0),
             split_at: 1.0,
-            length: 3.0,
+            length: 0.5,
         }, // 1: Progenitor
         BranchSpec {
             parent: Some(1),
@@ -155,17 +157,17 @@ pub fn generate_example_branches() -> Vec<BranchSpec> {
         BranchSpec {
             parent: Some(1),
             split_at: 1.0,
-            length: 3.0,
+            length: 1.0,
         }, // 3: Type B
         BranchSpec {
             parent: Some(3),
             split_at: 1.0,
-            length: 3.0,
+            length: 1.5,
         }, // 4: Type C
         BranchSpec {
             parent: Some(3),
             split_at: 1.0,
-            length: 3.0,
+            length: 2.5,
         }, // 5: Type D
     ];
 
