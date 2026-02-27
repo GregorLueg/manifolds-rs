@@ -14,7 +14,8 @@ use crate::utils::math::*;
 // Globals //
 /////////////
 
-pub const DEFAULT_LR: f64 = 0.01;
+/// Default learning rate for MDS
+pub const DEFAULT_MDS_LR: f64 = 0.001;
 
 ///////////
 // Enums //
@@ -91,7 +92,7 @@ where
     ///
     /// Initialised `Self`
     pub fn new(n: usize, randomised: bool, n_iter: Option<usize>, lr: Option<T>) -> Self {
-        let lr = lr.unwrap_or(T::from_f64(DEFAULT_LR).unwrap());
+        let lr = lr.unwrap_or(T::from_f64(DEFAULT_MDS_LR).unwrap());
         let n_iter = n_iter.unwrap_or(1000);
         let pairs_per_iter = (n as f64 * (n as f64).ln() * 2.0) as usize;
 
@@ -285,8 +286,13 @@ where
 
     let n_iter = params.n_iter;
     let pairs_per_iter = params.pairs_per_iter;
-    let eta_max = params.lr;
-    let eta_min = eta_max * T::from(0.01).unwrap();
+
+    let total_pairs = T::from(n * (n - 1) / 2).unwrap();
+    let sampling_ratio = T::from(pairs_per_iter).unwrap() / total_pairs;
+    let batch_scale = (T::one() / sampling_ratio).sqrt();
+
+    let eta_max = params.lr * batch_scale;
+    let eta_min = params.lr * T::from(0.01).unwrap() * batch_scale;
     let lambda = if n_iter > 1 {
         (eta_max / eta_min).ln() / T::from(n_iter - 1).unwrap()
     } else {
@@ -295,13 +301,14 @@ where
 
     if verbose {
         println!(
-            "SGD-MDS: n={}, pairs_per_iter={}, n_iter={}, eta_max={:.6}, eta_min={:.6}",
-            n.separate_with_underscores(),
-            pairs_per_iter.separate_with_underscores(),
-            n_iter.separate_with_underscores(),
-            eta_max.to_f64().unwrap(),
-            eta_min.to_f64().unwrap(),
-        );
+               "SGD-MDS: n={}, pairs_per_iter={}, n_iter={}, eta_max={:.6}, eta_min={:.6}, batch_scale={:.2}",
+               n.separate_with_underscores(),
+               pairs_per_iter.separate_with_underscores(),
+               n_iter.separate_with_underscores(),
+               eta_max.to_f64().unwrap(),
+               eta_min.to_f64().unwrap(),
+               batch_scale.to_f64().unwrap(),
+           );
     }
 
     let mut prev_stress = None;
