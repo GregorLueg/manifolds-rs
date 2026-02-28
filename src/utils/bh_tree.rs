@@ -84,18 +84,46 @@ impl<T: Float> BBox<T> {
 }
 
 //////////////
+// LeafData //
+//////////////
+
+/// Point index data stored in leaf nodes.
+///
+/// Uses an enum to avoid paying for a `Vec` allocation on the common
+/// single-point leaf path. The `Coincident` variant is only constructed
+/// when multiple points fall into the same quadrant and cannot be further
+/// separated (i.e. they are at identical or near-identical coordinates).
+#[derive(Debug, Clone)]
+pub enum LeafData {
+    /// Single point (vast majority of leaves, no heap allocation)
+    Single(usize),
+    /// Multiple coincident/near-coincident points
+    Coincident(Vec<usize>),
+}
+
+impl LeafData {
+    /// Check whether this leaf contains a given point index.
+    #[inline]
+    fn contains(&self, idx: usize) -> bool {
+        match self {
+            LeafData::Single(i) => *i == idx,
+            LeafData::Coincident(indices) => indices.contains(&idx),
+        }
+    }
+}
+
+//////////////
 // QuadNode //
 //////////////
 
 /// A node in the flattened quad-tree arena.
 ///
-/// Uses `Option<usize>` for the leaf point index rather than `Vec<usize>`,
-/// saving 16 bytes per node and eliminating heap allocations for leaves.
-/// Coincident points are handled by storing a single representative index
-/// alongside the total mass. Self-interaction exclusion is exact for the
-/// representative and approximate for other coincident points (their mass
-/// contribution to Z is off by 1), but since dx=dy=0 for coincident
-/// points, the force contribution is zero regardless.
+/// Leaf nodes carry a `LeafData` value identifying which point(s) they
+/// contain. Internal nodes have `leaf_data: None` and instead reference
+/// up to four children. This design keeps single-point leaves (the vast
+/// majority) free of heap allocation whilst still correctly tracking all
+/// indices for coincident-point leaves, ensuring exact self-interaction
+/// exclusion during force computation.
 ///
 /// ### Fields
 ///
@@ -105,9 +133,7 @@ impl<T: Float> BBox<T> {
 /// * `width` - Width of the cell covered by this node
 /// * `children` - Indices of children in the `nodes` vector; `None` if
 ///   child does not exist
-/// * `point_idx` - If this is a leaf, the index of the (representative)
-///   point; `None` for internal nodes
-/// * `is_leaf` - Whether this node is a leaf
+/// * `leaf_data` - Point data for leaf nodes; `None` for internal nodes
 #[derive(Debug, Clone)]
 pub struct QuadNode<T> {
     pub com_x: T,
@@ -115,8 +141,15 @@ pub struct QuadNode<T> {
     pub mass: T,
     pub width: T,
     pub children: [Option<usize>; 4],
-    pub point_idx: Option<usize>,
-    pub is_leaf: bool,
+    pub leaf_data: Option<LeafData>,
+}
+
+impl<T: Float> QuadNode<T> {
+    /// Whether this node is a leaf.
+    #[inline]
+    pub fn is_leaf(&self) -> bool {
+        self.leaf_data.is_some()
+    }
 }
 
 ///////////////////
@@ -230,8 +263,7 @@ where
                 mass: T::one(),
                 width,
                 children: [None; 4],
-                point_idx: Some(idx),
-                is_leaf: true,
+                leaf_data: Some(LeafData::Single(idx)),
             });
             return node_idx;
         }
@@ -250,11 +282,10 @@ where
             counts[q] += 1;
         }
 
-        // all points in same quadrant: either coincident or need deeper split
+        // all points in same quadrant: coincident or near-coincident,
+        // cannot subdivide further — store as leaf with all indices
         let max_count = *counts.iter().max().unwrap();
         if max_count == n {
-            // all points land in the same quadrant — coincident or near-coincident
-            // store as leaf with representative index and total mass
             let node_idx = nodes.len();
             nodes.push(QuadNode {
                 com_x: sum_x / mass,
@@ -262,13 +293,11 @@ where
                 mass,
                 width,
                 children: [None; 4],
-                point_idx: Some(point_indices[0]),
-                is_leaf: true,
+                leaf_data: Some(LeafData::Coincident(point_indices.to_vec())),
             });
             return node_idx;
         }
 
-        // compute start offsets for each quadrant bucket
         // internal node: partition indices by quadrant using scratch buffer
         let mut offsets = [0usize; 4];
         offsets[0] = 0;
@@ -277,7 +306,7 @@ where
         }
         let mut write_pos = offsets;
 
-        // scatter into scratch (borrow is scoped to this block)
+        // scatter into scratch
         for &idx in point_indices {
             let q = bbox.get_quadrant(embd[idx][0], embd[idx][1]);
             scratch[write_pos[q]] = idx;
@@ -292,8 +321,7 @@ where
             mass,
             width,
             children: [None; 4],
-            point_idx: None,
-            is_leaf: false,
+            leaf_data: None,
         });
 
         // recurse into non-empty quadrants
@@ -323,15 +351,16 @@ where
 
     /// Compute repulsive forces on a point using Barnes-Hut approximation.
     ///
-    /// Traverses the tree using an explicit stack (fixed-size array on the
-    /// thread stack, no heap allocation). At each node, applies the
-    /// Barnes-Hut opening criterion: if `width^2 / dist^2 < theta^2`, the
-    /// node's centre of mass is used as a summary; otherwise the node is
-    /// opened and its children are pushed onto the stack.
+    /// Traverses the tree using an explicit fixed-size stack (no heap
+    /// allocation). At each node, applies the Barnes-Hut opening
+    /// criterion: if `width^2 / dist^2 < theta^2`, the node's centre
+    /// of mass is used as a summary; otherwise the node is opened and
+    /// its children are pushed onto the stack.
     ///
-    /// Self-interaction is excluded by checking `point_idx` on leaf nodes.
-    /// For coincident-point leaves, the mass is reduced by one to account
-    /// for the query point (force direction is zero anyway since dx=dy=0).
+    /// Self-interaction is excluded exactly for all leaf types:
+    /// `Single` leaves use a direct index comparison; `Coincident`
+    /// leaves perform a linear scan (rare, only for coincident points)
+    /// and reduce the effective mass by one.
     ///
     /// ### Params
     ///
@@ -366,21 +395,19 @@ where
             let dy = p_y - node.com_y;
             let dist_sq = (dx * dx + dy * dy).max(min_dist_sq);
 
-            if node.is_leaf {
-                if let Some(idx) = node.point_idx {
-                    // effective mass excluding the query point itself
-                    let m = if idx == point_idx {
-                        node.mass - T::one()
-                    } else {
-                        node.mass
-                    };
-                    if m > T::zero() {
-                        let q = T::one() / (T::one() + dist_sq);
-                        sum_q = sum_q + m * q;
-                        let mult = m * q * q;
-                        force_x = force_x + mult * dx;
-                        force_y = force_y + mult * dy;
-                    }
+            // leaf node
+            if let Some(ref leaf) = node.leaf_data {
+                let m = if leaf.contains(point_idx) {
+                    node.mass - T::one()
+                } else {
+                    node.mass
+                };
+                if m > T::zero() {
+                    let q = T::one() / (T::one() + dist_sq);
+                    sum_q = sum_q + m * q;
+                    let mult = m * q * q;
+                    force_x = force_x + mult * dx;
+                    force_y = force_y + mult * dy;
                 }
                 continue;
             }
@@ -395,7 +422,6 @@ where
                 force_x = force_x + mult * dx;
                 force_y = force_y + mult * dy;
             } else {
-                // open the node: push children
                 for child in node.children.iter().flatten() {
                     stack[stack_top] = *child;
                     stack_top += 1;
@@ -431,8 +457,8 @@ mod tests {
         assert_relative_eq!(root.com_x, 1.0);
         assert_relative_eq!(root.com_y, 2.0);
         assert_relative_eq!(root.mass, 1.0);
-        assert_eq!(root.point_idx, Some(0));
-        assert!(root.is_leaf);
+        assert!(root.is_leaf());
+        assert!(matches!(root.leaf_data, Some(LeafData::Single(0))));
     }
 
     #[test]
@@ -444,8 +470,8 @@ mod tests {
         assert_relative_eq!(root.mass, 2.0);
         assert_relative_eq!(root.com_x, 5.0);
         assert_relative_eq!(root.com_y, 5.0);
-        assert!(!root.is_leaf);
-        assert!(root.point_idx.is_none());
+        assert!(!root.is_leaf());
+        assert!(root.leaf_data.is_none());
     }
 
     #[test]
@@ -455,8 +481,17 @@ mod tests {
 
         let root = &tree.nodes[tree.root];
         assert_relative_eq!(root.mass, 3.0);
-        assert!(root.is_leaf);
-        assert!(root.point_idx.is_some());
+        assert!(root.is_leaf());
+
+        match &root.leaf_data {
+            Some(LeafData::Coincident(indices)) => {
+                assert_eq!(indices.len(), 3);
+                assert!(indices.contains(&0));
+                assert!(indices.contains(&1));
+                assert!(indices.contains(&2));
+            }
+            other => panic!("Expected Coincident, got {:?}", other),
+        }
     }
 
     #[test]
@@ -499,6 +534,8 @@ mod tests {
 
     #[test]
     fn test_no_self_interaction_coincident_points() {
+        // three coincident points — each should exclude exactly itself,
+        // leaving mass 2 from the other two
         let embd = embd_from_tuples(&[(5.0, 5.0), (5.0, 5.0), (5.0, 5.0)]);
         let tree = BarnesHutTree::new(&embd);
 
@@ -507,6 +544,10 @@ mod tests {
             assert!(fx.is_finite(), "fx is not finite for point {}", i);
             assert!(fy.is_finite(), "fy is not finite for point {}", i);
             assert!(sum_q.is_finite(), "sum_q is not finite for point {}", i);
+
+            // all three queries should produce identical sum_q (symmetry)
+            let (_, _, sum_q_0) = tree.compute_repulsive_force(0, 5.0, 5.0, 0.5);
+            assert_relative_eq!(sum_q, sum_q_0, epsilon = 1e-10);
         }
     }
 
@@ -650,5 +691,30 @@ mod tests {
 
         assert!(total > 0.0);
         assert!(total.is_finite());
+    }
+
+    #[test]
+    fn test_self_exclusion_exact_for_all_coincident() {
+        // verify that every point in a coincident cluster gets exactly
+        // mass-1, not full mass (the bug the LeafData enum fixes)
+        let embd = embd_from_tuples(&[(3.0, 3.0), (3.0, 3.0), (3.0, 3.0), (3.0, 3.0)]);
+        let tree = BarnesHutTree::new(&embd);
+
+        let mut sum_qs = Vec::new();
+        for i in 0..4 {
+            let (_, _, sq) = tree.compute_repulsive_force(i, 3.0, 3.0, 0.5);
+            sum_qs.push(sq);
+        }
+
+        // all four must be identical (each excludes exactly itself)
+        for i in 1..4 {
+            assert!(
+                (sum_qs[0] - sum_qs[i]).abs() < 1e-12,
+                "sum_q differs between point 0 ({}) and point {} ({})",
+                sum_qs[0],
+                i,
+                sum_qs[i]
+            );
+        }
     }
 }
