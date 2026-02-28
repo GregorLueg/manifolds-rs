@@ -156,6 +156,16 @@ impl<T: Float> QuadNode<T> {
 // BarnesHutTree //
 ///////////////////
 
+/// Internal Build stack
+struct BuildTask<T> {
+    /// Tracks (parent_node_index, quadrant_index) to link back up the tree
+    parent_idx: Option<(usize, usize)>,
+    start: usize,
+    end: usize,
+    bbox: BBox<T>,
+    depth: usize,
+}
+
 /// Barnes-Hut quad-tree for 2D repulsive force approximation.
 ///
 /// Stores nodes in a contiguous flat arena for cache locality. The tree
@@ -177,9 +187,10 @@ where
 {
     /// Build quad-tree from current embedding positions.
     ///
-    /// Computes bounding box with epsilon padding, then recursively
-    /// partitions points into quadrants until each leaf contains at
-    /// most one unique position.
+    /// Uses a heap-allocated task stack to completely eliminate recursion.
+    /// This is strictly necessary when called from FFI environments (like R or
+    /// Python) where C-stack limits are strictly monitored and easily blown
+    /// during post-early-exaggeration t-SNE cluster expansions.
     ///
     /// ### Params
     ///
@@ -189,6 +200,20 @@ where
     ///
     /// Constructed tree ready for force queries
     pub fn new(embd: &[Vec<T>]) -> Self {
+        if embd.is_empty() {
+            return Self {
+                nodes: vec![QuadNode {
+                    com_x: T::zero(),
+                    com_y: T::zero(),
+                    mass: T::zero(),
+                    width: T::zero(),
+                    children: [None; 4],
+                    leaf_data: None,
+                }],
+                root: 0,
+            };
+        }
+
         let (min_x, max_x, min_y, max_y) = embd.iter().fold(
             (
                 T::infinity(),
@@ -215,79 +240,69 @@ where
         };
 
         let mut nodes: Vec<QuadNode<T>> = Vec::with_capacity(embd.len() * 2);
-
-        // scratch buffer for quadrant partitioning, avoids per-recursion
-        // heap allocation of four Vec<usize> buckets
         let mut scratch = vec![0usize; embd.len()];
         let mut indices: Vec<usize> = (0..embd.len()).collect();
 
-        let root = Self::build_recursive(&mut nodes, embd, &mut indices, bbox, &mut scratch);
+        let mut stack = Vec::with_capacity(128);
+        stack.push(BuildTask {
+            parent_idx: None,
+            start: 0,
+            end: embd.len(),
+            bbox,
+            depth: 0,
+        });
 
-        Self { nodes, root }
-    }
+        let mut root_idx = 0;
 
-    /// Recursively builds the quad-tree using zero-allocation in-place
-    /// partitioning.
-    ///
-    /// Resolves infinite recursion on coincident points by checking bounding
-    /// box width. If points are clustered in one quadrant but not physically
-    /// coincident, it correctly shrinks the bounding box without creating
-    /// premature leaves.
-    ///
-    /// ### Params
-    ///
-    /// * `nodes` - Flat arena being populated
-    /// * `embd` - Read-only embedding coordinates
-    /// * `point_indices` - Mutable slice of point indices in this node's region
-    /// * `bbox` - Spatial bounding box for this node
-    /// * `scratch` - Reusable mutable scratch buffer matching `point_indices`
-    ///   length
-    ///
-    /// ### Returns
-    ///
-    /// Index of the newly created node in the `nodes` arena
-    fn build_recursive(
-        nodes: &mut Vec<QuadNode<T>>,
-        embd: &[Vec<T>],
-        point_indices: &mut [usize],
-        bbox: BBox<T>,
-        scratch: &mut [usize],
-    ) -> usize {
-        let width = bbox.x_max - bbox.x_min;
-        let n = point_indices.len();
+        // Iterative Tree Builder Loop
+        while let Some(task) = stack.pop() {
+            let width = task.bbox.x_max - task.bbox.x_min;
+            let n = task.end - task.start;
+            let point_indices = &mut indices[task.start..task.end];
 
-        if n == 1 {
-            let idx = point_indices[0];
-            let p = &embd[idx];
-            let node_idx = nodes.len();
-            nodes.push(QuadNode {
-                com_x: p[0],
-                com_y: p[1],
-                mass: T::one(),
-                width,
-                children: [None; 4],
-                leaf_data: Some(LeafData::Single(idx)),
-            });
-            return node_idx;
-        }
+            // 1. Single point -> leaf
+            if n == 1 {
+                let idx = point_indices[0];
+                let p = &embd[idx];
+                let node_idx = nodes.len();
+                nodes.push(QuadNode {
+                    com_x: p[0],
+                    com_y: p[1],
+                    mass: T::one(),
+                    width,
+                    children: [None; 4],
+                    leaf_data: Some(LeafData::Single(idx)),
+                });
 
-        let mut sum_x = T::zero();
-        let mut sum_y = T::zero();
-        let mass = T::from_usize(n).unwrap();
-        let mut counts = [0usize; 4];
+                if let Some((p_idx, q)) = task.parent_idx {
+                    nodes[p_idx].children[q] = Some(node_idx);
+                } else {
+                    root_idx = node_idx;
+                }
+                continue;
+            }
 
-        for &idx in point_indices.iter() {
-            let p = &embd[idx];
-            sum_x = sum_x + p[0];
-            sum_y = sum_y + p[1];
-            let q = bbox.get_quadrant(p[0], p[1]);
-            counts[q] += 1;
-        }
+            // 2. Compute center of mass and quadrant counts
+            let mut sum_x = T::zero();
+            let mut sum_y = T::zero();
+            let mass = T::from_usize(n).unwrap();
+            let mut counts = [0usize; 4];
 
-        let max_count = *counts.iter().max().unwrap();
-        if max_count == n {
-            let min_width = T::from_f64(1e-10).unwrap();
-            if width < min_width {
+            for &idx in point_indices.iter() {
+                let p = &embd[idx];
+                sum_x = sum_x + p[0];
+                sum_y = sum_y + p[1];
+                let q = task.bbox.get_quadrant(p[0], p[1]);
+                counts[q] += 1;
+            }
+
+            let max_count = *counts.iter().max().unwrap();
+
+            // 3. Fallback Guard: Depth limit or exact coincidence
+            if task.depth >= 64
+                || !width.is_finite()
+                || (max_count == n && width < T::from_f64(1e-10).unwrap())
+            {
                 let node_idx = nodes.len();
                 nodes.push(QuadNode {
                     com_x: sum_x / mass,
@@ -297,63 +312,82 @@ where
                     children: [None; 4],
                     leaf_data: Some(LeafData::Coincident(point_indices.to_vec())),
                 });
-                return node_idx;
-            } else {
+
+                if let Some((p_idx, q)) = task.parent_idx {
+                    nodes[p_idx].children[q] = Some(node_idx);
+                } else {
+                    root_idx = node_idx;
+                }
+                continue;
+            }
+
+            // 4. Box shrinking: All points in one quadrant, but not perfectly coincident
+            if max_count == n {
                 let q = counts.iter().position(|&c| c == n).unwrap();
-                return Self::build_recursive(
-                    nodes,
-                    embd,
-                    point_indices, // reuse the exact same mutable slice
-                    bbox.sub_quadrant(q),
-                    scratch,
-                );
+                // Push back to stack with a shrunk box, keeping the original parent
+                stack.push(BuildTask {
+                    parent_idx: task.parent_idx,
+                    start: task.start,
+                    end: task.end,
+                    bbox: task.bbox.sub_quadrant(q),
+                    depth: task.depth + 1,
+                });
+                continue;
+            }
+
+            // 5. Internal Node: scatter to scratch to partition in place
+            let mut offsets = [0usize; 4];
+            offsets[0] = 0;
+            for i in 1..4 {
+                offsets[i] = offsets[i - 1] + counts[i - 1];
+            }
+            let mut write_pos = offsets;
+            let scratch_slice = &mut scratch[task.start..task.end];
+
+            for &idx in point_indices.iter() {
+                let q = task.bbox.get_quadrant(embd[idx][0], embd[idx][1]);
+                scratch_slice[write_pos[q]] = idx;
+                write_pos[q] += 1;
+            }
+            point_indices.copy_from_slice(scratch_slice);
+
+            let node_idx = nodes.len();
+            nodes.push(QuadNode {
+                com_x: sum_x / mass,
+                com_y: sum_y / mass,
+                mass,
+                width,
+                children: [None; 4],
+                leaf_data: None,
+            });
+
+            if let Some((p_idx, q)) = task.parent_idx {
+                nodes[p_idx].children[q] = Some(node_idx);
+            } else {
+                root_idx = node_idx;
+            }
+
+            // 6. Push sub-tasks for children
+            let mut current_start = task.start;
+            for i in 0..4 {
+                let current_end = current_start + counts[i];
+                if counts[i] > 0 {
+                    stack.push(BuildTask {
+                        parent_idx: Some((node_idx, i)),
+                        start: current_start,
+                        end: current_end,
+                        bbox: task.bbox.sub_quadrant(i),
+                        depth: task.depth + 1,
+                    });
+                }
+                current_start = current_end;
             }
         }
 
-        let mut offsets = [0usize; 4];
-        offsets[0] = 0;
-        for i in 1..4 {
-            offsets[i] = offsets[i - 1] + counts[i - 1];
+        Self {
+            nodes,
+            root: root_idx,
         }
-        let mut write_pos = offsets;
-
-        for &idx in point_indices.iter() {
-            let q = bbox.get_quadrant(embd[idx][0], embd[idx][1]);
-            scratch[write_pos[q]] = idx;
-            write_pos[q] += 1;
-        }
-
-        point_indices.copy_from_slice(&scratch[..n]);
-
-        let node_idx = nodes.len();
-        nodes.push(QuadNode {
-            com_x: sum_x / mass,
-            com_y: sum_y / mass,
-            mass,
-            width,
-            children: [None; 4],
-            leaf_data: None,
-        });
-
-        let mut children_indices = [None; 4];
-        let mut start = 0;
-        for i in 0..4 {
-            let end = start + counts[i];
-            if counts[i] > 0 {
-                let child_idx = Self::build_recursive(
-                    nodes,
-                    embd,
-                    &mut point_indices[start..end],
-                    bbox.sub_quadrant(i),
-                    &mut scratch[start..end],
-                );
-                children_indices[i] = Some(child_idx);
-            }
-            start = end;
-        }
-
-        nodes[node_idx].children = children_indices;
-        node_idx
     }
 
     /// Compute repulsive forces on a point using Barnes-Hut approximation.
