@@ -219,40 +219,43 @@ where
         // scratch buffer for quadrant partitioning, avoids per-recursion
         // heap allocation of four Vec<usize> buckets
         let mut scratch = vec![0usize; embd.len()];
-        let indices: Vec<usize> = (0..embd.len()).collect();
+        let mut indices: Vec<usize> = (0..embd.len()).collect();
 
-        let root = Self::build_recursive(&mut nodes, embd, &indices, bbox, &mut scratch);
+        let root = Self::build_recursive(&mut nodes, embd, &mut indices, bbox, &mut scratch);
 
         Self { nodes, root }
     }
 
-    /// Recursively build quad-tree by partitioning points into quadrants.
+    /// Recursively builds the quad-tree using zero-allocation in-place
+    /// partitioning.
     ///
-    /// Uses a caller-provided scratch buffer to partition point indices
-    /// by quadrant without allocating fresh vectors at each level.
+    /// Resolves infinite recursion on coincident points by checking bounding
+    /// box width. If points are clustered in one quadrant but not physically
+    /// coincident, it correctly shrinks the bounding box without creating
+    /// premature leaves.
     ///
     /// ### Params
     ///
     /// * `nodes` - Flat arena being populated
     /// * `embd` - Read-only embedding coordinates
-    /// * `point_indices` - Indices of points in this node's region
+    /// * `point_indices` - Mutable slice of point indices in this node's region
     /// * `bbox` - Spatial bounding box for this node
-    /// * `scratch` - Reusable scratch buffer (length >= point_indices.len())
+    /// * `scratch` - Reusable mutable scratch buffer matching `point_indices`
+    ///   length
     ///
     /// ### Returns
     ///
-    /// Index of the newly created node in `nodes`
+    /// Index of the newly created node in the `nodes` arena
     fn build_recursive(
         nodes: &mut Vec<QuadNode<T>>,
         embd: &[Vec<T>],
-        point_indices: &[usize],
+        point_indices: &mut [usize],
         bbox: BBox<T>,
-        scratch: &mut Vec<usize>,
+        scratch: &mut [usize],
     ) -> usize {
         let width = bbox.x_max - bbox.x_min;
         let n = point_indices.len();
 
-        // single point: leaf
         if n == 1 {
             let idx = point_indices[0];
             let p = &embd[idx];
@@ -268,13 +271,12 @@ where
             return node_idx;
         }
 
-        // compute centre of mass and count per quadrant
         let mut sum_x = T::zero();
         let mut sum_y = T::zero();
         let mass = T::from_usize(n).unwrap();
         let mut counts = [0usize; 4];
 
-        for &idx in point_indices {
+        for &idx in point_indices.iter() {
             let p = &embd[idx];
             sum_x = sum_x + p[0];
             sum_y = sum_y + p[1];
@@ -282,23 +284,32 @@ where
             counts[q] += 1;
         }
 
-        // all points in same quadrant: coincident or near-coincident,
-        // cannot subdivide further — store as leaf with all indices
         let max_count = *counts.iter().max().unwrap();
         if max_count == n {
-            let node_idx = nodes.len();
-            nodes.push(QuadNode {
-                com_x: sum_x / mass,
-                com_y: sum_y / mass,
-                mass,
-                width,
-                children: [None; 4],
-                leaf_data: Some(LeafData::Coincident(point_indices.to_vec())),
-            });
-            return node_idx;
+            let min_width = T::from_f64(1e-10).unwrap();
+            if width < min_width {
+                let node_idx = nodes.len();
+                nodes.push(QuadNode {
+                    com_x: sum_x / mass,
+                    com_y: sum_y / mass,
+                    mass,
+                    width,
+                    children: [None; 4],
+                    leaf_data: Some(LeafData::Coincident(point_indices.to_vec())),
+                });
+                return node_idx;
+            } else {
+                let q = counts.iter().position(|&c| c == n).unwrap();
+                return Self::build_recursive(
+                    nodes,
+                    embd,
+                    point_indices, // reuse the exact same mutable slice
+                    bbox.sub_quadrant(q),
+                    scratch,
+                );
+            }
         }
 
-        // internal node: partition indices by quadrant using scratch buffer
         let mut offsets = [0usize; 4];
         offsets[0] = 0;
         for i in 1..4 {
@@ -306,14 +317,14 @@ where
         }
         let mut write_pos = offsets;
 
-        // scatter into scratch
-        for &idx in point_indices {
+        for &idx in point_indices.iter() {
             let q = bbox.get_quadrant(embd[idx][0], embd[idx][1]);
             scratch[write_pos[q]] = idx;
             write_pos[q] += 1;
         }
 
-        // reserve slot for this internal node
+        point_indices.copy_from_slice(&scratch[..n]);
+
         let node_idx = nodes.len();
         nodes.push(QuadNode {
             com_x: sum_x / mass,
@@ -324,21 +335,17 @@ where
             leaf_data: None,
         });
 
-        // recurse into non-empty quadrants
-        // copy each child's slice out of scratch before recursing,
-        // since the recursive call will reuse scratch
         let mut children_indices = [None; 4];
         let mut start = 0;
         for i in 0..4 {
             let end = start + counts[i];
             if counts[i] > 0 {
-                let child_indices: Vec<usize> = scratch[start..end].to_vec();
                 let child_idx = Self::build_recursive(
                     nodes,
                     embd,
-                    &child_indices,
+                    &mut point_indices[start..end],
                     bbox.sub_quadrant(i),
-                    scratch,
+                    &mut scratch[start..end],
                 );
                 children_indices[i] = Some(child_idx);
             }
@@ -351,16 +358,10 @@ where
 
     /// Compute repulsive forces on a point using Barnes-Hut approximation.
     ///
-    /// Traverses the tree using an explicit fixed-size stack (no heap
-    /// allocation). At each node, applies the Barnes-Hut opening
-    /// criterion: if `width^2 / dist^2 < theta^2`, the node's centre
-    /// of mass is used as a summary; otherwise the node is opened and
-    /// its children are pushed onto the stack.
-    ///
-    /// Self-interaction is excluded exactly for all leaf types:
-    /// `Single` leaves use a direct index comparison; `Coincident`
-    /// leaves perform a linear scan (rare, only for coincident points)
-    /// and reduce the effective mass by one.
+    /// Traverses the tree using an explicit fixed-size stack. At each node,
+    /// applies the Barnes-Hut opening criterion. Self-interaction is excluded,
+    /// and mathematically coincident points are ignored to prevent
+    /// Z-normalisation inflation.
     ///
     /// ### Params
     ///
@@ -378,8 +379,9 @@ where
         let mut force_y = T::zero();
         let mut sum_q = T::zero();
 
-        // fixed-size stack: tree depth bounded by O(log N), 64 is generous
-        let mut stack = [0usize; 64];
+        // increased to 256. Accommodates a max tree depth of ~85, which is
+        // heavily safe.
+        let mut stack = [0usize; 256];
         let mut stack_top: usize = 1;
         stack[0] = self.root;
 
@@ -393,16 +395,19 @@ where
 
             let dx = p_x - node.com_x;
             let dy = p_y - node.com_y;
+
+            // clamp distance early to prevent divide-by-zero later
             let dist_sq = (dx * dx + dy * dy).max(min_dist_sq);
 
-            // leaf node
+            // leaf node processing
             if let Some(ref leaf) = node.leaf_data {
                 let m = if leaf.contains(point_idx) {
                     node.mass - T::one()
                 } else {
                     node.mass
                 };
-                if m > T::zero() {
+
+                if m > T::zero() && dist_sq > min_dist_sq {
                     let q = T::one() / (T::one() + dist_sq);
                     sum_q = sum_q + m * q;
                     let mult = m * q * q;
@@ -412,7 +417,6 @@ where
                 continue;
             }
 
-            // internal node: apply opening criterion
             let is_summary = node.width * node.width < theta_sq * dist_sq;
 
             if is_summary {
