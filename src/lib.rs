@@ -745,6 +745,10 @@ where
         verbose,
     );
 
+    if verbose {
+        println!("Initialising embedding via {}...", &params.initialisation);
+    }
+
     // 2. initialise embedding
     let init_type = parse_initilisation(
         &params.initialisation,
@@ -752,13 +756,9 @@ where
         params.init_range,
     )
     .unwrap_or(EmbdInit::PcaInit {
-        randomised: false,
+        randomised: true,
         range: Some(T::from_f64(1e-2).unwrap()),
     });
-
-    if verbose {
-        println!("Initialising embedding via PCA...");
-    }
 
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
 
@@ -893,6 +893,10 @@ where
     );
 
     // 2. initialise embedding
+    if verbose {
+        println!("Initialising embedding via {}...", &params.initialisation);
+    }
+
     let init_type = parse_initilisation(
         &params.initialisation,
         params.randomised_init,
@@ -902,10 +906,6 @@ where
         randomised: false,
         range: Some(T::from_f64(1e-2).unwrap()),
     });
-
-    if verbose {
-        println!("Initialising embedding via PCA...");
-    }
 
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
 
