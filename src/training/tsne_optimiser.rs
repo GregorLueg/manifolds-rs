@@ -259,7 +259,10 @@ pub fn optimise_bh_tsne<T>(
         // (rep_x, rep_y, partial_z) per point
         let rep_forces: Vec<(T, T, T)> = (0..n)
             .into_par_iter()
-            .map(|i| bh_tree.compute_repulsive_force(i, xs[i], ys[i], params.theta))
+            .map_init(
+                || Vec::with_capacity(256), // init one buffer per worker thread
+                |stack, i| bh_tree.compute_repulsive_force(i, xs[i], ys[i], params.theta, stack),
+            )
             .collect();
 
         // global normalisation constant

@@ -168,7 +168,7 @@ impl<T: Float> QuadNode<T> {
 /// * `root` - Index of the root node in the arena
 pub struct BarnesHutTree<T> {
     pub nodes: Vec<QuadNode<T>>,
-    root: usize,
+    pub root: usize,
 }
 
 impl<T> BarnesHutTree<T>
@@ -374,32 +374,32 @@ where
     ///
     /// Tuple `(force_x, force_y, sum_q)` where `sum_q` is the sum of
     /// unnormalised Student-t affinities (for computing Z)
-    pub fn compute_repulsive_force(&self, point_idx: usize, p_x: T, p_y: T, theta: T) -> (T, T, T) {
+    pub fn compute_repulsive_force(
+        &self,
+        point_idx: usize,
+        p_x: T,
+        p_y: T,
+        theta: T,
+        stack: &mut Vec<usize>,
+    ) -> (T, T, T) {
         let mut force_x = T::zero();
         let mut force_y = T::zero();
         let mut sum_q = T::zero();
 
-        // increased to 256. Accommodates a max tree depth of ~85, which is
-        // heavily safe.
-        let mut stack = [0usize; 256];
-        let mut stack_top: usize = 1;
-        stack[0] = self.root;
+        // Clear the stack from the previous run but keep its allocated capacity!
+        stack.clear();
+        stack.push(self.root);
 
         let theta_sq = theta * theta;
         let min_dist_sq = T::from_f64(1e-12).unwrap();
 
-        while stack_top > 0 {
-            stack_top -= 1;
-            let ni = stack[stack_top];
+        while let Some(ni) = stack.pop() {
             let node = &self.nodes[ni];
 
             let dx = p_x - node.com_x;
             let dy = p_y - node.com_y;
-
-            // clamp distance early to prevent divide-by-zero later
             let dist_sq = (dx * dx + dy * dy).max(min_dist_sq);
 
-            // leaf node processing
             if let Some(ref leaf) = node.leaf_data {
                 let m = if leaf.contains(point_idx) {
                     node.mass - T::one()
@@ -427,8 +427,7 @@ where
                 force_y = force_y + mult * dy;
             } else {
                 for child in node.children.iter().flatten() {
-                    stack[stack_top] = *child;
-                    stack_top += 1;
+                    stack.push(*child);
                 }
             }
         }
@@ -529,8 +528,9 @@ mod tests {
     fn test_no_self_interaction_single_point() {
         let embd = embd_from_tuples(&[(0.0, 0.0)]);
         let tree = BarnesHutTree::new(&embd);
+        let mut stack = Vec::new();
 
-        let (fx, fy, sum_q) = tree.compute_repulsive_force(0, 0.0, 0.0, 0.5);
+        let (fx, fy, sum_q) = tree.compute_repulsive_force(0, 0.0, 0.0, 0.5, &mut stack);
         assert_relative_eq!(fx, 0.0, epsilon = 1e-10);
         assert_relative_eq!(fy, 0.0, epsilon = 1e-10);
         assert_relative_eq!(sum_q, 0.0, epsilon = 1e-10);
@@ -538,19 +538,17 @@ mod tests {
 
     #[test]
     fn test_no_self_interaction_coincident_points() {
-        // three coincident points — each should exclude exactly itself,
-        // leaving mass 2 from the other two
         let embd = embd_from_tuples(&[(5.0, 5.0), (5.0, 5.0), (5.0, 5.0)]);
         let tree = BarnesHutTree::new(&embd);
+        let mut stack = Vec::new();
 
         for i in 0..3 {
-            let (fx, fy, sum_q) = tree.compute_repulsive_force(i, 5.0, 5.0, 0.5);
+            let (fx, fy, sum_q) = tree.compute_repulsive_force(i, 5.0, 5.0, 0.5, &mut stack);
             assert!(fx.is_finite(), "fx is not finite for point {}", i);
             assert!(fy.is_finite(), "fy is not finite for point {}", i);
             assert!(sum_q.is_finite(), "sum_q is not finite for point {}", i);
 
-            // all three queries should produce identical sum_q (symmetry)
-            let (_, _, sum_q_0) = tree.compute_repulsive_force(0, 5.0, 5.0, 0.5);
+            let (_, _, sum_q_0) = tree.compute_repulsive_force(0, 5.0, 5.0, 0.5, &mut stack);
             assert_relative_eq!(sum_q, sum_q_0, epsilon = 1e-10);
         }
     }
@@ -559,9 +557,10 @@ mod tests {
     fn test_force_symmetry_two_points() {
         let embd = embd_from_tuples(&[(0.0, 0.0), (2.0, 0.0)]);
         let tree = BarnesHutTree::new(&embd);
+        let mut stack = Vec::new();
 
-        let (fx0, fy0, _) = tree.compute_repulsive_force(0, 0.0, 0.0, 0.5);
-        let (fx1, fy1, _) = tree.compute_repulsive_force(1, 2.0, 0.0, 0.5);
+        let (fx0, fy0, _) = tree.compute_repulsive_force(0, 0.0, 0.0, 0.5, &mut stack);
+        let (fx1, fy1, _) = tree.compute_repulsive_force(1, 2.0, 0.0, 0.5, &mut stack);
 
         assert_relative_eq!(fx0, -fx1, epsilon = 1e-10);
         assert_relative_eq!(fy0, -fy1, epsilon = 1e-10);
@@ -578,9 +577,10 @@ mod tests {
 
         let tree_close = BarnesHutTree::new(&embd_close);
         let tree_far = BarnesHutTree::new(&embd_far);
+        let mut stack = Vec::new();
 
-        let (fx_close, _, _) = tree_close.compute_repulsive_force(0, 0.0, 0.0, 0.5);
-        let (fx_far, _, _) = tree_far.compute_repulsive_force(0, 0.0, 0.0, 0.5);
+        let (fx_close, _, _) = tree_close.compute_repulsive_force(0, 0.0, 0.0, 0.5, &mut stack);
+        let (fx_far, _, _) = tree_far.compute_repulsive_force(0, 0.0, 0.0, 0.5, &mut stack);
 
         assert!(
             fx_close.abs() > fx_far.abs(),
@@ -594,8 +594,9 @@ mod tests {
     fn test_sum_q_equals_n_minus_1_for_exact_computation() {
         let embd = embd_from_tuples(&[(0.0, 0.0), (100.0, 0.0), (0.0, 100.0), (100.0, 100.0)]);
         let tree = BarnesHutTree::new(&embd);
+        let mut stack = Vec::new();
 
-        let (_, _, sum_q) = tree.compute_repulsive_force(0, 0.0, 0.0, 0.0);
+        let (_, _, sum_q) = tree.compute_repulsive_force(0, 0.0, 0.0, 0.0, &mut stack);
         assert!(sum_q > 0.0);
         assert!(sum_q < 3.0);
     }
@@ -610,12 +611,15 @@ mod tests {
         }
         let embd = embd_from_tuples(&pts);
         let tree = BarnesHutTree::new(&embd);
+        let mut stack = Vec::new();
 
         let test_idx = 55;
         let (px, py) = pts[test_idx];
 
-        let (fx_exact, fy_exact, _) = tree.compute_repulsive_force(test_idx, px, py, 0.0);
-        let (fx_approx, fy_approx, _) = tree.compute_repulsive_force(test_idx, px, py, 0.5);
+        let (fx_exact, fy_exact, _) =
+            tree.compute_repulsive_force(test_idx, px, py, 0.0, &mut stack);
+        let (fx_approx, fy_approx, _) =
+            tree.compute_repulsive_force(test_idx, px, py, 0.5, &mut stack);
 
         let fx_ratio = if fx_exact.abs() > 1e-10 {
             (fx_approx / fx_exact - 1.0).abs()
@@ -650,9 +654,11 @@ mod tests {
         for (cfg_idx, pts) in configs.iter().enumerate() {
             let embd = embd_from_tuples(pts);
             let tree = BarnesHutTree::new(&embd);
+            let mut stack = Vec::new();
 
             for i in 0..pts.len() {
-                let (fx, fy, sum_q) = tree.compute_repulsive_force(i, pts[i].0, pts[i].1, 0.5);
+                let (fx, fy, sum_q) =
+                    tree.compute_repulsive_force(i, pts[i].0, pts[i].1, 0.5, &mut stack);
                 assert!(
                     fx.is_finite(),
                     "Config {}, point {}: fx not finite",
@@ -685,10 +691,12 @@ mod tests {
     fn test_total_sum_q_consistent() {
         let embd = embd_from_tuples(&[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]);
         let tree = BarnesHutTree::new(&embd);
+        let mut stack = Vec::new();
 
         let total: f64 = (0..4)
             .map(|i| {
-                let (_, _, sq) = tree.compute_repulsive_force(i, embd[i][0], embd[i][1], 0.0);
+                let (_, _, sq) =
+                    tree.compute_repulsive_force(i, embd[i][0], embd[i][1], 0.0, &mut stack);
                 sq
             })
             .sum();
@@ -699,18 +707,16 @@ mod tests {
 
     #[test]
     fn test_self_exclusion_exact_for_all_coincident() {
-        // verify that every point in a coincident cluster gets exactly
-        // mass-1, not full mass (the bug the LeafData enum fixes)
         let embd = embd_from_tuples(&[(3.0, 3.0), (3.0, 3.0), (3.0, 3.0), (3.0, 3.0)]);
         let tree = BarnesHutTree::new(&embd);
+        let mut stack = Vec::new();
 
         let mut sum_qs = Vec::new();
         for i in 0..4 {
-            let (_, _, sq) = tree.compute_repulsive_force(i, 3.0, 3.0, 0.5);
+            let (_, _, sq) = tree.compute_repulsive_force(i, 3.0, 3.0, 0.5, &mut stack);
             sum_qs.push(sq);
         }
 
-        // all four must be identical (each excludes exactly itself)
         for i in 1..4 {
             assert!(
                 (sum_qs[0] - sum_qs[i]).abs() < 1e-12,
