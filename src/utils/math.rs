@@ -476,60 +476,46 @@ where
 /// ### Returns
 ///
 /// A vector of von Neumann entropies for each power.
-pub fn von_neumann_entropy<T>(mat: Mat<T>, t_max: usize) -> Vec<T>
+pub fn landmark_von_neumann_entropy<T>(operator: &CompressedSparseData<T>, t_max: usize) -> Vec<T>
 where
-    T: ComplexField + RealField + Float + std::iter::Sum,
+    T: ComplexField + RealField + Float + std::iter::Sum + FromPrimitive,
 {
-    let eigen_decomp = mat.eigen().unwrap();
+    let (n, m) = operator.shape;
 
-    // get the eigenvalues - the syntax always confuses me
-    let s = eigen_decomp.S();
-    let mut eigenvalues: Vec<T> = s
-        .column_vector()
-        .iter()
-        .map(|lambda| {
-            let real_part = lambda.re;
-            T::from(real_part).unwrap_or(T::zero())
-        })
-        .collect();
-
-    // I need absolute values
-    for val in eigenvalues.iter_mut() {
-        *val = val.abs();
+    // convert to dense
+    let mut dense = Mat::<T>::zeros(n, m);
+    for i in 0..n {
+        for idx in operator.indptr[i]..operator.indptr[i + 1] {
+            let j = operator.indices[idx];
+            dense[(i, j)] = operator.data[idx];
+        }
     }
 
-    // compute entropy for each power
-    let mut entropy = Vec::with_capacity(t_max);
+    // full SVD - singular values are the proxy for eigenvalues, matching Python
+    let svd = dense.thin_svd().unwrap();
+    let eigenvalues: Vec<T> = svd.S().column_vector().iter().copied().collect();
+
     let mut eigenvalues_t = eigenvalues.clone();
+    let mut entropy = Vec::with_capacity(t_max);
 
     for _ in 0..t_max {
-        // Normalise to get probability distribution
         let sum: T = eigenvalues_t.iter().copied().sum();
 
         if sum <= T::zero() {
-            // Degenerate case
             entropy.push(T::zero());
         } else {
-            // Compute H = -Σ p_i log(p_i)
             let h: T = eigenvalues_t
                 .iter()
-                .map(|&lambda_t| {
-                    let prob = lambda_t / sum;
-                    if prob > T::zero() {
-                        let prob_safe = prob + T::epsilon();
-                        -prob_safe * prob_safe.ln()
-                    } else {
-                        T::zero()
-                    }
+                .map(|&v| {
+                    let prob = v / sum + T::epsilon();
+                    -prob * prob.ln()
                 })
                 .sum();
-
             entropy.push(h);
         }
 
-        // power the eigenvalues: λ^(t+1) = λ^t × λ (element-wise)
-        for (lambda_t, &lambda) in eigenvalues_t.iter_mut().zip(&eigenvalues) {
-            *lambda_t = *lambda_t * lambda;
+        for (vt, &v) in eigenvalues_t.iter_mut().zip(&eigenvalues) {
+            *vt = *vt * v;
         }
     }
 

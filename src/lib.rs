@@ -1168,7 +1168,7 @@ where
             );
             if verbose {
                 println!(
-                    " Landmarks generated in : {:.2?}.",
+                    " Landmarks generated in: {:.2?}.",
                     start_landmarks.elapsed()
                 );
             }
@@ -1262,7 +1262,7 @@ where
             match &phate_diffusion {
                 PhateDiffusion::Landmark { landmarks } => landmarks.find_optimal_t(t_max),
                 PhateDiffusion::Full { operator } => {
-                    let entropy = sparse_von_neumann_entropy(operator, t_max, 100, seed as u64);
+                    let entropy = landmark_von_neumann_entropy(operator, t_max);
                     find_knee_point(&entropy)
                 }
             }
