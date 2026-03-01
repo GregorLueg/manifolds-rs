@@ -10,7 +10,7 @@ pub use crate::training::umap_optimisers::UmapOptimParams;
 pub use crate::training::UmapGraphParams;
 pub use crate::utils::diffusions::PhateDiffusionParams;
 pub use crate::utils::diffusions::{parse_landmark_method, LandmarkMethod, PhateTime};
-pub use crate::utils::math::{landmark_von_neumann_entropy, sparse_von_neumann_entropy};
+pub use crate::utils::math::landmark_von_neumann_entropy;
 pub use crate::utils::potentials::calculate_potential;
 
 #[cfg(feature = "parametric")]

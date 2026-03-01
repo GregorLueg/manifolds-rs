@@ -5,7 +5,7 @@ use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal, StandardNormal};
-use rayon::iter::*;
+use rayon::prelude::*;
 use std::iter::Sum;
 use std::ops::{Add, Mul};
 
@@ -135,82 +135,77 @@ pub fn sparse_randomised_svd<T>(
     n_power_iter: Option<usize>,
 ) -> RandomSvdResults<T>
 where
-    T: Into<T> + ComplexField + Float + FromPrimitive + ToPrimitive,
+    T: Into<T> + ComplexField + Float + FromPrimitive + ToPrimitive + Send + Sync,
 {
     let (n, m) = matrix.shape;
     let os = oversampling.unwrap_or(10);
     let sample_size = (rank + os).min(m).min(n);
     let n_iter = n_power_iter.unwrap_or(2);
+    let ncols = sample_size;
 
+    // keep both representations... this makes the matrix math faster
+    let (csr, csc);
     let csr_owned;
-    let csr: &CompressedSparseData<T> = match matrix.cs_type {
-        CompressedSparseFormat::Csr => matrix,
+    let csc_owned;
+
+    match matrix.cs_type {
+        CompressedSparseFormat::Csr => {
+            csr = matrix;
+            csc_owned = matrix.transform();
+            csc = &csc_owned;
+        }
         CompressedSparseFormat::Csc => {
+            csc = matrix;
             csr_owned = matrix.transform();
-            &csr_owned
+            csr = &csr_owned;
         }
     };
 
-    let data_f: Vec<T> = csr.data.to_vec();
+    // borrow slices to prevent allocations
+    let data_csr = csr.data.as_slice();
+    let data_csc = csc.data.as_slice();
 
-    let matvec_a = |x: MatRef<T>, y: MatMut<T>| {
-        let ncols = x.ncols();
-        let y_ptr = y.as_ptr_mut() as usize;
-        let y_row_stride = y.row_stride();
-        let y_col_stride = y.col_stride();
+    let spmm = |sparse: &CompressedSparseData<T>, data: &[T], x_flat: &[T], y_flat: &mut [T]| {
+        let n_outer = sparse.indptr.len() - 1;
 
-        (0..n).into_par_iter().for_each(|i| {
-            let base = y_ptr as *mut T;
-            for col in 0..ncols {
-                unsafe {
-                    *base.offset(i as isize * y_row_stride + col as isize * y_col_stride) =
-                        T::zero();
-                }
-            }
-            for idx in csr.indptr[i]..csr.indptr[i + 1] {
-                let j = csr.indices[idx];
-                let a_val = data_f[idx];
-                for col in 0..ncols {
-                    unsafe {
-                        let ptr =
-                            base.offset(i as isize * y_row_stride + col as isize * y_col_stride);
-                        *ptr = *ptr + a_val * x[(j, col)];
+        y_flat
+            .par_chunks_exact_mut(ncols)
+            .take(n_outer)
+            .enumerate()
+            .for_each(|(i, y_row)| {
+                y_row.fill(T::zero());
+
+                for idx in sparse.indptr[i]..sparse.indptr[i + 1] {
+                    let j = sparse.indices[idx];
+                    let a_val = data[idx];
+                    let x_row = &x_flat[j * ncols..(j + 1) * ncols];
+
+                    for col in 0..ncols {
+                        y_row[col] = y_row[col] + a_val * x_row[col];
                     }
                 }
-            }
-        });
+            });
     };
 
-    let matvec_at = |x: MatRef<T>, mut y: MatMut<T>| {
-        let ncols = x.ncols();
-        let result = (0..n)
-            .into_par_iter()
-            .fold(
-                || vec![T::zero(); m * ncols],
-                |mut acc, i| {
-                    for idx in csr.indptr[i]..csr.indptr[i + 1] {
-                        let j = csr.indices[idx];
-                        let a_val = data_f[idx];
-                        for col in 0..ncols {
-                            acc[j * ncols + col] = acc[j * ncols + col] + a_val * x[(i, col)];
-                        }
-                    }
-                    acc
-                },
-            )
-            .reduce(
-                || vec![T::zero(); m * ncols],
-                |mut a, b| {
-                    for i in 0..a.len() {
-                        a[i] = a[i] + b[i];
-                    }
-                    a
-                },
-            );
+    let to_row_major = |mat: MatRef<T>| -> Vec<T> {
+        let rows = mat.nrows();
+        let mut flat = vec![T::zero(); rows * ncols];
+        flat.par_chunks_exact_mut(ncols)
+            .enumerate()
+            .for_each(|(i, row_slice)| {
+                for col in 0..ncols {
+                    row_slice[col] = mat[(i, col)];
+                }
+            });
+        flat
+    };
 
-        for j in 0..m {
+    let from_row_major = |flat: &[T], mut mat: MatMut<T>| {
+        let rows = mat.nrows();
+        for i in 0..rows {
+            let row_slice = &flat[i * ncols..(i + 1) * ncols];
             for col in 0..ncols {
-                y[(j, col)] = result[j * ncols + col];
+                mat[(i, col)] = row_slice[col];
             }
         }
     };
@@ -221,23 +216,41 @@ where
         T::from_f64(normal.sample(&mut rng)).unwrap()
     });
 
+    let mut x_flat = to_row_major(omega.as_ref());
+    let mut y_flat = vec![T::zero(); n * ncols];
+    let mut z_flat = vec![T::zero(); m * ncols];
+
+    // Y = A * Omega
+    spmm(csr, data_csr, &x_flat, &mut y_flat);
+
     let mut y = Mat::<T>::zeros(n, sample_size);
-    matvec_a(omega.as_ref(), y.as_mut());
+    from_row_major(&y_flat, y.as_mut());
     let mut q = y.qr().compute_thin_Q();
 
-    let mut z = Mat::<T>::zeros(m, sample_size);
-    let mut y_new = Mat::<T>::zeros(n, sample_size);
-
+    // Power Iterations
     for _ in 0..n_iter {
-        matvec_at(q.as_ref(), z.as_mut());
-        matvec_a(z.as_ref(), y_new.as_mut());
-        q = y_new.qr().compute_thin_Q();
+        // Z = A^T * Q  --> Notice we use `csc` here!
+        x_flat = to_row_major(q.as_ref());
+        spmm(csc, data_csc, &x_flat, &mut z_flat);
+
+        // Y_new = A * Z
+        spmm(csr, data_csr, &z_flat, &mut y_flat);
+
+        from_row_major(&y_flat, y.as_mut());
+        q = y.qr().compute_thin_Q();
     }
 
+    // B_t = A^T * Q
+    x_flat = to_row_major(q.as_ref());
+    let mut b_t_flat = vec![T::zero(); m * ncols];
+    spmm(csc, data_csc, &x_flat, &mut b_t_flat);
+
     let mut b_t = Mat::<T>::zeros(m, sample_size);
-    matvec_at(q.as_ref(), b_t.as_mut());
+    from_row_major(&b_t_flat, b_t.as_mut());
+
     let b = b_t.transpose().to_owned();
 
+    // Final SVD on the small B matrix
     let svd = b.thin_svd().unwrap();
     let u = (&q * svd.U()).get(.., ..rank).to_owned();
     let s: Vec<T> = svd.S().column_vector().iter().copied().take(rank).collect();
@@ -516,75 +529,6 @@ where
 
         for (vt, &v) in eigenvalues_t.iter_mut().zip(&eigenvalues) {
             *vt = *vt * v;
-        }
-    }
-
-    entropy
-}
-
-/// Calculate the von Neumann entropy of a sparse matrix using Randomised SVD.
-///
-/// Uses singular values as a highly efficient proxy for eigenvalues to
-/// approximate the entropy curve of the diffusion process.
-///
-/// ### Params
-///
-/// * `operator`: The sparse transition matrix.
-/// * `t_max`: The maximum number of powers to consider.
-/// * `n_svd`: Number of top singular values to compute (e.g., 100).
-/// * `seed`: Random seed for the SVD.
-///
-/// ### Returns
-///
-/// A vector of von Neumann entropies for each power.
-pub fn sparse_von_neumann_entropy<T>(
-    operator: &CompressedSparseData<T>,
-    t_max: usize,
-    n_svd: usize,
-    seed: u64,
-) -> Vec<T>
-where
-    T: ComplexField + RealField + Float + std::iter::Sum + FromPrimitive + ToPrimitive,
-{
-    let actual_rank = n_svd.min(operator.shape.0).min(operator.shape.1);
-
-    // extract the top `n_svd` singular values.
-    let svd_result = sparse_randomised_svd(operator, actual_rank, seed, None, None);
-
-    let mut eigenvalues_t = svd_result.s;
-    let eigenvalues_base = eigenvalues_t.clone();
-
-    let mut entropy = Vec::with_capacity(t_max);
-
-    // compute entropy for each power
-    for _ in 0..t_max {
-        // normalise to get probability distribution
-        let sum: T = eigenvalues_t.iter().copied().sum();
-
-        if sum <= T::zero() {
-            // degenerate case
-            entropy.push(T::zero());
-        } else {
-            // compute H = -Σ p_i log(p_i)
-            let h: T = eigenvalues_t
-                .iter()
-                .map(|&lambda_t| {
-                    let prob = lambda_t / sum;
-                    if prob > T::zero() {
-                        let prob_safe = prob + T::epsilon();
-                        -prob_safe * prob_safe.ln()
-                    } else {
-                        T::zero()
-                    }
-                })
-                .sum();
-
-            entropy.push(h);
-        }
-
-        // power the singular values: σ^(t+1) = σ^t × σ (element-wise)
-        for (lambda_t, &lambda) in eigenvalues_t.iter_mut().zip(&eigenvalues_base) {
-            *lambda_t = *lambda_t * lambda;
         }
     }
 
