@@ -3,10 +3,13 @@ use ann_search_rs::utils::ivf_utils::{assign_all_parallel, train_centroids};
 use faer::MatRef;
 use faer_traits::{ComplexField, RealField};
 use num_traits::{Float, FromPrimitive};
+use rand::prelude::Distribution;
+use rand::rngs::StdRng;
 use rand::seq::index::sample;
 use rand::SeedableRng;
-use rand::{rngs::StdRng, Rng};
+use rand_distr::weighted::WeightedIndex;
 use rayon::prelude::*;
+use rustc_hash::{FxBuildHasher, FxHashSet};
 use std::ops::{AddAssign, Range};
 
 use crate::data::structures::*;
@@ -232,8 +235,8 @@ pub enum LandmarkMethod {
     Random { seed: u64 },
     /// Use spectral clustering to select landmarks.
     Spectral { n_svd: usize },
-    /// MinMax
-    MinMax,
+    /// Density - leverage node degree
+    Density { seed: u64 },
 }
 
 impl Default for LandmarkMethod {
@@ -269,7 +272,7 @@ pub fn parse_landmark_method(
     match s.to_lowercase().as_str() {
         "random" => Some(LandmarkMethod::Random { seed: seed as u64 }),
         "spectral" => Some(LandmarkMethod::Spectral { n_svd }),
-        "minmax" => Some(LandmarkMethod::MinMax),
+        "density" => Some(LandmarkMethod::Density { seed: seed as u64 }),
         _ => None,
     }
 }
@@ -726,79 +729,56 @@ where
 
                 assignemnts
             }
-            LandmarkMethod::MinMax => {
-                let mut rng = StdRng::seed_from_u64(seed as u64);
-                let mut landmarks = Vec::with_capacity(n_landmarks);
-                let first = rng.random_range(0..n);
-                landmarks.push(first);
-
-                let norms: Vec<T> = if matches!(distance, Dist::Cosine) {
-                    (0..n)
-                        .into_par_iter()
-                        .map(|i| T::calculate_l2_norm(&data[i * dim..(i + 1) * dim]))
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-
-                let point_dist = |i: usize, j: usize| -> T {
-                    let pi = &data[i * dim..(i + 1) * dim];
-                    let pj = &data[j * dim..(j + 1) * dim];
-                    match distance {
-                        Dist::Euclidean => T::euclidean_simd(pi, pj).sqrt(),
-                        Dist::Cosine => {
-                            let dot = T::dot_simd(pi, pj);
-                            let denom = norms[i] * norms[j];
-                            if denom > T::zero() {
-                                T::one() - dot / denom
-                            } else {
-                                T::zero()
-                            }
-                        }
-                    }
-                };
-
-                // initialise min distances to first landmark
-                let mut min_dists: Vec<T> = (0..n)
-                    .into_par_iter()
-                    .map(|i| point_dist(i, first))
-                    .collect();
-                min_dists[first] = T::zero();
-
-                for _ in 1..n_landmarks {
-                    // next landmark is the point furthest from all current landmarks
-                    let next = min_dists
-                        .iter()
-                        .enumerate()
-                        .max_by(|(_, a), (_, b)| {
-                            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .map(|(i, _)| i)
-                        .unwrap();
-
-                    landmarks.push(next);
-
-                    // update min distances in parallel
-                    min_dists = (0..n)
-                        .into_par_iter()
-                        .map(|i| {
-                            let d = point_dist(i, next);
-                            if d < min_dists[i] {
-                                d
-                            } else {
-                                min_dists[i]
-                            }
-                        })
-                        .collect();
-                    min_dists[next] = T::zero();
+            LandmarkMethod::Density { seed } => {
+                if verbose {
+                    println!(" Using degree-weighted (density) selection of landmarks.")
                 }
 
-                // assign points to landmarks
-                let landmark_data: Vec<T> = landmarks
+                // calculate weights
+                let weights: Vec<f64> = (0..n)
+                    .into_par_iter()
+                    .map(|i| {
+                        let start = affinity.indptr[i];
+                        let end = affinity.indptr[i + 1];
+                        let mut sum = T::zero();
+                        for idx in start..end {
+                            sum += affinity.data[idx];
+                        }
+
+                        // damping prevents massive clusters from hogging all
+                        // the landmarks, ensuring rare branches/trajectories
+                        // still get sampled. neat trick over just degree-based
+                        // sampling
+                        sum.to_f64().unwrap_or(0.0).sqrt()
+                    })
+                    .collect();
+
+                let mut rng = StdRng::seed_from_u64(seed);
+                let dist = WeightedIndex::new(&weights).expect("Failed to create weighted index. Check affinity matrix for negative/NaN values.");
+
+                // generate exactly n_landmarks
+                let mut landmark_set =
+                    FxHashSet::with_capacity_and_hasher(n_landmarks, FxBuildHasher);
+                while landmark_set.len() < n_landmarks {
+                    landmark_set.insert(dist.sample(&mut rng));
+                }
+
+                let landmark_indices: Vec<usize> = landmark_set.into_iter().collect();
+
+                // extract the data
+                let landmark_data: Vec<T> = landmark_indices
                     .iter()
                     .flat_map(|&i| data[i * dim..(i + 1) * dim].iter().copied())
                     .collect();
 
+                // norms
+                let norm_data = match distance {
+                    Dist::Cosine => (0..n)
+                        .into_par_iter()
+                        .map(|i| T::calculate_l2_norm(&data[i * dim..(i + 1) * dim]))
+                        .collect::<Vec<_>>(),
+                    Dist::Euclidean => Vec::new(),
+                };
                 let norm_landmark = match distance {
                     Dist::Cosine => (0..n_landmarks)
                         .into_par_iter()
@@ -807,21 +787,14 @@ where
                     Dist::Euclidean => Vec::new(),
                 };
 
-                let norm_data_mm = match distance {
-                    Dist::Cosine => (0..n)
-                        .into_par_iter()
-                        .map(|i| T::calculate_l2_norm(&data[i * dim..(i + 1) * dim]))
-                        .collect::<Vec<_>>(),
-                    Dist::Euclidean => Vec::new(),
-                };
-
+                // assign
                 (0..n)
                     .into_par_iter()
                     .map(|i| {
                         let norm = if matches!(distance, Dist::Euclidean) {
-                            T::zero()
+                            T::zero() // unused by assign_to_landmark for Euclidean
                         } else {
-                            norm_data_mm[i]
+                            norm_data[i]
                         };
                         assign_to_landmark(
                             &data[i * dim..(i + 1) * dim],
