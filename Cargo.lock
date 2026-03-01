@@ -85,7 +85,7 @@ dependencies = [
 [[package]]
 name = "ann-search-rs"
 version = "0.2.4"
-source = "git+https://github.com/GregorLueg/ann-search-rs?branch=docs-updated-benchmarks#70579f78f9667c74dd87fb35106cd42e99dd21c3"
+source = "git+https://github.com/GregorLueg/ann-search-rs?branch=docs-updated-benchmarks#62ef2ffa9362a23ea04740792f9a92c489359cc5"
 dependencies = [
  "approx",
  "clap",

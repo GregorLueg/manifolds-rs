@@ -1,5 +1,5 @@
 use ann_search_rs::utils::dist::{parse_ann_dist, Dist, SimdDistance};
-use ann_search_rs::utils::ivf_utils::{assign_all_parallel, train_centroids};
+use ann_search_rs::utils::k_means_utils::{assign_all_parallel, train_centroids};
 use faer::MatRef;
 use faer_traits::{ComplexField, RealField};
 use num_traits::{Float, FromPrimitive};
