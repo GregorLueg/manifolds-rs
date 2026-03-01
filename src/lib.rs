@@ -959,12 +959,11 @@ where
 /// * `k` - Number of nearest neighbours for graph construction (default: 5)
 /// * `ann_type` - Approximate nearest neighbour method: `"hnsw"` or
 ///   `"nndescent"` (default: `"hnsw"`)
+/// * `ann_params` - Nearest neighbour search parameters.
+/// * `diffusion_params` - Diffusion parameters.
 /// * `mds_method` - MDS algorithm: `"sgd_dense"`, `"sgd_streaming"`, or
 ///   `"classic"` (default: `"sgd_dense"`)
-/// * `n_threads` - Set this to ≥1 if you are happy with Hogwild parallel SGD
-///   for MDS. Faster, but not determistic anymore.
 /// * `randomised` - Shall randomised SVD be used for the `"classic"` MDS.
-/// * `phate_diffusion_params` - Structure with all of the diffuion parameters.
 /// * `ann_params` - Nearest neighbour search parameters
 #[derive(Debug, Clone)]
 pub struct PhateParams<T> {
@@ -977,6 +976,7 @@ pub struct PhateParams<T> {
     pub diffusion_params: PhateDiffusionParams<T>,
     // mds
     pub mds_method: String,
+    pub mds_iter: Option<usize>,
     pub randomised: bool,
 }
 
@@ -1007,6 +1007,7 @@ where
         n_svd: Option<usize>,
         t_custom: Option<usize>,
         mds_method: Option<String>,
+        mds_iter: Option<usize>,
         randomised: Option<bool>,
     ) -> Self {
         let phate_diffusion_params = PhateDiffusionParams::new(
@@ -1032,6 +1033,7 @@ where
             diffusion_params: phate_diffusion_params,
             // mds
             mds_method: mds_method.unwrap_or_else(|| "sgd_dense".to_string()),
+            mds_iter,
             randomised: randomised.unwrap_or(true),
         }
     }
@@ -1273,7 +1275,12 @@ where
 
     let mds_method = parse_mds_method(&phate_params.mds_method).unwrap_or_default();
     let dist = parse_ann_dist(&phate_params.ann_params.dist_metric).unwrap_or_default();
-    let mds_params = MdsOptimParams::new(data.nrows(), phate_params.randomised, None, None);
+    let mds_params = MdsOptimParams::new(
+        data.nrows(),
+        phate_params.randomised,
+        phate_params.mds_iter,
+        None,
+    );
 
     let start_embed = Instant::now();
 

@@ -418,6 +418,7 @@ fn phate_integration_07_full_phate_quality() {
         None,
         None,
         None,
+        None,
     );
 
     let embedding = phate(data.as_ref(), None, params, 42, true);
@@ -476,6 +477,7 @@ fn phate_integration_08_landmark_phate_quality() {
         None,
         None,
         None,
+        None,
     );
 
     let embedding = phate(data.as_ref(), None, params, 42, true);
@@ -526,6 +528,7 @@ fn phate_integration_09_reproducibility() {
         None,     // n_svd
         None,     // t_custom
         None,     // mds_method
+        None,     // mds_iter
         None,     // randomised
     );
 
@@ -569,6 +572,7 @@ fn phate_integration_10_different_seeds() {
         None,     // n_svd
         None,     // t_custom
         None,     // mds_method
+        None,     // mds_iter
         None,     // randomised
     );
 
@@ -616,6 +620,7 @@ fn phate_integration_11_precomputed_knn() {
         None,     // n_svd
         None,     // t_custom
         None,     // mds_method
+        None,     // mds_iter
         None,     // randomised
     );
 
@@ -666,6 +671,7 @@ fn phate_integration_12_fixed_vs_auto_t() {
         None,     // n_svd
         None,     // t_custom — None means Auto
         None,     // mds_method
+        None,     // mds_iter
         None,     // randomised
     );
 
@@ -682,7 +688,8 @@ fn phate_integration_12_fixed_vs_auto_t() {
         None,     // landmark_method
         None,     // n_svd
         Some(10), // t_custom — Some(10) means Fixed(10)
-        None,     // mds_method  // n_threads
+        None,     // mds_method
+        None,     // mds_iter
         None,     // randomised
     );
 

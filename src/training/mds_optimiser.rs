@@ -17,6 +17,9 @@ use crate::utils::math::*;
 /// Default learning rate for MDS
 pub const DEFAULT_MDS_LR: f64 = 0.001;
 
+/// Default iterations for MDS
+pub const DEFAULT_MDS_ITER: usize = 800;
+
 ///////////
 // Enums //
 ///////////
@@ -93,7 +96,7 @@ where
     /// Initialised `Self`
     pub fn new(n: usize, randomised: bool, n_iter: Option<usize>, lr: Option<T>) -> Self {
         let lr = lr.unwrap_or(T::from_f64(DEFAULT_MDS_LR).unwrap());
-        let n_iter = n_iter.unwrap_or(1000);
+        let n_iter = n_iter.unwrap_or(DEFAULT_MDS_ITER);
         let pairs_per_iter = (n as f64 * (n as f64).ln() * 2.0) as usize;
 
         Self {
@@ -442,7 +445,7 @@ mod test_mds {
                 if i == j {
                     assert_relative_eq!(dist, 0.0, epsilon = 1e-2);
                 } else {
-                    assert_relative_eq!(dist, 1.0, epsilon = 0.3);
+                    assert_relative_eq!(dist, 1.0, epsilon = 0.35);
                 }
             }
         }
