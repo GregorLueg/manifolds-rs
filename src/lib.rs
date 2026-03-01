@@ -1260,8 +1260,7 @@ where
             match &phate_diffusion {
                 PhateDiffusion::Landmark { landmarks } => landmarks.find_optimal_t(t_max),
                 PhateDiffusion::Full { operator } => {
-                    let dense = operator.to_dense();
-                    let entropy = von_neumann_entropy(dense, t_max);
+                    let entropy = sparse_von_neumann_entropy(operator, t_max, 100, seed as u64);
                     find_knee_point(&entropy)
                 }
             }

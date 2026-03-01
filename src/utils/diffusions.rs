@@ -874,11 +874,7 @@ where
             return self.landmark_op.clone();
         }
 
-        let mut result = self.landmark_op.clone();
-        for _ in 1..t {
-            result = csr_matmul_csr(&result, &self.landmark_op);
-        }
-        result
+        matrix_power(&self.landmark_op, t)
     }
 
     /// Compute diffusion at optimal time
@@ -895,7 +891,7 @@ where
         T: AddAssign,
     {
         let t_opt = self.find_optimal_t(t_max);
-        self.power(t_opt)
+        matrix_power(&self.landmark_op, t_opt)
     }
 
     /// Interpolate landmark diffusion back to full data space
@@ -931,8 +927,7 @@ where
     ///
     /// Optimal t value (knee point of entropy curve)
     pub fn find_optimal_t(&self, t_max: usize) -> usize {
-        let dense = self.landmark_op.to_dense();
-        let entropy = von_neumann_entropy(dense, t_max);
+        let entropy = sparse_von_neumann_entropy(&self.landmark_op, t_max, 100, 42);
         find_knee_point(&entropy)
     }
 

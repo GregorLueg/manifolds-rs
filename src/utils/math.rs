@@ -536,6 +536,75 @@ where
     entropy
 }
 
+/// Calculate the von Neumann entropy of a sparse matrix using Randomised SVD.
+///
+/// Uses singular values as a highly efficient proxy for eigenvalues to
+/// approximate the entropy curve of the diffusion process.
+///
+/// ### Params
+///
+/// * `operator`: The sparse transition matrix.
+/// * `t_max`: The maximum number of powers to consider.
+/// * `n_svd`: Number of top singular values to compute (e.g., 100).
+/// * `seed`: Random seed for the SVD.
+///
+/// ### Returns
+///
+/// A vector of von Neumann entropies for each power.
+pub fn sparse_von_neumann_entropy<T>(
+    operator: &CompressedSparseData<T>,
+    t_max: usize,
+    n_svd: usize,
+    seed: u64,
+) -> Vec<T>
+where
+    T: ComplexField + RealField + Float + std::iter::Sum + FromPrimitive + ToPrimitive,
+{
+    let actual_rank = n_svd.min(operator.shape.0).min(operator.shape.1);
+
+    // extract the top `n_svd` singular values.
+    let svd_result = sparse_randomised_svd(operator, actual_rank, seed, None, None);
+
+    let mut eigenvalues_t = svd_result.s;
+    let eigenvalues_base = eigenvalues_t.clone();
+
+    let mut entropy = Vec::with_capacity(t_max);
+
+    // compute entropy for each power
+    for _ in 0..t_max {
+        // normalise to get probability distribution
+        let sum: T = eigenvalues_t.iter().copied().sum();
+
+        if sum <= T::zero() {
+            // degenerate case
+            entropy.push(T::zero());
+        } else {
+            // compute H = -Σ p_i log(p_i)
+            let h: T = eigenvalues_t
+                .iter()
+                .map(|&lambda_t| {
+                    let prob = lambda_t / sum;
+                    if prob > T::zero() {
+                        let prob_safe = prob + T::epsilon();
+                        -prob_safe * prob_safe.ln()
+                    } else {
+                        T::zero()
+                    }
+                })
+                .sum();
+
+            entropy.push(h);
+        }
+
+        // power the singular values: σ^(t+1) = σ^t × σ (element-wise)
+        for (lambda_t, &lambda) in eigenvalues_t.iter_mut().zip(&eigenvalues_base) {
+            *lambda_t = *lambda_t * lambda;
+        }
+    }
+
+    entropy
+}
+
 ///////////
 // Tests //
 ///////////
