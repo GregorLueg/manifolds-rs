@@ -927,7 +927,7 @@ where
     ///
     /// Optimal t value (knee point of entropy curve)
     pub fn find_optimal_t(&self, t_max: usize) -> usize {
-        let entropy = sparse_von_neumann_entropy(&self.landmark_op, t_max, 100, 42);
+        let entropy = sparse_von_neumann_entropy(&self.landmark_op, t_max, self.n_landmarks, 42);
         find_knee_point(&entropy)
     }
 
