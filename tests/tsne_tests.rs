@@ -20,8 +20,8 @@ fn entropy(probs: &[f64]) -> f64 {
 }
 
 /// Helper: build adjacency list from sparse graph
-fn graph_to_adj(graph: &SparseGraph<f64>) -> Vec<Vec<(usize, f64)>> {
-    let mut adj = vec![Vec::new(); graph.n_vertices];
+fn graph_to_adj(graph: &CoordinateList<f64>) -> Vec<Vec<(usize, f64)>> {
+    let mut adj = vec![Vec::new(); graph.n_samples];
     for ((&i, &j), &w) in graph
         .row_indices
         .iter()
@@ -43,7 +43,7 @@ fn tsne_integration_01_knn_correctness() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!("\n=== t-SNE DIAGNOSTIC 1: kNN Search ===");
     println!("Points per cluster: 100, k = {} neighbours", k);
@@ -115,7 +115,7 @@ fn tsne_integration_02_gaussian_affinities() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!("\n=== t-SNE DIAGNOSTIC 2: Gaussian Affinities ===");
 
@@ -188,7 +188,7 @@ fn tsne_integration_03_symmetrisation() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     let directed = gaussian_knn_affinities(&knn_indices, &knn_dist, perplexity, 1e-5, 200, true);
     let symmetric = symmetrise_affinities_tsne(directed);
@@ -296,8 +296,8 @@ fn tsne_integration_04_barnes_hut_tree() {
 
     println!("Tree has {} nodes for {} points", tree.nodes.len(), n);
 
-    // Check root mass equals n
-    let root = &tree.nodes[0];
+    // Check root mass equals n (Note: fixed to use `tree.root` instead of `0`)
+    let root = &tree.nodes[tree.root];
     assert!(
         (root.mass - n as f64).abs() < 1e-10,
         "Root mass {} should equal n={}",
@@ -325,8 +325,12 @@ fn tsne_integration_04_barnes_hut_tree() {
     let mut nan_count = 0;
     let mut inf_count = 0;
 
+    // Allocate our reusable stack
+    let mut stack = Vec::with_capacity(128);
+
     for i in 0..n {
-        let (fx, fy, sum_q) = tree.compute_repulsive_force(i, embd[i][0], embd[i][1], 0.5);
+        let (fx, fy, sum_q) =
+            tree.compute_repulsive_force(i, embd[i][0], embd[i][1], 0.5, &mut stack);
 
         if fx.is_nan() || fy.is_nan() || sum_q.is_nan() {
             nan_count += 1;
@@ -347,9 +351,9 @@ fn tsne_integration_04_barnes_hut_tree() {
 
     // Compare exact vs approximate
     let (fx_exact, fy_exact, sq_exact) =
-        tree.compute_repulsive_force(0, embd[0][0], embd[0][1], 0.0);
+        tree.compute_repulsive_force(0, embd[0][0], embd[0][1], 0.0, &mut stack);
     let (fx_approx, fy_approx, sq_approx) =
-        tree.compute_repulsive_force(0, embd[0][0], embd[0][1], 0.5);
+        tree.compute_repulsive_force(0, embd[0][0], embd[0][1], 0.5, &mut stack);
 
     println!("\nPoint 0 forces:");
     println!(
@@ -915,7 +919,7 @@ fn tsne_integration_13_precomputed_knn() {
     // Run kNN search separately
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!(
         "Precomputed kNN: {} neighbours per point",

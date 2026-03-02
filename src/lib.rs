@@ -10,7 +10,7 @@ pub mod parametric;
 
 use ann_search_rs::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
-use ann_search_rs::utils::dist::SimdDistance;
+use ann_search_rs::utils::dist::{parse_ann_dist, SimdDistance};
 use faer::traits::{ComplexField, RealField};
 use faer::MatRef;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
@@ -31,10 +31,14 @@ use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
 use crate::data::structures::*;
-
+use crate::prelude::*;
+use crate::training::mds_optimiser::*;
 use crate::training::tsne_optimiser::*;
 use crate::training::umap_optimisers::*;
 use crate::training::*;
+use crate::utils::diffusions::*;
+use crate::utils::potentials::compute_potential_distances;
+use crate::utils::sparse_ops::matrix_power;
 
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::FftwFloat;
@@ -56,111 +60,9 @@ use crate::parametric::parametric_train::*;
 /// * `1` - Should be the distances to the nearest neighbours excluding self
 pub type PreComputedKnn<T> = Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>;
 
-/////////////
-// Helpers //
-/////////////
-
-/// Helper function to generate the UMAP graph
-///
-/// ### Params
-///
-/// * `data` - Input data matrix (samples × features)
-/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
-///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
-///   distances excluding self.
-/// * `k` - Number of nearest neighbours (typically 15-50).
-/// * `ann_type` - Approximate nearest neighbour method: `"annoy"`, `"hnsw"`, or
-///   `"nndescent"`. If you provide a weird string, the function will default
-///   to `"hnsw"`
-/// * `umap_params` - UMAP-specific parameters (bandwidth, local_connectivity,
-///   mix_weight)
-/// * `nn_params` - Nearest neighbour parameters for nearest neighbour search.
-/// * `seed` - Random seed
-/// * `verbose` - Controls verbosity
-///
-/// ### Returns
-///
-/// Tuple of (graph, knn_indices, knn_dist) for use in optimisation
-#[allow(clippy::too_many_arguments)]
-pub fn construct_umap_graph<T>(
-    data: MatRef<T>,
-    precomputed_knn: PreComputedKnn<T>,
-    k: usize,
-    ann_type: String,
-    umap_params: &UmapGraphParams<T>,
-    nn_params: &NearestNeighbourParams<T>,
-    n_epochs: usize,
-    seed: usize,
-    verbose: bool,
-) -> (SparseGraph<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
-where
-    T: Float
-        + FromPrimitive
-        + Send
-        + Sync
-        + Default
-        + ComplexField
-        + RealField
-        + Sum
-        + AddAssign
-        + SimdDistance,
-    HnswIndex<T>: HnswState<T>,
-    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
-{
-    let (knn_indices, knn_dist) = match precomputed_knn {
-        Some((indices, distances)) => {
-            if verbose {
-                println!("Using precomputed kNN graph...");
-            }
-            (indices, distances)
-        }
-        None => {
-            if verbose {
-                println!(
-                    "Running approximate nearest neighbour search using {}...",
-                    ann_type
-                );
-            }
-            let start_knn = Instant::now();
-            let result = run_ann_search(data, k, ann_type, nn_params, seed);
-            if verbose {
-                println!("kNN search done in: {:.2?}.", start_knn.elapsed());
-            }
-            result
-        }
-    };
-
-    if verbose {
-        println!("Constructing fuzzy simplicial set...");
-    }
-
-    let start_graph = Instant::now();
-
-    let (sigma, rho) = smooth_knn_dist(
-        &knn_dist,
-        knn_dist[0].len(),
-        umap_params.local_connectivity,
-        umap_params.bandwidth,
-        64,
-    );
-
-    let graph = knn_to_coo(&knn_indices, &knn_dist, &sigma, &rho);
-    let graph = symmetrise_graph(graph, umap_params.mix_weight);
-    let graph = filter_weak_edges(graph, n_epochs, verbose);
-
-    if verbose {
-        println!(
-            "Finalised graph generation in {:.2?}.",
-            start_graph.elapsed()
-        );
-    }
-
-    (graph, knn_indices, knn_dist)
-}
-
-////////////////////////
-// Main "normal" UMAP //
-////////////////////////
+//////////
+// Umap //
+//////////
 
 /// Main Config structure with all of the possible sub configurations
 ///
@@ -302,6 +204,104 @@ where
             randomised: false,
         }
     }
+}
+
+/// Helper function to generate the UMAP graph
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
+/// * `k` - Number of nearest neighbours (typically 15-50).
+/// * `ann_type` - Approximate nearest neighbour method: `"annoy"`, `"hnsw"`, or
+///   `"nndescent"`. If you provide a weird string, the function will default
+///   to `"hnsw"`
+/// * `umap_params` - UMAP-specific parameters (bandwidth, local_connectivity,
+///   mix_weight)
+/// * `nn_params` - Nearest neighbour parameters for nearest neighbour search.
+/// * `seed` - Random seed
+/// * `verbose` - Controls verbosity
+///
+/// ### Returns
+///
+/// Tuple of (graph, knn_indices, knn_dist) for use in optimisation
+#[allow(clippy::too_many_arguments)]
+pub fn construct_umap_graph<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    k: usize,
+    ann_type: String,
+    umap_params: &UmapGraphParams<T>,
+    nn_params: &NearestNeighbourParams<T>,
+    n_epochs: usize,
+    seed: usize,
+    verbose: bool,
+) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
+where
+    T: Float
+        + FromPrimitive
+        + Send
+        + Sync
+        + Default
+        + ComplexField
+        + RealField
+        + Sum
+        + AddAssign
+        + SimdDistance,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let (knn_indices, knn_dist) = match precomputed_knn {
+        Some((indices, distances)) => {
+            if verbose {
+                println!("Using precomputed kNN graph...");
+            }
+            (indices, distances)
+        }
+        None => {
+            if verbose {
+                println!(
+                    "Running approximate nearest neighbour search using {}...",
+                    ann_type
+                );
+            }
+            let start_knn = Instant::now();
+            let result = run_ann_search(data, k, ann_type, nn_params, seed, verbose);
+            if verbose {
+                println!("kNN search done in: {:.2?}.", start_knn.elapsed());
+            }
+            result
+        }
+    };
+
+    if verbose {
+        println!("Constructing fuzzy simplicial set...");
+    }
+
+    let start_graph = Instant::now();
+
+    let (sigma, rho) = smooth_knn_dist(
+        &knn_dist,
+        knn_dist[0].len(),
+        umap_params.local_connectivity,
+        umap_params.bandwidth,
+        64,
+    );
+
+    let graph = knn_to_coo(&knn_indices, &knn_dist, &sigma, &rho);
+    let graph = symmetrise_graph(graph, umap_params.mix_weight);
+    let graph = filter_weak_edges(graph, n_epochs, verbose);
+
+    if verbose {
+        println!(
+            "Finalised graph generation in {:.2?}.",
+            start_graph.elapsed()
+        );
+    }
+
+    (graph, knn_indices, knn_dist)
 }
 
 /// Run UMAP dimensionality reduction
@@ -573,7 +573,7 @@ where
 ///
 /// Tuple of:
 ///
-/// - `SparseGraph<T>` containing symmetric joint probabilities P_ij
+/// - `CoordinateList<T>` containing symmetric joint probabilities P_ij
 /// - `Vec<Vec<usize>>` k-nearest neighbour indices for each point
 /// - `Vec<Vec<T>>` k-nearest neighbour distances for each point
 ///
@@ -589,7 +589,7 @@ pub fn construct_tsne_graph<T>(
     nn_params: &NearestNeighbourParams<T>,
     seed: usize,
     verbose: bool,
-) -> (SparseGraph<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
+) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
 where
     T: Float
         + FromPrimitive
@@ -621,7 +621,7 @@ where
             }
 
             let start_knn = Instant::now();
-            let result = run_ann_search(data, k, ann_type, nn_params, seed);
+            let result = run_ann_search(data, k, ann_type, nn_params, seed, verbose);
 
             if verbose {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
@@ -745,6 +745,10 @@ where
         verbose,
     );
 
+    if verbose {
+        println!("Initialising embedding via {}...", &params.initialisation);
+    }
+
     // 2. initialise embedding
     let init_type = parse_initilisation(
         &params.initialisation,
@@ -752,13 +756,9 @@ where
         params.init_range,
     )
     .unwrap_or(EmbdInit::PcaInit {
-        randomised: false,
-        range: Some(T::from_f64(1e-4).unwrap()),
+        randomised: true,
+        range: Some(T::from_f64(1e-2).unwrap()),
     });
-
-    if verbose {
-        println!("Initialising embedding via PCA...");
-    }
 
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
 
@@ -893,6 +893,10 @@ where
     );
 
     // 2. initialise embedding
+    if verbose {
+        println!("Initialising embedding via {}...", &params.initialisation);
+    }
+
     let init_type = parse_initilisation(
         &params.initialisation,
         params.randomised_init,
@@ -900,12 +904,8 @@ where
     )
     .unwrap_or(EmbdInit::PcaInit {
         randomised: false,
-        range: Some(T::from_f64(1e-4).unwrap()),
+        range: Some(T::from_f64(1e-2).unwrap()),
     });
-
-    if verbose {
-        println!("Initialising embedding via PCA...");
-    }
 
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
 
@@ -941,6 +941,458 @@ where
     for sample_idx in 0..n_samples {
         for dim_idx in 0..params.n_dim {
             transposed[dim_idx][sample_idx] = embd[sample_idx][dim_idx];
+        }
+    }
+
+    transposed
+}
+
+///////////
+// PHATE //
+///////////
+
+/// PHATE parameters
+///
+/// ### Fields
+///
+/// * `n_dim` - Number of output dimensions (default: 2)
+/// * `k` - Number of nearest neighbours for graph construction (default: 5)
+/// * `ann_type` - Approximate nearest neighbour method: `"hnsw"` or
+///   `"nndescent"` (default: `"hnsw"`)
+/// * `ann_params` - Nearest neighbour search parameters.
+/// * `diffusion_params` - Diffusion parameters.
+/// * `mds_method` - MDS algorithm: `"sgd_dense"`, `"sgd_streaming"`, or
+///   `"classic"` (default: `"sgd_dense"`)
+/// * `randomised` - Shall randomised SVD be used for the `"classic"` MDS.
+/// * `ann_params` - Nearest neighbour search parameters
+#[derive(Debug, Clone)]
+pub struct PhateParams<T> {
+    pub n_dim: usize,
+    // knn
+    pub k: usize,
+    pub ann_type: String,
+    pub ann_params: NearestNeighbourParams<T>,
+    // diffusion
+    pub diffusion_params: PhateDiffusionParams<T>,
+    // mds
+    pub mds_method: String,
+    pub mds_iter: Option<usize>,
+    pub randomised: bool,
+}
+
+impl<T> PhateParams<T>
+where
+    T: Float + FromPrimitive,
+{
+    /// Create new PHATE parameters with sensible defaults
+    ///
+    /// ### Params
+    ///
+    ///
+    /// ### Returns
+    ///
+    /// `PhateParams` with sensible defaults for standard PHATE
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        n_dim: Option<usize>,
+        k: Option<usize>,
+        ann_type: Option<String>,
+        decay: Option<T>,
+        bandwidth_scale: Option<T>,
+        graph_symmetry: Option<String>,
+        t_max: Option<usize>,
+        gamma: Option<T>,
+        n_landmarks: Option<usize>,
+        landmark_method: Option<String>,
+        n_svd: Option<usize>,
+        t_custom: Option<usize>,
+        mds_method: Option<String>,
+        mds_iter: Option<usize>,
+        randomised: Option<bool>,
+    ) -> Self {
+        let phate_diffusion_params = PhateDiffusionParams::new(
+            Some(decay.unwrap_or_else(|| T::from_f64(40.0).unwrap())),
+            bandwidth_scale.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
+            T::from_f64(1e-4).unwrap(),
+            graph_symmetry.unwrap_or("average".to_string()),
+            n_landmarks,
+            landmark_method.unwrap_or("spectral".to_string()),
+            n_svd,
+            t_max,
+            t_custom,
+            gamma.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
+        );
+
+        Self {
+            n_dim: n_dim.unwrap_or(2),
+            // knn
+            k: k.unwrap_or(5),
+            ann_type: ann_type.unwrap_or_else(|| "hnsw".to_string()),
+            ann_params: NearestNeighbourParams::default(),
+            // diffusion
+            diffusion_params: phate_diffusion_params,
+            // mds
+            mds_method: mds_method.unwrap_or_else(|| "sgd_dense".to_string()),
+            mds_iter,
+            randomised: randomised.unwrap_or(true),
+        }
+    }
+}
+
+/////////////////////
+// PHATE diffusion //
+/////////////////////
+
+/// Build the PHATE diffusion operator from high-dimensional data
+///
+/// Runs kNN search (or uses precomputed results), computes alpha decay
+/// affinities, and constructs either a full or landmark diffusion operator
+/// depending on `phate_params.n_landmarks`.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `k` - Number of nearest neighbours for graph construction
+/// * `precomputed_knn` - Precomputed kNN indices and distances as
+///   `Some((Vec<Vec<usize>>, Vec<Vec<T>>))`, or `None` to run search
+///   internally. Indices and distances must exclude self.
+/// * `ann_type` - ANN algorithm: `"hnsw"` or `"nndescent"`
+/// * `nn_params` - Nearest neighbour search parameters
+/// * `phate_params` - Full PHATE parameter struct (uses `k`, `decay`,
+///   `bandwidth_scale`, `thresh`, `symmetrise`, `n_landmarks`,
+///   `landmark_mode`)
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - Print progress information
+///
+/// ### Returns
+///
+/// `PhateDiffusion::Full { operator }` when `n_landmarks` is `None` or
+/// \>= N, otherwise `PhateDiffusion::Landmark { landmarks }` containing
+/// the compressed landmark operator and interpolation matrices.
+#[allow(clippy::too_many_arguments)]
+pub fn construct_phate_diffusion<T>(
+    data: MatRef<T>,
+    k: usize,
+    precomputed_knn: PreComputedKnn<T>,
+    ann_type: &str,
+    nn_params: &NearestNeighbourParams<T>,
+    phate_params: &PhateParams<T>,
+    seed: usize,
+    verbose: bool,
+) -> PhateDiffusion<T>
+where
+    T: Float
+        + Send
+        + Sync
+        + SimdDistance
+        + ComplexField
+        + RealField
+        + AddAssign
+        + std::iter::Sum
+        + Default
+        + FromPrimitive,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let (knn_indices, knn_dist) = match precomputed_knn {
+        Some((indices, distances)) => {
+            if verbose {
+                println!("Using precomputed kNN graph...");
+            }
+            (indices, distances)
+        }
+        None => {
+            if verbose {
+                println!(
+                    "Running approximate nearest neighbour search using {}...",
+                    ann_type
+                );
+            }
+            let start_knn = Instant::now();
+            let result = run_ann_search(data, k, ann_type.to_string(), nn_params, seed, verbose);
+            if verbose {
+                println!("kNN search done in: {:.2?}.", start_knn.elapsed());
+            }
+            result
+        }
+    };
+
+    if verbose {
+        println!("Calculating alpha decay affinities");
+    }
+    let start_alpha_affinities = Instant::now();
+
+    let graph = phate_alpha_decay_affinities(
+        &knn_indices,
+        &knn_dist,
+        phate_params.k,
+        phate_params.diffusion_params.decay,
+        phate_params.diffusion_params.bandwidth_scale,
+        phate_params.diffusion_params.thresh,
+        &phate_params.diffusion_params.graph_symmetry,
+        nn_params.dist_metric == "euclidean",
+    );
+
+    if verbose {
+        println!(
+            "Alpha decay affinity calculations done in: {:.2?}.",
+            start_alpha_affinities.elapsed()
+        );
+    }
+
+    let affinity = coo_to_csr(&graph);
+    let diffusion_op = build_diffusion_operator(&affinity);
+
+    match phate_params.diffusion_params.n_landmarks {
+        None => PhateDiffusion::Full {
+            operator: diffusion_op,
+        },
+        Some(n_landmarks) if n_landmarks >= data.nrows() => PhateDiffusion::Full {
+            operator: diffusion_op,
+        },
+        Some(n_landmarks) => {
+            if verbose {
+                println!(" Building {} landmarks...", n_landmarks);
+            }
+            let start_landmarks = Instant::now();
+            let landmarks = PhateLandmarks::build(
+                data,
+                &affinity,
+                &diffusion_op,
+                n_landmarks,
+                &phate_params.diffusion_params.landmark_method,
+                &nn_params.dist_metric,
+                seed,
+                Some(100),
+                verbose,
+            );
+            if verbose {
+                println!(
+                    " Landmarks generated in: {:.2?}.",
+                    start_landmarks.elapsed()
+                );
+            }
+            PhateDiffusion::Landmark { landmarks }
+        }
+    }
+}
+
+/// Run PHATE dimensionality reduction
+///
+/// Potential of Heat-diffusion for Affinity-based Transition Embedding
+/// (PHATE) learns a low-dimensional embedding that preserves the
+/// diffusion geometry of the data.
+///
+/// ### Algorithm
+///
+/// 1. Build affinity graph via alpha decay kernel on kNN distances
+/// 2. Construct row-stochastic diffusion operator P = D^{-1} K
+/// 3. Determine diffusion time t (knee of Von Neumann entropy, or fixed)
+/// 4. Compute diffusion potential: log transformation of P^t by default
+/// 5. Embed via MDS on pairwise potential distances
+///
+/// Steps 2–4 optionally operate on a compressed landmark representation
+/// (N × L instead of N × N) when `phate_params.n_landmarks` is set.
+/// Pairwise distances and MDS (step 5) always run in the full N × N space;
+/// however, to avoid holding the full N x N matrix in memory, you can
+/// use a streaming version of MDS that computes the distances on the fly.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed kNN indices and distances as
+///   `Some((Vec<Vec<usize>>, Vec<Vec<T>>))`, or `None` to run search
+///   internally. Indices and distances must exclude self.
+/// * `phate_params` - PHATE parameters. See `PhateParams` for full
+///   documentation of each field.
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - Print progress information
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has
+/// length `n_dim` and each inner vector has length `n_samples`. Each
+/// outer element represents one embedding dimension.
+///
+/// ### References
+///
+/// - Moon et al. (2019): "Visualizing Structure and Transitions in
+///   High-Dimensional Biological Data" (Nature Biotechnology)
+pub fn phate<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    phate_params: PhateParams<T>,
+    seed: usize,
+    verbose: bool,
+) -> Vec<Vec<T>>
+where
+    T: Float
+        + Send
+        + Sync
+        + SimdDistance
+        + ComplexField
+        + RealField
+        + AddAssign
+        + std::iter::Sum
+        + Default
+        + FromPrimitive,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+    StandardNormal: Distribution<T>,
+{
+    let start_phate = Instant::now();
+
+    let phate_diffusion = construct_phate_diffusion(
+        data,
+        phate_params.k,
+        precomputed_knn,
+        &phate_params.ann_type,
+        &phate_params.ann_params,
+        &phate_params,
+        seed,
+        verbose,
+    );
+
+    let start_t = Instant::now();
+    let t = match phate_params.diffusion_params.t {
+        PhateTime::Auto { t_max } => {
+            if verbose {
+                println!("Finding optimal t (t_max={})...", t_max);
+            }
+            match &phate_diffusion {
+                PhateDiffusion::Landmark { landmarks } => landmarks.find_optimal_t(t_max),
+                PhateDiffusion::Full { operator } => {
+                    let entropy = landmark_von_neumann_entropy(operator, t_max);
+                    find_knee_point(&entropy)
+                }
+            }
+        }
+        PhateTime::Fixed(t) => t,
+    };
+    if verbose {
+        println!("Identified t = {} in {:.2?}.", t, start_t.elapsed());
+    }
+
+    let mds_method = parse_mds_method(&phate_params.mds_method).unwrap_or_default();
+    let dist = parse_ann_dist(&phate_params.ann_params.dist_metric).unwrap_or_default();
+    let mds_params = MdsOptimParams::new(
+        data.nrows(),
+        phate_params.randomised,
+        phate_params.mds_iter,
+        None,
+    );
+
+    let start_embed = Instant::now();
+
+    let embedding = match phate_diffusion {
+        PhateDiffusion::Full { operator } => {
+            if verbose {
+                println!("Powering diffusion operator...");
+            }
+            let powered = matrix_power(&operator, t);
+            let potential = calculate_potential(&powered, 1, phate_params.diffusion_params.gamma);
+
+            if verbose {
+                println!(
+                    "Potential shape: {} × {} - calculated in {:.2?}.",
+                    potential.shape().0,
+                    potential.shape().1,
+                    start_embed.elapsed()
+                );
+            }
+
+            match mds_method {
+                MdsMethod::ClassicMds => {
+                    if verbose {
+                        println!("Computing pairwise distances, running classic MDS...");
+                    }
+                    let distances = compute_potential_distances(&potential, &dist);
+                    classic_mds(&distances, phate_params.n_dim, mds_params.randomised, seed)
+                }
+                MdsMethod::SgdDense => {
+                    if verbose {
+                        println!("Computing pairwise distances, running SGD-MDS...");
+                    }
+                    let distances = compute_potential_distances(&potential, &dist);
+                    sgd_mds(
+                        &distances,
+                        phate_params.n_dim,
+                        &mds_params,
+                        None,
+                        seed,
+                        verbose,
+                    )
+                }
+            }
+        }
+        PhateDiffusion::Landmark { landmarks } => {
+            if verbose {
+                println!(
+                    "Powering landmark operator ({} landmarks)...",
+                    landmarks.get_n_landmarks()
+                );
+            }
+            let landmark_powered = landmarks.power(t);
+            let landmark_potential =
+                calculate_potential(&landmark_powered, 1, phate_params.diffusion_params.gamma);
+
+            if verbose {
+                println!(
+                    "Landmark potential shape: {} × {} - calculated in {:.2?}.",
+                    landmark_potential.shape().0,
+                    landmark_potential.shape().1,
+                    start_embed.elapsed()
+                );
+                println!("Computing landmark pairwise distances...");
+            }
+
+            let landmark_distances = compute_potential_distances(&landmark_potential, &dist);
+
+            let landmark_mds_params = MdsOptimParams::new(
+                landmarks.get_n_landmarks(),
+                phate_params.randomised,
+                None,
+                None,
+            );
+
+            if verbose {
+                println!("Running MDS on landmarks...");
+            }
+
+            let landmark_embedding = match mds_method {
+                MdsMethod::ClassicMds => classic_mds(
+                    &landmark_distances,
+                    phate_params.n_dim,
+                    landmark_mds_params.randomised,
+                    seed,
+                ),
+                _ => sgd_mds(
+                    &landmark_distances,
+                    phate_params.n_dim,
+                    &landmark_mds_params,
+                    None,
+                    seed,
+                    verbose,
+                ),
+            };
+
+            if verbose {
+                println!("Interpolating to full N points via Nyström...");
+            }
+            landmarks.interpolate_embedding(&landmark_embedding)
+        }
+    };
+
+    if verbose {
+        println!("Ran MDS in {:.2?}.", start_embed.elapsed());
+        println!("Finished running PHATE in {:.2?}.", start_phate.elapsed());
+    }
+
+    let n_samples = embedding.len();
+    let mut transposed = vec![vec![T::zero(); n_samples]; phate_params.n_dim];
+    for i in 0..n_samples {
+        for d in 0..phate_params.n_dim {
+            transposed[d][i] = embedding[i][d];
         }
     }
 

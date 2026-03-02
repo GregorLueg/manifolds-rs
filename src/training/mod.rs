@@ -1,3 +1,4 @@
+pub mod mds_optimiser;
 pub mod tsne_optimiser;
 pub mod umap_optimisers;
 
