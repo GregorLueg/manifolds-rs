@@ -27,7 +27,6 @@ use thousands::*;
 #[cfg(feature = "parametric")]
 use burn::tensor::{backend::AutodiffBackend, Element};
 
-use crate::data::diffusions::*;
 use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
@@ -37,6 +36,7 @@ use crate::training::mds_optimiser::*;
 use crate::training::tsne_optimiser::*;
 use crate::training::umap_optimisers::*;
 use crate::training::*;
+use crate::utils::diffusions::*;
 use crate::utils::potentials::compute_potential_distances;
 use crate::utils::sparse_ops::matrix_power;
 
@@ -268,7 +268,7 @@ where
                 );
             }
             let start_knn = Instant::now();
-            let result = run_ann_search(data, k, ann_type, nn_params, seed);
+            let result = run_ann_search(data, k, ann_type, nn_params, seed, verbose);
             if verbose {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
             }
@@ -621,7 +621,7 @@ where
             }
 
             let start_knn = Instant::now();
-            let result = run_ann_search(data, k, ann_type, nn_params, seed);
+            let result = run_ann_search(data, k, ann_type, nn_params, seed, verbose);
 
             if verbose {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
@@ -745,6 +745,10 @@ where
         verbose,
     );
 
+    if verbose {
+        println!("Initialising embedding via {}...", &params.initialisation);
+    }
+
     // 2. initialise embedding
     let init_type = parse_initilisation(
         &params.initialisation,
@@ -752,13 +756,9 @@ where
         params.init_range,
     )
     .unwrap_or(EmbdInit::PcaInit {
-        randomised: false,
-        range: Some(T::from_f64(1e-4).unwrap()),
+        randomised: true,
+        range: Some(T::from_f64(1e-2).unwrap()),
     });
-
-    if verbose {
-        println!("Initialising embedding via PCA...");
-    }
 
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
 
@@ -893,6 +893,10 @@ where
     );
 
     // 2. initialise embedding
+    if verbose {
+        println!("Initialising embedding via {}...", &params.initialisation);
+    }
+
     let init_type = parse_initilisation(
         &params.initialisation,
         params.randomised_init,
@@ -900,12 +904,8 @@ where
     )
     .unwrap_or(EmbdInit::PcaInit {
         randomised: false,
-        range: Some(T::from_f64(1e-4).unwrap()),
+        range: Some(T::from_f64(1e-2).unwrap()),
     });
-
-    if verbose {
-        println!("Initialising embedding via PCA...");
-    }
 
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
 
@@ -959,21 +959,8 @@ where
 /// * `k` - Number of nearest neighbours for graph construction (default: 5)
 /// * `ann_type` - Approximate nearest neighbour method: `"hnsw"` or
 ///   `"nndescent"` (default: `"hnsw"`)
-/// * `thresh` - Threshold below which affinities are set to zero (default:
-///   `1e-4`)
-/// * `symmetrise` - Affinity symmetrisation method: `"average"` or `"maximum"`
-///   (default: `"average"`)
-/// * `decay` - Alpha decay exponent. `Some(alpha)` applies alpha decay kernel;
-///   `None` uses a binary (unweighted) kernel (default: `Some(40.0)`)
-/// * `bandwidth_scale` - Scales the kernel bandwidth (default: `1.0`)
-/// * `time` - Diffusion time selection: `PhateTime::Auto { t_max }` or
-///   `PhateTime::Fixed(t)` (default: `PhateTime::Auto { t_max: 100 }`)
-/// * `gamma` - Informational distance parameter. `1.0` gives Von Neumann
-///   entropy, `0.0` gives classic PHATE (default: `1.0`)
-/// * `n_landmarks` - Number of landmarks for landmark PHATE. `None` uses the
-///   full diffusion operator (default: `None`)
-/// * `landmark_mode` - Method for landmark selection: `"kmeans"` (default:
-///   `"kmeans"`)
+/// * `ann_params` - Nearest neighbour search parameters.
+/// * `diffusion_params` - Diffusion parameters.
 /// * `mds_method` - MDS algorithm: `"sgd_dense"`, `"sgd_streaming"`, or
 ///   `"classic"` (default: `"sgd_dense"`)
 /// * `randomised` - Shall randomised SVD be used for the `"classic"` MDS.
@@ -981,19 +968,16 @@ where
 #[derive(Debug, Clone)]
 pub struct PhateParams<T> {
     pub n_dim: usize,
+    // knn
     pub k: usize,
     pub ann_type: String,
-    pub thresh: T,
-    pub symmetrise: String,
-    pub decay: Option<T>,
-    pub bandwidth_scale: T,
-    pub time: PhateTime,
-    pub gamma: T,
-    pub n_landmarks: Option<usize>,
-    pub landmark_mode: String,
-    pub mds_method: String,
-    pub randomised: bool,
     pub ann_params: NearestNeighbourParams<T>,
+    // diffusion
+    pub diffusion_params: PhateDiffusionParams<T>,
+    // mds
+    pub mds_method: String,
+    pub mds_iter: Option<usize>,
+    pub randomised: bool,
 }
 
 impl<T> PhateParams<T>
@@ -1004,18 +988,6 @@ where
     ///
     /// ### Params
     ///
-    /// * `n_dim` - Number of output dimensions. Default: 2
-    /// * `k` - Number of nearest neighbours. Default: 5
-    /// * `decay` - Alpha decay exponent. `None` uses binary kernel. Default:
-    ///   `Some(40.0)`
-    /// * `bandwidth_scale` - Kernel bandwidth scaling factor. Default: `1.0`
-    /// * `t_max` - Maximum diffusion time for automatic t selection. Default:
-    ///   `100`
-    /// * `gamma` - Informational distance parameter. Default: `1.0`
-    /// * `n_landmarks` - Number of landmarks. `None` uses full operator.
-    ///   Default: `None`
-    /// * `mds_method` - MDS algorithm. Default: `"sgd_dense"`
-    /// * `ann_type` - ANN algorithm. Default: `"hnsw"`
     ///
     /// ### Returns
     ///
@@ -1024,32 +996,45 @@ where
     pub fn new(
         n_dim: Option<usize>,
         k: Option<usize>,
+        ann_type: Option<String>,
         decay: Option<T>,
         bandwidth_scale: Option<T>,
+        graph_symmetry: Option<String>,
         t_max: Option<usize>,
         gamma: Option<T>,
         n_landmarks: Option<usize>,
+        landmark_method: Option<String>,
+        n_svd: Option<usize>,
+        t_custom: Option<usize>,
         mds_method: Option<String>,
+        mds_iter: Option<usize>,
         randomised: Option<bool>,
-        ann_type: Option<String>,
     ) -> Self {
+        let phate_diffusion_params = PhateDiffusionParams::new(
+            Some(decay.unwrap_or_else(|| T::from_f64(40.0).unwrap())),
+            bandwidth_scale.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
+            T::from_f64(1e-4).unwrap(),
+            graph_symmetry.unwrap_or("average".to_string()),
+            n_landmarks,
+            landmark_method.unwrap_or("spectral".to_string()),
+            n_svd,
+            t_max,
+            t_custom,
+            gamma.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
+        );
+
         Self {
             n_dim: n_dim.unwrap_or(2),
+            // knn
             k: k.unwrap_or(5),
             ann_type: ann_type.unwrap_or_else(|| "hnsw".to_string()),
-            thresh: T::from_f64(1e-4).unwrap(),
-            symmetrise: "average".to_string(),
-            decay: Some(decay.unwrap_or_else(|| T::from_f64(40.0).unwrap())),
-            bandwidth_scale: bandwidth_scale.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
-            time: PhateTime::Auto {
-                t_max: t_max.unwrap_or(100),
-            },
-            gamma: gamma.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
-            n_landmarks,
-            landmark_mode: "kmeans".to_string(),
-            mds_method: mds_method.unwrap_or_else(|| "sgd_dense".to_string()),
-            randomised: randomised.unwrap_or_else(|| true),
             ann_params: NearestNeighbourParams::default(),
+            // diffusion
+            diffusion_params: phate_diffusion_params,
+            // mds
+            mds_method: mds_method.unwrap_or_else(|| "sgd_dense".to_string()),
+            mds_iter,
+            randomised: randomised.unwrap_or(true),
         }
     }
 }
@@ -1082,8 +1067,9 @@ where
 /// ### Returns
 ///
 /// `PhateDiffusion::Full { operator }` when `n_landmarks` is `None` or
-/// >= N, otherwise `PhateDiffusion::Landmark { landmarks }` containing
+/// \>= N, otherwise `PhateDiffusion::Landmark { landmarks }` containing
 /// the compressed landmark operator and interpolation matrices.
+#[allow(clippy::too_many_arguments)]
 pub fn construct_phate_diffusion<T>(
     data: MatRef<T>,
     k: usize,
@@ -1123,7 +1109,7 @@ where
                 );
             }
             let start_knn = Instant::now();
-            let result = run_ann_search(data, k, ann_type.to_string(), nn_params, seed);
+            let result = run_ann_search(data, k, ann_type.to_string(), nn_params, seed, verbose);
             if verbose {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
             }
@@ -1140,10 +1126,10 @@ where
         &knn_indices,
         &knn_dist,
         phate_params.k,
-        phate_params.decay,
-        phate_params.bandwidth_scale,
-        phate_params.thresh,
-        &phate_params.symmetrise,
+        phate_params.diffusion_params.decay,
+        phate_params.diffusion_params.bandwidth_scale,
+        phate_params.diffusion_params.thresh,
+        &phate_params.diffusion_params.graph_symmetry,
         nn_params.dist_metric == "euclidean",
     );
 
@@ -1154,10 +1140,10 @@ where
         );
     }
 
-    let kernel_csr = coo_to_csr(&graph);
-    let diffusion_op = build_diffusion_operator(&kernel_csr);
+    let affinity = coo_to_csr(&graph);
+    let diffusion_op = build_diffusion_operator(&affinity);
 
-    match phate_params.n_landmarks {
+    match phate_params.diffusion_params.n_landmarks {
         None => PhateDiffusion::Full {
             operator: diffusion_op,
         },
@@ -1171,16 +1157,18 @@ where
             let start_landmarks = Instant::now();
             let landmarks = PhateLandmarks::build(
                 data,
+                &affinity,
                 &diffusion_op,
                 n_landmarks,
-                &phate_params.landmark_mode,
+                &phate_params.diffusion_params.landmark_method,
                 &nn_params.dist_metric,
-                Some(seed),
+                seed,
                 Some(100),
+                verbose,
             );
             if verbose {
                 println!(
-                    " Landmarks generated in : {:.2?}.",
+                    " Landmarks generated in: {:.2?}.",
                     start_landmarks.elapsed()
                 );
             }
@@ -1254,7 +1242,6 @@ where
 {
     let start_phate = Instant::now();
 
-    // stage 1: generate the diffusion operator
     let phate_diffusion = construct_phate_diffusion(
         data,
         phate_params.k,
@@ -1266,9 +1253,8 @@ where
         verbose,
     );
 
-    // stage 2: determine optimal t
     let start_t = Instant::now();
-    let t = match phate_params.time {
+    let t = match phate_params.diffusion_params.t {
         PhateTime::Auto { t_max } => {
             if verbose {
                 println!("Finding optimal t (t_max={})...", t_max);
@@ -1276,110 +1262,130 @@ where
             match &phate_diffusion {
                 PhateDiffusion::Landmark { landmarks } => landmarks.find_optimal_t(t_max),
                 PhateDiffusion::Full { operator } => {
-                    let dense = operator.to_dense();
-                    let entropy = von_neumann_entropy(dense, t_max);
+                    let entropy = landmark_von_neumann_entropy(operator, t_max);
                     find_knee_point(&entropy)
                 }
             }
         }
         PhateTime::Fixed(t) => t,
     };
-    let end_t = start_t.elapsed();
     if verbose {
-        println!("Identified t = {} in {:.2?}.", t, end_t);
+        println!("Identified t = {} in {:.2?}.", t, start_t.elapsed());
     }
 
-    // stage 3: calculate potential at time t
-    let start_diffusion = Instant::now();
-    let potential = match &phate_diffusion {
+    let mds_method = parse_mds_method(&phate_params.mds_method).unwrap_or_default();
+    let dist = parse_ann_dist(&phate_params.ann_params.dist_metric).unwrap_or_default();
+    let mds_params = MdsOptimParams::new(
+        data.nrows(),
+        phate_params.randomised,
+        phate_params.mds_iter,
+        None,
+    );
+
+    let start_embed = Instant::now();
+
+    let embedding = match phate_diffusion {
         PhateDiffusion::Full { operator } => {
             if verbose {
                 println!("Powering diffusion operator...");
             }
-            let powered = matrix_power(operator, t);
-            calculate_potential(&powered, 1, phate_params.gamma) // Already powered, so t=1
+            let powered = matrix_power(&operator, t);
+            let potential = calculate_potential(&powered, 1, phate_params.diffusion_params.gamma);
+
+            if verbose {
+                println!(
+                    "Potential shape: {} × {} - calculated in {:.2?}.",
+                    potential.shape().0,
+                    potential.shape().1,
+                    start_embed.elapsed()
+                );
+            }
+
+            match mds_method {
+                MdsMethod::ClassicMds => {
+                    if verbose {
+                        println!("Computing pairwise distances, running classic MDS...");
+                    }
+                    let distances = compute_potential_distances(&potential, &dist);
+                    classic_mds(&distances, phate_params.n_dim, mds_params.randomised, seed)
+                }
+                MdsMethod::SgdDense => {
+                    if verbose {
+                        println!("Computing pairwise distances, running SGD-MDS...");
+                    }
+                    let distances = compute_potential_distances(&potential, &dist);
+                    sgd_mds(
+                        &distances,
+                        phate_params.n_dim,
+                        &mds_params,
+                        None,
+                        seed,
+                        verbose,
+                    )
+                }
+            }
         }
         PhateDiffusion::Landmark { landmarks } => {
             if verbose {
-                println!("Powering landmark operator...");
+                println!(
+                    "Powering landmark operator ({} landmarks)...",
+                    landmarks.get_n_landmarks()
+                );
             }
             let landmark_powered = landmarks.power(t);
-            let interpolated = landmarks.interpolate(&landmark_powered);
-            calculate_potential(&interpolated, 1, phate_params.gamma)
-        }
-    };
-    let end_diffusion = start_diffusion.elapsed();
-
-    if verbose {
-        println!(
-            "Potential shape: {} × {} - calculated in {:.2?}.",
-            potential.shape().0,
-            potential.shape().1,
-            end_diffusion
-        );
-    }
-
-    // stage 4: multi-dimensional scaling
-    let start_mds = Instant::now();
-
-    let mds_method = parse_mds_method(&phate_params.mds_method).unwrap_or_default();
-    let dist = parse_ann_dist(&phate_params.ann_params.dist_metric).unwrap_or_default();
-
-    let embedding = match mds_method {
-        MdsMethod::SgdDense => {
-            if verbose {
-                println!("Computing pairwise distances...");
-            }
-            let distances = compute_potential_distances(&potential, &dist);
+            let landmark_potential =
+                calculate_potential(&landmark_powered, 1, phate_params.diffusion_params.gamma);
 
             if verbose {
-                println!("Running SGD-MDS...");
-            }
-            sgd_mds(
-                &distances,
-                phate_params.n_dim,
-                None,
-                None,
-                None,
-                seed,
-                verbose,
-            )
-        }
-        MdsMethod::SgdStreaming => {
-            if verbose {
-                println!("Running streaming SGD-MDS...");
+                println!(
+                    "Landmark potential shape: {} × {} - calculated in {:.2?}.",
+                    landmark_potential.shape().0,
+                    landmark_potential.shape().1,
+                    start_embed.elapsed()
+                );
+                println!("Computing landmark pairwise distances...");
             }
 
-            sgd_mds_streaming(
-                &potential,
-                phate_params.n_dim,
-                &dist,
+            let landmark_distances = compute_potential_distances(&landmark_potential, &dist);
+
+            let landmark_mds_params = MdsOptimParams::new(
+                landmarks.get_n_landmarks(),
+                phate_params.randomised,
                 None,
                 None,
-                None,
-                seed,
-                verbose,
-            )
-        }
-        MdsMethod::ClassicMds => {
-            if verbose {
-                println!("Computing pairwise distances...");
-            }
-            let distances = compute_potential_distances(&potential, &dist);
+            );
 
             if verbose {
-                println!("Running classic MDS...");
+                println!("Running MDS on landmarks...");
             }
-            classic_mds(&distances, phate_params.n_dim, true, 42)
+
+            let landmark_embedding = match mds_method {
+                MdsMethod::ClassicMds => classic_mds(
+                    &landmark_distances,
+                    phate_params.n_dim,
+                    landmark_mds_params.randomised,
+                    seed,
+                ),
+                _ => sgd_mds(
+                    &landmark_distances,
+                    phate_params.n_dim,
+                    &landmark_mds_params,
+                    None,
+                    seed,
+                    verbose,
+                ),
+            };
+
+            if verbose {
+                println!("Interpolating to full N points via Nyström...");
+            }
+            landmarks.interpolate_embedding(&landmark_embedding)
         }
     };
 
-    let end_mds = start_mds.elapsed();
-    let end_phate = start_phate.elapsed();
-
     if verbose {
-        println!("Ran MDS in {:.2?}.", end_mds);
-        println!("Finished running PHATE in {:.2?}.", end_phate)
+        println!("Ran MDS in {:.2?}.", start_embed.elapsed());
+        println!("Finished running PHATE in {:.2?}.", start_phate.elapsed());
     }
 
     let n_samples = embedding.len();

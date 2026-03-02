@@ -3,10 +3,10 @@
 mod commons;
 use commons::*;
 
-use manifolds_rs::data::diffusions::build_diffusion_operator;
 use manifolds_rs::data::graph::phate_alpha_decay_affinities;
 use manifolds_rs::data::structures::{coo_to_csr, CompressedSparseData};
 use manifolds_rs::prelude::*;
+use manifolds_rs::utils::diffusions::build_diffusion_operator;
 use manifolds_rs::utils::potentials::calculate_potential;
 use manifolds_rs::utils::sparse_ops::matrix_power;
 use manifolds_rs::*;
@@ -86,7 +86,7 @@ fn phate_integration_01_knn_correctness() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!("\n=== PHATE DIAGNOSTIC 1: kNN Search ===");
     println!("Points per cluster: 100, k = {}", k);
@@ -138,7 +138,7 @@ fn phate_integration_02_alpha_decay_affinities() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!("\n=== PHATE DIAGNOSTIC 2: Alpha Decay Affinities ===");
 
@@ -206,7 +206,7 @@ fn phate_integration_03_binary_kernel() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!("\n=== PHATE DIAGNOSTIC 3: Binary Kernel ===");
 
@@ -255,7 +255,7 @@ fn phate_integration_04_diffusion_operator() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!("\n=== PHATE DIAGNOSTIC 4: Diffusion Operator ===");
 
@@ -307,7 +307,7 @@ fn phate_integration_05_matrix_power() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!("\n=== PHATE DIAGNOSTIC 5: Matrix Power ===");
 
@@ -355,7 +355,7 @@ fn phate_integration_06_potential_calculation() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!("\n=== PHATE DIAGNOSTIC 6: Potential Calculation ===");
 
@@ -403,15 +403,22 @@ fn phate_integration_07_full_phate_quality() {
 
     let params = PhateParams::new(
         Some(2),
+        // knn
         Some(10),
-        None,     // default decay (40.0)
-        None,     // default bandwidth_scale
-        Some(50), // t_max
-        None,     // default gamma (1.0)
-        None,     // no landmarks
-        None,     // default mds_method
-        None,     // randomised SVD
-        None,     // default ann_type
+        None,
+        // diffusion
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
     );
 
     let embedding = phate(data.as_ref(), None, params, 42, true);
@@ -455,12 +462,19 @@ fn phate_integration_08_landmark_phate_quality() {
 
     let params = PhateParams::new(
         Some(2),
+        // knn
         Some(10),
         None,
+        // diffusion
         None,
-        Some(50),
         None,
-        Some(20), // use 20 landmarks
+        None,
+        None,
+        None,
+        Some(20),
+        None,
+        None,
+        None,
         None,
         None,
         None,
@@ -501,16 +515,21 @@ fn phate_integration_09_reproducibility() {
     println!("\n=== PHATE DIAGNOSTIC 9: Reproducibility ===");
 
     let params = PhateParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        Some(50),
-        None,
-        None,
-        None,
-        None,
-        None,
+        Some(2),  // n_dim
+        Some(10), // k
+        None,     // ann_type
+        None,     // decay
+        None,     // bandwidth_scale
+        None,     // graph_symmetry
+        Some(50), // t_max
+        None,     // gamma
+        None,     // n_landmarks
+        None,     // landmark_method
+        None,     // n_svd
+        None,     // t_custom
+        None,     // mds_method
+        None,     // mds_iter
+        None,     // randomised
     );
 
     let embd1 = phate(data.as_ref(), None, params.clone(), 42, false);
@@ -540,16 +559,21 @@ fn phate_integration_10_different_seeds() {
     println!("\n=== PHATE DIAGNOSTIC 10: Different Seeds ===");
 
     let params = PhateParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        Some(50),
-        None,
-        None,
-        None,
-        None,
-        None,
+        Some(2),  // n_dim
+        Some(10), // k
+        None,     // ann_type
+        None,     // decay
+        None,     // bandwidth_scale
+        None,     // graph_symmetry
+        Some(50), // t_max
+        None,     // gamma
+        None,     // n_landmarks
+        None,     // landmark_method
+        None,     // n_svd
+        None,     // t_custom
+        None,     // mds_method
+        None,     // mds_iter
+        None,     // randomised
     );
 
     let embd1 = phate(data.as_ref(), None, params.clone(), 42, false);
@@ -580,19 +604,24 @@ fn phate_integration_11_precomputed_knn() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     let params = PhateParams::new(
-        Some(2),
-        Some(k),
-        None,
-        None,
-        Some(50),
-        None,
-        None,
-        None,
-        None,
-        None,
+        Some(2),  // n_dim
+        Some(k),  // k
+        None,     // ann_type
+        None,     // decay
+        None,     // bandwidth_scale
+        None,     // graph_symmetry
+        Some(50), // t_max
+        None,     // gamma
+        None,     // n_landmarks
+        None,     // landmark_method
+        None,     // n_svd
+        None,     // t_custom
+        None,     // mds_method
+        None,     // mds_iter
+        None,     // randomised
     );
 
     let embd_precomputed = phate(
@@ -628,33 +657,41 @@ fn phate_integration_12_fixed_vs_auto_t() {
 
     println!("\n=== PHATE DIAGNOSTIC 12: Fixed t vs Auto t ===");
 
-    let mut params_auto = PhateParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        Some(50),
-        None,
-        None,
-        None,
-        None,
-        None,
+    let params_auto = PhateParams::new(
+        Some(2),  // n_dim
+        Some(10), // k
+        None,     // ann_type
+        None,     // decay
+        None,     // bandwidth_scale
+        None,     // graph_symmetry
+        Some(50), // t_max
+        None,     // gamma
+        None,     // n_landmarks
+        None,     // landmark_method
+        None,     // n_svd
+        None,     // t_custom — None means Auto
+        None,     // mds_method
+        None,     // mds_iter
+        None,     // randomised
     );
-    params_auto.time = PhateTime::Auto { t_max: 50 };
 
-    let mut params_fixed = PhateParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        Some(50),
-        None,
-        None,
-        None,
-        None,
-        None,
+    let params_fixed = PhateParams::new(
+        Some(2),  // n_dim
+        Some(10), // k
+        None,     // ann_type
+        None,     // decay
+        None,     // bandwidth_scale
+        None,     // graph_symmetry
+        None,     // t_max
+        None,     // gamma
+        None,     // n_landmarks
+        None,     // landmark_method
+        None,     // n_svd
+        Some(10), // t_custom — Some(10) means Fixed(10)
+        None,     // mds_method
+        None,     // mds_iter
+        None,     // randomised
     );
-    params_fixed.time = PhateTime::Fixed(10);
 
     let embd_auto = phate(data.as_ref(), None, params_auto, 42, false);
     let embd_fixed = phate(data.as_ref(), None, params_fixed, 42, false);
@@ -687,7 +724,7 @@ fn phate_integration_13_bandwidth_scale_effect() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!("\n=== PHATE DIAGNOSTIC 13: Bandwidth Scale Effect ===");
 

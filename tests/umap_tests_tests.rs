@@ -16,7 +16,7 @@ fn umap_integration_01_knn_correctness() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!("\n=== DIAGNOSTIC 1: kNN Search Correctness ===");
     println!(
@@ -94,7 +94,7 @@ fn umap_integration_02_smooth_knn_dist() {
     let k = 15;
 
     let nn_params = NearestNeighbourParams::default();
-    let (_, knn_dist) = run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+    let (_, knn_dist) = run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!("\n=== DIAGNOSTIC 2: smooth_knn_dist Values ===");
 
@@ -656,7 +656,7 @@ fn umap_integration_07_precomputed_knn() {
     // First, run kNN search separately
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42);
+        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
     println!(
         "Precomputed kNN: {} neighbours per point",

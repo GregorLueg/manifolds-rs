@@ -1,23 +1,26 @@
 use ann_search_rs::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
-use ann_search_rs::utils::dist::SimdDistance;
+use ann_search_rs::prelude::*;
 
 use ann_search_rs::*;
 use faer::MatRef;
-use num_traits::{Float, FromPrimitive, ToPrimitive};
+use num_traits::Float;
 use rayon::prelude::*;
 use std::default::Default;
-use std::iter::Sum;
 
 #[derive(Default)]
 pub enum AnnSearch {
-    #[default]
     /// Annoy
     Annoy,
     /// HNSW
+    #[default]
     Hnsw,
     /// NNDescent
     NNDescent,
+    /// BallTree
+    BallTree,
+    /// Exhaustive
+    Exhaustive,
 }
 
 /// Parameters for the nearest neighbour search
@@ -47,6 +50,10 @@ pub enum AnnSearch {
 ///   generation.
 /// * `delta` - Early termination criterium
 /// * `ef_budget` - Optional query budget.
+///
+/// **BallTree**-specific parameter
+///
+/// * `ef_budget` - Optional query budget.
 #[derive(Debug, Clone)]
 pub struct NearestNeighbourParams<T> {
     pub dist_metric: String,
@@ -61,6 +68,8 @@ pub struct NearestNeighbourParams<T> {
     pub diversify_prob: T,
     pub delta: T,
     pub ef_budget: Option<usize>,
+    // balltree
+    pub bt_budget: T,
 }
 
 impl<T> NearestNeighbourParams<T> {
@@ -68,12 +77,35 @@ impl<T> NearestNeighbourParams<T> {
     ///
     /// ### Params
     ///
+    /// General parameters
+    ///
+    /// * `dist_metric` - One of `"euclidean"` or `"cosine"`
+    ///
+    /// **Annoy**
+    ///
     /// * `dist_metric` - One of `"euclidean"` or `"cosine"`
     /// * `n_trees` - Number of trees to use to build the index. Defaults to `50`
     ///   like the `uwot` package.
     /// * `search_budget` - Optional search budget. The algorithm will set the
     ///   search budget to `10 * k * n_trees` if not provided.
     ///
+    /// **HNSW**
+    ///
+    /// * `m` - Number of edges to generate per layer.
+    /// * `ef_construction` - Budget during the construction of the index.
+    /// * `ef_search` - Budget during the search of the index.
+    ///
+    /// **NN Descent**
+    ///
+    /// * `delta` - Early termination criterium.
+    /// * `diversify_prob` - Diversifying probability at the end of the index
+    ///   generation. Generates additional random edges which can improve the
+    ///   Recall.
+    /// * `ef_budget` - Optional query budget.
+    ///
+    /// **BallTree**
+    ///
+    /// * `bt_budget` - Budget to use for BallTree
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         dist_metric: String,
@@ -88,6 +120,8 @@ impl<T> NearestNeighbourParams<T> {
         diversify_prob: T,
         delta: T,
         ef_budget: Option<usize>,
+        // balltree
+        bt_budget: T,
     ) -> Self {
         Self {
             dist_metric,
@@ -99,6 +133,7 @@ impl<T> NearestNeighbourParams<T> {
             diversify_prob,
             delta,
             ef_budget,
+            bt_budget,
         }
     }
 }
@@ -126,6 +161,8 @@ where
             diversify_prob: T::from(0.0).unwrap(),
             delta: T::from(0.001).unwrap(),
             ef_budget: None,
+            // balltree
+            bt_budget: T::from(0.1).unwrap(),
         }
     }
 }
@@ -144,6 +181,8 @@ pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
         "annoy" => Some(AnnSearch::Annoy),
         "hnsw" => Some(AnnSearch::Hnsw),
         "nndescent" => Some(AnnSearch::NNDescent),
+        "balltree" => Some(AnnSearch::BallTree),
+        "exhaustive" => Some(AnnSearch::Exhaustive),
         _ => None,
     }
 }
@@ -155,7 +194,7 @@ pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
 /// * `data` - The data with samples x features
 /// * `k` - Number of neighbours to return
 /// * `ann_type` - Which approximate nearest neighbour search to use. One of
-///   `"annoy"`, `"hnsw"` or `"nndesccent"`.
+///   `"annoy"`, `"hnsw"`, `"balltree"` or `"nndesccent"`.
 /// * `params_nn` - The parameters for the approximate nearest neighbour search.
 /// * `seed` - Seed for reproducibility.
 /// * `verbose` - Controls verbosity of the function
@@ -169,9 +208,10 @@ pub fn run_ann_search<T>(
     ann_type: String,
     params_nn: &NearestNeighbourParams<T>,
     seed: usize,
+    verbose: bool,
 ) -> (Vec<Vec<usize>>, Vec<Vec<T>>)
 where
-    T: Float + FromPrimitive + ToPrimitive + Send + Sync + Default + Sum + SimdDistance,
+    T: AnnSearchFloat,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
@@ -182,7 +222,7 @@ where
             let index =
                 build_annoy_index(data, params_nn.dist_metric.clone(), params_nn.n_tree, seed);
 
-            query_annoy_index(data, &index, k + 1, params_nn.search_budget, true, false)
+            query_annoy_index(data, &index, k + 1, params_nn.search_budget, true, verbose)
         }
         AnnSearch::Hnsw => {
             let index = build_hnsw_index(
@@ -191,10 +231,10 @@ where
                 params_nn.ef_construction,
                 &params_nn.dist_metric,
                 seed,
-                false,
+                verbose,
             );
 
-            query_hnsw_index(data, &index, k + 1, params_nn.ef_search, true, false)
+            query_hnsw_index(data, &index, k + 1, params_nn.ef_search, true, verbose)
         }
         AnnSearch::NNDescent => {
             let index = build_nndescent_index(
@@ -207,10 +247,22 @@ where
                 None,
                 None,
                 seed,
-                false,
+                verbose,
             );
 
-            query_nndescent_index(data, &index, k + 1, params_nn.ef_budget, true, false)
+            query_nndescent_index(data, &index, k + 1, params_nn.ef_budget, true, verbose)
+        }
+        AnnSearch::BallTree => {
+            let index = build_balltree_index(data, params_nn.dist_metric.clone(), seed);
+
+            let budget = (data.nrows() as f32 * params_nn.bt_budget.to_f32().unwrap()) as usize;
+
+            query_balltree_index(data, &index, k + 1, Some(budget), true, verbose)
+        }
+        AnnSearch::Exhaustive => {
+            let index = build_exhaustive_index(data, &params_nn.dist_metric);
+
+            query_exhaustive_index(data, &index, k + 1, true, verbose)
         }
     };
 

@@ -195,40 +195,41 @@ where
 
     let row_results: Vec<Vec<(usize, T)>> = (0..nrows)
         .into_par_iter()
-        .map(|i| {
-            let mut acc = SparseAccumulator::new(ncols);
+        .map_init(
+            || SparseAccumulator::new(ncols),
+            |acc, i| {
+                unsafe {
+                    let a_indptr = a.indptr.as_ptr();
+                    let a_indices = a.indices.as_ptr();
+                    let a_data = a.data.as_ptr();
+                    let b_indptr = b.indptr.as_ptr();
+                    let b_indices = b.indices.as_ptr();
+                    let b_data = b.data.as_ptr();
 
-            unsafe {
-                let a_indptr = a.indptr.as_ptr();
-                let a_indices = a.indices.as_ptr();
-                let a_data = a.data.as_ptr();
-                let b_indptr = b.indptr.as_ptr();
-                let b_indices = b.indices.as_ptr();
-                let b_data = b.data.as_ptr();
+                    let a_start = *a_indptr.add(i);
+                    let a_end = *a_indptr.add(i + 1);
 
-                let a_start = *a_indptr.add(i);
-                let a_end = *a_indptr.add(i + 1);
+                    for a_idx in a_start..a_end {
+                        let k = *a_indices.add(a_idx);
+                        let a_val = *a_data.add(a_idx);
 
-                for a_idx in a_start..a_end {
-                    let k = *a_indices.add(a_idx);
-                    let a_val = *a_data.add(a_idx);
+                        let b_start = *b_indptr.add(k);
+                        let b_end = *b_indptr.add(k + 1);
 
-                    let b_start = *b_indptr.add(k);
-                    let b_end = *b_indptr.add(k + 1);
-
-                    for b_idx in b_start..b_end {
-                        let j = *b_indices.add(b_idx);
-                        let b_val = *b_data.add(b_idx);
-                        acc.add_acc(j, a_val * b_val);
+                        for b_idx in b_start..b_end {
+                            let j = *b_indices.add(b_idx);
+                            let b_val = *b_data.add(b_idx);
+                            acc.add_acc(j, a_val * b_val);
+                        }
                     }
                 }
-            }
 
-            acc.extract_sorted()
-        })
+                acc.extract_sorted()
+            },
+        )
         .collect();
 
-    // Direct CSR construction
+    // direct CSR construction
     let total_nnz: usize = row_results.iter().map(|r| r.len()).sum();
     let mut data = Vec::with_capacity(total_nnz);
     let mut indices = Vec::with_capacity(total_nnz);

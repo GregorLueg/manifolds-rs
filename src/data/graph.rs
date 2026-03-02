@@ -955,7 +955,7 @@ where
                     dists[knn - 1] // already a distance
                 }
             } else {
-                // Fallback: use last neighbour
+                // fallback: use last neighbour
                 if distances_squared {
                     dists[dists.len() - 1].sqrt()
                 } else {

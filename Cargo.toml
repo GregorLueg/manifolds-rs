@@ -30,7 +30,7 @@ burn = { version = "0.19.1", features = [
     "train",
     "ndarray",
 ], optional = true }
-ann-search-rs = "0.2.3"
+ann-search-rs = "0.2.4"
 approx = "0.5.1"
 faer = "0.23.2"
 faer-traits = "0.23.2"

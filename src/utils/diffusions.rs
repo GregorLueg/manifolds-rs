@@ -1,16 +1,112 @@
 use ann_search_rs::utils::dist::{parse_ann_dist, Dist, SimdDistance};
+use ann_search_rs::utils::k_means_utils::{assign_all_parallel, train_centroids};
 use faer::MatRef;
 use faer_traits::{ComplexField, RealField};
-use num_traits::Float;
+use num_traits::{Float, FromPrimitive};
+use rand::prelude::Distribution;
 use rand::rngs::StdRng;
 use rand::seq::index::sample;
 use rand::SeedableRng;
+use rand_distr::weighted::WeightedIndex;
 use rayon::prelude::*;
+use rustc_hash::{FxBuildHasher, FxHashSet};
 use std::ops::{AddAssign, Range};
 
 use crate::data::structures::*;
 use crate::utils::math::*;
 use crate::utils::sparse_ops::*;
+
+/////////////
+// Globals //
+/////////////
+
+pub const PHATE_MAX_T: usize = 100;
+
+////////////
+// Params //
+////////////
+
+/// Parameters for the diffusion process
+///
+/// ### Fields
+///
+/// * `decay` - Decay exponent alpha (typical: 40). If None, returns binary
+///   connectivity.
+/// * `bandwidth_scale` - Multiplicative factor for bandwidth (default: 1.0)
+/// * `thresh` - Threshold below which affinities are set to 0 (default: 1e-4,
+///   for sparsity)
+/// * `graph_symmetry` - symmetrisation method: "add" for (K+K^T)/2, "multiply"
+///   for K*K^T, "none" for asymmetric.
+/// * `n_landmarks` - Option to use landmarks. Set to something.
+/// * `landmark_method` - String definining which landmark method to use.
+/// * `n_svd` - Number of SVDs to use for the spectral clustering
+/// * `t_max` - to be written
+/// * `gamma` - to be written
+#[derive(Debug, Clone)]
+pub struct PhateDiffusionParams<T> {
+    pub decay: Option<T>,
+    pub bandwidth_scale: T,
+    pub thresh: T,
+    pub graph_symmetry: String,
+    pub n_landmarks: Option<usize>,
+    pub landmark_method: String,
+    pub n_svd: Option<usize>,
+    pub t: PhateTime,
+    pub gamma: T,
+}
+
+impl<T> PhateDiffusionParams<T> {
+    /// Generate new PhateDiffusionParams
+    ///
+    /// ### Params
+    ///
+    /// * `decay` - Decay exponent alpha (typical: 40). If None, returns binary
+    ///   connectivity.
+    /// * `bandwidth_scale` - Multiplicative factor for bandwidth (default: 1.0)
+    /// * `thresh` - Threshold below which affinities are set to 0 (default: 1e-4,
+    ///   for sparsity)
+    /// * `graph_symmetry` - symmetrisation method: "add" for (K+K^T)/2,
+    ///   "multiply"
+    ///   for K*K^T, "none" for asymmetric.
+    /// * `n_landmarks` - Option to use landmarks. Set to something.
+    /// * `landmark_method` - String definining which landmark method to use.
+    /// * `n_svd` - Number of SVDs to use for the spectral clustering.
+    /// * `gamma` - To be written
+    /// * `t_detection` -
+    ///
+    /// ### Returns
+    ///
+    /// Initialised self
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        decay: Option<T>,
+        bandwidth_scale: T,
+        thresh: T,
+        graph_symmetry: String,
+        n_landmarks: Option<usize>,
+        landmark_method: String,
+        n_svd: Option<usize>,
+        t_max: Option<usize>,
+        t_custom: Option<usize>,
+        gamma: T,
+    ) -> Self {
+        let t_max = t_max.unwrap_or(PHATE_MAX_T);
+
+        let t = parse_phate_time(t_custom, t_max);
+
+        Self {
+            decay,
+            bandwidth_scale,
+            thresh,
+            graph_symmetry,
+            n_landmarks,
+            landmark_method,
+            n_svd,
+            t,
+            gamma,
+        }
+    }
+}
 
 /// Build the row-stochastic Diffusion Operator P
 ///
@@ -111,21 +207,20 @@ impl Default for PhateTime {
     }
 }
 
-/// Parse the time diffusion method from a string.
+/// Parse the Phate t value based on the provided values
 ///
 /// ### Params
 ///
-/// * `s` - String to parse. One of `auto`, `fixed`.
-/// * `t` - Maximum time for auto-diffusion or the fixed number of time to use.
+/// * `t_custom` - If provided, it will use this value.
+/// * `t_max` - Maximum number for auto-detection
 ///
 /// ### Returns
 ///
-/// Option<PhateTime>
-pub fn parse_phate_time(s: &str, t: usize) -> Option<PhateTime> {
-    match s.to_lowercase().as_str() {
-        "auto" => Some(PhateTime::Auto { t_max: t }),
-        "fixed" => Some(PhateTime::Fixed(t)),
-        _ => None,
+/// PhateTime
+pub fn parse_phate_time(t_custom: Option<usize>, t_max: usize) -> PhateTime {
+    match t_custom {
+        Some(t) => PhateTime::Fixed(t),
+        None => PhateTime::Auto { t_max },
     }
 }
 
@@ -140,12 +235,14 @@ pub enum LandmarkMethod {
     Random { seed: u64 },
     /// Use spectral clustering to select landmarks.
     Spectral { n_svd: usize },
+    /// Density - leverage node degree
+    Density { seed: u64 },
 }
 
 impl Default for LandmarkMethod {
-    /// Default to random landmark selection with a fixed seed.
+    /// Default to spectral with 100 PCs to calculate
     fn default() -> Self {
-        LandmarkMethod::Random { seed: 42 }
+        LandmarkMethod::Spectral { n_svd: 100 }
     }
 }
 
@@ -175,6 +272,7 @@ pub fn parse_landmark_method(
     match s.to_lowercase().as_str() {
         "random" => Some(LandmarkMethod::Random { seed: seed as u64 }),
         "spectral" => Some(LandmarkMethod::Spectral { n_svd }),
+        "density" => Some(LandmarkMethod::Density { seed: seed as u64 }),
         _ => None,
     }
 }
@@ -322,10 +420,10 @@ where
         panic!("Cannot find knee point on vector of length < 3");
     }
 
-    // Use indices as x values
+    // use indices as x values
     let x: Vec<T> = (0..n).map(|i| T::from(i).unwrap()).collect();
 
-    // Compute cumulative sums for linear fits
+    // compute cumulative sums for linear fits
     let mut sigma_x = Vec::with_capacity(n);
     let mut sigma_y = Vec::with_capacity(n);
     let mut sigma_xy = Vec::with_capacity(n);
@@ -348,7 +446,7 @@ where
         sigma_xx.push(sum_xx);
     }
 
-    // Compute forward fits (left of knee)
+    // compute forward fits (left of knee)
     let mut mfwd = Vec::with_capacity(n - 1);
     let mut bfwd = Vec::with_capacity(n - 1);
 
@@ -367,7 +465,7 @@ where
         }
     }
 
-    // Compute backward fits (right of knee) by reversing
+    // compute backward fits (right of knee) by reversing
     let x_rev: Vec<T> = x.iter().rev().copied().collect();
     let y_rev: Vec<T> = y.iter().rev().copied().collect();
 
@@ -426,7 +524,7 @@ where
             error = error + (predicted - y[i]).abs();
         }
 
-        // Error from right fit
+        // error from right fit
         for i in breakpt..n {
             let predicted = mbck[breakpt - 1] * x[i] + bbck[breakpt - 1];
             error = error + (predicted - y[i]).abs();
@@ -435,7 +533,7 @@ where
         error_curve[breakpt] = error;
     }
 
-    // Find minimum error
+    // find minimum error
     let mut min_idx = 1;
     let mut min_error = error_curve[1];
 
@@ -485,14 +583,16 @@ where
         + AddAssign
         + ComplexField
         + RealField
-        + std::ops::AddAssign,
+        + std::ops::AddAssign
+        + FromPrimitive,
 {
     /// Build landmarks from an existing diffusion operator
     ///
     /// ### Params
     ///
     /// * `data` - Original data (N × features)
-    /// * `diffusion_op` - The P matrix (N × N) already built and normalized
+    /// * `affinity` - Original affinity matrix (N x N) - not yet normalised.
+    /// * `diffusion_op` - The P matrix (N × N) already built and normalised.
     /// * `n_landmarks` - Number of landmarks to use
     /// * `method` - Random or Spectral
     /// * `distance` - Distance metric used
@@ -502,21 +602,28 @@ where
     /// ### Returns
     ///
     /// PhateLandmarks structure ready for powering
+    #[allow(clippy::too_many_arguments)]
     pub fn build(
         data: MatRef<T>,
+        affinity: &CompressedSparseData<T>,
         diffusion_op: &CompressedSparseData<T>,
         n_landmarks: usize,
         method: &str,
         distance: &str,
-        seed: Option<usize>,
+        seed: usize,
         n_svd: Option<usize>,
+        verbose: bool,
     ) -> Self {
         let (data, n, dim) = matrix_to_flat(data);
-        let landmark_method = parse_landmark_method(method, seed, n_svd).unwrap_or_default();
+        let landmark_method = parse_landmark_method(method, Some(seed), n_svd).unwrap_or_default();
         let distance = parse_ann_dist(distance).unwrap_or_default();
 
         let assignments: Vec<usize> = match landmark_method {
             LandmarkMethod::Random { seed } => {
+                if verbose {
+                    println!(" Using random selection of landmarks.")
+                }
+
                 let landmark_indices = random_sample(0..n, n_landmarks, seed);
 
                 let landmark_data: Vec<T> = landmark_indices
@@ -528,14 +635,14 @@ where
                 let norm_data = match distance {
                     Dist::Cosine => (0..n)
                         .into_par_iter()
-                        .map(|i| T::calculate_norm(&data[i * dim..(i + 1) * dim]))
+                        .map(|i| T::calculate_l2_norm(&data[i * dim..(i + 1) * dim]))
                         .collect::<Vec<_>>(),
                     Dist::Euclidean => Vec::new(),
                 };
                 let norm_landmark = match distance {
                     Dist::Cosine => (0..n_landmarks)
                         .into_par_iter()
-                        .map(|i| T::calculate_norm(&landmark_data[i * dim..(i + 1) * dim]))
+                        .map(|i| T::calculate_l2_norm(&landmark_data[i * dim..(i + 1) * dim]))
                         .collect::<Vec<_>>(),
                     Dist::Euclidean => Vec::new(),
                 };
@@ -562,7 +669,144 @@ where
             }
             #[allow(unused_variables)]
             LandmarkMethod::Spectral { n_svd } => {
-                unimplemented!("Spectral clustering not yet implemented")
+                if verbose {
+                    println!(" Using spectral detection of landmarks.")
+                }
+
+                let svd = sparse_randomised_svd(affinity, n_svd, seed as u64, None, None);
+
+                if verbose {
+                    println!(" Finished calculation of randomised SVD on the affinity matrix.")
+                }
+
+                let v = &svd.v;
+                let k = v.ncols();
+                let mut embedding_flat: Vec<T> = vec![T::zero(); n * k];
+
+                for i in 0..n {
+                    for idx in diffusion_op.indptr[i]..diffusion_op.indptr[i + 1] {
+                        let j = diffusion_op.indices[idx];
+                        let a_val = diffusion_op.data[idx];
+                        for col in 0..k {
+                            embedding_flat[i * k + col] += a_val * v[(j, col)];
+                        }
+                    }
+                }
+
+                // use ann-search-rs k-means-clustering
+                let centroids = train_centroids(
+                    &embedding_flat,
+                    k,
+                    n,
+                    n_landmarks,
+                    &Dist::Euclidean,
+                    100,
+                    seed,
+                    verbose,
+                );
+
+                if verbose {
+                    println!(" Centroids identified.")
+                }
+
+                let centroid_norms = vec![T::one(); n_landmarks]; // Euclidean, unused
+                let data_norms = vec![T::one(); n];
+
+                let assignemnts = assign_all_parallel(
+                    &embedding_flat,
+                    &data_norms,
+                    k,
+                    n,
+                    &centroids,
+                    &centroid_norms,
+                    n_landmarks,
+                    &Dist::Euclidean,
+                );
+
+                if verbose {
+                    println!(" Landmark assignments done.")
+                }
+
+                assignemnts
+            }
+            LandmarkMethod::Density { seed } => {
+                if verbose {
+                    println!(" Using degree-weighted (density) selection of landmarks.")
+                }
+
+                // calculate weights
+                let weights: Vec<f64> = (0..n)
+                    .into_par_iter()
+                    .map(|i| {
+                        let start = affinity.indptr[i];
+                        let end = affinity.indptr[i + 1];
+                        let mut sum = T::zero();
+                        for idx in start..end {
+                            sum += affinity.data[idx];
+                        }
+
+                        // damping prevents massive clusters from hogging all
+                        // the landmarks, ensuring rare branches/trajectories
+                        // still get sampled. neat trick over just degree-based
+                        // sampling
+                        sum.to_f64().unwrap_or(0.0).sqrt()
+                    })
+                    .collect();
+
+                let mut rng = StdRng::seed_from_u64(seed);
+                let dist = WeightedIndex::new(&weights).expect("Failed to create weighted index. Check affinity matrix for negative/NaN values.");
+
+                // generate exactly n_landmarks
+                let mut landmark_set =
+                    FxHashSet::with_capacity_and_hasher(n_landmarks, FxBuildHasher);
+                while landmark_set.len() < n_landmarks {
+                    landmark_set.insert(dist.sample(&mut rng));
+                }
+
+                let landmark_indices: Vec<usize> = landmark_set.into_iter().collect();
+
+                // extract the data
+                let landmark_data: Vec<T> = landmark_indices
+                    .iter()
+                    .flat_map(|&i| data[i * dim..(i + 1) * dim].iter().copied())
+                    .collect();
+
+                // norms
+                let norm_data = match distance {
+                    Dist::Cosine => (0..n)
+                        .into_par_iter()
+                        .map(|i| T::calculate_l2_norm(&data[i * dim..(i + 1) * dim]))
+                        .collect::<Vec<_>>(),
+                    Dist::Euclidean => Vec::new(),
+                };
+                let norm_landmark = match distance {
+                    Dist::Cosine => (0..n_landmarks)
+                        .into_par_iter()
+                        .map(|i| T::calculate_l2_norm(&landmark_data[i * dim..(i + 1) * dim]))
+                        .collect::<Vec<_>>(),
+                    Dist::Euclidean => Vec::new(),
+                };
+
+                // assign
+                (0..n)
+                    .into_par_iter()
+                    .map(|i| {
+                        let norm = if matches!(distance, Dist::Euclidean) {
+                            T::zero() // unused by assign_to_landmark for Euclidean
+                        } else {
+                            norm_data[i]
+                        };
+                        assign_to_landmark(
+                            &data[i * dim..(i + 1) * dim],
+                            &norm,
+                            &landmark_data,
+                            &norm_landmark,
+                            &distance,
+                            n_landmarks,
+                            dim,
+                        )
+                    })
+                    .collect()
             }
         };
 
@@ -603,11 +847,7 @@ where
             return self.landmark_op.clone();
         }
 
-        let mut result = self.landmark_op.clone();
-        for _ in 1..t {
-            result = csr_matmul_csr(&result, &self.landmark_op);
-        }
-        result
+        matrix_power(&self.landmark_op, t)
     }
 
     /// Compute diffusion at optimal time
@@ -624,7 +864,7 @@ where
         T: AddAssign,
     {
         let t_opt = self.find_optimal_t(t_max);
-        self.power(t_opt)
+        matrix_power(&self.landmark_op, t_opt)
     }
 
     /// Interpolate landmark diffusion back to full data space
@@ -660,9 +900,46 @@ where
     ///
     /// Optimal t value (knee point of entropy curve)
     pub fn find_optimal_t(&self, t_max: usize) -> usize {
-        let dense = self.landmark_op.to_dense();
-        let entropy = von_neumann_entropy(dense, t_max);
+        let entropy = landmark_von_neumann_entropy(&self.landmark_op, t_max);
         find_knee_point(&entropy)
+    }
+
+    /// Interpolate embedding from landmark embedding
+    ///
+    /// ### Params
+    ///
+    /// * `landmark_embedding` - The embedding calculated on the landmark
+    ///   transition matrix
+    ///
+    /// ### Returns
+    ///
+    /// Interpolated embedding
+    pub fn interpolate_embedding(&self, landmark_embedding: &[Vec<T>]) -> Vec<Vec<T>>
+    where
+        T: AddAssign,
+    {
+        let n = self.transitions.shape().0;
+        let n_dim = landmark_embedding[0].len();
+        let mut embedding = vec![vec![T::zero(); n_dim]; n];
+
+        for i in 0..n {
+            let start = self.transitions.indptr[i];
+            let end = self.transitions.indptr[i + 1];
+            for idx in start..end {
+                let l = self.transitions.indices[idx];
+                let w = self.transitions.data[idx];
+                for d in 0..n_dim {
+                    embedding[i][d] += w * landmark_embedding[l][d];
+                }
+            }
+        }
+
+        embedding
+    }
+
+    /// Get the numbers of landmarks
+    pub fn get_n_landmarks(&self) -> usize {
+        self.n_landmarks
     }
 }
 
