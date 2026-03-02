@@ -5,7 +5,7 @@
 # manifolds-rs
 
 High-performance manifold learning and dimensionality reduction algorithms
-implemented in Rust. Contains for now
+implemented in Rust. Contains for now:
 
 - **UMAP**
 - **Parametric UMAP** (optional feature)
@@ -13,6 +13,7 @@ implemented in Rust. Contains for now
   - ***Barnes Hut tSNE*** (With a `O(n log n)` complexity).
   - ***Fast Fourier Transform-accelerated Interpolation-based t-SNE (Flt-SNE)***
   (optional feature; with a `O(n)` complexity for large datasets).
+- **PHATE**
 
 ## Description
 
@@ -25,7 +26,7 @@ These are typically used methods for visualising high-dimensional biological
 data, but not without [controversy](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1011288).
 Moreover, the `crate` also provides via the Burn DL framework optionally
 [parametric UMAP](https://arxiv.org/abs/2009.12981) that can be optionally be
-used via the prospective feature flag. The next one to implement is likely
+used via the prospective feature flag. With the new release, we also have
 [PHATE](https://pmc.ncbi.nlm.nih.gov/articles/PMC7073148/).
 
 ## Features
@@ -35,6 +36,8 @@ reduction algorithm with several optimisations: SGD, Adam and a parallelised
 version of ADAM for increased optimisation speed.
 - **tSNE algorithm**: Implementation of the Barnes-Hut accelerated version and
 the FFT-accelerated version (optional).
+- **PHATE**: Implementation of Potential of Heat-diffusion for Affinity-based
+  Trajectory Embedding with different landmark methods.
 - **Multiple ANN backends** via [`ann-search-rs`](https://crates.io/crates/ann-search-rs):
   - Annoy (Approximate Nearest Neighbours Oh Yeah) - good for smaller datasets.
   - HNSW (Hierarchical Navigable Small World) - good for larger datasets.
@@ -50,13 +53,14 @@ the FFT-accelerated version (optional).
   - Random initialisation
   - PCA-based initialisation with randomised SVD for veeery large data sets
 - **Customisable parameters**: Full control over fuzzy simplicial set
-construction, graph symmetrisation, and optimisation parameters for tSNE and
-UMAP.
+  construction, graph symmetrisation, and optimisation parameters for tSNE,
+  UMAP and PHATE.
 - **High performance**: Parallel processing with Rayon, efficient sparse matrix
-operations, and optimised SGD and Adam optimisers for UMAP (for the latter also a
-parallelised version...) and rapid optimisations for tSNE.
+  operations, cache-friendly structures and optimised SGD and Adam optimisers
+  for UMAP (for the latter also a parallelised version...) and fast optimisers
+  for tSNE and also PHATE.
 - **Synthetic datasets**: Some synthetic datasets are available for testing and
-experimentation: Swiss role, clustered data and a tree-like structure.
+  experimentation: Swiss role, clustered data and a trajectory-like structure.
 
 ## Installation
 
@@ -64,21 +68,21 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-manifold-rs = "*"
+manifolds-rs = "*"
 ```
 
 If you want to enable parametric UMAP, please use:
 
 ```toml
 [dependencies]
-manifold-rs = { version = "*", features = [ "parametric" ] }
+manifolds-rs = { version = "*", features = [ "parametric" ] }
 ```
 
 If you want to enable the FFT-accelerated version of tSNE, please use:
 
 ```toml
 [dependencies]
-manifold-rs = { version = "*", features = [ "fft_tsne" ] }
+manifolds-rs = { version = "*", features = [ "fft_tsne" ] }
 ```
 
 ## Notes
@@ -148,7 +152,7 @@ let params = TsneParams::new(
     Some(1000),   // n_epochs
     None,         // ann_type (None = default "hnsw")
     Some(0.5),    // theta (Barnes-Hut angle)
-    Some(3),      // n_jobs
+    Some(3),      // n_interp_points (FFT interpolation grid points)
 );
 
 // Run t-SNE (Barnes-Hut)
@@ -183,6 +187,7 @@ let (knn_indices, knn_dist) = run_ann_search(
     "hnsw".to_string(),
     &nn_params,
     42,              // seed
+    true             // verbosity
 );
 
 // Use precomputed k-NN for UMAP
@@ -246,6 +251,56 @@ let embedding = parametric_umap::<f64, Backend>(
     None,        // precomputed kNN (None = compute internally)
     &params,
     &device,
+    42,          // seed
+    true,        // verbose
+);
+
+// embedding[0] contains x-coordinates
+// embedding[1] contains y-coordinates
+```
+
+### PHATE Example
+
+PHATE is well-suited for data with continuous structure and branching
+trajectories, such as single-cell differentiation data.
+
+```rust
+use manifolds_rs::prelude::*;
+
+// Generate a synthetic branching trajectory
+let branches = generate_example_branches(&TrajectoryTopology::DeepBifurcation);
+let (data, branch_assignments) = generate_trajectory(
+    1000,        // n_samples
+    &branches,   // branch topology
+    50,          // dimensionality
+    0.5,         // noise
+    42,          // seed
+);
+
+// Configure PHATE parameters
+let params = PhateParams::new(
+    Some(2),     // n_dim (output dimensions)
+    Some(5),     // k (number of neighbours)
+    None,        // ann_type (None = default "hnsw")
+    None,        // decay (None = default 40.0)
+    None,        // bandwidth_scale (None = default 1.0)
+    None,        // graph_symmetry (None = default "average")
+    None,        // t_max (None = auto)
+    None,        // gamma (None = default 1.0)
+    None,        // n_landmarks (None = full operator)
+    None,        // landmark_method (None = default "spectral")
+    None,        // n_svd
+    None,        // t_custom
+    None,        // mds_method (None = default "sgd_dense")
+    None,        // mds_iter
+    None,        // randomised (None = default true)
+);
+
+// Run PHATE
+let embedding = phate(
+    data.as_ref(),
+    None,        // precomputed kNN (None = compute internally)
+    params,      // note: consumed by value, not borrowed
     42,          // seed
     true,        // verbose
 );
