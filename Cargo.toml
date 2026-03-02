@@ -30,7 +30,7 @@ burn = { version = "0.19.1", features = [
     "train",
     "ndarray",
 ], optional = true }
-ann-search-rs = { git = "https://github.com/GregorLueg/ann-search-rs", branch = "docs-updated-benchmarks" }
+ann-search-rs = "0.2.4"
 approx = "0.5.1"
 faer = "0.23.2"
 faer-traits = "0.23.2"
