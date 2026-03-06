@@ -1,7 +1,7 @@
 //! Re-exports of commonly used types and traits for convenient glob importing.
 //!
 //! ```rust
-//! use my_crate::prelude::*;
+//! use manifolds_rs::prelude::*;
 //! ```
 
 pub use crate::data::init::{initialise_embedding, parse_initilisation};
