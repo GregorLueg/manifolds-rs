@@ -1,3 +1,5 @@
+//! Barnes-Hut tree implementation for tSNE fitting
+
 use num_traits::{Float, FromPrimitive};
 
 /////////////
@@ -124,23 +126,20 @@ impl LeafData {
 /// majority) free of heap allocation whilst still correctly tracking all
 /// indices for coincident-point leaves, ensuring exact self-interaction
 /// exclusion during force computation.
-///
-/// ### Fields
-///
-/// * `com_x` - Centre of mass (X)
-/// * `com_y` - Centre of mass (Y)
-/// * `mass` - Total mass (number of points in this node/subtree)
-/// * `width` - Width of the cell covered by this node
-/// * `children` - Indices of children in the `nodes` vector; `None` if
-///   child does not exist
-/// * `leaf_data` - Point data for leaf nodes; `None` for internal nodes
 #[derive(Debug, Clone)]
 pub struct QuadNode<T> {
+    /// Centre of mass (X)
     pub com_x: T,
+    /// Centre of mass (Y)
     pub com_y: T,
+    /// Total mass (number of points in this node/subtree)
     pub mass: T,
+    /// Width of the cell covered by this node
     pub width: T,
+    /// Indices of children in the `nodes` vector; `None` if child does not
+    /// exist
     pub children: [Option<usize>; 4],
+    /// Point data for leaf nodes; `None` for internal nodes
     pub leaf_data: Option<LeafData>,
 }
 
@@ -171,13 +170,10 @@ struct BuildTask<T> {
 /// Stores nodes in a contiguous flat arena for cache locality. The tree
 /// is built once per epoch from the current embedding positions, then
 /// queried in parallel for each point's repulsive forces.
-///
-/// ### Fields
-///
-/// * `nodes` - Flat arena of quad-tree nodes
-/// * `root` - Index of the root node in the arena
 pub struct BarnesHutTree<T> {
+    /// Flat arena of quad-tree nodes
     pub nodes: Vec<QuadNode<T>>,
+    /// Index of the root node in the arena
     pub root: usize,
 }
 
