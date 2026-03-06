@@ -1,3 +1,6 @@
+//! Module containing helper functions to generate the graphs used by UMAP and
+//! tSNE.
+
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};

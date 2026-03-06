@@ -9,6 +9,7 @@ use rayon::prelude::*;
 use std::default::Default;
 use std::iter::Sum;
 
+/// Which search algorithm to use for the approximate nearest neighbour search
 #[derive(Default)]
 pub enum AnnSearch {
     #[default]

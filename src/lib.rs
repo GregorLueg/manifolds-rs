@@ -1,4 +1,5 @@
 #![allow(clippy::needless_range_loop)] // I like loops ... !
+#![warn(missing_docs)]
 
 pub mod data;
 pub mod prelude;

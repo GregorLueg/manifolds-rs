@@ -1,3 +1,5 @@
+//! Module containing functions to initialise embeddings
+
 use faer::{
     traits::{ComplexField, RealField},
     MatRef,
@@ -14,11 +16,13 @@ use std::iter::Sum;
 use crate::data::structures::*;
 use crate::utils::math::*;
 
-// Different initial ranges for the embedddings
-// Defaults based on what works for UMAP
-
+/// Range for spectral-based initialisation (based on uwot UMAP)
 pub const SPECTRAL_RANGE: f64 = 10.0;
+
+/// Range for randomly generated initialisation (based on uwot UMAP)
 pub const RANDOM_RANGE: f64 = 10.0;
+
+/// Range for PCA-based initialisation (based on uwot UMAP)
 pub const PCA_RANGE: f64 = 1.0;
 
 /////////////
@@ -29,11 +33,22 @@ pub const PCA_RANGE: f64 = 1.0;
 #[derive(Clone, Debug)]
 pub enum EmbdInit<T> {
     /// Spectral initialisation
-    SpectralInit { range: Option<T> },
+    SpectralInit {
+        /// Optional range parameters that overrides defaults
+        range: Option<T>,
+    },
     /// Random initialisation
-    RandomInit { range: Option<T> },
+    RandomInit {
+        /// Optional range parameters that overrides defaults
+        range: Option<T>,
+    },
     /// PCA initialisation
-    PcaInit { range: Option<T>, randomised: bool },
+    PcaInit {
+        /// Optional range parameters that overrides defaults
+        range: Option<T>,
+        /// Shall randomised SVD be used
+        randomised: bool,
+    },
 }
 
 /// Parse the respective initialisation
