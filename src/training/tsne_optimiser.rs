@@ -1,4 +1,7 @@
-use core::f64;
+//! Optimisers for tSNE fitting. Contains the BarnesHut version from Laurens
+//! van der Maarten and the FFT-accelerated Interpolation-based version of tSNE
+//! from Lindermann, et al.
+
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rayon::prelude::*;
 use std::iter::Sum;
@@ -30,24 +33,20 @@ const TSNE_EPS: f64 = 1e-12;
 ////////////////
 
 /// t-SNE specific optimization parameters
-///
-/// ### Fields
-///
-/// * `n_epochs` - Number of epochs (typically n / 12 or 200 or so)
-/// * `lr` - Learning rate
-/// * `early_exag_iter` - Early exaggeration iters
-/// * `early_exag_factor` - The factor to exaggerate in the early iterations
-/// * `theta` - The Barnes-Hut theta; relevant if you use the
-///   `optimise_bh_tsne()`
-/// * `n_interp_points` - Interpolation points per box (typically 3); relevant
-///   if you use `optimise_fft_tsne()`
 #[derive(Clone, Debug)]
 pub struct TsneOptimParams<T> {
+    /// Number of epochs (typically n / 12 or 1000)
     pub n_epochs: usize,
+    /// Learning rate
     pub lr: T,
+    /// Early exaggeration iters
     pub early_exag_iter: usize,
+    /// The factor to exaggerate in the early iterations
     pub early_exag_factor: T,
+    ///  The Barnes-Hut theta; relevant if you use the `optimise_bh_tsne()`
     pub theta: T,
+    /// Interpolation points per box (typically 3); relevant if you use
+    /// `optimise_fft_tsne()`
     pub n_interp_points: usize,
 }
 
@@ -107,6 +106,7 @@ impl<T: Float + FromPrimitive> Default for TsneOptimParams<T> {
 // Optimiser //
 ///////////////
 
+/// Type of optimisation to use for tSNE. Choice of BarnesHut or FFT
 #[derive(Default)]
 pub enum TsneOpt {
     #[default]
