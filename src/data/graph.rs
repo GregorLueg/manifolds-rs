@@ -1,5 +1,5 @@
-//! Module containing helper functions to generate the graphs used by UMAP and
-//! tSNE.
+//! Module containing helper functions to generate the graphs used by UMAP,
+//! tSNE and PHATE.
 
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rayon::prelude::*;
@@ -607,6 +607,7 @@ where
 // Enums //
 ///////////
 
+/// Which symmetrisation to use for the PHATE graph.
 #[derive(Default)]
 pub enum PhateGraphSymmetrisation {
     /// Additive symmetrisation - used in PHATE
