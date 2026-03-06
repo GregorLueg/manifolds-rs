@@ -1,3 +1,6 @@
+//! Synthetic data generation to understand caveats of different embedding
+//! methods and do (assumption) testing
+
 use faer::Mat;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
@@ -146,18 +149,13 @@ pub fn parse_topology(s: &str) -> Option<TrajectoryTopology> {
 }
 
 /// Structure for branch specification
-///
-/// ### Fields
-///
-/// * `parent` - The optional parent of this cell type
-/// * `split_at` - Fraction along the parent where this branch starts (0.0 or
-///   1.0)
-/// * `length` - The length of this branch
 #[derive(Clone, Debug)]
 pub struct BranchSpec {
+    /// The optional parent of this cell type
     pub parent: Option<usize>,
-    // Fraction along parent where this branch starts (0.0–1.0)
+    /// Fraction along the parent where this branch starts (0.0 or 1.0)
     pub split_at: f64,
+    /// The length of this branch
     pub length: f64,
 }
 

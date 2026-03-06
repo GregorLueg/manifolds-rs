@@ -1,3 +1,5 @@
+//! Helper functions to calculate potentials for PHATE
+
 use ann_search_rs::utils::dist::{Dist, SimdDistance};
 use faer_traits::ComplexField;
 use num_traits::Float;

@@ -1,3 +1,6 @@
+//! (Sparse) data structures for representing the graph used in the embedding
+//! methods.
+
 use faer::Mat;
 use faer_traits::ComplexField;
 use num_traits::{Float, Zero};
@@ -15,18 +18,15 @@ use std::ops::{Add, Mul};
 /// Coordinate list
 ///
 /// Represents the graph in COO (Coordinate) format - tensor-friendly
-///
-/// ### Fields
-///
-/// * `row_indices` - Row index
-/// * `col_indices` - Column index
-/// * `values` - The value stored here
-/// * `n_samples` - The number of vertices in the graph
 #[derive(Clone)]
 pub struct CoordinateList<T> {
+    /// Row index
     pub row_indices: Vec<usize>,
+    /// Column index
     pub col_indices: Vec<usize>,
+    /// Edge weights
     pub values: Vec<T>,
+    /// Number of vertices in the graph
     pub n_samples: usize,
 }
 
@@ -83,25 +83,20 @@ impl CompressedSparseFormat {
 }
 
 /// Structure to store compressed sparse data of either type
-///
-/// Ported over from the bixverse code; removed the second data structure here.
-///
-/// ### Fields
-///
-/// * `data` - The values
-/// * `indices` - The indices of the values
-/// * `indptr` - The index pointers
-/// * `cs_type` - Is the data stored in `Csr` or `Csc`.
-/// * `shape` - The shape of the underlying matrix
 #[derive(Debug, Clone)]
 pub struct CompressedSparseData<T>
 where
     T: Clone + Float + ComplexField,
 {
+    /// Data values
     pub data: Vec<T>,
+    /// Indices of the data (pending format, column or row indices)
     pub indices: Vec<usize>,
+    /// Index pointers
     pub indptr: Vec<usize>,
+    /// Storage type, either `Csr` or `CSC`
     pub cs_type: CompressedSparseFormat,
+    /// Dimensionality of the sparse data
     pub shape: (usize, usize),
 }
 
@@ -430,13 +425,10 @@ where
 ////////////////
 
 /// SparseRow represents a row in a sparse matrix.
-///
-/// ### Fields
-///
-/// * `data` - Vector of non-zero values in the row
-/// * `indices` - Vector of column indices corresponding to non-zero values
 pub struct SparseRow<T> {
+    /// Column indices
     pub indices: Vec<usize>,
+    /// Data in the columns
     pub data: Vec<T>,
 }
 

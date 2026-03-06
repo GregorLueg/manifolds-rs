@@ -1,4 +1,11 @@
+//! Dimensionality reduction algorithms including UMAP, t-SNE, and PHATE.
+//!
+//! Provides both standard and approximate nearest-neighbour-based graph
+//! construction, multiple optimisers, and (optionally) parametric UMAP via a
+//! neural network encoder.
+
 #![allow(clippy::needless_range_loop)] // I like loops ... !
+#![warn(missing_docs)]
 
 pub mod data;
 pub mod prelude;
@@ -466,28 +473,24 @@ where
 //////////
 
 /// Main configuration for t-SNE dimensionality reduction
-///
-/// ### Fields
-///
-/// * `n_dim` - Number of output dimensions (typically 2)
-/// * `perplexity` - Perplexity parameter controlling neighbourhood size
-///   (typical: 5-50)
-/// * `ann_type` - Approximate nearest neighbour method: "hnsw" or "nndescent"
-/// * `initialisation` - Embedding initialisation method: "pca", "random", or
-///   "spectral"
-/// * `nn_params` - Nearest neighbour search parameters
-/// * `optim_params` - Optimization parameters (learning rate, epochs, early
-///   exaggeration, theta)
-/// * `randomised_init` - Use randomised SVD for PCA initialisation
 #[derive(Debug, Clone)]
 pub struct TsneParams<T> {
+    ///  Number of output dimensions (typically 2)
     pub n_dim: usize,
+    /// Perplexity parameter controlling neighbourhood size (typical: 5-50)
     pub perplexity: T,
+    /// Approximate nearest neighbour method: `"exhaustive"`, `"annoy"`,
+    /// `"balltree"`, `"hnsw"` or `"nndescent"`
     pub ann_type: String,
+    /// Embedding initialisation method: `"pca"`, `"random"`, or `"spectral"`
     pub initialisation: String,
+    /// Optional initialisation range
     pub init_range: Option<T>,
+    /// Nearest neighbour parameters
     pub nn_params: NearestNeighbourParams<T>,
+    /// tSNE optimisation parameters
     pub optim_params: TsneOptimParams<T>,
+    /// Use randomised SVD for PCA initialisation
     pub randomised_init: bool,
 }
 
@@ -952,31 +955,24 @@ where
 ///////////
 
 /// PHATE parameters
-///
-/// ### Fields
-///
-/// * `n_dim` - Number of output dimensions (default: 2)
-/// * `k` - Number of nearest neighbours for graph construction (default: 5)
-/// * `ann_type` - Approximate nearest neighbour method: `"hnsw"` or
-///   `"nndescent"` (default: `"hnsw"`)
-/// * `ann_params` - Nearest neighbour search parameters.
-/// * `diffusion_params` - Diffusion parameters.
-/// * `mds_method` - MDS algorithm: `"sgd_dense"`, `"sgd_streaming"`, or
-///   `"classic"` (default: `"sgd_dense"`)
-/// * `randomised` - Shall randomised SVD be used for the `"classic"` MDS.
-/// * `ann_params` - Nearest neighbour search parameters
 #[derive(Debug, Clone)]
 pub struct PhateParams<T> {
+    /// Number of output dimensions (default: 2)
     pub n_dim: usize,
-    // knn
+    /// Number of neighbours to use
     pub k: usize,
+    /// Approximate nearest neighbour method: `"exhaustive"`, `"annoy"`,
+    /// `"balltree"`, `"hnsw"` or `"nndescent"`
     pub ann_type: String,
+    /// Nearest neighbour search parameters to use
     pub ann_params: NearestNeighbourParams<T>,
-    // diffusion
+    /// Diffusion parameters to use
     pub diffusion_params: PhateDiffusionParams<T>,
-    // mds
+    /// Which MDS implementation to use
     pub mds_method: String,
+    /// Optional number of iterations for MDS fitting
     pub mds_iter: Option<usize>,
+    /// Shall randomised SVD be used for PCA-based initialisation
     pub randomised: bool,
 }
 

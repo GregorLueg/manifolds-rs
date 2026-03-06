@@ -1,3 +1,5 @@
+//! The trainings parameters and trainings loop for the parametric UMAP.
+
 use burn::{
     data::dataloader::{DataLoaderBuilder, Dataset},
     optim::{AdamConfig, GradientsParams, Optimizer},
@@ -17,28 +19,23 @@ use crate::parametric::model::*;
 ////////////
 
 /// Parameters for parametric UMAP training
-///
-/// ### Fields
-///
-/// * `a` - Curve parameter for attractive force (typically ~1.5 for 2D)
-/// * `b` - Curve parameter for repulsive force (typically ~0.9 for 2D)
-/// * `lr` - Learning rate for the optimiser
-/// * `corr_weight` - Coefficient in front of the negative Pearson correlation
-///   coefficient that encourages similar distance in the embedding space as
-///   in the original target space.
-/// * `n_epochs` - Number of epochs to train the neural net for (typically 500).
-/// * `batch_size` - Number of samples to train in a given batch (typically
-///   256).
-/// * `neg_sample_rate` - Number of negative samples per positive edge
-///   (typically 5).
 #[derive(Clone, Debug)]
 pub struct TrainParametricParams<T> {
+    /// Curve parameter for attractive force (typically ~1.5 for 2D)
     pub a: T,
+    /// Curve parameter for repulsive force (typically ~0.9 for 2D)
     pub b: T,
+    /// Learning rate for the optimiser
     pub lr: T,
+    /// Coefficient in front of the negative Pearson correlation coefficient
+    /// that encourages similar distance in the embedding space as in the
+    /// original target space.
     pub corr_weight: T,
+    /// Number of epochs to train the neural net for (typically 500).
     pub n_epochs: usize,
+    /// Batch size - typically 256.
     pub batch_size: usize,
+    /// Number of negative samples per positive edge (typically 5).
     pub neg_sample_rate: usize,
 }
 

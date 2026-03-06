@@ -1,3 +1,5 @@
+//! Math helper functions
+
 use ann_search_rs::utils::dist::SimdDistance;
 use faer::traits::{ComplexField, RealField};
 use faer::{Mat, MatMut, MatRef};
@@ -16,17 +18,14 @@ use crate::data::structures::*;
 // Randomised SVD //
 ////////////////////
 
-/// Structure for random SVD results
-///
-/// ### Fields
-///
-/// * `u` - Matrix u of the SVD decomposition
-/// * `v` - Matrix v of the SVD decomposition
-/// * `s` - Eigen vectors of the SVD decomposition
+/// Structure for randomised SVD results
 #[derive(Clone, Debug)]
 pub struct RandomSvdResults<T> {
+    /// Matrix u of the SVD decomposition
     pub u: faer::Mat<T>,
+    /// Matrix v of the SVD decomposition
     pub v: faer::Mat<T>,
+    /// Eigen vectors of the SVD decomposition
     pub s: Vec<T>,
 }
 

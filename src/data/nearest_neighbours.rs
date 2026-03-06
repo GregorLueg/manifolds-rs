@@ -1,3 +1,5 @@
+//! Module containing (approximate) nearest neighbour generation functions.
+
 use ann_search_rs::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
 use ann_search_rs::prelude::*;
@@ -8,6 +10,7 @@ use num_traits::Float;
 use rayon::prelude::*;
 use std::default::Default;
 
+/// Which search algorithm to use for the approximate nearest neighbour search
 #[derive(Default)]
 pub enum AnnSearch {
     /// Annoy
@@ -24,51 +27,30 @@ pub enum AnnSearch {
 }
 
 /// Parameters for the nearest neighbour search
-///
-/// ### Fields
-///
-/// * `dist_metric` - One of `"euclidean"` or `"cosine"`
-///
-/// **Annoy**-specific parameter**:
-///
-/// * `n_trees` - Number of trees to use to build the index. Defaults to `50`
-///   like the `uwot` package.
-/// * `search_budget` - Multiplier. The algorithm will set the search budget to
-///   `10 * k * n_trees`
-///
-/// **HNSW**-specific parameter:
-///
-/// * `m` - Number of bidirectional connections per layer. Defaults to 16 based
-///   on uwot R package.
-/// * `ef_construction` - Size of candidate list during construction.
-/// * `ef_search` - Size of candidate list during search (higher = better
-///   recall, slower)
-///
-/// **NNDescent**-specific parameter
-///
-/// * `diversify_prob` - Diversifying probability at the end of the index
-///   generation.
-/// * `delta` - Early termination criterium
-/// * `ef_budget` - Optional query budget.
-///
-/// **BallTree**-specific parameter
-///
-/// * `ef_budget` - Optional query budget.
 #[derive(Debug, Clone)]
 pub struct NearestNeighbourParams<T> {
+    /// Distance metric, one of `"euclidean"` or `"cosine"`
     pub dist_metric: String,
-    // annoy
+    /// Annoy: Number of trees to use to build the index. Defaults to `50` like
+    /// the `uwot` package.
     pub n_tree: usize,
+    /// Annoy: Optional search budget per tree. If not provided, defaults to
+    /// `k * n_tree * 20` candidates.
     pub search_budget: Option<usize>,
-    // hnsw
+    /// HNSW: connections per given layer to use
     pub m: usize,
+    /// HNSW: construction budget
     pub ef_construction: usize,
+    /// HNSW: search budget
     pub ef_search: usize,
-    // nndescent
+    /// NNDescent: diversification probability after generation of the graph.
     pub diversify_prob: T,
+    /// NNDescent: convergence criterium. If less than these percentage of
+    /// neighbours have been udpated, the algorithm counts as converged.
     pub delta: T,
+    /// NNDescent: optional beam search budget for querying.
     pub ef_budget: Option<usize>,
-    // balltree
+    /// BallTree: Proportions of N to search in the BallTree
     pub bt_budget: T,
 }
 

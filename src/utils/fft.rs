@@ -1,3 +1,5 @@
+//! FFT implementation for the acceleration tSNE form
+
 use fftw::array::AlignedVec;
 use fftw::plan::{C2RPlan, C2RPlan32, C2RPlan64, R2CPlan, R2CPlan32, R2CPlan64};
 use fftw::types::{c32, c64, Flag};
@@ -181,23 +183,19 @@ impl FftwFloat for f32 {
 /// allowing them to persist across calls to `n_body_fft_2d` and across
 /// optimisation epochs. Rebuild only when `n_fft` changes, i.e. when the
 /// grid resizes.
-///
-/// ### Fields
-///
-/// * `n_fft` - FFT array dimension this workspace was built for
-/// * `fft_input` - Aligned real input buffer, dimensions `n_fft x n_fft`
-/// * `fft_output` - Aligned complex output buffer,
-///   dimensions `n_fft x (n_fft/2 + 1)` for R2C transform
-/// * `fft_scratch` - Aligned real scratch buffer for C2R output,
-///   dimensions `n_fft x n_fft`
-/// * `plan_r2c` - Pre-built real-to-complex FFT plan
-/// * `plan_c2r` - Pre-built complex-to-real FFT plan
 pub struct FftWorkspace<T: FftwFloat> {
+    /// FFT array dimension this workspace was built for
     pub n_fft: usize,
+    /// Aligned real input buffer, dimensions `n_fft x n_fft`
     pub fft_input: AlignedVec<T>,
+    /// Aligned complex output buffer, dimensions
+    /// `n_fft x (n_fft/2 + 1)` for R2C transform
     pub fft_output: AlignedVec<T::Complex>,
+    /// Aligned real scratch buffer for C2R output, dimensions `n_fft x n_fft`
     pub fft_scratch: AlignedVec<T>,
+    /// Pre-built real-to-complex FFT plan
     pub plan_r2c: T::R2CPlan,
+    /// Pre-built complex-to-real FFT plan
     pub plan_c2r: T::C2RPlan,
 }
 
@@ -237,36 +235,29 @@ impl<T: FftwFloat> FftWorkspace<T> {
 /// efficient potential field evaluation via convolution. The grid divides
 /// coordinate space into boxes, each containing interpolation nodes for
 /// Lagrange polynomial interpolation.
-///
-/// ### Fields
-///
-/// * `n_boxes_per_dim` - Number of boxes per dimension
-/// * `n_interp_points` - Number of interpolation nodes per box dimension
-///   (typically 3)
-/// * `box_width` - Width of each box in coordinate space
-/// * `coord_min` - Minimum coordinate value (same for x and y; assumes square
-///   domain)
-/// * `interp_spacings` - Interpolation node positions within [0,1] normalised
-///   box coordinates
-/// * `lagrange_denominators` - Pre-computed Lagrange polynomial denominators
-///   for each node
-/// * `global_x_coords` - Global grid node x-coordinates
-///   (length `n_interp_points * n_boxes_per_dim`)
-/// * `global_y_coords` - Global grid node y-coordinates
-///   (length `n_interp_points * n_boxes_per_dim`)
-/// * `fft_kernel` - Pre-computed FFT of convolution kernel;
-///   dimensions `n_fft x (n_fft/2 + 1)` for R2C transform
-/// * `n_fft` - FFT array dimension: `2 * n_interp_points * n_boxes_per_dim`
 pub struct FftGrid<T: FftwFloat> {
+    /// Number of boxes per dimension
     pub n_boxes_per_dim: usize,
+    /// Number of interpolation nodes per box dimension (typically 3)
     pub n_interp_points: usize,
+    /// Width of each box in coordinate space
     pub box_width: T,
+    /// Minimum coordinate value (same for x and y; assumes square domain)
     pub coord_min: T,
+    /// Interpolation node positions within [0,1] normalised box coordinates
     pub interp_spacings: Vec<T>,
+    /// Pre-computed Lagrange polynomial denominators for each node
     pub lagrange_denominators: Vec<T>,
+    /// Global grid node x-coordinates (length
+    /// `n_interp_points * n_boxes_per_dim`)
     pub global_x_coords: Vec<T>,
+    /// `global_y_coords` - Global grid node y-coordinates (length
+    /// `n_interp_points * n_boxes_per_dim`)
     pub global_y_coords: Vec<T>,
+    /// Pre-computed FFT of convolution kernel; dimensions
+    /// `n_fft x (n_fft/2 + 1)` for R2C transform
     pub fft_kernel: AlignedVec<T::Complex>,
+    /// FFT array dimension: `2 * n_interp_points * n_boxes_per_dim`
     pub n_fft: usize,
 }
 

@@ -1,3 +1,9 @@
+//! Re-exports of commonly used types and traits for convenient glob importing.
+//!
+//! ```rust
+//! use my_crate::prelude::*;
+//! ```
+
 pub use crate::data::init::{initialise_embedding, parse_initilisation};
 pub use crate::data::nearest_neighbours::{
     parse_ann_search, run_ann_search, NearestNeighbourParams,

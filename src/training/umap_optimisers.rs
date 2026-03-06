@@ -1,4 +1,6 @@
-use core::f64;
+//! Optimisers for UMAP fitting. Contains the SGD, Adam and a parallel Adam
+//! variant
+
 use num_traits::{Float, FromPrimitive};
 use rand::{
     rngs::SmallRng,
@@ -27,31 +29,27 @@ const EPS: f64 = 1e-7;
 //////////////////////////
 
 /// UMAP optimisation parameters
-///
-/// ### Fields
-///
-/// * `a` - Curve parameter for repulsive force (typically ~1.5 for 2D)
-/// * `b` - Curve parameter for repulsive force (typically ~0.9 for 2D)
-/// * `lr` - Initial learning rate (typically 1.0)
-/// * `gamma` - Parameter to control repulsion force
-/// * `n_epochs` - Number of optimisation epochs (typically 500)
-/// * `neg_sample_rate` - Number of negative samples per positive edge
-///   (typically 5)
-/// * `min_dist` - Minimum distance between points in embedding (typically 0.1)
-/// * `beta1` - beta1 parameter for Adam optimiser
-/// * `beta2` - beta2 parameter for Adam optimiser
-/// * `eps` - eps for Adam optimiser
 #[derive(Clone, Debug)]
 pub struct UmapOptimParams<T> {
+    /// Curve parameter for repulsive force (typically ~1.5 for 2D)
     pub a: T,
+    /// Curve parameter for repulsive force (typically ~0.9 for 2D)
     pub b: T,
+    /// Initial learning rate (typically 1.0)
     pub lr: T,
+    /// Parameter to control repulsion force
     pub gamma: T,
+    /// Number of optimisation epochs (typically 500)
     pub n_epochs: usize,
+    /// Number of negative samples per positive edge (typically 5)
     pub neg_sample_rate: usize,
+    /// Minimum distance between points in embedding (typically 0.1)
     pub min_dist: T,
+    /// Beta1 parameter for Adam optimiser
     pub beta1: T,
+    /// Beta2 parameter for Adam optimiser
     pub beta2: T,
+    /// Eps for Adam optimiser
     pub eps: T,
 }
 
@@ -230,6 +228,7 @@ where
     }
 }
 
+/// Type of UMAP optimiser to use
 #[derive(Default)]
 pub enum UmapOptimiser {
     /// Parallel version of Adam

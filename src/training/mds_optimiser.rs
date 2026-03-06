@@ -1,3 +1,6 @@
+//! Multidimensional scaling for the usage in PHATE. Optimisers, parameters,
+//! etc.
+
 use faer::Mat;
 use faer_traits::{ComplexField, RealField};
 use num_traits::{Float, FromPrimitive};
@@ -57,21 +60,15 @@ pub fn parse_mds_method(s: &str) -> Option<MdsMethod> {
 ////////////
 
 /// Parameters for Mds optimisation
-///
-/// ### Fields
-///
-/// * `randomised` - Shall randomised SVD be used for classical MDS
-/// * `n_iter` - How many iterations to run the optimisation for. For the SGD
-///   variants.
-/// * `n_pairs` - The number of pairs to evaluate per given iteration. For the
-///   SGD variants.
-/// * `lr` - The learning rate.
-/// * `n_threads` - Set this to ≥1 if you are happy with Hogwild parallel SGD.
-///   Faster, but not determistic anymore.
 pub struct MdsOptimParams<T> {
+    /// Shall randomised SVD be used for classical MDS
     pub randomised: bool,
+    /// How many iterations to run the optimisation for. For the SGD variants.
     pub n_iter: usize,
+    /// The number of pairs to evaluate per given iteration. For the SGD
+    /// variants.
     pub pairs_per_iter: usize,
+    /// The learning rate.
     pub lr: T,
 }
 

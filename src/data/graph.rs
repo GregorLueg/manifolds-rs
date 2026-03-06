@@ -1,8 +1,10 @@
-use std::ops::AddAssign;
+//! Module containing helper functions to generate the graphs used by UMAP,
+//! tSNE and PHATE.
 
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::ops::AddAssign;
 use thousands::*;
 
 use crate::data::structures::*;
@@ -605,6 +607,7 @@ where
 // Enums //
 ///////////
 
+/// Which symmetrisation to use for the PHATE graph.
 #[derive(Default)]
 pub enum PhateGraphSymmetrisation {
     /// Additive symmetrisation - used in PHATE

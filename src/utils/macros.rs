@@ -1,3 +1,5 @@
+//! Macros for assertions
+
 ///////////////////
 // Vector macros //
 ///////////////////
