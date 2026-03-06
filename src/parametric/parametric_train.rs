@@ -233,7 +233,7 @@ where
 /// ### Returns
 ///
 /// The UmapEdgeDataset
-pub fn graph_to_trainings_data<T>(graph_data: &SparseGraph<T>) -> UmapEdgeDataset {
+pub fn graph_to_trainings_data<T>(graph_data: &CoordinateList<T>) -> UmapEdgeDataset {
     let mut edges: Vec<(usize, usize, f32)> = Vec::with_capacity(graph_data.col_indices.len());
     for (idx, &col) in graph_data.col_indices.iter().enumerate() {
         edges.push((graph_data.row_indices[idx], col, 1.0f32));
@@ -262,7 +262,7 @@ pub fn graph_to_trainings_data<T>(graph_data: &SparseGraph<T>) -> UmapEdgeDatase
 /// A tuple of `(embedding, trained model)`
 pub fn train_parametric_umap<'a, B, T>(
     data: MatRef<T>,
-    graph_data: SparseGraph<T>,
+    graph_data: CoordinateList<T>,
     model_config: &UmapMlpConfig,
     train_params: &TrainParametricParams<T>,
     device: &'a B::Device,
@@ -415,10 +415,10 @@ mod parametric_train_tests {
 
     #[test]
     fn test_graph_to_training_data() {
-        use crate::data::structures::SparseGraph;
+        use crate::data::structures::CoordinateList;
 
-        let graph = SparseGraph {
-            n_vertices: 10,
+        let graph = CoordinateList {
+            n_samples: 10,
             row_indices: vec![0, 0, 1, 1, 2],
             col_indices: vec![1, 2, 0, 2, 1],
             values: vec![0.9, 0.8, 0.9, 0.7, 0.8],

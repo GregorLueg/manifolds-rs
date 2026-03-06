@@ -77,38 +77,30 @@ impl FftwFloat for f64 {
     fn new_complex(re: Self, im: Self) -> Self::Complex {
         c64::new(re, im)
     }
-
     #[inline]
     fn complex_zero() -> Self::Complex {
         c64::new(0.0, 0.0)
     }
-
     #[inline]
     fn complex_re(c: Self::Complex) -> Self {
         c.re
     }
-
     #[inline]
     fn complex_im(c: Self::Complex) -> Self {
         c.im
     }
-
     fn aligned_real(size: usize) -> AlignedVec<Self> {
         AlignedVec::new(size)
     }
-
     fn aligned_complex(size: usize) -> AlignedVec<Self::Complex> {
         AlignedVec::new(size)
     }
-
     fn plan_r2c_2d(n: usize) -> Self::R2CPlan {
         R2CPlan::aligned(&[n, n], Flag::ESTIMATE).expect("Failed to create R2C plan")
     }
-
     fn plan_c2r_2d(n: usize) -> Self::C2RPlan {
         C2RPlan::aligned(&[n, n], Flag::ESTIMATE).expect("Failed to create C2R plan")
     }
-
     fn execute_r2c(
         plan: &mut Self::R2CPlan,
         input: &mut AlignedVec<Self>,
@@ -116,7 +108,6 @@ impl FftwFloat for f64 {
     ) {
         plan.r2c(input, output).expect("R2C FFT failed");
     }
-
     fn execute_c2r(
         plan: &mut Self::C2RPlan,
         input: &mut AlignedVec<Self::Complex>,
@@ -139,38 +130,30 @@ impl FftwFloat for f32 {
     fn new_complex(re: Self, im: Self) -> Self::Complex {
         c32::new(re, im)
     }
-
     #[inline]
     fn complex_zero() -> Self::Complex {
         c32::new(0.0, 0.0)
     }
-
     #[inline]
     fn complex_re(c: Self::Complex) -> Self {
         c.re
     }
-
     #[inline]
     fn complex_im(c: Self::Complex) -> Self {
         c.im
     }
-
     fn aligned_real(size: usize) -> AlignedVec<Self> {
         AlignedVec::new(size)
     }
-
     fn aligned_complex(size: usize) -> AlignedVec<Self::Complex> {
         AlignedVec::new(size)
     }
-
     fn plan_r2c_2d(n: usize) -> Self::R2CPlan {
         R2CPlan::aligned(&[n, n], Flag::ESTIMATE).expect("Failed to create R2C plan")
     }
-
     fn plan_c2r_2d(n: usize) -> Self::C2RPlan {
         C2RPlan::aligned(&[n, n], Flag::ESTIMATE).expect("Failed to create C2R plan")
     }
-
     fn execute_r2c(
         plan: &mut Self::R2CPlan,
         input: &mut AlignedVec<Self>,
@@ -178,13 +161,69 @@ impl FftwFloat for f32 {
     ) {
         plan.r2c(input, output).expect("R2C FFT failed");
     }
-
     fn execute_c2r(
         plan: &mut Self::C2RPlan,
         input: &mut AlignedVec<Self::Complex>,
         output: &mut AlignedVec<Self>,
     ) {
         plan.c2r(input, output).expect("C2R IFFT failed");
+    }
+}
+
+//////////////////
+// FftWorkspace //
+//////////////////
+
+/// Reusable FFTW plans and aligned buffers for FFT convolution.
+///
+/// Creating FFTW plans is expensive (even with `ESTIMATE`), and aligned
+/// memory allocation has non-trivial overhead. This workspace holds both,
+/// allowing them to persist across calls to `n_body_fft_2d` and across
+/// optimisation epochs. Rebuild only when `n_fft` changes, i.e. when the
+/// grid resizes.
+///
+/// ### Fields
+///
+/// * `n_fft` - FFT array dimension this workspace was built for
+/// * `fft_input` - Aligned real input buffer, dimensions `n_fft x n_fft`
+/// * `fft_output` - Aligned complex output buffer,
+///   dimensions `n_fft x (n_fft/2 + 1)` for R2C transform
+/// * `fft_scratch` - Aligned real scratch buffer for C2R output,
+///   dimensions `n_fft x n_fft`
+/// * `plan_r2c` - Pre-built real-to-complex FFT plan
+/// * `plan_c2r` - Pre-built complex-to-real FFT plan
+pub struct FftWorkspace<T: FftwFloat> {
+    pub n_fft: usize,
+    pub fft_input: AlignedVec<T>,
+    pub fft_output: AlignedVec<T::Complex>,
+    pub fft_scratch: AlignedVec<T>,
+    pub plan_r2c: T::R2CPlan,
+    pub plan_c2r: T::C2RPlan,
+}
+
+impl<T: FftwFloat> FftWorkspace<T> {
+    /// Create workspace for a given FFT dimension.
+    ///
+    /// Allocates FFTW-aligned buffers and builds R2C/C2R plans.
+    ///
+    /// ### Params
+    ///
+    /// * `n_fft` - FFT array dimension (typically `2 * n_interp_points *
+    ///   n_boxes_per_dim`)
+    ///
+    /// ### Returns
+    ///
+    /// Workspace ready for use with `n_body_fft_2d`
+    pub fn new(n_fft: usize) -> Self {
+        let n_complex = n_fft * (n_fft / 2 + 1);
+        Self {
+            n_fft,
+            fft_input: T::aligned_real(n_fft * n_fft),
+            fft_output: T::aligned_complex(n_complex),
+            fft_scratch: T::aligned_real(n_fft * n_fft),
+            plan_r2c: T::plan_r2c_2d(n_fft),
+            plan_c2r: T::plan_c2r_2d(n_fft),
+        }
     }
 }
 
@@ -216,7 +255,7 @@ impl FftwFloat for f32 {
 /// * `global_y_coords` - Global grid node y-coordinates
 ///   (length `n_interp_points * n_boxes_per_dim`)
 /// * `fft_kernel` - Pre-computed FFT of convolution kernel;
-///   dimensions `n_fft × (n_fft/2 + 1)` for R2C transform
+///   dimensions `n_fft x (n_fft/2 + 1)` for R2C transform
 /// * `n_fft` - FFT array dimension: `2 * n_interp_points * n_boxes_per_dim`
 pub struct FftGrid<T: FftwFloat> {
     pub n_boxes_per_dim: usize,
@@ -235,8 +274,8 @@ impl<T: FftwFloat> FftGrid<T> {
     /// Create new FFT grid structure.
     ///
     /// Initialises uniform 2D grid covering square domain
-    /// `[coord_min, coord_max]²`, computes Lagrange interpolation coefficients,
-    /// and pre-computes FFT of the kernel `K(r) = 1/(1 + r²)²`.
+    /// `[coord_min, coord_max]^2`, computes Lagrange interpolation coefficients,
+    /// and pre-computes FFT of the kernel `K(r) = 1/(1 + r^2)^2`.
     ///
     /// ### Params
     ///
@@ -303,7 +342,7 @@ impl<T: FftwFloat> FftGrid<T> {
 
     /// Pre-compute FFT of convolution kernel.
     ///
-    /// Constructs spatial kernel `K(r) = 1/(1 + r²)²` on zero-padded grid,
+    /// Constructs spatial kernel `K(r) = 1/(1 + r^2)^2` on zero-padded grid,
     /// exploiting circular symmetry by populating four quadrants. Transforms
     /// to frequency domain via R2C FFT for efficient convolution.
     ///
@@ -315,7 +354,7 @@ impl<T: FftwFloat> FftGrid<T> {
     ///
     /// ### Returns
     ///
-    /// Complex-valued FFT of kernel, dimensions `n_fft × (n_fft/2 + 1)`
+    /// Complex-valued FFT of kernel, dimensions `n_fft x (n_fft/2 + 1)`
     fn precompute_kernel(x_coords: &[T], y_coords: &[T], n_fft: usize) -> AlignedVec<T::Complex> {
         let n_interp = x_coords.len();
         let x_0 = x_coords[0];
@@ -334,9 +373,7 @@ impl<T: FftwFloat> FftGrid<T> {
                 let denom = T::one() + dist_sq;
                 let k_val = T::one() / (denom * denom);
 
-                // Centre and three mirrored quadrants
                 kernel_real[(n_interp + i) * n_fft + (n_interp + j)] = k_val;
-
                 if i > 0 {
                     kernel_real[(n_interp - i) * n_fft + (n_interp + j)] = k_val;
                 }
@@ -407,7 +444,7 @@ impl<T: FftwFloat> FftGrid<T> {
     /// ### Returns
     ///
     /// `true` if all points satisfy
-    /// `coord_min + margin ≤ {x,y} ≤ coord_max - margin`
+    /// `coord_min + margin <= {x,y} <= coord_max - margin`
     pub fn contains_points(&self, xs: &[T], ys: &[T], margin: T) -> bool {
         let coord_max =
             self.coord_min + self.box_width * T::from_usize(self.n_boxes_per_dim).unwrap();
@@ -479,7 +516,7 @@ impl<T: FftwFloat> FftGrid<T> {
     }
 }
 
-/// Compute Lagrange interpolation weights
+/// Compute Lagrange interpolation weights.
 ///
 /// For a point at position `y_in_box` (in [0,1]), computes the weights for all
 /// interpolation nodes using Lagrange polynomials.
@@ -510,10 +547,11 @@ pub fn lagrange_weights<T: FftwFloat>(
     }
 }
 
-/// Determine optimal grid size based on data spread
+/// Determine optimal grid size based on data spread.
 ///
 /// Follows FIt-SNE's heuristic: number of boxes scales with spread,
-/// then rounds up to FFT-friendly sizes
+/// then rounds up to FFT-friendly sizes. Allowed sizes match the C++
+/// reference implementation.
 ///
 /// ### Params
 ///
@@ -535,7 +573,7 @@ pub fn choose_grid_size(
     let n_boxes = ((spread / intervals_per_integer).max(min_intervals as f64)) as usize;
 
     const ALLOWED_SIZES: [usize; 20] = [
-        25, 27, 32, 36, 40, 48, 50, 54, 60, 64, 72, 75, 80, 81, 90, 96, 100, 108, 120, 125,
+        25, 36, 50, 55, 60, 65, 70, 75, 80, 85, 90, 96, 100, 110, 120, 130, 140, 150, 175, 200,
     ];
 
     if n_boxes < ALLOWED_SIZES[19] {
@@ -551,32 +589,47 @@ pub fn choose_grid_size(
 /// Compute repulsive forces/potentials using FFT acceleration.
 ///
 /// Generic implementation supporting f32/f64 via the `FftwFloat` trait.
-/// Modelled after the much more efficient C++ code. Note to self: do not be
-/// smart with structures in Rust, just translate working C++ into Rust.
+/// Accepts a pre-allocated workspace to avoid per-call FFTW plan creation
+/// and aligned buffer allocation. The caller must also provide the output
+/// buffer, which is zeroed internally before use.
 ///
 /// ### Params
 ///
-/// * `xs`: x-coordinates of the points
-/// * `ys`: y-coordinates of the points
-/// * `charges`: charges of the points
-/// * `n_terms`: number of terms in the expansion
-/// * `grid`: FFT grid
-///
-/// ### Returns
-///
-/// Forces/potentials of the points
+/// * `xs` - X-coordinates of the points
+/// * `ys` - Y-coordinates of the points
+/// * `charges` - Charges of the points, shape `[n_points * n_terms]`
+/// * `n_terms` - Number of terms in the expansion
+/// * `grid` - FFT grid (pre-computed kernel and interpolation data)
+/// * `ws` - Reusable FFT workspace (plans and aligned buffers); must have
+///   been created with the same `n_fft` as the grid
+/// * `potentials_out` - Output buffer, shape `[n_points * n_terms]`; will
+///   be zeroed and filled with computed potentials
 pub fn n_body_fft_2d<T: FftwFloat>(
     xs: &[T],
     ys: &[T],
     charges: &[T],
     n_terms: usize,
     grid: &FftGrid<T>,
-) -> Vec<T> {
+    ws: &mut FftWorkspace<T>,
+    potentials_out: &mut [T],
+) {
     let n_points = xs.len();
     let n_interp = grid.n_interp_points;
     let n_boxes = grid.n_boxes_per_dim;
     let n_interp_1d = n_interp * n_boxes;
     let total_grid_points = n_interp_1d * n_interp_1d;
+
+    assert_eq!(ws.n_fft, grid.n_fft, "Workspace n_fft does not match grid");
+    assert_eq!(
+        potentials_out.len(),
+        n_points * n_terms,
+        "Output buffer size mismatch"
+    );
+
+    // zero output
+    for v in potentials_out.iter_mut() {
+        *v = T::zero();
+    }
 
     // step 1: box assignment and relative coords
     let box_data: Vec<((usize, usize), T, T)> = (0..n_points)
@@ -589,15 +642,13 @@ pub fn n_body_fft_2d<T: FftwFloat>(
         })
         .collect();
 
-    // step 2: interpolation weights (math only)
+    // interpolation weights
     let (x_weights_all, y_weights_all): (Vec<Vec<T>>, Vec<Vec<T>>) = (0..n_points)
         .into_par_iter()
         .map(|i| {
             let (_, x_pos, y_pos) = box_data[i];
-
             let mut x_w = vec![T::zero(); n_interp];
             let mut y_w = vec![T::zero(); n_interp];
-
             lagrange_weights(
                 x_pos,
                 &grid.interp_spacings,
@@ -610,16 +661,14 @@ pub fn n_body_fft_2d<T: FftwFloat>(
                 &grid.lagrange_denominators,
                 &mut y_w,
             );
-
             (x_w, y_w)
         })
         .unzip();
 
-    // flatten for cache locality in the serial loop
     let x_weights_flat: Vec<T> = x_weights_all.into_iter().flatten().collect();
     let y_weights_flat: Vec<T> = y_weights_all.into_iter().flatten().collect();
 
-    // step 1b: grid assembly
+    // grid assembly (serial, matching C++)
     let mut w_coefficients = vec![T::zero(); total_grid_points * n_terms];
 
     for i in 0..n_points {
@@ -644,23 +693,15 @@ pub fn n_body_fft_2d<T: FftwFloat>(
         }
     }
 
-    // step 2: FFT convolution
-    let n_fft = grid.n_fft;
+    // step 2: FFT convolution (reusing workspace buffers and plans)
+    let n_fft = ws.n_fft;
     let n_complex = n_fft * (n_fft / 2 + 1);
-
-    // allocate aligned buffers using the trait methods
-    let mut fft_input = T::aligned_real(n_fft * n_fft);
-    let mut fft_output = T::aligned_complex(n_complex);
-    let mut fft_scratch = T::aligned_real(n_fft * n_fft);
-
-    // create plans using trait methods
-    let mut plan_r2c = T::plan_r2c_2d(n_fft);
-    let mut plan_c2r = T::plan_c2r_2d(n_fft);
 
     let mut y_tilde_values = vec![T::zero(); total_grid_points * n_terms];
 
     for term in 0..n_terms {
-        for x in fft_input.iter_mut() {
+        // zero fft_input
+        for x in ws.fft_input.iter_mut() {
             *x = T::zero();
         }
 
@@ -669,58 +710,52 @@ pub fn n_body_fft_2d<T: FftwFloat>(
             for j in 0..n_interp_1d {
                 let w_idx = (i * n_interp_1d + j) * n_terms + term;
                 let fft_idx = i * n_fft + j;
-                fft_input[fft_idx] = w_coefficients[w_idx];
+                ws.fft_input[fft_idx] = w_coefficients[w_idx];
             }
         }
 
-        // 1. R2C
-        T::execute_r2c(&mut plan_r2c, &mut fft_input, &mut fft_output);
+        // R2C
+        T::execute_r2c(&mut ws.plan_r2c, &mut ws.fft_input, &mut ws.fft_output);
 
-        // 2. kernel multiply (Hadamard Product)
+        // kernel multiply (Hadamard product)
         for i in 0..n_complex {
-            let val = fft_output[i];
+            let val = ws.fft_output[i];
             let kern = grid.fft_kernel[i];
 
-            // extract components via trait
             let val_re = T::complex_re(val);
             let val_im = T::complex_im(val);
             let kern_re = T::complex_re(kern);
             let kern_im = T::complex_im(kern);
 
-            // complex mul: (a + bi)(c + di) = (ac - bd) + (ad + bc)i
             let new_re = val_re * kern_re - val_im * kern_im;
             let new_im = val_re * kern_im + val_im * kern_re;
 
-            fft_output[i] = T::new_complex(new_re, new_im);
+            ws.fft_output[i] = T::new_complex(new_re, new_im);
         }
 
-        // 3. C2R
-        T::execute_c2r(&mut plan_c2r, &mut fft_output, &mut fft_scratch);
+        // C2R
+        T::execute_c2r(&mut ws.plan_c2r, &mut ws.fft_output, &mut ws.fft_scratch);
 
-        // 4. normalise
+        // normalise and extract from bottom-right quadrant
         let norm_factor = T::from_usize(n_fft * n_fft).unwrap();
 
         for i in 0..n_interp_1d {
             for j in 0..n_interp_1d {
-                // extract from the specific quadrant used in C++ logic
-                // the C++ logic effectively reads from the wrapped/mirrored position
                 let fft_idx = (n_interp_1d + i) * n_fft + (n_interp_1d + j);
-
-                let val = fft_scratch[fft_idx] / norm_factor;
+                let val = ws.fft_scratch[fft_idx] / norm_factor;
                 let pot_idx = (i * n_interp_1d + j) * n_terms + term;
                 y_tilde_values[pot_idx] = val;
             }
         }
     }
 
-    // step 3: gathering
-    let potentials_flat: Vec<T> = (0..n_points)
-        .into_par_iter()
-        .flat_map(|i| {
+    // step 3: gathering (parallel, pre-allocated output)
+    potentials_out
+        .par_chunks_mut(n_terms)
+        .enumerate()
+        .for_each(|(i, out)| {
             let ((box_y, box_x), _, _) = box_data[i];
             let w_start_idx = i * n_interp;
-
-            let mut point_potentials = vec![T::zero(); n_terms];
 
             for interp_y in 0..n_interp {
                 for interp_x in 0..n_interp {
@@ -732,16 +767,11 @@ pub fn n_body_fft_2d<T: FftwFloat>(
                         * x_weights_flat[w_start_idx + interp_x];
 
                     for term in 0..n_terms {
-                        point_potentials[term] = point_potentials[term]
-                            + weight * y_tilde_values[grid_idx * n_terms + term];
+                        out[term] = out[term] + weight * y_tilde_values[grid_idx * n_terms + term];
                     }
                 }
             }
-            point_potentials
-        })
-        .collect();
-
-    potentials_flat
+        });
 }
 
 ///////////
@@ -754,12 +784,10 @@ mod tests {
 
     #[test]
     fn test_lagrange_weights() {
-        // Test on 3-point interpolation
         let spacings = vec![0.25, 0.5, 0.75];
         let mut denominators = vec![0.0; 3];
         let mut weights = vec![0.0; 3];
 
-        // Compute denominators manually for test
         for i in 0..spacings.len() {
             let mut denom = 1.0;
             for j in 0..spacings.len() {
@@ -770,13 +798,11 @@ mod tests {
             denominators[i] = denom;
         }
 
-        // At the middle point (0.5), should be exactly [0, 1, 0]
         lagrange_weights(0.5, &spacings, &denominators, &mut weights);
         assert!((weights[0] - 0.0).abs() < 1e-10);
         assert!((weights[1] - 1.0).abs() < 1e-10);
         assert!((weights[2] - 0.0).abs() < 1e-10);
 
-        // Weights should sum to 1.0 anywhere
         lagrange_weights(0.6, &spacings, &denominators, &mut weights);
         let sum: f64 = weights.iter().sum();
         assert!((sum - 1.0).abs() < 1e-10);
@@ -786,27 +812,20 @@ mod tests {
     fn test_grid_box_assignment() {
         let grid = FftGrid::<f64>::new(-10.0, 10.0, 4, 3);
 
-        // Point at (-10, -10) should be in box (0, 0)
         let (by, bx) = grid.point_to_box(-10.0, -10.0);
         assert_eq!((by, bx), (0, 0));
 
-        // Point at (9.9, 9.9) should be in box (3, 3)
         let (by, bx) = grid.point_to_box(9.9, 9.9);
         assert_eq!((by, bx), (3, 3));
 
-        // Point at (0, 0) should be in box (2, 2) (middle)
         let (by, bx) = grid.point_to_box(0.0, 0.0);
         assert_eq!((by, bx), (2, 2));
     }
 
-    /// Helper: Brute force computation of repulsive forces
-    /// Returns (fx, fy, Z)
     fn direct_repulsive_forces(embd: &[Vec<f64>]) -> (Vec<f64>, Vec<f64>, f64) {
         let n = embd.len();
         let mut sum_q = 0.0;
 
-        // 1. Compute Z (normalization constant)
-        // Z = Sum_{k!=l} 1 / (1 + ||y_k - y_l||^2)
         for i in 0..n {
             for j in 0..n {
                 if i != j {
@@ -818,9 +837,6 @@ mod tests {
             }
         }
 
-        // 2. Compute Forces
-        // F_i = Sum_{j!=i} (y_i - y_j) * Q_ij^2 / Z
-        // Note: Q_ij = 1 / (1 + dist^2)
         let mut forces_x = vec![0.0; n];
         let mut forces_y = vec![0.0; n];
 
@@ -831,12 +847,7 @@ mod tests {
                     let dy = embd[i][1] - embd[j][1];
                     let dist_sq = dx * dx + dy * dy;
                     let q_ij = 1.0 / (1.0 + dist_sq);
-
-                    // The repulsive gradient term in t-SNE is q_ij^2 / Z (un-normalized q_ij squared)
-                    // actually it's q_ij * Q_ij ... Q_ij = q_ij/Z.
-                    // Repulsive force term: q_ij^2 / Z
                     let weight = q_ij * q_ij / sum_q;
-
                     forces_x[i] += weight * dx;
                     forces_y[i] += weight * dy;
                 }
@@ -848,7 +859,6 @@ mod tests {
 
     #[test]
     fn test_repulsive_forces_match_direct() {
-        // A small random-ish embedding
         let embd: Vec<Vec<f64>> = vec![
             vec![-2.1, 0.3],
             vec![-0.8, 1.2],
@@ -862,22 +872,16 @@ mod tests {
         let n = embd.len();
         let n_terms = 4;
 
-        // 1. Calculate Truth via Brute Force
         let (direct_fx, direct_fy, direct_z) = direct_repulsive_forces(&embd);
 
-        // 2. Calculate via FFT
-        // Define grid loose enough to capture points
         let coord_min = -5.0;
         let coord_max = 5.0;
-        // 10 boxes, 3 interp points is standard-ish for accuracy
         let grid = FftGrid::<f64>::new(coord_min, coord_max, 20, 3);
+        let mut ws = FftWorkspace::new(grid.n_fft);
 
-        // Prepare inputs
         let xs: Vec<f64> = embd.iter().map(|p| p[0]).collect();
         let ys: Vec<f64> = embd.iter().map(|p| p[1]).collect();
 
-        // Construct charges manually as done in the optimizer
-        // Terms: 1, x, y, x^2+y^2
         let mut charges = vec![0.0; n * n_terms];
         for i in 0..n {
             charges[i * n_terms] = 1.0;
@@ -886,28 +890,23 @@ mod tests {
             charges[i * n_terms + 3] = xs[i] * xs[i] + ys[i] * ys[i];
         }
 
-        // Run FFT
-        let potentials = n_body_fft_2d(&xs, &ys, &charges, n_terms, &grid);
+        let mut potentials = vec![0.0; n * n_terms];
+        n_body_fft_2d(&xs, &ys, &charges, n_terms, &grid, &mut ws, &mut potentials);
 
-        // Decode Potentials to Forces (matching optimizer logic)
         let mut fft_fx = vec![0.0; n];
         let mut fft_fy = vec![0.0; n];
 
-        // Calculate Z from potentials
-        // Z = Sum [ (1+r^2)phi1 - 2(x*phi2 + y*phi3) + phi4 ] - N
         let mut fft_z = 0.0;
         for i in 0..n {
             let phi1 = potentials[i * n_terms];
             let phi2 = potentials[i * n_terms + 1];
             let phi3 = potentials[i * n_terms + 2];
             let phi4 = potentials[i * n_terms + 3];
-
             let r2 = xs[i] * xs[i] + ys[i] * ys[i];
             fft_z += (1.0 + r2) * phi1 - 2.0 * (xs[i] * phi2 + ys[i] * phi3) + phi4;
         }
         fft_z -= n as f64;
 
-        // Check Z accuracy
         let z_rel_err = (fft_z - direct_z).abs() / direct_z.abs();
         assert!(
             z_rel_err < 0.05,
@@ -917,29 +916,21 @@ mod tests {
             z_rel_err
         );
 
-        // Calculate Forces from potentials
-        // Fx = (x*phi1 - phi2) / Z
-        // Fy = (y*phi1 - phi3) / Z
         for i in 0..n {
             let phi1 = potentials[i * n_terms];
             let phi2 = potentials[i * n_terms + 1];
             let phi3 = potentials[i * n_terms + 2];
-
             fft_fx[i] = (xs[i] * phi1 - phi2) / fft_z;
             fft_fy[i] = (ys[i] * phi1 - phi3) / fft_z;
         }
 
-        // Compare Forces
         for i in 0..n {
             let fx_err = (fft_fx[i] - direct_fx[i]).abs();
             let fy_err = (fft_fy[i] - direct_fy[i]).abs();
-
-            // Allow larger error for small forces
             let force_mag = (direct_fx[i].powi(2) + direct_fy[i].powi(2))
                 .sqrt()
                 .max(1e-10);
 
-            // 15% relative error tolerance for approximation is acceptable for t-SNE
             assert!(
                 fx_err / force_mag < 0.15 || fx_err < 1e-5,
                 "Point {} Fx mismatch. FFT={:.6}, Direct={:.6}",
@@ -979,12 +970,12 @@ mod tests {
             charges[i * 4 + 3] = xs[i] * xs[i] + ys[i] * ys[i];
         }
 
-        // Helper to run fft and get avg error
         let run_fft_err = |n_boxes: usize| -> f64 {
             let grid = FftGrid::new(-5.0, 5.0, n_boxes, 3);
-            let pots = n_body_fft_2d(&xs, &ys, &charges, 4, &grid);
+            let mut ws = FftWorkspace::new(grid.n_fft);
+            let mut pots = vec![0.0; n * 4];
+            n_body_fft_2d(&xs, &ys, &charges, 4, &grid, &mut ws, &mut pots);
 
-            // Compute Z
             let mut z = 0.0;
             for i in 0..n {
                 let r2 = xs[i] * xs[i] + ys[i] * ys[i];
@@ -1003,8 +994,8 @@ mod tests {
             tot_err
         };
 
-        let err_coarse = run_fft_err(8); // Coarse grid
-        let err_fine = run_fft_err(32); // Fine grid
+        let err_coarse = run_fft_err(8);
+        let err_fine = run_fft_err(32);
 
         assert!(
             err_fine < err_coarse,
@@ -1016,7 +1007,6 @@ mod tests {
 
     #[test]
     fn test_forces_sum_to_zero() {
-        // Newton's third law check
         let embd: Vec<Vec<f64>> = vec![
             vec![-2.0, 1.0],
             vec![1.0, -1.5],
@@ -1028,7 +1018,6 @@ mod tests {
         let xs: Vec<f64> = embd.iter().map(|p| p[0]).collect();
         let ys: Vec<f64> = embd.iter().map(|p| p[1]).collect();
 
-        // 4 terms setup
         let mut charges = vec![0.0; n * 4];
         for i in 0..n {
             charges[i * 4] = 1.0;
@@ -1038,9 +1027,10 @@ mod tests {
         }
 
         let grid = FftGrid::new(-5.0, 5.0, 20, 3);
-        let pots = n_body_fft_2d(&xs, &ys, &charges, 4, &grid);
+        let mut ws = FftWorkspace::new(grid.n_fft);
+        let mut pots = vec![0.0; n * 4];
+        n_body_fft_2d(&xs, &ys, &charges, 4, &grid, &mut ws, &mut pots);
 
-        // Calc Z
         let mut z = 0.0;
         for i in 0..n {
             let r2 = xs[i] * xs[i] + ys[i] * ys[i];
@@ -1052,7 +1042,6 @@ mod tests {
 
         let mut sum_fx = 0.0;
         let mut sum_fy = 0.0;
-
         for i in 0..n {
             let fx = (xs[i] * pots[i * 4] - pots[i * 4 + 1]) / z;
             let fy = (ys[i] * pots[i * 4] - pots[i * 4 + 2]) / z;

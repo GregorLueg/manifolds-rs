@@ -1,31 +1,44 @@
-use num_traits::Float;
+use faer::Mat;
+use faer_traits::ComplexField;
+use num_traits::{Float, Zero};
+use rayon::prelude::*;
 use std::ops::{Add, Mul};
 
 /////////////////////
 // Data structures //
 /////////////////////
 
-/// Sparse graph in COO (Coordinate) format - tensor-friendly
+/////////
+// COO //
+/////////
+
+/// Coordinate list
+///
+/// Represents the graph in COO (Coordinate) format - tensor-friendly
 ///
 /// ### Fields
 ///
 /// * `row_indices` - Row index
 /// * `col_indices` - Column index
 /// * `values` - The value stored here
-/// * `n_vertices` - The number of vertices in the graph
+/// * `n_samples` - The number of vertices in the graph
 #[derive(Clone)]
-pub struct SparseGraph<T> {
+pub struct CoordinateList<T> {
     pub row_indices: Vec<usize>,
     pub col_indices: Vec<usize>,
     pub values: Vec<T>,
-    pub n_vertices: usize,
+    pub n_samples: usize,
 }
 
-impl<T> SparseGraph<T>
+impl<T> CoordinateList<T>
 where
     T: Float,
 {
     /// Generate an edge list from the COO
+    ///
+    /// ### Returns
+    ///
+    /// A vector of tuples representing the edges and their weights
     pub fn to_edge_list(&self) -> Vec<(usize, usize, T)> {
         self.row_indices
             .iter()
@@ -34,7 +47,20 @@ where
             .map(|((&r, &c), &v)| (r, c, v))
             .collect()
     }
+
+    /// Returns the size of the graph
+    ///
+    /// ### Returns
+    ///
+    /// The number of edges in the graph
+    pub fn get_size(&self) -> usize {
+        self.row_indices.len()
+    }
 }
+
+/////////////
+// CSR/CSC //
+/////////////
 
 /// Type to describe the CompressedSparseFormat
 #[derive(Debug, Clone)]
@@ -70,7 +96,7 @@ impl CompressedSparseFormat {
 #[derive(Debug, Clone)]
 pub struct CompressedSparseData<T>
 where
-    T: Clone + Default,
+    T: Clone + Float + ComplexField,
 {
     pub data: Vec<T>,
     pub indices: Vec<usize>,
@@ -81,7 +107,7 @@ where
 
 impl<T> CompressedSparseData<T>
 where
-    T: Clone + Default + Into<f64> + Sync + Add + PartialEq + Mul,
+    T: Clone + Sync + Add + PartialEq + Mul + Float + ComplexField,
 {
     /// Generate a nes CSC version of the matrix
     ///
@@ -132,6 +158,47 @@ where
         }
     }
 
+    /// Transpose the matrix, maintaining the same storage format
+    ///
+    /// * For CSR: creates CSR^T (which is naturally CSC, then converted back to
+    ///   CSR)
+    /// * For CSC: creates CSC^T (which is naturally CSR, then converted back to
+    ///   CSC)
+    ///
+    /// ### Returns
+    ///
+    /// Transposed matrix in the same storage format
+    pub fn transpose(&self) -> Self {
+        match self.cs_type {
+            CompressedSparseFormat::Csr => {
+                // CSR transposed is naturally CSC
+                // Just reinterpret the data with swapped dimensions
+                let as_csc = CompressedSparseData {
+                    data: self.data.clone(),
+                    indices: self.indices.clone(),
+                    indptr: self.indptr.clone(),
+                    cs_type: CompressedSparseFormat::Csc,
+                    shape: (self.shape.1, self.shape.0), // swap dimensions
+                };
+                // Convert back to CSR for consistency
+                csc_to_csr(&as_csc)
+            }
+            CompressedSparseFormat::Csc => {
+                // CSC transposed is naturally CSR
+                // Just reinterpret the data with swapped dimensions
+                let as_csr = CompressedSparseData {
+                    data: self.data.clone(),
+                    indices: self.indices.clone(),
+                    indptr: self.indptr.clone(),
+                    cs_type: CompressedSparseFormat::Csr,
+                    shape: (self.shape.1, self.shape.0), // swap dimensions
+                };
+                // Convert back to CSC for consistency
+                csr_to_csc(&as_csr)
+            }
+        }
+    }
+
     /// Returns the shape of the matrix
     ///
     /// ### Returns
@@ -149,6 +216,61 @@ where
     pub fn get_nnz(&self) -> usize {
         self.data.len()
     }
+
+    /// Returns the number of rows
+    ///
+    /// ### Returns
+    ///
+    /// The number of rows
+    pub fn nrows(&self) -> usize {
+        self.shape.0
+    }
+
+    /// Returns the number of columns
+    ///
+    /// ### Returns
+    ///
+    /// The number of columns
+    pub fn ncols(&self) -> usize {
+        self.shape.1
+    }
+
+    /// Converts the compressed sparse matrix to a dense matrix
+    ///
+    /// ### Returns
+    ///
+    /// The dense matrix
+    pub fn to_dense(&self) -> Mat<T> {
+        let (nrows, ncols) = self.shape;
+        let mut dense: Mat<T> = Mat::zeros(nrows, ncols);
+
+        match self.cs_type {
+            CompressedSparseFormat::Csr => {
+                for i in 0..nrows {
+                    let start = self.indptr[i];
+                    let end = self.indptr[i + 1];
+                    for idx in start..end {
+                        let j = self.indices[idx];
+                        let val = self.data[idx];
+                        dense[(i, j)] = val;
+                    }
+                }
+            }
+            CompressedSparseFormat::Csc => {
+                for j in 0..ncols {
+                    let start = self.indptr[j];
+                    let end = self.indptr[j + 1];
+                    for idx in start..end {
+                        let i = self.indices[idx];
+                        let val = self.data[idx];
+                        dense[(i, j)] = val;
+                    }
+                }
+            }
+        }
+
+        dense
+    }
 }
 
 /// Transforms a CompressedSparseData that is CSC to CSR
@@ -162,7 +284,7 @@ where
 ///
 pub fn csc_to_csr<T>(sparse_data: &CompressedSparseData<T>) -> CompressedSparseData<T>
 where
-    T: Clone + Default + Into<f64> + Sync + Add + PartialEq + Mul,
+    T: Clone + Sync + Add + PartialEq + Mul + Float + ComplexField,
 {
     // early return if already in the desired format
     if sparse_data.cs_type.is_csr() {
@@ -181,7 +303,7 @@ where
         row_ptr[i + 1] += row_ptr[i];
     }
 
-    let mut csr_data = vec![T::default(); nnz];
+    let mut csr_data = vec![T::zero(); nnz];
     let mut csr_col_ind = vec![0; nnz];
     let mut next = row_ptr[..nrow].to_vec();
 
@@ -190,7 +312,7 @@ where
             let row = sparse_data.indices[idx];
             let pos = next[row];
 
-            csr_data[pos] = sparse_data.data[idx].clone();
+            csr_data[pos] = sparse_data.data[idx];
             csr_col_ind[pos] = col;
 
             next[row] += 1;
@@ -220,7 +342,7 @@ where
 /// The data in CSC format, i.e., `CompressedSparseData`
 pub fn csr_to_csc<T>(sparse_data: &CompressedSparseData<T>) -> CompressedSparseData<T>
 where
-    T: Clone + Default + Into<f64> + Sync + Add + PartialEq + Mul,
+    T: Clone + Sync + Add + PartialEq + Mul + Float + ComplexField,
 {
     // early return if already in the desired format
     if sparse_data.cs_type.is_csc() {
@@ -241,7 +363,7 @@ where
         col_ptr[i + 1] += col_ptr[i];
     }
 
-    let mut csc_data = vec![T::default(); nnz];
+    let mut csc_data = vec![T::zero(); nnz];
     let mut csc_row_ind = vec![0; nnz];
     let mut next = col_ptr[..ncol].to_vec();
 
@@ -251,7 +373,7 @@ where
             let col = sparse_data.indices[idx];
             let pos = next[col];
 
-            csc_data[pos] = sparse_data.data[idx].clone();
+            csc_data[pos] = sparse_data.data[idx];
             csc_row_ind[pos] = row;
 
             next[col] += 1;
@@ -267,6 +389,141 @@ where
     }
 }
 
+/// Helper to
+pub fn to_dense<T>(sparse: &CompressedSparseData<T>) -> Mat<T>
+where
+    T: Clone + Float + Zero + ComplexField,
+{
+    let (nrows, ncols) = sparse.shape;
+    let mut dense = Mat::zeros(nrows, ncols);
+
+    match sparse.cs_type {
+        CompressedSparseFormat::Csr => {
+            for i in 0..nrows {
+                let start = sparse.indptr[i];
+                let end = sparse.indptr[i + 1];
+                for idx in start..end {
+                    let j = sparse.indices[idx];
+                    let val = sparse.data[idx];
+                    dense[(i, j)] = val;
+                }
+            }
+        }
+        CompressedSparseFormat::Csc => {
+            for j in 0..ncols {
+                let start = sparse.indptr[j];
+                let end = sparse.indptr[j + 1];
+                for idx in start..end {
+                    let i = sparse.indices[idx];
+                    let val = sparse.data[idx];
+                    dense[(i, j)] = val;
+                }
+            }
+        }
+    }
+
+    dense
+}
+
+////////////////
+// SparseRows //
+////////////////
+
+/// SparseRow represents a row in a sparse matrix.
+///
+/// ### Fields
+///
+/// * `data` - Vector of non-zero values in the row
+/// * `indices` - Vector of column indices corresponding to non-zero values
+pub struct SparseRow<T> {
+    pub indices: Vec<usize>,
+    pub data: Vec<T>,
+}
+
+////////////////
+// Conversion //
+////////////////
+
+/// Convert COO CoordinateList to CSR CompressedSparseData
+///
+/// Converts coordinate format to Compressed Sparse Row format. This is required
+/// for efficient row-based operations like normalization and matrix multiplication.
+///
+/// Uses parallel sorting for performance.
+///
+/// ### Params
+///
+/// * `graph` - Input graph in COO format
+///
+/// ### Returns
+///
+/// Matrix in CSR format with shape (n_samples, n_samples)
+pub fn coo_to_csr<T>(graph: &CoordinateList<T>) -> CompressedSparseData<T>
+where
+    T: Float + Send + Sync + Default + ComplexField,
+{
+    let n = graph.n_samples;
+    let nnz = graph.values.len();
+
+    let mut triplets: Vec<(usize, usize, T)> = (0..nnz)
+        .into_par_iter()
+        .map(|i| (graph.row_indices[i], graph.col_indices[i], graph.values[i]))
+        .collect();
+
+    triplets.par_sort_unstable_by(|(r1, c1, _), (r2, c2, _)| r1.cmp(r2).then(c1.cmp(c2)));
+
+    let mut data = Vec::with_capacity(nnz);
+    let mut indices = Vec::with_capacity(nnz);
+
+    for (_, c, v) in triplets.iter() {
+        data.push(*v);
+        indices.push(*c);
+    }
+
+    let mut indptr = vec![0; n + 1];
+
+    for (r, _, _) in triplets.iter() {
+        indptr[r + 1] += 1;
+    }
+
+    for i in 0..n {
+        indptr[i + 1] += indptr[i];
+    }
+
+    CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n))
+}
+
+/// Transform a slice of rows into a CSR matrix
+///
+/// ### Params
+///
+/// * `rows` - Slice of sparse rows to convert
+/// * `ncols` - Number of columns in the matrix
+///
+/// ### Returns
+///
+/// A CompressedSparseData structure in CSR format
+pub fn sparse_row_to_csr<T>(rows: &[SparseRow<T>], ncols: usize) -> CompressedSparseData<T>
+where
+    T: Clone + Float + Send + Sync + ComplexField,
+{
+    let nrows = rows.len();
+    let nnz: usize = rows.iter().map(|row| row.data.len()).sum();
+
+    let mut data = Vec::with_capacity(nnz);
+    let mut indices = Vec::with_capacity(nnz);
+    let mut indptr = Vec::with_capacity(nrows + 1);
+
+    indptr.push(0);
+    for row in rows {
+        data.extend_from_slice(&row.data);
+        indices.extend_from_slice(&row.indices);
+        indptr.push(data.len());
+    }
+
+    CompressedSparseData::new_csr(&data, &indices, &indptr, (nrows, ncols))
+}
+
 ///////////
 // Tests //
 ///////////
@@ -277,11 +534,11 @@ mod test_data_struct {
 
     #[test]
     fn test_sparse_graph_to_edge_list() {
-        let graph = SparseGraph {
+        let graph = CoordinateList {
             row_indices: vec![0, 0, 1, 2],
             col_indices: vec![1, 2, 2, 0],
             values: vec![1.0, 2.0, 3.0, 4.0],
-            n_vertices: 3,
+            n_samples: 3,
         };
 
         let edges = graph.to_edge_list();
@@ -368,5 +625,58 @@ mod test_data_struct {
 
         let csc = csr.transform();
         assert_eq!(csc.get_nnz(), 0);
+    }
+
+    #[test]
+    fn test_coo_to_csr_sorting_and_structure() {
+        // Construct a COO graph with unsorted entries and mixed row orders
+        // (0,1)=1.0, (1,2)=3.0, (0,2)=2.0
+        let graph = CoordinateList {
+            row_indices: vec![0, 1, 0],
+            col_indices: vec![1, 2, 2],
+            values: vec![1.0, 3.0, 2.0],
+            n_samples: 3,
+        };
+
+        let csr = coo_to_csr(&graph);
+
+        // 1. Verify Structure
+        assert!(csr.cs_type.is_csr());
+        assert_eq!(csr.shape(), (3, 3));
+        assert_eq!(csr.get_nnz(), 3);
+
+        // 2. Verify Sorting (Row 0 should come before Row 1, and (0,1) before (0,2))
+        // Expected order: (0,1,1.0), (0,2,2.0), (1,2,3.0)
+        // Data: [1.0, 2.0, 3.0]
+        // Indices: [1, 2, 2]
+        // Indptr: [0, 2, 3, 3] (Row 0 has 2 items, Row 1 has 1 item, Row 2 empty)
+
+        assert_eq!(csr.data, vec![1.0, 2.0, 3.0]);
+        assert_eq!(csr.indices, vec![1, 2, 2]);
+        assert_eq!(csr.indptr, vec![0, 2, 3, 3]);
+    }
+
+    #[test]
+    fn test_coo_to_csr_empty_rows_and_gaps() {
+        // Graph with 4 vertices, but only edges on row 0 and row 3
+        let graph = CoordinateList {
+            row_indices: vec![0, 3],
+            col_indices: vec![1, 2],
+            values: vec![10.0, 20.0],
+            n_samples: 4,
+        };
+
+        let csr = coo_to_csr(&graph);
+
+        // Indptr should reflect empty rows 1 and 2
+        // Row 0: len 1 -> start 0, end 1
+        // Row 1: len 0 -> start 1, end 1
+        // Row 2: len 0 -> start 1, end 1
+        // Row 3: len 1 -> start 1, end 2
+        // Indptr: [0, 1, 1, 1, 2]
+
+        assert_eq!(csr.indptr, vec![0, 1, 1, 1, 2]);
+        assert_eq!(csr.data, vec![10.0, 20.0]);
+        assert_eq!(csr.indices, vec![1, 2]);
     }
 }
