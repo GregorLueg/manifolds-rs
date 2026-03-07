@@ -11,15 +11,16 @@ use rayon::prelude::*;
 use std::default::Default;
 
 /// Which search algorithm to use for the approximate nearest neighbour search
+/// Default is set to NNDescent
 #[derive(Default)]
 pub enum AnnSearch {
+    /// NNDescent
+    #[default]
+    NNDescent,
     /// Annoy
     Annoy,
     /// HNSW
-    #[default]
     Hnsw,
-    /// NNDescent
-    NNDescent,
     /// BallTree
     BallTree,
     /// Exhaustive

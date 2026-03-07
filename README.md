@@ -5,15 +5,18 @@
 # manifolds-rs
 
 High-performance manifold learning and dimensionality reduction algorithms
-implemented in Rust. Contains for now:
+implemented in Rust. Contains as for now:
 
 - **UMAP**
+  - Has different optimisers: SGD (traditional), Adam and a parallelised
+  version of Adam for very fast fitting.
 - **Parametric UMAP** (optional feature)
 - **tSNE**
   - ***Barnes Hut tSNE*** (With a `O(n log n)` complexity).
   - ***Fast Fourier Transform-accelerated Interpolation-based t-SNE (Flt-SNE)***
   (optional feature; with a `O(n)` complexity for large datasets).
 - **PHATE**
+- **PaCMAP**
 
 ## Description
 
@@ -26,8 +29,9 @@ These are typically used methods for visualising high-dimensional biological
 data, but not without [controversy](https://journals.plos.org/ploscompbiol/article?id=10.1371/journal.pcbi.1011288).
 Moreover, the `crate` also provides via the Burn DL framework optionally
 [parametric UMAP](https://arxiv.org/abs/2009.12981) that can be optionally be
-used via the prospective feature flag. With the new release, we also have
-[PHATE](https://pmc.ncbi.nlm.nih.gov/articles/PMC7073148/).
+used via the prospective feature flag. Since release `0.1.8`, we also have
+[PHATE](https://pmc.ncbi.nlm.nih.gov/articles/PMC7073148/). With `0.1.9`,
+[PaCMAP](https://arxiv.org/abs/2012.04456) has been also implemented.
 
 ## Features
 
@@ -37,13 +41,18 @@ version of ADAM for increased optimisation speed.
 - **tSNE algorithm**: Implementation of the Barnes-Hut accelerated version and
 the FFT-accelerated version (optional).
 - **PHATE**: Implementation of Potential of Heat-diffusion for Affinity-based
-  Trajectory Embedding with different landmark methods.
+Trajectory Embedding with different landmark methods.
 - **Multiple ANN backends** via [`ann-search-rs`](https://crates.io/crates/ann-search-rs):
-  - Annoy (Approximate Nearest Neighbours Oh Yeah) - good for smaller datasets.
-  - HNSW (Hierarchical Navigable Small World) - good for larger datasets.
-  - NNDescent (Nearest Neighbour Descent) - good for larger datasets.
-  - BallTree - a small, fast index for smaller data sets.
-  - Exhaustive - if you want precise results and have too much time.
+  - *Exhaustive* - If you want precise results and have a small data set in
+    which the approximate nearest neighbour index building is actually slower.
+  - *BallTree* - A small, fast index for smaller data sets with lower
+    dimensions.
+  - *Annoy (Approximate Nearest Neighbours Oh Yeah)* - Good for medium low-
+    dimensionality datasets.
+  - *NNDescent (Nearest Neighbour Descent)* - good for larger datasets with
+    higher dimensionality.
+  - *HNSW (Hierarchical Navigable Small World)* - good for (very) larger
+    datasets with higher dimensionality.
 - **Distance metrics**:
   - Euclidean
   - Cosine
@@ -51,7 +60,7 @@ the FFT-accelerated version (optional).
 - **Multiple initialisations**:
   - Graph Laplacian eigenvector-based initialisation using Lanczos iteration
   - Random initialisation
-  - PCA-based initialisation with randomised SVD for veeery large data sets
+  - PCA-based initialisation
 - **Customisable parameters**: Full control over fuzzy simplicial set
   construction, graph symmetrisation, and optimisation parameters for tSNE,
   UMAP and PHATE.
@@ -91,6 +100,11 @@ Please use version `0.1.3` and higher. These ones are not extensively tested
 against real data.
 
 ## Usage
+
+### R package
+
+This crate powers [manifoldsR](https://gregorlueg.github.io/manifoldsR/index.html),
+an R package leveraging the incredible speed that Rust offers.
 
 ### UMAP Example
 
