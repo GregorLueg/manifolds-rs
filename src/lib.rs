@@ -1,4 +1,4 @@
-//! Dimensionality reduction algorithms including UMAP, t-SNE, and PHATE.
+//! Dimensionality reduction algorithms including UMAP, t-SNE, PHATE and PacMAP.
 //!
 //! Provides both standard and approximate nearest-neighbour-based graph
 //! construction, multiple optimisers, and (optionally) parametric UMAP via a
@@ -71,33 +71,28 @@ pub type PreComputedKnn<T> = Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>;
 //////////
 
 /// Main Config structure with all of the possible sub configurations
-///
-/// ### Fields
-///
-/// * `n_dim` - How many dimensions to return
-/// * `k` - Number of neighbours
-/// * `optimiser` - Which optimiser to use. Defaults to `"adam_parallel"`.
-/// * `ann_type` - Which of the possible approximate nearest neighbour searches
-///   to use. Defaults to `"hnsw"`.
-/// * `initialisation` - Which embedding initialisation to use. Defaults to
-///   spectral clustering.
-/// * `nn_params` - Nearest neighbour parameters.
-/// * `optim_params` - The optimiser parameters.
-/// * `umap_graph_params` - The graph parameters for the generation of the
-///   graph structure.
-/// * `randomised` - If initialisation is set to PCA, shall randomised PCA be
-///   used.
 #[derive(Debug, Clone)]
 pub struct UmapParams<T> {
+    /// How many dimensions to return
     n_dim: usize,
+    /// Number of neighbours
     k: usize,
+    /// Which optimiser to use. Defaults to `"adam_parallel"`.
     optimiser: String,
+    /// Which of the possible approximate nearest neighbour searches to use.
+    /// Defaults to `"hnsw"`.
     ann_type: String,
+    /// Which embedding initialisation to use. Defaults to spectral clustering.
     initialisation: String,
+    /// Optional initialisation range to use
     init_range: Option<T>,
+    /// Nearest neighbour parameters.
     nn_params: NearestNeighbourParams<T>,
+    /// Parameters for the UMAP graph generation.
     umap_graph_params: UmapGraphParams<T>,
+    /// Parameters to use for the UMAP optimiser.
     optim_params: UmapOptimParams<T>,
+    /// Shall randomised SVC be used for PCA-based embedding
     randomised: bool,
 }
 
@@ -1392,6 +1387,124 @@ where
     }
 
     transposed
+}
+
+////////////
+// PaCMAP //
+////////////
+
+////////////
+// Params //
+////////////
+
+/// Parameters for PaCMAP dimensionality reduction.
+#[derive(Debug, Clone)]
+pub struct PacmapParams<T> {
+    /// Output dimensionality. Default 2.
+    pub n_dim: usize,
+    /// Number of near neighbours. Default 10 (paper default; lower than UMAP's
+    /// 15 since PaCMAP is less sensitive to k). (The function will use 100
+    /// neighbours for in the k-nearest neighbour searches generally speaking.)
+    pub k: usize,
+    /// Approximate nearest neighbour method: `"exhaustive"`, `"annoy"`,
+    /// `"balltree"`, `"hnsw"` or `"nndescent"`
+    pub ann_type: String,
+    /// Which optimiser to use. Options are `"adam"` and `"adam_parallel"`
+    pub optimiser_type: String,
+    /// Mid-near pairs per point. Default 2.
+    pub n_mid_near: usize,
+    /// Further (random) pairs per point. Default 2.
+    pub n_further: usize,
+    /// Start index into kNN list for mid-near candidate window. Default 4
+    /// (skip the 4 nearest).
+    pub mn_candidate_start: usize,
+    /// End index into kNN list for mid-near candidate window. Default 50.
+    /// Requires k >= this value.
+    pub mn_candidate_end: usize,
+    /// Embedding initialisation. Default `"pca"`. PCA is strongly recommended
+    /// for PaCMAP as random init degrades global structure.
+    pub initialisation: String,
+    /// Nearest neighbour search parameters.
+    pub nn_params: NearestNeighbourParams<T>,
+    /// Optimiser parameters.
+    pub optim_params: PacmapOptimParams<T>,
+}
+
+impl<T> PacmapParams<T>
+where
+    T: Float + FromPrimitive,
+{
+    /// Generate a new instance of the PaCMAP parameters
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - Number of dimensions for the embedding
+    /// * `k` - Number of near neighbours. Default 10 (paper default; lower than
+    ///   UMAP's 15 since PaCMAP is less sensitive to k). The function will use
+    ///   100 neighbours for in the k-nearest neighbour searches generally
+    ///   speaking.
+    /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
+    ///   `"annoy"`, `"balltree"`, `"hnsw"` or `"nndescent"`
+    /// * `optimiser_type` - Which optimiser to use. Options are `"adam"` and
+    ///   `"adam_parallel"`. Defaults to the parallel version.
+    /// * `n_mid_near` - Mid-near pairs per point. Default 2.
+    /// * `n_further` - Start index into kNN list for mid-near candidate window. ]
+    ///   Default 4 (skip the 4 nearest).
+    /// * `mn_candidate_start` - Start index into kNN list for mid-near
+    ///   candidate window. Default 4 (skip the 4 nearest).
+    /// * `mn_candidate_end` - End index into kNN list for mid-near candidate
+    ///   window. Default 50. Requires k >= this value.
+    /// * `initialisation` - Embedding initialisation. Default `"pca"`. PCA is
+    ///   strongly recommended for PaCMAP as random init degrades global
+    ///   structure.
+    /// * `nn_params` - Nearest neighbour search parameters.
+    /// * `optim_params` - Optimiser parameters.
+    ///
+    /// ### Returns
+    ///
+    /// Initialised self
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        n_dim: Option<usize>,
+        k: Option<usize>,
+        ann_type: Option<String>,
+        optimiser_type: Option<String>,
+        n_mid_near: Option<usize>,
+        n_further: Option<usize>,
+        mn_candidate_start: Option<usize>,
+        mn_candidate_end: Option<usize>,
+        initialisation: Option<String>,
+        nn_params: Option<NearestNeighbourParams<T>>,
+        optim_params: Option<PacmapOptimParams<T>>,
+    ) -> Self {
+        let mn_candidate_end = mn_candidate_end.unwrap_or(50);
+        let k = k.unwrap_or(10).max(mn_candidate_end);
+
+        Self {
+            n_dim: n_dim.unwrap_or(2),
+            k,
+            ann_type: ann_type.unwrap_or("hnsw".to_string()),
+            optimiser_type: optimiser_type.unwrap_or("adam_parallel".to_string()),
+            n_mid_near: n_mid_near.unwrap_or(2),
+            n_further: n_further.unwrap_or(2),
+            mn_candidate_start: mn_candidate_start.unwrap_or(4),
+            mn_candidate_end,
+            initialisation: initialisation.unwrap_or("pca".to_string()),
+            nn_params: nn_params.unwrap_or_default(),
+            optim_params: optim_params.unwrap_or_default(),
+        }
+    }
+}
+
+impl<T> Default for PacmapParams<T>
+where
+    T: Float + FromPrimitive,
+{
+    fn default() -> Self {
+        Self::new(
+            None, None, None, None, None, None, None, None, None, None, None,
+        )
+    }
 }
 
 /////////////////////

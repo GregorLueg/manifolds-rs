@@ -531,3 +531,173 @@ pub fn optimise_pacmap_parallel<T>(
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
     }
 }
+
+///////////
+// Tests //
+///////////
+
+#[cfg(test)]
+mod test_pacmap_optimiser {
+    use super::*;
+    use crate::data::pacmap_pairs::PacmapPairs;
+
+    fn simple_pairs(n: usize) -> PacmapPairs {
+        let near = (0..n).map(|i| (i, (i + 1) % n)).collect();
+        let mid_near = (0..n).map(|i| (i, (i + 2) % n)).collect();
+        let further = (0..n).map(|i| (i, (i + n / 2) % n)).collect();
+        PacmapPairs {
+            near,
+            mid_near,
+            further,
+        }
+    }
+
+    fn simple_embd(n: usize) -> Vec<Vec<f64>> {
+        (0..n).map(|i| vec![i as f64 * 2.0, 0.0]).collect()
+    }
+
+    fn default_params() -> PacmapOptimParams<f64> {
+        PacmapOptimParams::new(Some(50), None, None, None, None, None, None)
+    }
+
+    fn total_movement(before: &[Vec<f64>], after: &[Vec<f64>]) -> f64 {
+        before
+            .iter()
+            .zip(after.iter())
+            .flat_map(|(b, a)| b.iter().zip(a.iter()).map(|(&x, &y)| (x - y).abs()))
+            .sum()
+    }
+
+    #[test]
+    fn test_sequential_moves_points() {
+        let pairs = simple_pairs(6);
+        let mut embd = simple_embd(6);
+        let initial = embd.clone();
+        optimise_pacmap(&mut embd, &pairs, &default_params(), false);
+        assert!(total_movement(&initial, &embd) > 0.01);
+    }
+
+    #[test]
+    fn test_parallel_moves_points() {
+        let pairs = simple_pairs(6);
+        let mut embd = simple_embd(6);
+        let initial = embd.clone();
+        optimise_pacmap_parallel(&mut embd, &pairs, &default_params(), false);
+        assert!(total_movement(&initial, &embd) > 0.01);
+    }
+
+    #[test]
+    fn test_sequential_all_finite() {
+        let pairs = simple_pairs(8);
+        let mut embd = simple_embd(8);
+        optimise_pacmap(&mut embd, &pairs, &default_params(), false);
+        for point in &embd {
+            for &coord in point {
+                assert!(coord.is_finite(), "non-finite coordinate: {}", coord);
+            }
+        }
+    }
+
+    #[test]
+    fn test_parallel_all_finite() {
+        let pairs = simple_pairs(8);
+        let mut embd = simple_embd(8);
+        optimise_pacmap_parallel(&mut embd, &pairs, &default_params(), false);
+        for point in &embd {
+            for &coord in point {
+                assert!(coord.is_finite(), "non-finite coordinate: {}", coord);
+            }
+        }
+    }
+
+    #[test]
+    fn test_sequential_reproducible() {
+        let pairs = simple_pairs(6);
+        let params = default_params();
+        let mut embd1 = simple_embd(6);
+        let mut embd2 = simple_embd(6);
+        optimise_pacmap(&mut embd1, &pairs, &params, false);
+        optimise_pacmap(&mut embd2, &pairs, &params, false);
+        assert_eq!(embd1, embd2);
+    }
+
+    #[test]
+    fn test_parallel_reproducible() {
+        let pairs = simple_pairs(6);
+        let params = default_params();
+        let mut embd1 = simple_embd(6);
+        let mut embd2 = simple_embd(6);
+        optimise_pacmap_parallel(&mut embd1, &pairs, &params, false);
+        optimise_pacmap_parallel(&mut embd2, &pairs, &params, false);
+        assert_eq!(embd1, embd2);
+    }
+
+    #[test]
+    fn test_empty_embedding_does_not_panic() {
+        let pairs = PacmapPairs {
+            near: vec![],
+            mid_near: vec![],
+            further: vec![],
+        };
+        let mut embd: Vec<Vec<f64>> = vec![];
+        optimise_pacmap(&mut embd, &pairs, &default_params(), false);
+        optimise_pacmap_parallel(&mut embd, &pairs, &default_params(), false);
+    }
+
+    #[test]
+    fn test_phase_weights_respected() {
+        // run for only phase 1 epochs and check mid-near pairs drive movement
+        // by comparing against a run with zero mid-near pairs
+        let n = 10;
+        let pairs_full = simple_pairs(n);
+        let pairs_no_mn = PacmapPairs {
+            near: pairs_full.near.clone(),
+            mid_near: vec![],
+            further: pairs_full.further.clone(),
+        };
+
+        let params = PacmapOptimParams::new(Some(50), None, None, None, None, None, None);
+
+        let mut embd_full = simple_embd(n);
+        let mut embd_no_mn = simple_embd(n);
+        let initial = simple_embd(n);
+
+        optimise_pacmap(&mut embd_full, &pairs_full, &params, false);
+        optimise_pacmap(&mut embd_no_mn, &pairs_no_mn, &params, false);
+
+        let movement_full = total_movement(&initial, &embd_full);
+        let movement_no_mn = total_movement(&initial, &embd_no_mn);
+
+        // mid-near pairs contribute additional force so movement should differ
+        assert!(
+            (movement_full - movement_no_mn).abs() > 1e-6,
+            "mid-near pairs had no effect: full={:.4}, no_mn={:.4}",
+            movement_full,
+            movement_no_mn
+        );
+    }
+
+    #[test]
+    fn test_sequential_and_parallel_broadly_agree() {
+        // both should converge to similar embeddings from the same start,
+        // not necessarily identical due to gradient accumulation order
+        let pairs = simple_pairs(10);
+        let params = PacmapOptimParams::new(Some(200), None, None, None, None, None, None);
+
+        let mut embd_seq = simple_embd(10);
+        let mut embd_par = simple_embd(10);
+
+        optimise_pacmap(&mut embd_seq, &pairs, &params, false);
+        optimise_pacmap_parallel(&mut embd_par, &pairs, &params, false);
+
+        let diff = total_movement(&embd_seq, &embd_par);
+        let scale = total_movement(&simple_embd(10), &embd_seq);
+
+        assert!(
+            diff < scale * 0.5,
+            "sequential and parallel diverged too much: diff={:.4}, scale={:.4}",
+            diff,
+            scale
+        );
+    }
+}

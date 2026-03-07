@@ -13,6 +13,7 @@ pub use crate::data::pacmap_pairs::PacmapPairs;
 pub use crate::data::structures::CoordinateList;
 pub use crate::data::synthetic::*;
 pub use crate::training::mds_optimiser::{parse_mds_method, MdsMethod};
+pub use crate::training::pacmap_optimiser::{parse_pacmap_optimiser, PacmapOptimParams};
 pub use crate::training::tsne_optimiser::TsneOptimParams;
 pub use crate::training::umap_optimisers::UmapOptimParams;
 pub use crate::utils::diffusions::PhateDiffusionParams;
