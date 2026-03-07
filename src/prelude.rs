@@ -4,6 +4,7 @@
 //! use manifolds_rs::prelude::*;
 //! ```
 
+pub use crate::data::graph::UmapGraphParams;
 pub use crate::data::init::{initialise_embedding, parse_initilisation};
 pub use crate::data::nearest_neighbours::{
     parse_ann_search, run_ann_search, NearestNeighbourParams,
@@ -13,7 +14,6 @@ pub use crate::data::synthetic::*;
 pub use crate::training::mds_optimiser::{parse_mds_method, MdsMethod};
 pub use crate::training::tsne_optimiser::TsneOptimParams;
 pub use crate::training::umap_optimisers::UmapOptimParams;
-pub use crate::training::UmapGraphParams;
 pub use crate::utils::diffusions::PhateDiffusionParams;
 pub use crate::utils::diffusions::{parse_landmark_method, LandmarkMethod, PhateTime};
 pub use crate::utils::math::landmark_von_neumann_entropy;
