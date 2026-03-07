@@ -1,3 +1,6 @@
+//! Model parameters for the neural network that is being trained during
+//! parametric UMAP.
+
 use burn::tensor::Element;
 use burn::{nn::LeakyReluConfig, prelude::*};
 use faer::MatRef;
@@ -10,16 +13,13 @@ use std::marker::PhantomData;
 //////////////////
 
 /// Configuration structure for creating a `UMAPModel`.
-///
-/// ### Fields
-///
-/// * `input_size` - Number of input features.
-/// * `hidden_sizes` - Vector of sizes for the hidden layers.
-/// * `output_size` - Number of output features.
 #[derive(Config, Debug)]
 pub struct UmapMlpConfig {
+    /// Number of input features
     pub input_size: usize,
+    /// Vector of sizes for the hidden layers.
     pub hidden_sizes: Vec<usize>,
+    /// Number of output features.
     pub output_size: usize,
 }
 

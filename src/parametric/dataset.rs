@@ -1,3 +1,5 @@
+//! Dataset generation prior to training of the parametric UMAP
+
 use burn::{
     data::dataset::Dataset,
     prelude::*,
@@ -150,25 +152,19 @@ where
 //////////////
 
 /// Batch for UMAP edge training
-///
-/// ### Structure
-///
-/// * `src_indices` - Source node
-/// * `dst_indices` - Destination node
-/// * `targets` - 1.0 for positive edge, 0.0 for negative edge
 #[derive(Clone, Debug)]
 pub struct UmapBatch<B: Backend> {
+    /// Source node tensor
     pub src_indices: Tensor<B, 1, Int>,
+    /// Target node tensor
     pub dst_indices: Tensor<B, 1, Int>,
+    /// Type of edge: `1.0` for positive edge, `0.0` for negative edge
     pub targets: Tensor<B, 1>,
 }
 
 /// UmapEdgeDataset
-///
-/// ### Fields
-///
-/// * `edges` - Vector of edges with `(src, dist, target)`
 pub struct UmapEdgeDataset {
+    /// Vector of edges with `(src, dist, target)`
     pub edges: Vec<(usize, usize, f32)>,
 }
 

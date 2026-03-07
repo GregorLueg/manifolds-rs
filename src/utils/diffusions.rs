@@ -1,3 +1,5 @@
+//! Diffusion methods for PHATE (and in the future potentially diffuion maps)
+
 use ann_search_rs::utils::dist::{parse_ann_dist, Dist, SimdDistance};
 use ann_search_rs::utils::k_means_utils::{assign_all_parallel, train_centroids};
 use faer::MatRef;
@@ -20,6 +22,8 @@ use crate::utils::sparse_ops::*;
 // Globals //
 /////////////
 
+/// Maximum iterations to use for powering the Markov transition matrix during
+/// PHATE
 pub const PHATE_MAX_T: usize = 100;
 
 ////////////
@@ -40,18 +44,30 @@ pub const PHATE_MAX_T: usize = 100;
 /// * `n_landmarks` - Option to use landmarks. Set to something.
 /// * `landmark_method` - String definining which landmark method to use.
 /// * `n_svd` - Number of SVDs to use for the spectral clustering
-/// * `t_max` - to be written
-/// * `gamma` - to be written
 #[derive(Debug, Clone)]
 pub struct PhateDiffusionParams<T> {
+    /// Decay exponent alpha (typical: 40). If None, returns binary
+    /// connectivity.
     pub decay: Option<T>,
+    /// Multiplicative factor for bandwidth (default: 1.0)
     pub bandwidth_scale: T,
+    /// Threshold below which affinities are set to 0 (default: 1e-4, for
+    /// sparsity)
     pub thresh: T,
+    /// symmetrisation method: "add" for (K+K^T)/2, "multiply" for K*K^T,
+    /// "none" for asymmetric.
     pub graph_symmetry: String,
+    /// Option to use landmarks. Recommended to use for larger data sets.
     pub n_landmarks: Option<usize>,
+    /// String definining which landmark method to use. Option of `"spectral"`,
+    /// `"random"` or `"density"`.
     pub landmark_method: String,
+    /// Number of SVDs to use for the spectral clustering
     pub n_svd: Option<usize>,
+    /// Enum describing how to power the matrix. Auto or user-defined.
     pub t: PhateTime,
+    /// Gamma parameter to control the informational distance between data
+    /// points. Between `[-1.0, 1.0]`
     pub gamma: T,
 }
 
@@ -186,16 +202,25 @@ where
     T: ComplexField + Float,
 {
     /// Full diffusion using all nodes.
-    Full { operator: CompressedSparseData<T> },
+    Full {
+        /// The full operator
+        operator: CompressedSparseData<T>,
+    },
     /// Landmark diffusion using a subset of nodes.
-    Landmark { landmarks: PhateLandmarks<T> },
+    Landmark {
+        /// The landmark operator
+        landmarks: PhateLandmarks<T>,
+    },
 }
 
 /// Enum representing different time diffusion methods.
 #[derive(Debug, Clone)]
 pub enum PhateTime {
     /// Find optimal via VNE (default: 100)
-    Auto { t_max: usize },
+    Auto {
+        /// Maximum number of iterations to test
+        t_max: usize,
+    },
     /// Use specific t
     Fixed(usize),
 }
@@ -232,11 +257,20 @@ pub fn parse_phate_time(t_custom: Option<usize>, t_max: usize) -> PhateTime {
 #[derive(Debug, Clone)]
 pub enum LandmarkMethod {
     /// Randomly select landmarks.
-    Random { seed: u64 },
+    Random {
+        /// Seed for the randomised landmark selection
+        seed: u64,
+    },
     /// Use spectral clustering to select landmarks.
-    Spectral { n_svd: usize },
+    Spectral {
+        /// Number of PCs to use for spectral clustering
+        n_svd: usize,
+    },
     /// Density - leverage node degree
-    Density { seed: u64 },
+    Density {
+        /// Seed for the randomised landmark selection
+        seed: u64,
+    },
 }
 
 impl Default for LandmarkMethod {

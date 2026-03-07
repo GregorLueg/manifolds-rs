@@ -1,3 +1,5 @@
+//! Batching of samples for parametric UMAP
+
 use burn::{data::dataloader::batcher::Batcher, prelude::*, tensor::TensorData};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -6,17 +8,13 @@ use std::sync::{Arc, Mutex};
 use crate::parametric::dataset::*;
 
 /// Batcher that converts UMAP edges into training batches with negative sampling
-///
-/// ### Fields
-///
-/// * `neg_sample_rate` - Number of negative samples per positive edge
-/// * `n_samples` - Total number of samples in the dataset (for negative
-///   sampling)
-/// * `rng` - Thread safe seeded RNG for negative sampling
 #[derive(Clone)]
 pub struct UmapBatcher {
+    /// Number of negative samples per positive edge
     pub neg_sample_rate: usize,
+    /// Total number of samples in the dataset (for negative sampling)
     pub n_samples: usize,
+    /// Thread safe seeded RNG for negative sampling
     rng: Arc<Mutex<StdRng>>,
 }
 

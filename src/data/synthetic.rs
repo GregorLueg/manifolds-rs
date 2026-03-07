@@ -1,3 +1,6 @@
+//! Synthetic data generation to understand caveats of different embedding
+//! methods and do (assumption) testing
+
 use faer::Mat;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
@@ -146,18 +149,13 @@ pub fn parse_topology(s: &str) -> Option<TrajectoryTopology> {
 }
 
 /// Structure for branch specification
-///
-/// ### Fields
-///
-/// * `parent` - The optional parent of this cell type
-/// * `split_at` - Fraction along the parent where this branch starts (0.0 or
-///   1.0)
-/// * `length` - The length of this branch
 #[derive(Clone, Debug)]
 pub struct BranchSpec {
+    /// The optional parent of this cell type
     pub parent: Option<usize>,
-    // Fraction along parent where this branch starts (0.0–1.0)
+    /// Fraction along the parent where this branch starts (0.0 or 1.0)
     pub split_at: f64,
+    /// The length of this branch
     pub length: f64,
 }
 
@@ -465,4 +463,101 @@ pub fn generate_trajectory(
     }
 
     (data, assignments)
+}
+
+///////////////////////////
+// Hierarchical clusters //
+///////////////////////////
+
+/// Generate hierarchical cluster data with supergroups and subclusts.
+///
+/// Creates data with a two-level cluster hierarchy: `n_supergroups` groups
+/// each containing `n_subclusts` tight subclusters. Supergroup centres are
+/// spread far apart; subcluster centres are spread tightly around their
+/// supergroup centre. This structure tests whether an embedding preserves
+/// global relational structure (supergroup distances) while also resolving
+/// local separation (subclusters within a supergroup).
+///
+/// UMAP/tSNE tends to collapse supergroup distances arbitrarily and
+/// over-separate subclusters. PaCMAP should keep supergroups at meaningful
+/// relative distances while still resolving the subcluster structure.
+///
+/// ### Params
+///
+/// * `n_samples` - Total number of points, distributed evenly across all
+///   subclusters.
+/// * `dim` - Dimensionality of the ambient space.
+/// * `n_supergroups` - Number of top-level groups. Default `3`.
+/// * `n_subclusts` - Number of subclusters per supergroup. Default `3`.
+/// * `supergroup_spread` - Spread of supergroup centres. Default `15.0`.
+/// * `subcluster_spread` - Spread of subcluster centres around their
+///   supergroup centre. Default 2.0.
+/// * `point_std` - Within-subcluster Gaussian noise. Default `0.4`.
+/// * `seed` - Seed for reproducibility.
+///
+/// ### Returns
+///
+/// Tuple of:
+/// - `Mat<f64>` of shape `(n_samples, dim)`
+/// - `Vec<usize>` supergroup label per sample (0..n_supergroups)
+/// - `Vec<usize>` subcluster label per sample (0..n_supergroups * n_subclusts)
+#[allow(clippy::too_many_arguments)]
+pub fn generate_hierarchical_clusters(
+    n_samples: usize,
+    dim: usize,
+    n_supergroups: usize,
+    n_subclusts: usize,
+    supergroup_spread: f64,
+    subcluster_spread: f64,
+    point_std: f64,
+    seed: u64,
+) -> (Mat<f64>, Vec<usize>, Vec<usize>) {
+    let mut rng = StdRng::seed_from_u64(seed);
+
+    let total_subclusters = n_supergroups * n_subclusts;
+    let n_per_subcluster = n_samples / total_subclusters;
+
+    // supergroup centres — spread far apart
+    let supergroup_centres: Vec<Vec<f64>> = (0..n_supergroups)
+        .map(|_| {
+            (0..dim)
+                .map(|_| rng.random_range(-supergroup_spread..supergroup_spread))
+                .collect()
+        })
+        .collect();
+
+    // subcluster centres — tight around their supergroup centre
+    let mut subcluster_centres: Vec<(usize, Vec<f64>)> = Vec::with_capacity(total_subclusters);
+    for sg in 0..n_supergroups {
+        let sc = &supergroup_centres[sg];
+        for _ in 0..n_subclusts {
+            let centre = sc
+                .iter()
+                .map(|&c| c + rng.random_range(-subcluster_spread..subcluster_spread))
+                .collect();
+            subcluster_centres.push((sg, centre));
+        }
+    }
+
+    let actual_n = n_per_subcluster * total_subclusters;
+    let mut data = Mat::<f64>::zeros(actual_n, dim);
+    let mut supergroup_labels = Vec::with_capacity(actual_n);
+    let mut subcluster_labels = Vec::with_capacity(actual_n);
+
+    let mut idx = 0;
+    for (sc_idx, (sg_idx, centre)) in subcluster_centres.iter().enumerate() {
+        for _ in 0..n_per_subcluster {
+            for j in 0..dim {
+                let u1: f64 = rng.random();
+                let u2: f64 = rng.random();
+                let noise = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+                data[(idx, j)] = centre[j] + noise * point_std;
+            }
+            supergroup_labels.push(*sg_idx);
+            subcluster_labels.push(sc_idx);
+            idx += 1;
+        }
+    }
+
+    (data, supergroup_labels, subcluster_labels)
 }
