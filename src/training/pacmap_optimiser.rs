@@ -316,8 +316,8 @@ pub fn optimise_pacmap<T>(
 
             for d in 0..n_dim {
                 let delta = embd_flat[base_i + d] - embd_flat[base_j + d];
-                grads[base_i + d] += coeff * delta;
-                grads[base_j + d] -= coeff * delta;
+                grads[base_i + d] -= coeff * delta;
+                grads[base_j + d] += coeff * delta;
             }
         }
 
@@ -337,8 +337,8 @@ pub fn optimise_pacmap<T>(
 
                 for d in 0..n_dim {
                     let delta = embd_flat[base_i + d] - embd_flat[base_j + d];
-                    grads[base_i + d] += coeff * delta;
-                    grads[base_j + d] -= coeff * delta;
+                    grads[base_i + d] -= coeff * delta;
+                    grads[base_j + d] += coeff * delta;
                 }
             }
         }
@@ -359,8 +359,8 @@ pub fn optimise_pacmap<T>(
             for d in 0..n_dim {
                 let delta = embd_flat[base_i + d] - embd_flat[base_j + d];
                 // repulsive: push i away from j
-                grads[base_i + d] -= coeff * delta;
-                grads[base_j + d] += coeff * delta;
+                grads[base_i + d] += coeff * delta;
+                grads[base_j + d] -= coeff * delta;
             }
         }
 
@@ -471,7 +471,7 @@ pub fn optimise_pacmap_parallel<T>(
                     }
                     let coeff = w_nb * attract_grad_coeff(dist_sq, c_near);
                     for d in 0..n_dim {
-                        node_grad[d] += coeff * (embd_flat[base_i + d] - embd_flat[base_j + d]);
+                        node_grad[d] -= coeff * (embd_flat[base_i + d] - embd_flat[base_j + d]);
                     }
                 }
 
@@ -485,7 +485,7 @@ pub fn optimise_pacmap_parallel<T>(
                         }
                         let coeff = w_mn * attract_grad_coeff(dist_sq, c_mn);
                         for d in 0..n_dim {
-                            node_grad[d] += coeff * (embd_flat[base_i + d] - embd_flat[base_j + d]);
+                            node_grad[d] -= coeff * (embd_flat[base_i + d] - embd_flat[base_j + d]);
                         }
                     }
                 }
@@ -499,7 +499,7 @@ pub fn optimise_pacmap_parallel<T>(
                     }
                     let coeff = w_fp * repel_grad_coeff(dist_sq);
                     for d in 0..n_dim {
-                        node_grad[d] -= coeff * (embd_flat[base_i + d] - embd_flat[base_j + d]);
+                        node_grad[d] += coeff * (embd_flat[base_i + d] - embd_flat[base_j + d]);
                     }
                 }
 
@@ -694,7 +694,7 @@ mod test_pacmap_optimiser {
         let scale = total_movement(&simple_embd(10), &embd_seq);
 
         assert!(
-            diff < scale * 0.5,
+            diff < scale * 0.1,
             "sequential and parallel diverged too much: diff={:.4}, scale={:.4}",
             diff,
             scale

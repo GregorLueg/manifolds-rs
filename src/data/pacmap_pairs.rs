@@ -1,13 +1,15 @@
-//! Pair construction for PaCMAP.
+//! Pair construction for PaCMAP and dummy graph generation for PaCMAP.
 //!
 //! Constructs the three pair types used in PaCMAP optimisation:
 //! - Near pairs: k nearest neighbours
 //! - Mid-near pairs: sampled from a wider neighbourhood (candidates ~4-50)
 //! - Further pairs: random distant points
 
-use num_traits::Float;
+use num_traits::{Float, FromPrimitive};
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rayon::prelude::*;
+
+use crate::data::structures::CoordinateList;
 
 /////////////
 // Helpers //
@@ -77,7 +79,6 @@ fn sample_mid_near_pairs(
 
     let candidates = &neighbours[candidate_start..available_end];
 
-    // official paper samples 6 candidates and picks the 2 closest.
     candidates
         .iter()
         .take(n_mid_near)
@@ -145,17 +146,14 @@ fn sample_further_pairs(
 /// ### Returns
 ///
 /// `PacmapPairs` with all three pair lists populated.
-pub fn construct_pacmap_pairs<T>(
+pub fn construct_pacmap_pairs(
     knn_indices: &[Vec<usize>],
     n_mid_near: usize,
     n_further: usize,
     mn_candidate_start: usize,
     mn_candidate_end: usize,
     seed: u64,
-) -> PacmapPairs
-where
-    T: Float + Send + Sync,
-{
+) -> PacmapPairs {
     let n = knn_indices.len();
 
     // near pairs: all k neighbours for each point
@@ -168,6 +166,7 @@ where
     // mid-near pairs: sample n_mid_near from candidates mn_candidate_start to
     // mn_candidate_end in the knn list.
     let mid_near: Vec<(usize, usize)> = (0..n)
+        .into_par_iter()
         .flat_map(|i| {
             let mut rng = SmallRng::seed_from_u64(seed + i as u64);
             sample_mid_near_pairs(
@@ -183,6 +182,7 @@ where
 
     // further pairs: uniformly random points, not neighbours
     let further: Vec<(usize, usize)> = (0..n)
+        .into_par_iter()
         .flat_map(|i| {
             let mut rng = SmallRng::seed_from_u64(seed + n as u64 + i as u64);
             sample_further_pairs(i, n, n_further, &mut rng)
@@ -193,6 +193,40 @@ where
         near,
         mid_near,
         further,
+    }
+}
+
+/// Construct a coordinate-list (COO) sparse graph from kNN indices with
+/// uniform unit weights.
+///
+/// ### Params
+///
+/// * `knn_indices` - kNN indices excluding self, shape `[n_samples][k]`.
+///
+/// ### Returns
+///
+/// `CoordinateList<T>` with uniform weights of `1.0` for all edges.
+pub fn knn_to_coo_unweighted<T>(knn_indices: &[Vec<usize>]) -> CoordinateList<T>
+where
+    T: Float + FromPrimitive,
+{
+    let mut row_indices = Vec::new();
+    let mut col_indices = Vec::new();
+    let mut values = Vec::new();
+
+    for (i, neighbours) in knn_indices.iter().enumerate() {
+        for &j in neighbours {
+            row_indices.push(i);
+            col_indices.push(j);
+            values.push(T::one());
+        }
+    }
+
+    CoordinateList {
+        row_indices,
+        col_indices,
+        values,
+        n_samples: knn_indices.len(),
     }
 }
 
@@ -213,28 +247,28 @@ mod test_pacmap_pairs {
     #[test]
     fn test_near_pairs_count() {
         let knn = dummy_knn(10, 50);
-        let pairs = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 42);
+        let pairs = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 42);
         assert_eq!(pairs.near.len(), 10 * 50);
     }
 
     #[test]
     fn test_mid_near_pairs_count() {
         let knn = dummy_knn(10, 50);
-        let pairs = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 42);
+        let pairs = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 42);
         assert_eq!(pairs.mid_near.len(), 10 * 2);
     }
 
     #[test]
     fn test_further_pairs_count() {
         let knn = dummy_knn(10, 50);
-        let pairs = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 42);
+        let pairs = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 42);
         assert_eq!(pairs.further.len(), 10 * 2);
     }
 
     #[test]
     fn test_no_self_pairs_near() {
         let knn = dummy_knn(20, 50);
-        let pairs = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 42);
+        let pairs = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 42);
         for (i, j) in &pairs.near {
             assert_ne!(i, j, "self-pair found in near pairs at index {}", i);
         }
@@ -243,7 +277,7 @@ mod test_pacmap_pairs {
     #[test]
     fn test_no_self_pairs_mid_near() {
         let knn = dummy_knn(20, 50);
-        let pairs = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 42);
+        let pairs = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 42);
         for (i, j) in &pairs.mid_near {
             assert_ne!(i, j, "self-pair found in mid-near pairs at index {}", i);
         }
@@ -252,7 +286,7 @@ mod test_pacmap_pairs {
     #[test]
     fn test_no_self_pairs_further() {
         let knn = dummy_knn(20, 50);
-        let pairs = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 42);
+        let pairs = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 42);
         for (i, j) in &pairs.further {
             assert_ne!(i, j, "self-pair found in further pairs at index {}", i);
         }
@@ -262,7 +296,7 @@ mod test_pacmap_pairs {
     fn test_near_pairs_source_indices_valid() {
         let n = 15;
         let knn = dummy_knn(n, 50);
-        let pairs = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 42);
+        let pairs = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 42);
         for &(i, j) in &pairs.near {
             assert!(i < n);
             assert!(j < n);
@@ -273,7 +307,7 @@ mod test_pacmap_pairs {
     fn test_further_pairs_indices_in_bounds() {
         let n = 15;
         let knn = dummy_knn(n, 50);
-        let pairs = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 42);
+        let pairs = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 42);
         for &(i, j) in &pairs.further {
             assert!(i < n);
             assert!(j < n);
@@ -287,7 +321,7 @@ mod test_pacmap_pairs {
         let candidate_start = 4;
         let candidate_end = 50;
         let knn = dummy_knn(n, k);
-        let pairs = construct_pacmap_pairs::<f64>(&knn, 2, 2, candidate_start, candidate_end, 42);
+        let pairs = construct_pacmap_pairs(&knn, 2, 2, candidate_start, candidate_end, 42);
 
         for &(i, j) in &pairs.mid_near {
             let window = &knn[i][candidate_start..candidate_end.min(knn[i].len())];
@@ -303,8 +337,8 @@ mod test_pacmap_pairs {
     #[test]
     fn test_reproducibility() {
         let knn = dummy_knn(20, 50);
-        let pairs_a = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 99);
-        let pairs_b = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 99);
+        let pairs_a = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 99);
+        let pairs_b = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 99);
         assert_eq!(pairs_a.near, pairs_b.near);
         assert_eq!(pairs_a.mid_near, pairs_b.mid_near);
         assert_eq!(pairs_a.further, pairs_b.further);
@@ -313,8 +347,8 @@ mod test_pacmap_pairs {
     #[test]
     fn test_different_seeds_differ() {
         let knn = dummy_knn(20, 50);
-        let pairs_a = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 1);
-        let pairs_b = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 2);
+        let pairs_a = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 1);
+        let pairs_b = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 2);
         // further pairs are random so must differ; near pairs are deterministic
         assert_ne!(pairs_a.further, pairs_b.further);
     }
@@ -326,7 +360,7 @@ mod test_pacmap_pairs {
         let knn: Vec<Vec<usize>> = (0..10)
             .map(|i| (0..3).map(|o| (i + o + 1) % 10).collect())
             .collect();
-        let pairs = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 42);
+        let pairs = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 42);
         for &(i, j) in &pairs.mid_near {
             assert_ne!(i, j);
             assert!(j < 10);
@@ -336,7 +370,7 @@ mod test_pacmap_pairs {
     #[test]
     fn test_empty_knn_does_not_panic() {
         let knn: Vec<Vec<usize>> = vec![vec![]; 5];
-        let pairs = construct_pacmap_pairs::<f64>(&knn, 2, 2, 4, 50, 42);
+        let pairs = construct_pacmap_pairs(&knn, 2, 2, 4, 50, 42);
         assert!(pairs.near.is_empty());
         assert!(pairs.mid_near.is_empty());
     }

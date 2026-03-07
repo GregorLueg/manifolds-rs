@@ -37,9 +37,13 @@ use burn::tensor::{backend::AutodiffBackend, Element};
 use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
+use crate::data::pacmap_pairs::*;
 use crate::data::structures::*;
 use crate::prelude::*;
 use crate::training::mds_optimiser::*;
+use crate::training::pacmap_optimiser::{
+    optimise_pacmap, optimise_pacmap_parallel, PacMapOptimiser,
+};
 use crate::training::tsne_optimiser::*;
 use crate::training::umap_optimisers::*;
 use crate::utils::diffusions::*;
@@ -80,7 +84,7 @@ pub struct UmapParams<T> {
     /// Which optimiser to use. Defaults to `"adam_parallel"`.
     optimiser: String,
     /// Which of the possible approximate nearest neighbour searches to use.
-    /// Defaults to `"hnsw"`.
+    /// Defaults to `"nndescent"`.
     ann_type: String,
     /// Which embedding initialisation to use. Defaults to spectral clustering.
     initialisation: String,
@@ -112,7 +116,7 @@ where
     /// * `k` - How many neighbours to consider. Default `15`.
     /// * `optimiser` - Which optimiser to use. Default `"adam_parallel"`.
     /// * `ann_type` - Which approximate nearest neighbour search algorithm
-    ///   to use. Defaults to `"annoy"`.
+    ///   to use. Defaults to `"nndescent"`.
     /// * `initialisation` - Which initialisation of the embedding to use.
     ///   Defaults to `"spectral"`.
     /// * `nn_params` - Further nearest neighbour parameters.
@@ -141,7 +145,7 @@ where
         let n_dim = n_dim.unwrap_or(2);
         let k = k.unwrap_or(15);
         let optimiser = optimiser.unwrap_or("adam_parallel".to_string());
-        let ann_type = ann_type.unwrap_or("hnsw".to_string());
+        let ann_type = ann_type.unwrap_or("nndescent".to_string());
         let initialisation = initialisation.unwrap_or("spectral".to_string());
         let nn_params = nn_params.unwrap_or_default();
         let optim_params = optim_params.unwrap_or_default();
@@ -194,7 +198,7 @@ where
             n_dim,
             k,
             optimiser: "adam_parallel".into(),
-            ann_type: "hnsw".into(),
+            ann_type: "nndescent".into(),
             initialisation: "spectral".into(),
             init_range: None,
             nn_params: NearestNeighbourParams::default(),
@@ -216,9 +220,9 @@ where
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
 ///   distances excluding self.
 /// * `k` - Number of nearest neighbours (typically 15-50).
-/// * `ann_type` - Approximate nearest neighbour method: `"annoy"`, `"hnsw"`, or
-///   `"nndescent"`. If you provide a weird string, the function will default
-///   to `"hnsw"`
+/// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
+///   `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you provide a
+///   weird string, the function will default to `"nndescent"`
 /// * `umap_params` - UMAP-specific parameters (bandwidth, local_connectivity,
 ///   mix_weight)
 /// * `nn_params` - Nearest neighbour parameters for nearest neighbour search.
@@ -498,10 +502,15 @@ where
     ///
     /// * `n_dim` - Number of output dimensions. Default: 2
     /// * `perplexity` - Perplexity parameter. Default: 30.0
+    /// * `init_range` - Optional initialisation range to fix the initial
+    ///   embedding between certain values.
     /// * `lr` - Learning rate. Default: 200.0
     /// * `n_epochs` - Number of optimization epochs. Default: 1000
-    /// * `ann_type` - ANN algorithm: "hnsw" or "nndescent". Default: "hnsw"
+    /// * `ann_type` - ANN algorithm: `"exhaustive"`, `"balltree"`, `"annoy"`,
+    ///   `"hnsw"` or `"nndescent"`. Default: "nndescent"
     /// * `theta` - Barnes-Hut approximation parameter. Default: 0.5
+    /// * `n_interp_points` - Number of interpolation points for the FFT version
+    ///   of the optimiser.
     ///
     /// ### Returns
     ///
@@ -521,7 +530,7 @@ where
         let perplexity = perplexity.unwrap_or_else(|| T::from_f64(30.0).unwrap());
         let lr = lr.unwrap_or_else(|| T::from_f64(200.0).unwrap());
         let n_epochs = n_epochs.unwrap_or(1000);
-        let ann_type = ann_type.unwrap_or_else(|| "hnsw".to_string());
+        let ann_type = ann_type.unwrap_or_else(|| "nndescent".to_string());
         let theta = theta.unwrap_or_else(|| T::from_f64(0.5).unwrap());
         let n_interp_points = n_interp_points.unwrap_or(3);
 
@@ -561,7 +570,8 @@ where
 ///   distances excluding self.
 /// * `perplexity` - Target perplexity (effective number of neighbours,
 ///   typical: 5-50)
-/// * `ann_type` - ANN algorithm: `"annoy"` (default), `"hnsw"` or `"nndescent"`
+/// * `ann_type` - ANN algorithm: `"exhaustive"`, `"balltree"`, `"annoy"`,
+///   `"hnsw"` or `"nndescent"`. Default: "nndescent"
 /// * `nn_params` - Nearest neighbour search parameters
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - Print progress information
@@ -978,6 +988,32 @@ where
     ///
     /// ### Params
     ///
+    /// * `n_dim` - Number of output dimensions (default: 2)
+    /// * `k` - Number of nearest neighbours (default: 5)
+    /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
+    ///   `"annoy"`, `"balltree"`, `"hnsw"` or `"nndescent"` (default:
+    ///   `"nndescent"`)
+    /// * `decay` - Alpha decay parameter controlling kernel bandwidth (default:
+    ///   40.0)
+    /// * `bandwidth_scale` - Scaling factor for the kernel bandwidth (default:
+    ///   1.0)
+    /// * `graph_symmetry` - Method for symmetrising the affinity graph:
+    ///   `"average"` or `"max"` (default: `"average"`)
+    /// * `t_max` - Maximum number of diffusion steps for optimal `t` selection
+    /// * `gamma` - Informational distance constant; `1.0` gives PHATE, `-1.0`
+    ///   gives MDS (default: 1.0)
+    /// * `n_landmarks` - Number of landmark points for large-scale
+    ///   approximation; `None` disables landmarks
+    /// * `landmark_method`: Method for selecting landmarks: `"spectral"`,
+    ///   `"random"` or `"density"`
+    /// * `n_svd` - Number of SVD components to retain during diffusion
+    ///   (default: determined by diffusion params)
+    /// * `t_custom` - Fixed diffusion time `t`; overrides automatic selection
+    ///   if provided
+    /// * `mds_method` - MDS implementation to use (default: `"sgd_dense"`)
+    /// * `mds_iter` - Number of iterations for MDS fitting; `None` uses the MDS
+    ///   default
+    /// * `randomised` - Whether to use randomised SVD for PCA-based initialisation (default: `true`)
     ///
     /// ### Returns
     ///
@@ -1017,7 +1053,7 @@ where
             n_dim: n_dim.unwrap_or(2),
             // knn
             k: k.unwrap_or(5),
-            ann_type: ann_type.unwrap_or_else(|| "hnsw".to_string()),
+            ann_type: ann_type.unwrap_or_else(|| "nndescent".to_string()),
             ann_params: NearestNeighbourParams::default(),
             // diffusion
             diffusion_params: phate_diffusion_params,
@@ -1403,8 +1439,7 @@ pub struct PacmapParams<T> {
     /// Output dimensionality. Default 2.
     pub n_dim: usize,
     /// Number of near neighbours. Default 10 (paper default; lower than UMAP's
-    /// 15 since PaCMAP is less sensitive to k). (The function will use 100
-    /// neighbours for in the k-nearest neighbour searches generally speaking.)
+    /// 15 since PaCMAP is less sensitive to k).
     pub k: usize,
     /// Approximate nearest neighbour method: `"exhaustive"`, `"annoy"`,
     /// `"balltree"`, `"hnsw"` or `"nndescent"`
@@ -1441,8 +1476,8 @@ where
     /// * `n_dim` - Number of dimensions for the embedding
     /// * `k` - Number of near neighbours. Default 10 (paper default; lower than
     ///   UMAP's 15 since PaCMAP is less sensitive to k). The function will use
-    ///   100 neighbours for in the k-nearest neighbour searches generally
-    ///   speaking.
+    ///   `mn_candidate_end` neighbours for in the k-nearest neighbour searches
+    ///   generally speaking.
     /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
     ///   `"annoy"`, `"balltree"`, `"hnsw"` or `"nndescent"`
     /// * `optimiser_type` - Which optimiser to use. Options are `"adam"` and
@@ -1483,7 +1518,7 @@ where
         Self {
             n_dim: n_dim.unwrap_or(2),
             k,
-            ann_type: ann_type.unwrap_or("hnsw".to_string()),
+            ann_type: ann_type.unwrap_or("nndescent".to_string()),
             optimiser_type: optimiser_type.unwrap_or("adam_parallel".to_string()),
             n_mid_near: n_mid_near.unwrap_or(2),
             n_further: n_further.unwrap_or(2),
@@ -1496,6 +1531,7 @@ where
     }
 }
 
+/// Default implementation of PaCMAP
 impl<T> Default for PacmapParams<T>
 where
     T: Float + FromPrimitive,
@@ -1505,6 +1541,171 @@ where
             None, None, None, None, None, None, None, None, None, None, None,
         )
     }
+}
+
+//////////
+// Main //
+//////////
+
+/// Run PaCMAP dimensionality reduction.
+///
+/// Pairwise Controlled Manifold Approximation (PaCMAP) is a dimensionality
+/// reduction method that explicitly balances local and global structure
+/// preservation via three pair types and a phased optimisation schedule.
+///
+/// 1. Find k-nearest neighbours
+/// 2. Construct near, mid-near, and further pairs
+/// 3. Initialise embedding (PCA strongly recommended)
+/// 4. Optimise via three-phase Adam with pair-type weight schedule
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features).
+/// * `precomputed_knn` - Optional precomputed kNN. Must have been computed
+///   with k >= `params.mn_candidate_end` to support mid-near sampling.
+/// * `params` - PaCMAP parameters.
+/// * `seed` - Seed for reproducibility.
+/// * `verbose` - Controls verbosity.
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+pub fn pacmap<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params_pacmap: &PacmapParams<T>,
+    seed: usize,
+    verbose: bool,
+) -> Vec<Vec<T>>
+where
+    T: Float
+        + FromPrimitive
+        + Send
+        + Sync
+        + Default
+        + ComplexField
+        + RealField
+        + Sum
+        + AddAssign
+        + SimdDistance
+        + std::fmt::Display
+        + MulAssign
+        + SubAssign,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let n_samples = data.nrows();
+
+    let (knn_indices, _) = match precomputed_knn {
+        Some((indices, distances)) => {
+            if verbose {
+                println!("Using precomputed kNN graph...");
+            }
+            (indices, distances)
+        }
+        None => {
+            if verbose {
+                println!(
+                    "Running approximate nearest neighbour search using {} (k={})...",
+                    params_pacmap.ann_type, params_pacmap.k
+                );
+            }
+            let start_knn = Instant::now();
+            let result = run_ann_search(
+                data,
+                params_pacmap.k,
+                params_pacmap.ann_type.clone(),
+                &params_pacmap.nn_params,
+                seed,
+                verbose,
+            );
+            if verbose {
+                println!("kNN search done in: {:.2?}.", start_knn.elapsed());
+            }
+            result
+        }
+    };
+
+    if verbose {
+        println!("Constructing PaCMAP pairs...");
+    }
+
+    let start_pairs = Instant::now();
+
+    let pairs: PacmapPairs = construct_pacmap_pairs(
+        &knn_indices,
+        params_pacmap.n_mid_near,
+        params_pacmap.n_further,
+        params_pacmap.mn_candidate_start,
+        params_pacmap.mn_candidate_end,
+        seed as u64,
+    );
+
+    let end_pairs = start_pairs.elapsed();
+
+    if verbose {
+        println!(
+            "Pairs generated in {:.2?}: {} near, {} mid-near, {} further.",
+            end_pairs,
+            pairs.near.len().separate_with_underscores(),
+            pairs.mid_near.len().separate_with_underscores(),
+            pairs.further.len().separate_with_underscores()
+        );
+    }
+
+    let init_type = parse_initilisation(&params_pacmap.initialisation, true, None).unwrap_or(
+        EmbdInit::PcaInit {
+            randomised: true,
+            range: None,
+        },
+    );
+
+    if verbose {
+        println!(
+            "Initialising embedding via {} layout...",
+            params_pacmap.initialisation
+        );
+    }
+
+    let dummy_graph = knn_to_coo_unweighted(&knn_indices);
+    let mut embd = initialise_embedding(
+        &init_type,
+        params_pacmap.n_dim,
+        seed as u64,
+        &dummy_graph,
+        data,
+    );
+
+    let optimiser = parse_pacmap_optimiser(&params_pacmap.optimiser_type).unwrap_or_default();
+
+    let start_optim = Instant::now();
+
+    match optimiser {
+        PacMapOptimiser::AdamParallel => {
+            optimise_pacmap_parallel(&mut embd, &pairs, &params_pacmap.optim_params, verbose);
+        }
+        PacMapOptimiser::Adam => {
+            optimise_pacmap(&mut embd, &pairs, &params_pacmap.optim_params, verbose);
+        }
+    }
+
+    let end_optim = start_optim.elapsed();
+
+    if verbose {
+        println!("Optimisation done in {:.2?}.", end_optim);
+        println!("PaCMAP complete!");
+    }
+
+    // transpose from [n_samples][n_dim] to [n_dim][n_samples]
+    let mut transposed = vec![vec![T::zero(); n_samples]; params_pacmap.n_dim];
+    for sample_idx in 0..n_samples {
+        for dim_idx in 0..params_pacmap.n_dim {
+            transposed[dim_idx][sample_idx] = embd[sample_idx][dim_idx];
+        }
+    }
+
+    transposed
 }
 
 /////////////////////
