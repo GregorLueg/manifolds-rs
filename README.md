@@ -32,6 +32,7 @@ Moreover, the `crate` also provides via the Burn DL framework optionally
 used via the prospective feature flag. Since release `0.1.8`, we also have
 [PHATE](https://pmc.ncbi.nlm.nih.gov/articles/PMC7073148/). With `0.1.9`,
 [PaCMAP](https://arxiv.org/abs/2012.04456) has been also implemented.
+Changelog can be found [here](https://github.com/GregorLueg/manifolds-rs/blob/main/docs/news.md))
 
 ## Features
 
@@ -317,6 +318,37 @@ let embedding = phate(
     params,      // note: consumed by value, not borrowed
     42,          // seed
     true,        // verbose
+);
+
+// embedding[0] contains x-coordinates
+// embedding[1] contains y-coordinates
+```
+
+### PaCMAP Example
+
+PaCMAP preserves both local and global structure via three pair types (near,
+mid-near, and further pairs) and a phased optimisation schedule.
+```rust
+use manifolds_rs::prelude::*;
+
+// Generate synthetic clustered data
+let (data, labels) = generate_clustered_data(
+    1000,  // n_samples
+    50,    // dimensionality
+    5,     // n_clusters
+    42,    // seed
+);
+
+// Configure PaCMAP parameters
+let params = PacmapParams::default();
+
+// Run PaCMAP
+let embedding = pacmap(
+    data.as_ref(),
+    None,    // precomputed kNN (None = compute internally)
+    &params,
+    42,      // seed
+    true,    // verbose
 );
 
 // embedding[0] contains x-coordinates
