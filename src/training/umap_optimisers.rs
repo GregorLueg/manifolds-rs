@@ -62,8 +62,8 @@ where
             n_epochs: 500,
             neg_sample_rate: 5,
             min_dist: T::from_f64(0.1).unwrap(),
-            beta1: T::from(BETA1).unwrap(),
-            beta2: T::from(BETA2).unwrap(),
+            beta1: T::from(UMAP_BETA1).unwrap(),
+            beta2: T::from(UMAP_BETA2).unwrap(),
             eps: T::from(EPS).unwrap(),
         }
     }
@@ -98,8 +98,8 @@ where
         eps: Option<T>,
     ) -> Self {
         // take the Adam-related values
-        let beta1 = beta1.unwrap_or(T::from(BETA1).unwrap());
-        let beta2 = beta2.unwrap_or(T::from(BETA2).unwrap());
+        let beta1 = beta1.unwrap_or(T::from(UMAP_BETA1).unwrap());
+        let beta2 = beta2.unwrap_or(T::from(UMAP_BETA2).unwrap());
         let eps = eps.unwrap_or(T::from(EPS).unwrap());
         let n_epochs = n_epochs.unwrap_or(500);
         let neg_sample_rate = neg_sample_rate.unwrap_or(5);
@@ -231,23 +231,38 @@ pub enum UmapOptimiser {
     Sgd,
 }
 
+/// Parse the UMAP Optimiser to use
+///
+/// ### Params
+///
+/// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`
+///   or `"sgd"`.
+///
+/// ### Return
+///
+/// Option of Optimiser
+pub fn parse_umap_optimiser(s: &str) -> Option<UmapOptimiser> {
+    match s.to_lowercase().as_str() {
+        "adam" => Some(UmapOptimiser::Adam),
+        "sgd" => Some(UmapOptimiser::Sgd),
+        "adam_parallel" => Some(UmapOptimiser::AdamParallel),
+        _ => None,
+    }
+}
+
 /// Precomputed constants to avoid repeated calculations
-///
-/// ### Fields
-///
-/// * `a` - The a parameter.
-/// * `b` - The b parameter.
-/// * `two_b` - b multiplied with 2.
-/// * `four_b` - b multiplied with 4.
-/// * `two_a_b` - The product of `2 * a * b`.
-/// * `clip_val` - The clipping value, i.e., `4.0`.
-/// * `eps` - The epsilon value
 struct OptimConstants<T> {
+    /// The a parameter.
     a: T,
+    /// The b parameter.
     b: T,
+    /// a * b multiplied with 2.
     two_a_b: T,
+    /// 2 * gamma b
     two_gamma_b: T,
+    /// The clipping value, i.e., `4.0`.
     clip_val: T,
+    /// The epsilon value
     eps: T,
 }
 
@@ -260,9 +275,7 @@ impl<T: Float + FromPrimitive> OptimConstants<T> {
     /// * `b` - The b parameter
     /// * `gamma` - The repulsion parameter. Usually defaults to `1.0`.
     ///
-    /// ###
-    ///
-    /// Returns
+    /// ### Returns
     ///
     /// Self with all pre-calculated values.
     fn new(a: T, b: T, gamma: T) -> Self {
@@ -286,17 +299,14 @@ impl<T: Float + FromPrimitive> OptimConstants<T> {
 ///
 /// Replaces the expensive `powf` calls with a precomputed linear interpolation.
 /// This drastically improves SIMD pipelining and reduces math bottlenecks.
-///
-/// ### Fields
-///
-/// * `b` - The b-value
-/// * `max_val` - Maximum value
-/// * `inv_step` -
-/// * `table` - LUT
 struct FastPowLut<T> {
+    /// The b-value
     b: T,
+    /// Maximum value
     max_val: T,
+    /// Inverse step
     inv_step: T,
+    /// Table for look-ups
     table: Vec<T>,
 }
 
@@ -370,25 +380,6 @@ fn fast_pow<T: Float>(x: T, b: T, b_is_one: bool, b_is_half: bool) -> T {
         x.sqrt()
     } else {
         x.powf(b)
-    }
-}
-
-/// Parse the UMAP Optimiser to use
-///
-/// ### Params
-///
-/// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`
-///   or `"sgd"`.
-///
-/// ### Return
-///
-/// Option of Optimiser
-pub fn parse_umap_optimiser(s: &str) -> Option<UmapOptimiser> {
-    match s.to_lowercase().as_str() {
-        "adam" => Some(UmapOptimiser::Adam),
-        "sgd" => Some(UmapOptimiser::Sgd),
-        "adam_parallel" => Some(UmapOptimiser::AdamParallel),
-        _ => None,
     }
 }
 

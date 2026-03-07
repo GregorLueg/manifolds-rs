@@ -9,6 +9,7 @@ pub use crate::data::init::{initialise_embedding, parse_initilisation};
 pub use crate::data::nearest_neighbours::{
     parse_ann_search, run_ann_search, NearestNeighbourParams,
 };
+pub use crate::data::pacmap_pairs::PacmapPairs;
 pub use crate::data::structures::CoordinateList;
 pub use crate::data::synthetic::*;
 pub use crate::training::mds_optimiser::{parse_mds_method, MdsMethod};
