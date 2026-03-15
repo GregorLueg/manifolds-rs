@@ -1,7 +1,7 @@
 //! Module containing (approximate) nearest neighbour generation functions.
 
-use ann_search_rs::hnsw::{HnswIndex, HnswState};
-use ann_search_rs::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
+use ann_search_rs::cpu::hnsw::{HnswIndex, HnswState};
+use ann_search_rs::cpu::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
 use ann_search_rs::prelude::*;
 
 use ann_search_rs::*;
@@ -11,16 +11,18 @@ use rayon::prelude::*;
 use std::default::Default;
 
 /// Which search algorithm to use for the approximate nearest neighbour search
-/// Default is set to NNDescent
+/// Default is set to Hnsw
 #[derive(Default)]
 pub enum AnnSearch {
-    /// NNDescent
+    /// HNSW
     #[default]
+    Hnsw,
+    /// NNDescent
     NNDescent,
     /// Annoy
     Annoy,
-    /// HNSW
-    Hnsw,
+    /// IVF
+    Ivf,
     /// BallTree
     BallTree,
     /// Exhaustive
@@ -53,6 +55,12 @@ pub struct NearestNeighbourParams<T> {
     pub ef_budget: Option<usize>,
     /// BallTree: Proportions of N to search in the BallTree
     pub bt_budget: T,
+    /// IVF: Number of lists, clusters to use. If not provided, will default
+    /// to `sqrt(n)` lists.
+    pub n_list: Option<usize>,
+    /// IVF: Number of lists to probes. If not provided, will default to
+    /// to `sqrt(n_list)` lists.
+    pub n_probes: Option<usize>,
 }
 
 impl<T> NearestNeighbourParams<T> {
@@ -89,6 +97,11 @@ impl<T> NearestNeighbourParams<T> {
     /// **BallTree**
     ///
     /// * `bt_budget` - Budget to use for BallTree
+    ///
+    /// **IVF**
+    ///
+    /// * `n_list` - Number of lists to use for IVF
+    /// * `n_probes` - Number of lists/clusters to probe during querying
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         dist_metric: String,
@@ -105,6 +118,9 @@ impl<T> NearestNeighbourParams<T> {
         ef_budget: Option<usize>,
         // balltree
         bt_budget: T,
+        // ivf
+        n_list: Option<usize>,
+        n_probes: Option<usize>,
     ) -> Self {
         Self {
             dist_metric,
@@ -117,6 +133,8 @@ impl<T> NearestNeighbourParams<T> {
             delta,
             ef_budget,
             bt_budget,
+            n_list,
+            n_probes,
         }
     }
 }
@@ -146,6 +164,9 @@ where
             ef_budget: None,
             // balltree
             bt_budget: T::from(0.1).unwrap(),
+            // ivf
+            n_list: None,
+            n_probes: None,
         }
     }
 }
@@ -246,6 +267,18 @@ where
             let index = build_exhaustive_index(data, &params_nn.dist_metric);
 
             query_exhaustive_index(data, &index, k + 1, true, verbose)
+        }
+        AnnSearch::Ivf => {
+            let index = build_ivf_index(
+                data,
+                params_nn.n_list,
+                None,
+                &params_nn.dist_metric,
+                seed,
+                verbose,
+            );
+
+            query_ivf_self(&index, k + 1, params_nn.n_probes, true, verbose)
         }
     };
 

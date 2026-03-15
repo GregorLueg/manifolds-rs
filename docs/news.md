@@ -1,5 +1,13 @@
 # News
 
+## 0.1.10
+
+**Features:**
+
+- IVF index added
+- Version bump of `ann-search-rs` to take advantage of faster kNN searches
+  for various indices.
+
 ## 0.1.9
 
 **Features:**
