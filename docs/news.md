@@ -8,7 +8,8 @@
 
 ## 0.1.10
 
-(Yanked due to version problem)
+*(Yanked due to version problem with `ann-search-rs -> enforced MiMalloc as
+allocator without the user having a choice.)*
 
 **Features:**
 
