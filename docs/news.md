@@ -1,6 +1,14 @@
 # News
 
+## 0.1.11
+
+**Fix:**
+
+- Version bump of `ann-search-rs` to an unyanked version.
+
 ## 0.1.10
+
+(Yanked due to version problem)
 
 **Features:**
 
