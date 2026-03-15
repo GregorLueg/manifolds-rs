@@ -54,6 +54,7 @@ Trajectory Embedding with different landmark methods.
     higher dimensionality.
   - *HNSW (Hierarchical Navigable Small World)* - good for (very) larger
     datasets with higher dimensionality.
+  - *IVF (inversted file index)* - Another fast and optimised index.
 - **Distance metrics**:
   - Euclidean
   - Cosine
