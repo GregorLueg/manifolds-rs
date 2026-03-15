@@ -15,8 +15,8 @@ pub mod utils;
 #[cfg(feature = "parametric")]
 pub mod parametric;
 
-use ann_search_rs::hnsw::{HnswIndex, HnswState};
-use ann_search_rs::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
+use ann_search_rs::cpu::hnsw::{HnswIndex, HnswState};
+use ann_search_rs::cpu::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
 use ann_search_rs::utils::dist::{parse_ann_dist, SimdDistance};
 use faer::traits::{ComplexField, RealField};
 use faer::MatRef;
