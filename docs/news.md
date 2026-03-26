@@ -1,5 +1,11 @@
 # News
 
+## 0.1.12
+
+**Features:**
+
+- Version bump of `ann-search-rs` that has faster Annoy and IVF.
+
 ## 0.1.11
 
 **Fix:**
