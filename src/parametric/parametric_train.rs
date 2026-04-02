@@ -257,15 +257,15 @@ pub fn graph_to_trainings_data<T>(graph_data: &CoordinateList<T>) -> UmapEdgeDat
 /// ### Returns
 ///
 /// A tuple of `(embedding, trained model)`
-pub fn train_parametric_umap<'a, B, T>(
+pub fn train_parametric_umap<B, T>(
     data: MatRef<T>,
     graph_data: CoordinateList<T>,
     model_config: &UmapMlpConfig,
     train_params: &TrainParametricParams<T>,
-    device: &'a B::Device,
+    device: &B::Device,
     seed: usize,
     verbose: bool,
-) -> (Vec<Vec<T>>, TrainedUmapModel<'a, B, T>)
+) -> (Vec<Vec<T>>, TrainedUmapModel<B, T>)
 where
     T: Element + Float + FromPrimitive + ToPrimitive,
     B: AutodiffBackend,
@@ -295,6 +295,9 @@ where
     let use_correlation = train_params.corr_weight > T::zero();
 
     for epoch in 0..train_params.n_epochs {
+        let should_log =
+            verbose && (epoch == 0 || (epoch + 1) % 25 == 0 || epoch + 1 == train_params.n_epochs);
+
         let mut total_loss = 0.0;
         let mut n_batches = 0;
 
@@ -330,11 +333,14 @@ where
             let grads = GradientsParams::from_grads(grads, &model);
             model = optim.step(ToPrimitive::to_f64(&train_params.lr).unwrap(), model, grads);
 
-            total_loss += loss.clone().into_scalar().elem::<f64>();
-            n_batches += 1;
+            // Only sync when we actually need the value
+            if should_log {
+                total_loss += loss.clone().into_scalar().elem::<f64>();
+                n_batches += 1;
+            }
         }
 
-        if verbose && (epoch == 0 || (epoch + 1) % 25 == 0 || epoch + 1 == train_params.n_epochs) {
+        if should_log {
             println!(
                 "Epoch {}/{}: Loss = {:.6}",
                 epoch + 1,
@@ -347,7 +353,7 @@ where
     // Get final embeddings
     let embeddings = model.forward(tensor_data);
 
-    let trained_model = TrainedUmapModel::new(model, device);
+    let trained_model = TrainedUmapModel::new(model, device.clone());
 
     // Convert to Vec<Vec<f32>> format [n_components][n_samples]
     let n_components = model_config.output_size;

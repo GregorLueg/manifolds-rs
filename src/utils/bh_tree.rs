@@ -7,18 +7,15 @@ use num_traits::{Float, FromPrimitive};
 /////////////
 
 /// A simple 2D bounding box.
-///
-/// ### Fields
-///
-/// * `x_min` - Left boundary
-/// * `x_max` - Right boundary
-/// * `y_min` - Top boundary
-/// * `y_max` - Bottom boundary
 #[derive(Clone, Copy, Debug)]
 struct BBox<T> {
+    /// Left boundary
     x_min: T,
+    /// Right boundary
     x_max: T,
+    /// Top boundary
     y_min: T,
+    /// Bottom boundary
     y_max: T,
 }
 

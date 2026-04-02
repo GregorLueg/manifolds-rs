@@ -20,6 +20,7 @@ pub use crate::utils::diffusions::PhateDiffusionParams;
 pub use crate::utils::diffusions::{parse_landmark_method, LandmarkMethod, PhateTime};
 pub use crate::utils::math::landmark_von_neumann_entropy;
 pub use crate::utils::potentials::calculate_potential;
+pub use crate::utils::traits::ManifoldsFloat;
 
 #[cfg(feature = "parametric")]
 pub use crate::parametric::parametric_train::TrainParametricParams;

@@ -17,18 +17,11 @@ pub mod parametric;
 
 use ann_search_rs::cpu::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::cpu::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
-use ann_search_rs::utils::dist::{parse_ann_dist, SimdDistance};
-use faer::traits::{ComplexField, RealField};
+use ann_search_rs::utils::dist::parse_ann_dist;
 use faer::MatRef;
-use num_traits::{Float, FromPrimitive, ToPrimitive};
+use num_traits::ToPrimitive;
 use rand_distr::{Distribution, StandardNormal};
-use std::{
-    default::Default,
-    iter::Sum,
-    marker::{Send, Sync},
-    ops::{AddAssign, DivAssign, MulAssign, SubAssign},
-    time::Instant,
-};
+use std::{default::Default, time::Instant};
 use thousands::*;
 
 #[cfg(feature = "parametric")]
@@ -102,7 +95,7 @@ pub struct UmapParams<T> {
 
 impl<T> UmapParams<T>
 where
-    T: Float + FromPrimitive,
+    T: ManifoldsFloat,
 {
     /// Generate new UMAP parameters
     ///
@@ -245,16 +238,7 @@ pub fn construct_umap_graph<T>(
     verbose: bool,
 ) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
 where
-    T: Float
-        + FromPrimitive
-        + Send
-        + Sync
-        + Default
-        + ComplexField
-        + RealField
-        + Sum
-        + AddAssign
-        + SimdDistance,
+    T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
@@ -344,19 +328,7 @@ pub fn umap<T>(
     verbose: bool,
 ) -> Vec<Vec<T>>
 where
-    T: Float
-        + FromPrimitive
-        + Send
-        + Sync
-        + Default
-        + ComplexField
-        + RealField
-        + Sum
-        + AddAssign
-        + SimdDistance
-        + std::fmt::Display
-        + MulAssign
-        + SubAssign,
+    T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -494,7 +466,7 @@ pub struct TsneParams<T> {
 
 impl<T> TsneParams<T>
 where
-    T: Float + FromPrimitive,
+    T: ManifoldsFloat,
 {
     /// Create new t-SNE parameters with sensible defaults
     ///
@@ -598,17 +570,7 @@ pub fn construct_tsne_graph<T>(
     verbose: bool,
 ) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
 where
-    T: Float
-        + FromPrimitive
-        + ToPrimitive
-        + Send
-        + Sync
-        + Default
-        + ComplexField
-        + RealField
-        + Sum
-        + AddAssign
-        + SimdDistance,
+    T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
@@ -720,18 +682,7 @@ pub fn tsne<T>(
     verbose: bool,
 ) -> Vec<Vec<T>>
 where
-    T: Float
-        + Default
-        + ComplexField
-        + RealField
-        + Sum
-        + AddAssign
-        + SubAssign
-        + MulAssign
-        + DivAssign
-        + SimdDistance
-        + FromPrimitive
-        + FftwFloat,
+    T: ManifoldsFloat + FftwFloat,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -868,17 +819,7 @@ pub fn tsne<T>(
     verbose: bool,
 ) -> Vec<Vec<T>>
 where
-    T: Float
-        + Default
-        + ComplexField
-        + RealField
-        + Sum
-        + AddAssign
-        + SubAssign
-        + MulAssign
-        + DivAssign
-        + SimdDistance
-        + FromPrimitive,
+    T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -982,7 +923,7 @@ pub struct PhateParams<T> {
 
 impl<T> PhateParams<T>
 where
-    T: Float + FromPrimitive,
+    T: ManifoldsFloat,
 {
     /// Create new PHATE parameters with sensible defaults
     ///
@@ -1107,16 +1048,7 @@ pub fn construct_phate_diffusion<T>(
     verbose: bool,
 ) -> PhateDiffusion<T>
 where
-    T: Float
-        + Send
-        + Sync
-        + SimdDistance
-        + ComplexField
-        + RealField
-        + AddAssign
-        + std::iter::Sum
-        + Default
-        + FromPrimitive,
+    T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
@@ -1252,16 +1184,7 @@ pub fn phate<T>(
     verbose: bool,
 ) -> Vec<Vec<T>>
 where
-    T: Float
-        + Send
-        + Sync
-        + SimdDistance
-        + ComplexField
-        + RealField
-        + AddAssign
-        + std::iter::Sum
-        + Default
-        + FromPrimitive,
+    T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
     StandardNormal: Distribution<T>,
@@ -1467,7 +1390,7 @@ pub struct PacmapParams<T> {
 
 impl<T> PacmapParams<T>
 where
-    T: Float + FromPrimitive,
+    T: ManifoldsFloat,
 {
     /// Generate a new instance of the PaCMAP parameters
     ///
@@ -1534,7 +1457,7 @@ where
 /// Default implementation of PaCMAP
 impl<T> Default for PacmapParams<T>
 where
-    T: Float + FromPrimitive,
+    T: ManifoldsFloat,
 {
     fn default() -> Self {
         Self::new(
@@ -1578,19 +1501,7 @@ pub fn pacmap<T>(
     verbose: bool,
 ) -> Vec<Vec<T>>
 where
-    T: Float
-        + FromPrimitive
-        + Send
-        + Sync
-        + Default
-        + ComplexField
-        + RealField
-        + Sum
-        + AddAssign
-        + SimdDistance
-        + std::fmt::Display
-        + MulAssign
-        + SubAssign,
+    T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -1714,31 +1625,29 @@ where
 
 #[cfg(feature = "parametric")]
 /// Stores the parameters for parametric UMAP via neural nets
-///
-/// * `n_dim` - How many dimensions to return
-/// * `k` - Number of neighbours
-/// * `ann_type` - Which of the possible approximate nearest neighbour searches
-///   to use. Defaults to `"hnsw"`.
-/// * `hidden_layers` - Vector of usizes for the hidden layers in the MLP.
-/// * `nn_params` - Nearest neighbour parameters.
-/// * `umap_graph_params` - The graph parameters for the generation of the
-///   graph structure.
-/// * `train_param` - Train parameters for the neural network.
 #[derive(Debug, Clone)]
 pub struct ParametricUmapParams<T> {
-    n_dim: usize,
-    k: usize,
-    ann_type: String,
-    hidden_layers: Vec<usize>,
-    nn_params: NearestNeighbourParams<T>,
-    umap_graph_params: UmapGraphParams<T>,
-    train_param: TrainParametricParams<T>,
+    /// How many dimensions to return
+    pub n_dim: usize,
+    /// Number of neighbours
+    pub k: usize,
+    /// Which of the possible approximate nearest neighbour searches to use.
+    /// Defaults to `"hnsw"`.
+    pub ann_type: String,
+    /// Vector of usizes for the hidden layers in the MLP.
+    pub hidden_layers: Vec<usize>,
+    /// Nearest neighbour parameters.
+    pub nn_params: NearestNeighbourParams<T>,
+    /// The graph parameters for the generation of the graph structure.
+    pub umap_graph_params: UmapGraphParams<T>,
+    /// Train parameters for the neural network.
+    pub train_param: TrainParametricParams<T>,
 }
 
 #[cfg(feature = "parametric")]
 impl<T> ParametricUmapParams<T>
 where
-    T: Float + FromPrimitive + Element,
+    T: ManifoldsFloat + Element,
 {
     /// Generate new parametric UMAP parameters
     ///
@@ -1876,16 +1785,7 @@ pub fn parametric_umap<T, B>(
     verbose: bool,
 ) -> Vec<Vec<T>>
 where
-    T: Float
-        + FromPrimitive
-        + ToPrimitive
-        + Default
-        + ComplexField
-        + RealField
-        + Sum
-        + AddAssign
-        + Element
-        + SimdDistance,
+    T: ManifoldsFloat + Element,
     B: AutodiffBackend,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -1958,25 +1858,16 @@ where
 ///
 /// ### Returns
 ///
-/// Returns the `TrainedUmapModel` for further usage.
-pub fn train_parametric_umap_model<'a, T, B>(
+/// Returns a tuple of embedding and the `TrainedUmapModel` for further usage.
+pub fn train_parametric_umap_model<T, B>(
     data: MatRef<T>,
     umap_params: &ParametricUmapParams<T>,
-    device: &'a B::Device,
+    device: &B::Device,
     seed: usize,
     verbose: bool,
-) -> TrainedUmapModel<'a, B, T>
+) -> (Vec<Vec<T>>, TrainedUmapModel<B, T>)
 where
-    T: Float
-        + FromPrimitive
-        + ToPrimitive
-        + Default
-        + ComplexField
-        + RealField
-        + Sum
-        + AddAssign
-        + Element
-        + SimdDistance,
+    T: ManifoldsFloat + Element,
     B: AutodiffBackend,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -2010,7 +1901,7 @@ where
         umap_params.n_dim,
     );
 
-    let (_, trained_model) = train_parametric_umap::<B, T>(
+    let (embd, trained_model) = train_parametric_umap::<B, T>(
         data,
         graph,
         &model_params,
@@ -2020,5 +1911,5 @@ where
         verbose,
     );
 
-    trained_model
+    (embd, trained_model)
 }

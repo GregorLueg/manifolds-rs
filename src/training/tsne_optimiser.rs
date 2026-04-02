@@ -2,13 +2,12 @@
 //! van der Maarten and the FFT-accelerated Interpolation-based version of tSNE
 //! from Lindermann, et al.
 
-use num_traits::{Float, FromPrimitive, ToPrimitive};
+use num_traits::{Float, FromPrimitive};
 use rayon::prelude::*;
-use std::iter::Sum;
-use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
 use thousands::*;
 
 use crate::data::structures::*;
+use crate::prelude::*;
 use crate::utils::bh_tree::*;
 
 #[cfg(feature = "fft_tsne")]
@@ -22,10 +21,19 @@ use crate::utils::fft::*;
 // Globals //
 /////////////
 
+/// Iteration from when on to switch the tSNE momentum
 const TSNE_MOMENTUM_SWITCH_ITER: usize = 250;
+
+/// Initial tSNE momentum
 const TSNE_INITIAL_MOMENTUM: f64 = 0.5;
+
+/// Final tSNE momentum
 const TSNE_FINAL_MOMENTUM: f64 = 0.8;
+
+/// Minimum tSNE gain
 const TSNE_MIN_GAIN: f64 = 0.01;
+
+/// tSNE epsilon
 const TSNE_EPS: f64 = 1e-12;
 
 ////////////////
@@ -89,7 +97,10 @@ where
 }
 
 /// Default implementation for TsneOptimParams
-impl<T: Float + FromPrimitive> Default for TsneOptimParams<T> {
+impl<T> Default for TsneOptimParams<T>
+where
+    T: Float + FromPrimitive,
+{
     fn default() -> Self {
         Self {
             n_epochs: 1000,
@@ -162,19 +173,19 @@ fn update_parameter<T>(
     momentum: T,
     min_gain: T,
 ) where
-    T: Float + FromPrimitive + ToPrimitive,
+    T: ManifoldsFloat,
 {
     // adjust gain based on gradient-update alignment
     if (grad > T::zero()) != (*update > T::zero()) {
-        *gain = *gain + T::from_f64(0.2).unwrap();
+        *gain += T::from_f64(0.2).unwrap();
     } else {
-        *gain = *gain * T::from_f64(0.8).unwrap();
+        *gain *= T::from_f64(0.8).unwrap();
     }
     *gain = (*gain).max(min_gain);
 
     // momentum update with adaptive gain
     *update = momentum * *update - lr * *gain * grad;
-    *val = *val + *update;
+    *val += *update;
 }
 
 /// Optimise 2D embedding using Barnes-Hut t-SNE.
@@ -210,7 +221,7 @@ pub fn optimise_bh_tsne<T>(
     graph: &CoordinateList<T>,
     verbose: bool,
 ) where
-    T: Float + FromPrimitive + Send + Sync + AddAssign + SubAssign + MulAssign + DivAssign + Sum,
+    T: ManifoldsFloat,
 {
     let n = embd.len();
     let n_dim = embd[0].len();
@@ -220,11 +231,11 @@ pub fn optimise_bh_tsne<T>(
     let min_gain = T::from_f64(TSNE_MIN_GAIN).unwrap();
     let eps = T::from_f64(TSNE_EPS).unwrap();
 
-    // --- pre-allocate update and gains buffers ---
+    // pre-allocate update and gains buffers
     let mut update_flat = vec![T::zero(); n * n_dim];
     let mut gains_flat = vec![T::one(); n * n_dim];
 
-    // --- build adjacency list ONCE ---
+    // build adjacency list ONCE
     let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
     for ((&i, &j), &w) in graph
         .row_indices
@@ -375,7 +386,7 @@ pub fn optimise_fft_tsne<T>(
     graph: &CoordinateList<T>,
     verbose: bool,
 ) where
-    T: FftwFloat + AddAssign + SubAssign + MulAssign + DivAssign + Sum + ToPrimitive + Send + Sync,
+    T: FftwFloat + ManifoldsFloat,
 {
     let n = embd.len();
     let n_dim = embd[0].len();
