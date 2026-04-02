@@ -1,14 +1,13 @@
 //! Optimisers for UMAP fitting. Contains the SGD, Adam and a parallel Adam
 //! variant
 
-use num_traits::{Float, FromPrimitive};
 use rand::{
     rngs::SmallRng,
     {Rng, SeedableRng},
 };
 use rayon::prelude::*;
-use std::ops::{AddAssign, MulAssign, SubAssign};
 
+use crate::prelude::*;
 use crate::training::*;
 
 //////////
@@ -46,7 +45,7 @@ pub struct UmapOptimParams<T> {
 
 impl<T> UmapOptimParams<T>
 where
-    T: Float + FromPrimitive,
+    T: ManifoldsFloat,
 {
     /// Default parameters for 2D embedding
     ///
@@ -181,21 +180,21 @@ where
                 let pred = T::one() / denom;
                 let err = pred - y_target;
 
-                grad_a = grad_a + err * (-x_2b / (denom * denom));
+                grad_a += err * (-x_2b / (denom * denom));
 
                 let log_x = x.ln();
-                grad_b = grad_b + err * (-two * a * x_2b * log_x / (denom * denom));
+                grad_b += err * (-two * a * x_2b * log_x / (denom * denom));
             }
 
             // Normalise gradients and use adaptive learning rate
-            grad_a = grad_a / n_points_t;
-            grad_b = grad_b / n_points_t;
+            grad_a /= n_points_t;
+            grad_b /= n_points_t;
 
             let lr_a = T::from_f64(1.0).unwrap();
             let lr_b = T::from_f64(1.0).unwrap();
 
-            a = a - lr_a * grad_a;
-            b = b - lr_b * grad_b;
+            a -= lr_a * grad_a;
+            b -= lr_b * grad_b;
 
             a = a
                 .max(T::from_f64(0.001).unwrap())
@@ -211,7 +210,7 @@ where
 
 impl<T> Default for UmapOptimParams<T>
 where
-    T: Float + FromPrimitive,
+    T: ManifoldsFloat,
 {
     /// Returns sensible defaults for the optimiser (assuming 2D)
     fn default() -> Self {
@@ -266,7 +265,10 @@ struct OptimConstants<T> {
     eps: T,
 }
 
-impl<T: Float + FromPrimitive> OptimConstants<T> {
+impl<T> OptimConstants<T>
+where
+    T: ManifoldsFloat,
+{
     /// Generate all of the constants
     ///
     /// ### Params
@@ -312,7 +314,7 @@ struct FastPowLut<T> {
 
 impl<T> FastPowLut<T>
 where
-    T: Float + FromPrimitive,
+    T: ManifoldsFloat,
 {
     /// Creates a new LUT for the function x^b
     ///
@@ -373,7 +375,7 @@ where
 ///
 /// For specific versions of b, return quickly the value
 #[inline(always)]
-fn fast_pow<T: Float>(x: T, b: T, b_is_one: bool, b_is_half: bool) -> T {
+fn fast_pow<T: ManifoldsFloat>(x: T, b: T, b_is_one: bool, b_is_half: bool) -> T {
     if b_is_one {
         x
     } else if b_is_half {
@@ -430,7 +432,7 @@ pub fn optimise_embedding_sgd<T>(
     seed: u64,
     verbose: bool,
 ) where
-    T: Float + FromPrimitive + AddAssign + SubAssign,
+    T: ManifoldsFloat,
 {
     let n = embd.len();
     if n == 0 {
@@ -639,7 +641,7 @@ pub fn optimise_embedding_adam<T>(
     seed: u64,
     verbose: bool,
 ) where
-    T: Float + FromPrimitive + Send + Sync + AddAssign + MulAssign,
+    T: ManifoldsFloat,
 {
     let n = embd.len();
     if n == 0 {
@@ -850,7 +852,7 @@ pub fn optimise_embedding_adam_parallel<T>(
     seed: u64,
     verbose: bool,
 ) where
-    T: Float + FromPrimitive + Send + Sync + AddAssign + std::fmt::Display,
+    T: ManifoldsFloat,
 {
     let n = embd.len();
     if n == 0 {
@@ -1123,6 +1125,7 @@ pub fn optimise_embedding_adam_parallel<T>(
 mod test_umap_optimiser {
     use super::*;
     use approx::assert_relative_eq;
+    use num_traits::Float;
 
     #[inline(always)]
     fn squared_dist_flat<T>(embd: &[T], i: usize, j: usize, n_dim: usize) -> T

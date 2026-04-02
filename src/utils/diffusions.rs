@@ -1,10 +1,10 @@
 //! Diffusion methods for PHATE (and in the future potentially diffuion maps)
 
-use ann_search_rs::utils::dist::{parse_ann_dist, Dist, SimdDistance};
+use ann_search_rs::utils::dist::{parse_ann_dist, Dist};
 use ann_search_rs::utils::k_means_utils::{assign_all_parallel, train_centroids};
 use faer::MatRef;
-use faer_traits::{ComplexField, RealField};
-use num_traits::{Float, FromPrimitive};
+use faer_traits::ComplexField;
+use num_traits::Float;
 use rand::prelude::Distribution;
 use rand::rngs::StdRng;
 use rand::seq::index::sample;
@@ -15,6 +15,7 @@ use rustc_hash::{FxBuildHasher, FxHashSet};
 use std::ops::{AddAssign, Range};
 
 use crate::data::structures::*;
+use crate::prelude::*;
 use crate::utils::math::*;
 use crate::utils::sparse_ops::*;
 
@@ -136,10 +137,10 @@ impl<T> PhateDiffusionParams<T> {
 ///
 /// ### Returns
 ///
-/// Row-normalized CSR matrix
+/// Row-normalised CSR matrix
 pub fn build_diffusion_operator<T>(matrix: &CompressedSparseData<T>) -> CompressedSparseData<T>
 where
-    T: Float + Send + Sync + Default + ComplexField,
+    T: ManifoldsFloat,
 {
     if !matrix.cs_type.is_csr() {
         panic!("Diffusion operator requires CSR format input");
@@ -153,7 +154,7 @@ where
             let end = matrix.indptr[i + 1];
             let mut sum = T::zero();
             for idx in start..end {
-                sum = sum + matrix.data[idx];
+                sum += matrix.data[idx];
             }
             sum
         })
@@ -376,7 +377,7 @@ fn assign_to_landmark<T>(
     dim: usize,
 ) -> usize
 where
-    T: Float + SimdDistance + Send + Sync,
+    T: ManifoldsFloat,
 {
     let mut min_dist = T::infinity();
     let mut min_idx = 0;
@@ -417,7 +418,7 @@ fn build_landmarks_to_data<T>(
     n_landmarks: usize,
 ) -> CompressedSparseData<T>
 where
-    T: Float + Send + Sync + ComplexField + std::ops::AddAssign,
+    T: ManifoldsFloat,
 {
     let n = assignments.len();
     let mut landmark_pts: Vec<Vec<usize>> = vec![Vec::new(); n_landmarks];
@@ -608,17 +609,7 @@ where
 
 impl<T> PhateLandmarks<T>
 where
-    T: Float
-        + Send
-        + Sync
-        + Default
-        + SimdDistance
-        + std::iter::Sum<T>
-        + AddAssign
-        + ComplexField
-        + RealField
-        + std::ops::AddAssign
-        + FromPrimitive,
+    T: ManifoldsFloat,
 {
     /// Build landmarks from an existing diffusion operator
     ///

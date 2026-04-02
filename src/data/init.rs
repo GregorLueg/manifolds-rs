@@ -1,19 +1,15 @@
 //! Module containing functions to initialise embeddings
 
-use faer::{
-    traits::{ComplexField, RealField},
-    MatRef,
-};
-use num_traits::{Float, FromPrimitive, ToPrimitive};
+use faer::MatRef;
 use rand::{
     rngs::StdRng,
     {Rng, SeedableRng},
 };
 use rand_distr::{Distribution, StandardNormal};
 use std::collections::VecDeque;
-use std::iter::Sum;
 
 use crate::data::structures::*;
+use crate::prelude::*;
 use crate::utils::math::*;
 
 /// Range for spectral-based initialisation (based on uwot UMAP)
@@ -63,7 +59,7 @@ pub enum EmbdInit<T> {
 /// The Option of a EmbdInit
 pub fn parse_initilisation<T>(s: &str, randomised: bool, range: Option<T>) -> Option<EmbdInit<T>>
 where
-    T: Float,
+    T: ManifoldsFloat,
 {
     match s.to_lowercase().as_str() {
         "spectral" => Some(EmbdInit::SpectralInit { range }),
@@ -93,7 +89,7 @@ where
 /// Normalised Laplacian as CSR matrix
 fn graph_to_normalised_laplacian<T>(graph: &CoordinateList<T>) -> CompressedSparseData<f64>
 where
-    T: Float,
+    T: ManifoldsFloat,
 {
     let n = graph.n_samples;
 
@@ -158,7 +154,7 @@ where
 /// Vector of components, where each component is a vector of vertex indices
 fn find_connected_components<T>(graph: &CoordinateList<T>) -> Vec<Vec<usize>>
 where
-    T: Float,
+    T: ManifoldsFloat,
 {
     let n = graph.n_samples;
 
@@ -222,7 +218,7 @@ fn multi_component_init<T>(
     range: T,
 ) -> Vec<Vec<T>>
 where
-    T: Float + FromPrimitive + Send + Sync + Sum,
+    T: ManifoldsFloat,
 {
     let n = graph.n_samples;
     let n_components = components.len();
@@ -296,7 +292,7 @@ where
 /// Subgraph with locally indexed vertices
 fn extract_subgraph<T>(graph: &CoordinateList<T>, component: &[usize]) -> CoordinateList<T>
 where
-    T: Float,
+    T: ManifoldsFloat,
 {
     let n = graph.n_samples;
 
@@ -354,7 +350,7 @@ fn single_component_spectral<T>(
     range: T,
 ) -> Vec<Vec<T>>
 where
-    T: Float + FromPrimitive + Send + Sync + Sum,
+    T: ManifoldsFloat,
 {
     let n = graph.n_samples;
 
@@ -418,7 +414,7 @@ fn finalise_spectral_embedding<T>(
     seed: u64,
 ) -> Vec<Vec<T>>
 where
-    T: Float + FromPrimitive + Sum,
+    T: ManifoldsFloat,
 {
     let n = embedding.len();
     let n_t = T::from_usize(n).unwrap();
@@ -428,7 +424,7 @@ where
         let mean: T = embedding.iter().map(|v| v[comp]).sum::<T>() / n_t;
 
         for i in 0..n {
-            embedding[i][comp] = embedding[i][comp] - mean;
+            embedding[i][comp] -= mean;
         }
     }
 
@@ -449,7 +445,7 @@ where
         let scale = range / max_abs;
         for row in &mut embedding {
             for val in row {
-                *val = *val * scale;
+                *val *= scale;
             }
         }
     }
@@ -461,7 +457,7 @@ where
     for row in &mut embedding {
         for val in row {
             let noise = T::from_f64(rng.sample::<f64, _>(StandardNormal)).unwrap() * noise_std;
-            *val = *val + noise;
+            *val += noise;
         }
     }
 
@@ -491,7 +487,7 @@ pub fn spectral_layout<T>(
     range: Option<T>,
 ) -> Vec<Vec<T>>
 where
-    T: Float + FromPrimitive + Send + Sync + Sum,
+    T: ManifoldsFloat,
 {
     let range = range.unwrap_or(T::from_f64(SPECTRAL_RANGE).unwrap());
 
@@ -527,7 +523,7 @@ where
 /// Random embedding coordinates uniformly distributed in [-10, 10] range
 pub fn random_layout<T>(n_samples: usize, n_comp: usize, seed: u64, range: Option<T>) -> Vec<Vec<T>>
 where
-    T: Float + FromPrimitive + ToPrimitive,
+    T: ManifoldsFloat,
 {
     let range = range
         .unwrap_or(T::from_f64(RANDOM_RANGE).unwrap())
@@ -574,7 +570,7 @@ pub fn pca_layout<T>(
     seed: u64,
 ) -> Vec<Vec<T>>
 where
-    T: Float + Send + Sync + Sum + ComplexField + RealField + ToPrimitive + FromPrimitive,
+    T: ManifoldsFloat,
     StandardNormal: Distribution<T>,
 {
     let target_std = range.unwrap_or(T::from_f64(PCA_RANGE).unwrap());
@@ -585,7 +581,7 @@ where
     for j in 0..n_features {
         let mean = (0..n_samples).map(|i| data[(i, j)]).sum::<T>() / T::from(n_samples).unwrap();
         for i in 0..n_samples {
-            centred[(i, j)] = centred[(i, j)] - mean;
+            centred[(i, j)] -= mean;
         }
     }
 
@@ -673,7 +669,7 @@ pub fn initialise_embedding<T>(
     data: MatRef<T>,
 ) -> Vec<Vec<T>>
 where
-    T: Float + FromPrimitive + Send + Sync + Sum + ComplexField + RealField + ToPrimitive,
+    T: ManifoldsFloat,
     StandardNormal: Distribution<T>,
 {
     match init_method {

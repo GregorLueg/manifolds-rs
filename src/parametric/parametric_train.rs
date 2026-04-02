@@ -257,15 +257,15 @@ pub fn graph_to_trainings_data<T>(graph_data: &CoordinateList<T>) -> UmapEdgeDat
 /// ### Returns
 ///
 /// A tuple of `(embedding, trained model)`
-pub fn train_parametric_umap<'a, B, T>(
+pub fn train_parametric_umap<B, T>(
     data: MatRef<T>,
     graph_data: CoordinateList<T>,
     model_config: &UmapMlpConfig,
     train_params: &TrainParametricParams<T>,
-    device: &'a B::Device,
+    device: &B::Device,
     seed: usize,
     verbose: bool,
-) -> (Vec<Vec<T>>, TrainedUmapModel<'a, B, T>)
+) -> (Vec<Vec<T>>, TrainedUmapModel<B, T>)
 where
     T: Element + Float + FromPrimitive + ToPrimitive,
     B: AutodiffBackend,
@@ -347,7 +347,7 @@ where
     // Get final embeddings
     let embeddings = model.forward(tensor_data);
 
-    let trained_model = TrainedUmapModel::new(model, device);
+    let trained_model = TrainedUmapModel::new(model, device.clone());
 
     // Convert to Vec<Vec<f32>> format [n_components][n_samples]
     let n_components = model_config.output_size;

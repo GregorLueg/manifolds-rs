@@ -1,13 +1,11 @@
-//! Helper functions to calculate potentials for PHATE
+//! Helper functions to calculate potentials for PHATE.
 
-use ann_search_rs::utils::dist::{Dist, SimdDistance};
-use faer_traits::ComplexField;
-use num_traits::Float;
+use ann_search_rs::utils::dist::Dist;
 use rayon::prelude::*;
-use std::ops::AddAssign;
 
 use crate::data::structures::CompressedSparseData;
 use crate::utils::sparse_ops::*;
+use crate::utils::traits::*;
 
 ////////////////////////////
 // Potential calculations //
@@ -30,7 +28,7 @@ pub fn apply_log_potential<T>(
     epsilon: T,
 ) -> CompressedSparseData<T>
 where
-    T: Float + Send + Sync + ComplexField,
+    T: ManifoldsFloat,
 {
     assert!(matrix.cs_type.is_csr(), "Matrix must be CSR format");
 
@@ -64,7 +62,7 @@ pub fn apply_power_potential<T>(
     gamma: T,
 ) -> CompressedSparseData<T>
 where
-    T: Float + Send + Sync + ComplexField,
+    T: ManifoldsFloat,
 {
     assert!(matrix.cs_type.is_csr(), "Matrix must be CSR format");
 
@@ -103,7 +101,7 @@ pub fn calculate_potential<T>(
     gamma: T,
 ) -> CompressedSparseData<T>
 where
-    T: Float + Send + Sync + AddAssign + ComplexField,
+    T: ManifoldsFloat,
 {
     // power the operator
     let diffused = matrix_power(diffusion_op, t);
@@ -137,7 +135,7 @@ where
 /// Dense vector of length ncols (zeros for non-stored elements)
 fn csr_row_to_dense<T>(matrix: &CompressedSparseData<T>, row_idx: usize) -> Vec<T>
 where
-    T: Float + Copy + ComplexField,
+    T: ManifoldsFloat,
 {
     let ncols = matrix.shape().1;
     let mut dense = vec![T::zero(); ncols];
@@ -171,7 +169,7 @@ pub fn compute_potential_distances<T>(
     metric: &Dist,
 ) -> Vec<Vec<T>>
 where
-    T: Float + Send + Sync + SimdDistance + ComplexField,
+    T: ManifoldsFloat,
 {
     assert!(potential.cs_type.is_csr(), "Matrix must be CSR format");
 
@@ -230,6 +228,7 @@ where
 mod test_potential_transforms {
     use super::*;
     use approx::assert_relative_eq;
+    use num_traits::Float;
 
     fn create_test_matrix() -> CompressedSparseData<f64> {
         // Simple matrix with known values

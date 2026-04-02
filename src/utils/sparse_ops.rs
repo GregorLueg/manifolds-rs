@@ -1,13 +1,11 @@
 //! Various sparse operations on the internal `CompressedSparseData` structure.
 //! These are designed to be highly efficient and use unsafe under the hood.
 
-use faer_traits::ComplexField;
-use num_traits::Float;
 use rayon::prelude::*;
 use rustc_hash::{FxBuildHasher, FxHashMap};
-use std::ops::{Add, AddAssign, Mul};
 
 use crate::data::structures::*;
+use crate::utils::traits::*;
 
 ////////////////////
 // Row extraction //
@@ -26,7 +24,7 @@ use crate::data::structures::*;
 /// A dense vector containing the values of the specified row
 pub fn csr_row_to_dense<T>(matrix: &CompressedSparseData<T>, row: usize) -> Vec<T>
 where
-    T: Float + Clone + ComplexField,
+    T: ManifoldsFloat,
 {
     let ncols = matrix.shape.1;
     let mut dense = vec![T::zero(); ncols];
@@ -58,7 +56,7 @@ where
 /// A sparse row containing the summed columns for the specificied rows
 pub fn sparse_row_sum<T>(mat: &CompressedSparseData<T>, row_indices: &[usize]) -> SparseRow<T>
 where
-    T: Float + Sync + Add + PartialEq + Mul + ComplexField + std::ops::AddAssign,
+    T: ManifoldsFloat,
 {
     let mut col_sums: FxHashMap<usize, T> =
         FxHashMap::with_capacity_and_hasher(mat.ncols(), FxBuildHasher);
@@ -96,7 +94,7 @@ where
 /// * `flags` - Boolean flags indicating which indices are active
 struct SparseAccumulator<T>
 where
-    T: Float + AddAssign + ComplexField,
+    T: ManifoldsFloat,
 {
     values: Vec<T>,
     indices: Vec<usize>,
@@ -105,7 +103,7 @@ where
 
 impl<T> SparseAccumulator<T>
 where
-    T: Float + AddAssign + ComplexField,
+    T: ManifoldsFloat,
 {
     /// Create a new sparse accumulator
     ///
@@ -185,7 +183,7 @@ pub fn csr_matmul_csr<T>(
     b: &CompressedSparseData<T>,
 ) -> CompressedSparseData<T>
 where
-    T: Sync + Send + Float + AddAssign + ComplexField,
+    T: ManifoldsFloat,
 {
     assert!(a.cs_type.is_csr() && b.cs_type.is_csr());
     assert_eq!(a.shape.1, b.shape.0, "Dimension mismatch");
@@ -258,7 +256,7 @@ where
 /// * `csr` - Mutable reference to the CSR matrix (modified in-place)
 pub fn normalise_csr_rows_l1<T>(csr: &mut CompressedSparseData<T>)
 where
-    T: Float + Send + Sync + Default + Copy + std::iter::Sum<T> + ComplexField,
+    T: ManifoldsFloat,
 {
     assert!(csr.cs_type.is_csr(), "Matrix must be in CSR format");
     let nrows = csr.shape.0;
@@ -273,7 +271,7 @@ where
             // multiplications are faster than divisions
             let inv_sum = T::one() / row_sum;
             for val in row_data_slice.iter_mut() {
-                *val = *val * inv_sum;
+                *val *= inv_sum;
             }
         }
     }
@@ -298,7 +296,7 @@ where
 /// P^t in CSR format
 pub fn matrix_power_naive<T>(matrix: &CompressedSparseData<T>, t: usize) -> CompressedSparseData<T>
 where
-    T: Float + Send + Sync + AddAssign + ComplexField,
+    T: ManifoldsFloat,
 {
     assert!(matrix.cs_type.is_csr(), "Matrix must be CSR format");
     assert!(t > 0, "Power must be positive");
@@ -335,7 +333,7 @@ where
 /// P^t in CSR format
 pub fn matrix_power<T>(matrix: &CompressedSparseData<T>, t: usize) -> CompressedSparseData<T>
 where
-    T: Float + Send + Sync + AddAssign + ComplexField,
+    T: ManifoldsFloat,
 {
     assert!(matrix.cs_type.is_csr(), "Matrix must be CSR format");
     assert!(t > 0, "Power must be positive");

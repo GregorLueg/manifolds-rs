@@ -5,11 +5,11 @@
 //! - Mid-near pairs: sampled from a wider neighbourhood (candidates ~4-50)
 //! - Further pairs: random distant points
 
-use num_traits::{Float, FromPrimitive};
 use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rayon::prelude::*;
 
 use crate::data::structures::CoordinateList;
+use crate::prelude::*;
 
 /////////////
 // Helpers //
@@ -208,7 +208,7 @@ pub fn construct_pacmap_pairs(
 /// `CoordinateList<T>` with uniform weights of `1.0` for all edges.
 pub fn knn_to_coo_unweighted<T>(knn_indices: &[Vec<usize>]) -> CoordinateList<T>
 where
-    T: Float + FromPrimitive,
+    T: ManifoldsFloat,
 {
     let mut row_indices = Vec::new();
     let mut col_indices = Vec::new();

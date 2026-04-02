@@ -1,13 +1,13 @@
 //! Module containing helper functions to generate the graphs used by UMAP,
 //! tSNE and PHATE.
 
-use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::ops::AddAssign;
+
 use thousands::*;
 
 use crate::data::structures::*;
+use crate::prelude::*;
 
 //////////
 // UMAP //
@@ -32,7 +32,7 @@ pub struct UmapGraphParams<T> {
 
 impl<T> Default for UmapGraphParams<T>
 where
-    T: Float,
+    T: ManifoldsFloat,
 {
     /// Returns sensible defaults for UMAP
     ///
@@ -83,7 +83,7 @@ pub fn smooth_knn_dist<T>(
     n_iter: usize,
 ) -> (Vec<T>, Vec<T>)
 where
-    T: Float + Send + Sync,
+    T: ManifoldsFloat,
 {
     dist.par_iter()
         .map(|dists| {
@@ -118,7 +118,7 @@ where
                 let mut val = T::zero();
                 for &d in dists.iter() {
                     let adjusted = (d - rho).max(T::zero());
-                    val = val + (-(adjusted / mid)).exp();
+                    val += (-(adjusted / mid)).exp();
                 }
 
                 if (val.to_f64().unwrap() - target).abs() < bandwidth.to_f64().unwrap() {
@@ -131,7 +131,7 @@ where
                 } else {
                     lo = mid;
                     if hi == T::max_value() {
-                        mid = mid * (T::one() + T::one());
+                        mid *= T::one() + T::one();
                     } else {
                         mid = (lo + hi) / (T::one() + T::one());
                     }
@@ -168,7 +168,7 @@ pub fn knn_to_coo<T>(
     rhos: &[T],
 ) -> CoordinateList<T>
 where
-    T: Float + Send + Sync,
+    T: ManifoldsFloat,
 {
     let n = knn_indices.len();
     let capacity: usize = knn_indices.iter().map(|v| v.len()).sum();
@@ -231,7 +231,7 @@ where
 /// * `mix_weight = 0.0`: Use only outgoing edges (directed)
 pub fn symmetrise_graph<T>(graph: CoordinateList<T>, mix_weight: T) -> CoordinateList<T>
 where
-    T: Float + Send + Sync,
+    T: ManifoldsFloat,
 {
     let n = graph.n_samples;
 
@@ -312,7 +312,7 @@ where
 /// pairs for vertex `i`
 pub fn coo_to_adjacency_list<T>(graph: &CoordinateList<T>) -> Vec<Vec<(usize, T)>>
 where
-    T: Float + Copy,
+    T: ManifoldsFloat,
 {
     let mut adj = vec![Vec::new(); graph.n_samples];
 
@@ -348,7 +348,7 @@ pub fn filter_weak_edges<T>(
     verbose: bool,
 ) -> CoordinateList<T>
 where
-    T: Float + Send + Sync,
+    T: ManifoldsFloat,
 {
     let max_weight = graph
         .values
@@ -435,7 +435,7 @@ pub fn gaussian_knn_affinities<T>(
     distances_squared: bool,
 ) -> CoordinateList<T>
 where
-    T: Float + Send + Sync + FromPrimitive + ToPrimitive,
+    T: ManifoldsFloat,
 {
     let n = knn_indices.len();
     let target_entropy = perplexity.log2();
@@ -461,7 +461,7 @@ where
                     let d_sq = if distances_squared { d } else { d * d };
                     let p = (-beta * d_sq).exp();
                     current_probs[j] = p;
-                    sum_p = sum_p + p;
+                    sum_p += p;
                 }
 
                 // check for numerical stability
@@ -472,9 +472,9 @@ where
                 // normalise to get probabilities and compute entropy H
                 let mut entropy = T::zero();
                 for p in current_probs.iter_mut() {
-                    *p = *p / sum_p;
+                    *p /= sum_p;
                     if *p > machine_epsilon {
-                        entropy = entropy - *p * p.log2();
+                        entropy -= *p * p.log2();
                     }
                 }
 
@@ -489,7 +489,7 @@ where
                     // entropy too high → distribution too flat → increase beta (narrow curve)
                     min_beta = beta;
                     if max_beta.is_infinite() {
-                        beta = beta * (T::one() + T::one());
+                        beta *= T::one() + T::one();
                     } else {
                         beta = (beta + max_beta) / (T::one() + T::one());
                     }
@@ -497,7 +497,7 @@ where
                     // entropy too low → distribution too peaked → decrease beta (widen curve)
                     max_beta = beta;
                     if min_beta.is_infinite() {
-                        beta = beta / (T::one() + T::one());
+                        beta /= T::one() + T::one();
                     } else {
                         beta = (beta + min_beta) / (T::one() + T::one());
                     }
@@ -556,7 +556,7 @@ where
 /// 4. Add both directions (i,j) and (j,i) to output with weight P_ij
 pub fn symmetrise_affinities_tsne<T>(graph: CoordinateList<T>) -> CoordinateList<T>
 where
-    T: Float + Send + Sync + FromPrimitive,
+    T: ManifoldsFloat,
 {
     let n = graph.n_samples;
     let n_float = T::from_usize(n).unwrap();
@@ -690,7 +690,7 @@ pub fn parse_phate_symmetrisation(s: &str) -> Option<PhateGraphSymmetrisation> {
 /// * `graph` - Reference to the graph to symmetrise
 fn symmetrise_additive<T>(graph: &mut CoordinateList<T>)
 where
-    T: Float + Sync + Send + AddAssign,
+    T: ManifoldsFloat,
 {
     let two = T::one() + T::one();
 
@@ -744,7 +744,7 @@ where
 /// * `graph` - Reference to the graph to symmetrise
 fn symmetrise_multiplicative<T>(graph: &mut CoordinateList<T>)
 where
-    T: Float + Send + Sync,
+    T: ManifoldsFloat,
 {
     // forward map
     let forward_map: FxHashMap<(usize, usize), T> = graph
@@ -807,7 +807,7 @@ where
 /// * `graph` - Reference to the graph to symmetrise
 fn symmetrise_mnn<T>(graph: &mut CoordinateList<T>, theta: T)
 where
-    T: Float + Send + Sync,
+    T: ManifoldsFloat,
 {
     let edge_map: FxHashMap<(usize, usize), (Option<T>, Option<T>)> = graph
         .row_indices
@@ -887,7 +887,7 @@ fn binary_knn_connectivity<T>(
     symmetrise: PhateGraphSymmetrisation,
 ) -> CoordinateList<T>
 where
-    T: Float + Send + Sync + AddAssign,
+    T: ManifoldsFloat,
 {
     let n = knn_indices.len();
     let k_actual = knn.min(knn_indices[0].len());
@@ -963,7 +963,7 @@ pub fn phate_alpha_decay_affinities<T>(
     distances_squared: bool,
 ) -> CoordinateList<T>
 where
-    T: Float + Send + Sync + FromPrimitive + ToPrimitive + AddAssign,
+    T: ManifoldsFloat,
 {
     let n = knn_indices.len();
     let machine_epsilon = T::epsilon();
@@ -1088,6 +1088,7 @@ where
 mod test_data_gen {
     use super::*;
     use approx::assert_relative_eq;
+    use num_traits::Float;
 
     ////////////////
     // Umap stuff //

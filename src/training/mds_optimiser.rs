@@ -2,8 +2,7 @@
 //! etc.
 
 use faer::Mat;
-use faer_traits::{ComplexField, RealField};
-use num_traits::{Float, FromPrimitive};
+
 use rand::prelude::*;
 use rand::rngs::StdRng;
 use rand::SeedableRng;
@@ -11,6 +10,7 @@ use rand_distr::{Distribution, StandardNormal};
 use rayon::prelude::*;
 use thousands::*;
 
+use crate::prelude::*;
 use crate::utils::math::*;
 
 /////////////
@@ -74,7 +74,7 @@ pub struct MdsOptimParams<T> {
 
 impl<T> MdsOptimParams<T>
 where
-    T: Float + FromPrimitive,
+    T: ManifoldsFloat,
 {
     /// Create a new instance
     ///
@@ -120,7 +120,7 @@ where
 /// The standard deviation of the embedding
 fn compute_std<T>(embedding: &[T]) -> T
 where
-    T: Float + std::iter::Sum,
+    T: ManifoldsFloat,
 {
     if embedding.is_empty() {
         return T::zero();
@@ -152,7 +152,7 @@ pub fn classic_mds<T>(
     seed: usize,
 ) -> Vec<Vec<T>>
 where
-    T: Float + ComplexField + RealField + Send + Sync + std::iter::Sum,
+    T: ManifoldsFloat,
     StandardNormal: Distribution<T>,
 {
     let n = dist.len();
@@ -242,7 +242,7 @@ pub fn sgd_mds<T>(
     verbose: bool,
 ) -> Vec<Vec<T>>
 where
-    T: Float + Send + Sync + std::iter::Sum + FromPrimitive + RealField,
+    T: ManifoldsFloat,
     StandardNormal: Distribution<T>,
 {
     let n = dist.len();
@@ -331,7 +331,7 @@ where
                 let mut dist_sq = T::zero();
                 for k in 0..n_dim {
                     let diff = y[i * n_dim + k] - y[j * n_dim + k];
-                    dist_sq = dist_sq + diff * diff;
+                    dist_sq += diff * diff;
                 }
 
                 let current_dist = dist_sq.sqrt().max(T::from(1e-10).unwrap());
@@ -351,14 +351,14 @@ where
 
         for (i, j, contrib, sq_err) in &contribs {
             for k in 0..n_dim {
-                gradients[i * n_dim + k] = gradients[i * n_dim + k] + contrib[k];
-                gradients[j * n_dim + k] = gradients[j * n_dim + k] - contrib[k];
+                gradients[i * n_dim + k] += contrib[k];
+                gradients[j * n_dim + k] -= contrib[k];
             }
-            total_err = total_err + *sq_err;
+            total_err += *sq_err;
         }
 
         for idx in 0..n * n_dim {
-            y[idx] = y[idx] - lr_i * gradients[idx];
+            y[idx] -= lr_i * gradients[idx];
         }
 
         let stress = total_err / T::from(contribs.len()).unwrap();
@@ -389,7 +389,7 @@ where
     }
 
     if d_max > T::zero() {
-        y.iter_mut().for_each(|v| *v = *v * d_max);
+        y.iter_mut().for_each(|v| *v *= d_max);
     }
 
     let mut embedding = vec![vec![T::zero(); n_dim]; n];
@@ -411,6 +411,7 @@ where
 mod test_mds {
     use super::*;
     use approx::assert_relative_eq;
+    use num_traits::Float;
 
     #[test]
     fn test_sgd_mds_identity_distances() {

@@ -264,7 +264,7 @@ pub fn optimise_pacmap<T>(
     params: &PacmapOptimParams<T>,
     verbose: bool,
 ) where
-    T: Float + FromPrimitive + AddAssign + Send + Sync + SubAssign,
+    T: ManifoldsFloat,
 {
     let n = embd.len();
     if n == 0 {
@@ -374,8 +374,8 @@ pub fn optimise_pacmap<T>(
             embd_flat[idx] += ad_scale * m[idx] / (v[idx].sqrt() + epsc);
         }
 
-        beta1t = beta1t * params.beta1;
-        beta2t = beta2t * params.beta2;
+        beta1t *= params.beta1;
+        beta2t *= params.beta2;
 
         if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);

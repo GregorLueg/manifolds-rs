@@ -1,18 +1,15 @@
 //! Math helper functions
 
-use ann_search_rs::utils::dist::SimdDistance;
-use faer::traits::{ComplexField, RealField};
 use faer::{Mat, MatMut, MatRef};
-use num_traits::{Float, FromPrimitive, ToPrimitive};
+use num_traits::ToPrimitive;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal, StandardNormal};
 use rayon::prelude::*;
-use std::iter::Sum;
-use std::ops::{Add, Mul};
 
 use crate::assert_same_len;
 use crate::data::structures::*;
+use crate::utils::traits::*;
 
 ////////////////////
 // Randomised SVD //
@@ -64,7 +61,7 @@ pub fn randomised_svd<T>(
     n_power_iter: Option<usize>,
 ) -> RandomSvdResults<T>
 where
-    T: Float + Send + Sync + Sum + ComplexField + RealField + ToPrimitive,
+    T: ManifoldsFloat,
     StandardNormal: Distribution<T>,
 {
     let ncol = x.ncols();
@@ -134,7 +131,7 @@ pub fn sparse_randomised_svd<T>(
     n_power_iter: Option<usize>,
 ) -> RandomSvdResults<T>
 where
-    T: Into<T> + ComplexField + Float + FromPrimitive + ToPrimitive + Send + Sync,
+    T: Into<T> + ManifoldsFloat,
 {
     let (n, m) = matrix.shape;
     let os = oversampling.unwrap_or(10);
@@ -180,7 +177,7 @@ where
                     let x_row = &x_flat[j * ncols..(j + 1) * ncols];
 
                     for col in 0..ncols {
-                        y_row[col] = y_row[col] + a_val * x_row[col];
+                        y_row[col] += a_val * x_row[col];
                     }
                 }
             });
@@ -274,7 +271,7 @@ where
 /// Dot product of the two vectors
 fn dot<T>(a: &[T], b: &[T]) -> T
 where
-    T: Float + Send + Sync + Sum + SimdDistance,
+    T: ManifoldsFloat,
 {
     assert_same_len!(a, b);
     T::dot_simd(a, b)
@@ -291,7 +288,7 @@ where
 /// Normalised dot product of the vector `v`
 fn norm<T>(v: &[T]) -> T
 where
-    T: Float + Send + Sync + Sum + SimdDistance,
+    T: ManifoldsFloat,
 {
     dot(v, v).sqrt()
 }
@@ -303,10 +300,10 @@ where
 /// * `v` - Mutable reference of the vector to normalise
 fn normalise<T>(v: &mut [T])
 where
-    T: Float + Send + Sync + Sum + SimdDistance,
+    T: ManifoldsFloat,
 {
     let n = norm(v);
-    v.par_iter_mut().for_each(|x| *x = *x / n);
+    v.par_iter_mut().for_each(|x| *x /= n);
 }
 
 /// Helper function to calculate eigenvalues
@@ -321,7 +318,7 @@ where
 /// Tuple of `(eigenvectors, eigenvalues)`
 fn tridiag_eig<T>(alpha: &[T], beta: &[T]) -> (Vec<T::Real>, Mat<T>)
 where
-    T: ComplexField + Copy + RealField,
+    T: ManifoldsFloat,
 {
     let n = alpha.len();
     let mut t = Mat::<T>::zeros(n, n);
@@ -362,7 +359,7 @@ pub fn compute_smallest_eigenpairs_lanczos<T>(
     seed: u64,
 ) -> (Vec<f32>, Vec<Vec<f32>>)
 where
-    T: Clone + Default + Sync + Add + PartialEq + Mul + Float + ComplexField,
+    T: ManifoldsFloat,
 {
     let n = matrix.shape.0;
     let n_iter = (n_components * 2 + 10).max(n_components).min(n);
@@ -490,7 +487,7 @@ where
 /// A vector of von Neumann entropies for each power.
 pub fn landmark_von_neumann_entropy<T>(operator: &CompressedSparseData<T>, t_max: usize) -> Vec<T>
 where
-    T: ComplexField + RealField + Float + std::iter::Sum + FromPrimitive,
+    T: ManifoldsFloat,
 {
     let (n, m) = operator.shape;
 
@@ -527,7 +524,7 @@ where
         }
 
         for (vt, &v) in eigenvalues_t.iter_mut().zip(&eigenvalues) {
-            *vt = *vt * v;
+            *vt *= v;
         }
     }
 

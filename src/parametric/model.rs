@@ -149,13 +149,13 @@ impl UmapMlpConfig {
 /// ### Fields
 ///
 /// * `model` - The trained model
-pub struct TrainedUmapModel<'a, B: Backend, T> {
+pub struct TrainedUmapModel<B: Backend, T> {
     model: UmapMlp<B>,
-    device: &'a B::Device,
+    device: B::Device,
     _phantom: PhantomData<T>,
 }
 
-impl<'a, B: Backend, T> TrainedUmapModel<'a, B, T>
+impl<B: Backend, T> TrainedUmapModel<B, T>
 where
     T: Element + Float + FromPrimitive,
 {
@@ -168,7 +168,7 @@ where
     /// ### Returns
     ///
     /// Initialised self
-    pub fn new(model: UmapMlp<B>, device: &'a B::Device) -> Self {
+    pub fn new(model: UmapMlp<B>, device: B::Device) -> Self {
         Self {
             model,
             device,
@@ -195,7 +195,7 @@ where
 
         let input = Tensor::<B, 2>::from_data(
             TensorData::new(data_flat, [n_samples, n_features]),
-            self.device,
+            &self.device,
         );
 
         let embeddings = self.model.forward(input);
