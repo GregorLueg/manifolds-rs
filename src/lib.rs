@@ -1625,25 +1625,23 @@ where
 
 #[cfg(feature = "parametric")]
 /// Stores the parameters for parametric UMAP via neural nets
-///
-/// * `n_dim` - How many dimensions to return
-/// * `k` - Number of neighbours
-/// * `ann_type` - Which of the possible approximate nearest neighbour searches
-///   to use. Defaults to `"hnsw"`.
-/// * `hidden_layers` - Vector of usizes for the hidden layers in the MLP.
-/// * `nn_params` - Nearest neighbour parameters.
-/// * `umap_graph_params` - The graph parameters for the generation of the
-///   graph structure.
-/// * `train_param` - Train parameters for the neural network.
 #[derive(Debug, Clone)]
 pub struct ParametricUmapParams<T> {
-    n_dim: usize,
-    k: usize,
-    ann_type: String,
-    hidden_layers: Vec<usize>,
-    nn_params: NearestNeighbourParams<T>,
-    umap_graph_params: UmapGraphParams<T>,
-    train_param: TrainParametricParams<T>,
+    /// How many dimensions to return
+    pub n_dim: usize,
+    /// Number of neighbours
+    pub k: usize,
+    /// Which of the possible approximate nearest neighbour searches to use.
+    /// Defaults to `"hnsw"`.
+    pub ann_type: String,
+    /// Vector of usizes for the hidden layers in the MLP.
+    pub hidden_layers: Vec<usize>,
+    /// Nearest neighbour parameters.
+    pub nn_params: NearestNeighbourParams<T>,
+    /// The graph parameters for the generation of the graph structure.
+    pub umap_graph_params: UmapGraphParams<T>,
+    /// Train parameters for the neural network.
+    pub train_param: TrainParametricParams<T>,
 }
 
 #[cfg(feature = "parametric")]

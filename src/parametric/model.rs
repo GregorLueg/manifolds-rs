@@ -145,13 +145,12 @@ impl UmapMlpConfig {
 ///////////////////
 
 /// TrainedUmapModel
-///
-/// ### Fields
-///
-/// * `model` - The trained model
 pub struct TrainedUmapModel<B: Backend, T> {
-    model: UmapMlp<B>,
+    /// The trained model
+    pub model: UmapMlp<B>,
+    /// Device on which the tensor reside
     device: B::Device,
+    /// Phantomdata for types for compiling
     _phantom: PhantomData<T>,
 }
 
