@@ -1,5 +1,18 @@
 # News
 
+## 0.1.14
+
+**Features:**
+
+- Version bump to latest version of `ann-search-rs`
+
+## 0.1.13
+
+**Features:**
+
+- Faster parametric UMAP implementation with less data shuffling between CPU
+  and GPU.
+
 ## 0.1.12
 
 **Features:**
