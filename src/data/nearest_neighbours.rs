@@ -175,7 +175,7 @@ where
 ///
 /// ### Params
 ///
-/// * `s` - String defineing the ANN search to use
+/// * `s` - String defining the ANN search to use
 ///
 /// ### Return
 ///
@@ -183,10 +183,11 @@ where
 pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
     match s.to_lowercase().as_str() {
         "annoy" => Some(AnnSearch::Annoy),
-        "hnsw" => Some(AnnSearch::Hnsw),
-        "nndescent" => Some(AnnSearch::NNDescent),
         "balltree" => Some(AnnSearch::BallTree),
         "exhaustive" => Some(AnnSearch::Exhaustive),
+        "hnsw" => Some(AnnSearch::Hnsw),
+        "ivf" => Some(AnnSearch::Ivf),
+        "nndescent" => Some(AnnSearch::NNDescent),
         _ => None,
     }
 }
