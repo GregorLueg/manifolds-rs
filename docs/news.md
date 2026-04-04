@@ -1,5 +1,11 @@
 # News
 
+## 0.1.15
+
+**Features:**
+
+- Fix: IVF approximate nearest neighbour search can actually be used now.
+
 ## 0.1.14
 
 **Features:**
