@@ -1,5 +1,11 @@
 # News
 
+## 0.2.0
+
+**Features:**
+
+- GPU-accelerated kNN searches available.
+
 ## 0.1.15
 
 **Features:**
