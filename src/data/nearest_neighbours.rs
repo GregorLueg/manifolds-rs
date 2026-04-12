@@ -10,6 +10,10 @@ use num_traits::Float;
 use rayon::prelude::*;
 use std::default::Default;
 
+/////////////
+// Helpers //
+/////////////
+
 /// Which search algorithm to use for the approximate nearest neighbour search
 /// Default is set to Hnsw
 #[derive(Default)]
@@ -191,6 +195,10 @@ pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
         _ => None,
     }
 }
+
+//////////
+// Main //
+//////////
 
 /// Run the approximate nearest neighbour search prior to UMAP
 ///

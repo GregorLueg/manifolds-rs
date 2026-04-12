@@ -27,6 +27,13 @@ use thousands::*;
 #[cfg(feature = "parametric")]
 use burn::tensor::{backend::AutodiffBackend, Element};
 
+#[cfg(feature = "gpu")]
+use ann_search_rs::gpu::nndescent_gpu::NNDescentGpu;
+#[cfg(feature = "gpu")]
+use ann_search_rs::gpu::traits_gpu::AnnSearchGpuFloat;
+#[cfg(feature = "gpu")]
+use cubecl::prelude::*;
+
 use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
@@ -43,13 +50,12 @@ use crate::utils::diffusions::*;
 use crate::utils::potentials::compute_potential_distances;
 use crate::utils::sparse_ops::matrix_power;
 
-#[cfg(feature = "fft_tsne")]
-use crate::utils::fft::FftwFloat;
-
 #[cfg(feature = "parametric")]
 use crate::parametric::model::*;
 #[cfg(feature = "parametric")]
 use crate::parametric::parametric_train::*;
+#[cfg(feature = "fft_tsne")]
+use crate::utils::fft::FftwFloat;
 
 ///////////
 // Types //
@@ -170,7 +176,7 @@ where
     /// * `n_dim` - How many dimensions to return. Default `2`.
     /// * `k` - How many neighbours to consider. Default `15`.
     /// * `min_dist` - Minimum distance between the data points. Defaults to
-    ///   `0.1`.
+    ///   `0.5`.
     /// * `spread` - Spread paramter. Defaults to `1.0`.
     ///
     /// ### Returns
@@ -184,7 +190,7 @@ where
     ) -> Self {
         let n_dim = n_dim.unwrap_or(2);
         let k = k.unwrap_or(15);
-        let min_dist = min_dist.unwrap_or(T::from_f64(0.1).unwrap());
+        let min_dist = min_dist.unwrap_or(T::from_f64(0.5).unwrap());
         let spread = spread.unwrap_or(T::from_f64(1.0).unwrap());
 
         Self {
@@ -1912,4 +1918,354 @@ where
     );
 
     (embd, trained_model)
+}
+
+/////////
+// GPU //
+/////////
+
+/// UMAP parameters for GPU-accelerated nearest neighbour search
+#[cfg(feature = "gpu")]
+#[derive(Debug, Clone)]
+pub struct UmapParamsGpu<T> {
+    /// How many dimensions to return
+    pub n_dim: usize,
+    /// Number of neighbours
+    pub k: usize,
+    /// Which optimiser to use. Defaults to `"adam_parallel"`.
+    pub optimiser: String,
+    /// Which GPU nearest neighbour search to use. One of `"exhaustive_gpu"`,
+    /// `"ivf_gpu"` or `"nndescent_gpu"`. Defaults to `"ivf_gpu"`.
+    pub ann_type: String,
+    /// Which embedding initialisation to use. Defaults to spectral clustering.
+    pub initialisation: String,
+    /// Optional initialisation range
+    pub init_range: Option<T>,
+    /// GPU nearest neighbour parameters
+    pub nn_params: NearestNeighbourParamsGpu<T>,
+    /// Parameters for UMAP graph generation
+    pub umap_graph_params: UmapGraphParams<T>,
+    /// Parameters for the UMAP optimiser
+    pub optim_params: UmapOptimParams<T>,
+    /// Use randomised SVD for PCA-based initialisation
+    pub randomised: bool,
+}
+
+#[cfg(feature = "gpu")]
+impl<T> UmapParamsGpu<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Generate new GPU UMAP parameters
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - How many dimensions to return. Default `2`.
+    /// * `k` - How many neighbours to consider. Default `15`.
+    /// * `optimiser` - Which optimiser to use. Default `"adam_parallel"`.
+    /// * `ann_type` - Which GPU ANN search to use. One of `"exhaustive_gpu"`,
+    ///   `"ivf_gpu"` or `"nndescent_gpu"`. Default `"ivf_gpu"`.
+    /// * `initialisation` - Embedding initialisation. Default `"spectral"`.
+    /// * `init_range` - Optional initialisation range.
+    /// * `nn_params` - GPU nearest neighbour parameters.
+    /// * `optim_params` - Optimiser parameters.
+    /// * `umap_graph_params` - UMAP graph generation parameters.
+    /// * `randomised` - Use randomised SVD for PCA init. Default `false`.
+    ///
+    /// ### Returns
+    ///
+    /// Configured `UmapParamsGpu` with sensible defaults.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        n_dim: Option<usize>,
+        k: Option<usize>,
+        optimiser: Option<String>,
+        ann_type: Option<String>,
+        initialisation: Option<String>,
+        init_range: Option<T>,
+        nn_params: Option<NearestNeighbourParamsGpu<T>>,
+        optim_params: Option<UmapOptimParams<T>>,
+        umap_graph_params: Option<UmapGraphParams<T>>,
+        randomised: Option<bool>,
+    ) -> Self {
+        Self {
+            n_dim: n_dim.unwrap_or(2),
+            k: k.unwrap_or(15),
+            optimiser: optimiser.unwrap_or("adam_parallel".to_string()),
+            ann_type: ann_type.unwrap_or("ivf_gpu".to_string()),
+            initialisation: initialisation.unwrap_or("spectral".to_string()),
+            init_range,
+            nn_params: nn_params.unwrap_or_default(),
+            optim_params: optim_params.unwrap_or_default(),
+            umap_graph_params: umap_graph_params.unwrap_or_default(),
+            randomised: randomised.unwrap_or(false),
+        }
+    }
+
+    /// Default 2D parameters for GPU UMAP
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - Number of dimensions. Default `2`.
+    /// * `k` - Number of neighbours. Default `15`.
+    /// * `min_dist` - Minimum distance. Default `0.5`.
+    /// * `spread` - Spread parameter. Default `1.0`.
+    ///
+    /// ### Returns
+    ///
+    /// Sensible defaults for 2D visualisation with GPU kNN search.
+    pub fn default_2d(
+        n_dim: Option<usize>,
+        k: Option<usize>,
+        min_dist: Option<T>,
+        spread: Option<T>,
+    ) -> Self {
+        let min_dist = min_dist.unwrap_or(T::from_f64(0.5).unwrap());
+        let spread = spread.unwrap_or(T::from_f64(1.0).unwrap());
+
+        Self {
+            n_dim: n_dim.unwrap_or(2),
+            k: k.unwrap_or(15),
+            optimiser: "adam_parallel".into(),
+            ann_type: "ivf_gpu".into(),
+            initialisation: "spectral".into(),
+            init_range: None,
+            nn_params: NearestNeighbourParamsGpu::default(),
+            optim_params: UmapOptimParams::from_min_dist_spread(
+                min_dist, spread, None, None, None, None, None, None, None,
+            ),
+            umap_graph_params: UmapGraphParams::default(),
+            randomised: false,
+        }
+    }
+}
+
+/// Construct the UMAP graph using GPU-accelerated nearest neighbour search
+///
+/// Identical to `construct_umap_graph` except the kNN search runs on a GPU
+/// device via `run_ann_search_gpu`. All downstream graph construction
+/// (smooth kNN distances, symmetrisation, edge filtering) remains on CPU.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples x features)
+/// * `precomputed_knn` - Optional precomputed kNN (indices, distances)
+///   excluding self.
+/// * `k` - Number of nearest neighbours.
+/// * `ann_type` - GPU ANN method: `"exhaustive_gpu"`, `"ivf_gpu"` or
+///   `"nndescent_gpu"`.
+/// * `umap_params` - UMAP graph parameters (bandwidth, local_connectivity,
+///   mix_weight).
+/// * `nn_params` - GPU nearest neighbour search parameters.
+/// * `n_epochs` - Number of optimisation epochs (used for edge filtering).
+/// * `device` - The GPU device to use.
+/// * `seed` - Random seed.
+/// * `verbose` - Controls verbosity.
+///
+/// ### Returns
+///
+/// Tuple of (graph, knn_indices, knn_dist).
+#[cfg(feature = "gpu")]
+#[allow(clippy::too_many_arguments)]
+pub fn construct_umap_graph_gpu<T, R>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    k: usize,
+    ann_type: String,
+    umap_params: &UmapGraphParams<T>,
+    nn_params: &NearestNeighbourParamsGpu<T>,
+    n_epochs: usize,
+    device: R::Device,
+    seed: usize,
+    verbose: bool,
+) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
+where
+    T: ManifoldsFloat + AnnSearchGpuFloat,
+    R: Runtime,
+    NNDescentGpu<T, R>: NNDescentQuery<T>,
+{
+    let (knn_indices, knn_dist) = match precomputed_knn {
+        Some((indices, distances)) => {
+            if verbose {
+                println!("Using precomputed kNN graph...");
+            }
+            (indices, distances)
+        }
+        None => {
+            if verbose {
+                println!("Running GPU nearest neighbour search using {}...", ann_type);
+            }
+            let start_knn = Instant::now();
+            let result =
+                run_ann_search_gpu::<T, R>(data, k, ann_type, nn_params, device, seed, verbose);
+            if verbose {
+                println!("GPU kNN search done in: {:.2?}.", start_knn.elapsed());
+            }
+            result
+        }
+    };
+
+    if verbose {
+        println!("Constructing fuzzy simplicial set...");
+    }
+
+    let start_graph = Instant::now();
+
+    let (sigma, rho) = smooth_knn_dist(
+        &knn_dist,
+        knn_dist[0].len(),
+        umap_params.local_connectivity,
+        umap_params.bandwidth,
+        64,
+    );
+
+    let graph = knn_to_coo(&knn_indices, &knn_dist, &sigma, &rho);
+    let graph = symmetrise_graph(graph, umap_params.mix_weight);
+    let graph = filter_weak_edges(graph, n_epochs, verbose);
+
+    if verbose {
+        println!(
+            "Finalised graph generation in {:.2?}.",
+            start_graph.elapsed()
+        );
+    }
+
+    (graph, knn_indices, knn_dist)
+}
+
+/// Run UMAP with GPU-accelerated nearest neighbour search
+///
+/// Identical to `umap` except the kNN graph is constructed on the GPU.
+/// Embedding initialisation and optimisation remain on the CPU (the parallel
+/// Adam optimiser is already extremely fast for the 2D embedding updates).
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples x features)
+/// * `precomputed_knn` - Optional precomputed kNN (indices, distances)
+///   excluding self.
+/// * `umap_params` - GPU UMAP parameters.
+/// * `device` - The GPU device to use.
+/// * `seed` - Random seed.
+/// * `verbose` - Controls verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
+/// `n_dim` and inner vectors have length `n_samples`.
+#[cfg(feature = "gpu")]
+pub fn umap_gpu<T, R>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    umap_params: &UmapParamsGpu<T>,
+    device: R::Device,
+    seed: usize,
+    verbose: bool,
+) -> Vec<Vec<T>>
+where
+    T: ManifoldsFloat + AnnSearchGpuFloat,
+    R: Runtime,
+    StandardNormal: Distribution<T>,
+    NNDescentGpu<T, R>: NNDescentQuery<T>,
+{
+    let init_type = parse_initilisation(
+        &umap_params.initialisation,
+        umap_params.randomised,
+        umap_params.init_range,
+    )
+    .unwrap_or(EmbdInit::RandomInit { range: None });
+    let optimiser = parse_umap_optimiser(&umap_params.optimiser).unwrap_or_default();
+
+    if verbose {
+        println!(
+            "Running umap (GPU kNN) with alpha: {:.2?} and beta: {:.2?}",
+            umap_params.optim_params.a, umap_params.optim_params.b
+        );
+    }
+
+    let (graph, _, _) = construct_umap_graph_gpu::<T, R>(
+        data,
+        precomputed_knn,
+        umap_params.k,
+        umap_params.ann_type.clone(),
+        &umap_params.umap_graph_params,
+        &umap_params.nn_params,
+        umap_params.optim_params.n_epochs,
+        device,
+        seed,
+        verbose,
+    );
+
+    if verbose {
+        println!(
+            "Initialising embedding via {} layout...",
+            umap_params.initialisation
+        );
+    }
+
+    let start_layout = Instant::now();
+
+    let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data);
+
+    let graph_adj = coo_to_adjacency_list(&graph);
+
+    if verbose {
+        println!(
+            "Optimising embedding via {} ({} epochs) on {} edges...",
+            match optimiser {
+                UmapOptimiser::Adam => "Adam",
+                UmapOptimiser::Sgd => "SGD",
+                UmapOptimiser::AdamParallel => "Adam (multi-threaded)",
+            },
+            umap_params.optim_params.n_epochs,
+            graph.col_indices.len().separate_with_underscores()
+        );
+    }
+
+    match optimiser {
+        UmapOptimiser::Adam => optimise_embedding_adam(
+            &mut embd,
+            &graph_adj,
+            &umap_params.optim_params,
+            seed as u64,
+            verbose,
+        ),
+        UmapOptimiser::Sgd => {
+            optimise_embedding_sgd(
+                &mut embd,
+                &graph_adj,
+                &umap_params.optim_params,
+                seed as u64,
+                verbose,
+            );
+        }
+        UmapOptimiser::AdamParallel => {
+            optimise_embedding_adam_parallel(
+                &mut embd,
+                &graph_adj,
+                &umap_params.optim_params,
+                seed as u64,
+                verbose,
+            );
+        }
+    }
+
+    if verbose {
+        println!(
+            "Initialised and optimised embedding in: {:.2?}.",
+            start_layout.elapsed()
+        );
+        println!("UMAP (GPU) complete!");
+    }
+
+    let n_samples = embd.len();
+    let mut transposed = vec![vec![T::zero(); n_samples]; umap_params.n_dim];
+
+    for sample_idx in 0..n_samples {
+        for dim_idx in 0..umap_params.n_dim {
+            transposed[dim_idx][sample_idx] = embd[sample_idx][dim_idx];
+        }
+    }
+
+    transposed
 }

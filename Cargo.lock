@@ -4362,6 +4362,7 @@ dependencies = [
  "ann-search-rs",
  "approx",
  "burn",
+ "cubecl 0.9.0",
  "faer",
  "faer-traits",
  "fftw",

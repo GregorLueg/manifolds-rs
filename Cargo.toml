@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Gregor Lueg <gregorlueg@me.com>"]
 license = "MIT"
 repository = "https://github.com/GregorLueg/manifolds-rs"
-description = "Embedding methods implemented into Rust: (parametric) UMAP, tSNE, PHATE and PacMAP are now available."
+description = "Embedding methods implemented into Rust: (parametric) UMAP, tSNE, PHATE and PacMAP are supported."
 
 [lib]
 name = "manifolds_rs"
@@ -23,7 +23,7 @@ strip = true
 [features]
 parametric = ["burn"]
 fft_tsne = ["fftw"]
-gpu = ["ann-search-rs/gpu"]
+gpu = ["ann-search-rs/gpu", "cubecl"]
 
 [dependencies]
 burn = { version = "0.19.1", features = [
@@ -42,3 +42,4 @@ rayon = "1.11.0"
 rustc-hash = "2.1.1"
 thousands = "0.2.0"
 fftw = {version = "0.8.0", optional = true }
+cubecl = {version = "0.9.0", optional = true}
