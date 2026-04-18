@@ -1924,6 +1924,10 @@ where
 // GPU //
 /////////
 
+//////////////
+// UMAP GPU //
+//////////////
+
 /// UMAP parameters for GPU-accelerated nearest neighbour search
 #[cfg(feature = "gpu")]
 #[derive(Debug, Clone)]
@@ -2263,6 +2267,396 @@ where
 
     for sample_idx in 0..n_samples {
         for dim_idx in 0..umap_params.n_dim {
+            transposed[dim_idx][sample_idx] = embd[sample_idx][dim_idx];
+        }
+    }
+
+    transposed
+}
+
+//////////////
+// tSNE GPU //
+//////////////
+
+/// t-SNE parameters for GPU-accelerated nearest neighbour search
+#[cfg(feature = "gpu")]
+#[derive(Debug, Clone)]
+pub struct TsneParamsGpu<T> {
+    /// Number of output dimensions (typically 2)
+    pub n_dim: usize,
+    /// Perplexity parameter controlling neighbourhood size (typical: 5-50)
+    pub perplexity: T,
+    /// Which GPU ANN search to use. One of `"exhaustive_gpu"`, `"ivf_gpu"` or
+    /// `"nndescent_gpu"`. Defaults to `"ivf_gpu"`.
+    pub ann_type: String,
+    /// Embedding initialisation method: `"pca"`, `"random"`, or `"spectral"`
+    pub initialisation: String,
+    /// Optional initialisation range
+    pub init_range: Option<T>,
+    /// GPU nearest neighbour parameters
+    pub nn_params: NearestNeighbourParamsGpu<T>,
+    /// tSNE optimisation parameters
+    pub optim_params: TsneOptimParams<T>,
+    /// Use randomised SVD for PCA initialisation
+    pub randomised_init: bool,
+}
+
+#[cfg(feature = "gpu")]
+impl<T> TsneParamsGpu<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Create new GPU t-SNE parameters with sensible defaults
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - Number of output dimensions. Default: 2
+    /// * `perplexity` - Perplexity parameter. Default: 30.0
+    /// * `init_range` - Optional initialisation range
+    /// * `lr` - Learning rate. Default: 200.0
+    /// * `n_epochs` - Number of optimisation epochs. Default: 1000
+    /// * `ann_type` - GPU ANN algorithm: `"exhaustive_gpu"`, `"ivf_gpu"` or
+    ///   `"nndescent_gpu"`. Default: `"ivf_gpu"`
+    /// * `theta` - Barnes-Hut approximation parameter. Default: 0.5
+    /// * `n_interp_points` - Number of interpolation points for the FFT
+    ///   version of the optimiser.
+    ///
+    /// ### Returns
+    ///
+    /// `TsneParamsGpu` with sensible defaults for GPU-accelerated t-SNE
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        n_dim: Option<usize>,
+        perplexity: Option<T>,
+        init_range: Option<T>,
+        lr: Option<T>,
+        n_epochs: Option<usize>,
+        ann_type: Option<String>,
+        theta: Option<T>,
+        n_interp_points: Option<usize>,
+    ) -> Self {
+        let n_dim = n_dim.unwrap_or(2);
+        let perplexity = perplexity.unwrap_or_else(|| T::from_f64(30.0).unwrap());
+        let lr = lr.unwrap_or_else(|| T::from_f64(200.0).unwrap());
+        let n_epochs = n_epochs.unwrap_or(1000);
+        let ann_type = ann_type.unwrap_or_else(|| "ivf_gpu".to_string());
+        let theta = theta.unwrap_or_else(|| T::from_f64(0.5).unwrap());
+        let n_interp_points = n_interp_points.unwrap_or(3);
+
+        Self {
+            n_dim,
+            perplexity,
+            ann_type,
+            initialisation: "pca".to_string(),
+            init_range,
+            nn_params: NearestNeighbourParamsGpu::default(),
+            optim_params: TsneOptimParams {
+                n_epochs,
+                lr,
+                early_exag_iter: 250,
+                early_exag_factor: T::from_f64(12.0).unwrap(),
+                theta,
+                n_interp_points,
+            },
+            randomised_init: true,
+        }
+    }
+}
+
+/// Construct affinity graph for t-SNE using GPU-accelerated kNN search
+///
+/// Identical to `construct_tsne_graph` except the kNN runs on the GPU.
+/// Gaussian affinity computation and symmetrisation remain on CPU.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed kNN (indices, distances) excluding self
+/// * `perplexity` - Target perplexity
+/// * `ann_type` - GPU ANN method: `"exhaustive_gpu"`, `"ivf_gpu"` or
+///   `"nndescent_gpu"`
+/// * `nn_params` - GPU nearest neighbour search parameters
+/// * `device` - GPU device to use
+/// * `seed` - Random seed
+/// * `verbose` - Controls verbosity
+///
+/// ### Returns
+///
+/// Tuple of (symmetric affinity graph, knn_indices, knn_dist)
+#[cfg(feature = "gpu")]
+#[allow(clippy::too_many_arguments)]
+pub fn construct_tsne_graph_gpu<T, R>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    perplexity: T,
+    ann_type: String,
+    nn_params: &NearestNeighbourParamsGpu<T>,
+    device: R::Device,
+    seed: usize,
+    verbose: bool,
+) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
+where
+    T: ManifoldsFloat + AnnSearchGpuFloat,
+    R: Runtime,
+    NNDescentGpu<T, R>: NNDescentQuery<T>,
+{
+    let (knn_indices, knn_dist) = match precomputed_knn {
+        Some((indices, distances)) => {
+            if verbose {
+                println!("Using precomputed kNN graph...");
+            }
+            (indices, distances)
+        }
+        None => {
+            let k_float = perplexity * T::from_f64(3.0).unwrap();
+            let k = k_float.to_usize().unwrap().max(5).min(data.nrows() - 1);
+
+            if verbose {
+                println!("Running GPU kNN search (k={}) using {}...", k, ann_type);
+            }
+
+            let start_knn = Instant::now();
+            let result =
+                run_ann_search_gpu::<T, R>(data, k, ann_type, nn_params, device, seed, verbose);
+
+            if verbose {
+                println!("GPU kNN search done in: {:.2?}.", start_knn.elapsed());
+            }
+
+            result
+        }
+    };
+
+    if verbose {
+        println!("Computing Gaussian affinities and symmetrising...");
+    }
+
+    let start_graph = Instant::now();
+
+    let directed_graph = gaussian_knn_affinities(
+        &knn_indices,
+        &knn_dist,
+        perplexity,
+        T::from_f64(1e-5).unwrap(),
+        200,
+        nn_params.dist_metric == "euclidean",
+    );
+
+    let graph = symmetrise_affinities_tsne(directed_graph);
+
+    if verbose {
+        println!(
+            "Finalised graph generation in {:.2?}.",
+            start_graph.elapsed()
+        );
+    }
+
+    (graph, knn_indices, knn_dist)
+}
+
+/// Run t-SNE with GPU-accelerated nearest neighbour search (FFT build)
+///
+/// Identical to `tsne` except the kNN graph is constructed on the GPU.
+/// Optimisation (Barnes-Hut or FFT) stays on CPU.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Optional precomputed kNN, indices and distances
+///   excluding self
+/// * `params` - GPU t-SNE parameters
+/// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"` or
+///   `"fft"`
+/// * `device` - GPU device to use
+/// * `seed` - Random seed
+/// * `verbose` - Controls verbosity
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+#[cfg(all(feature = "gpu", feature = "fft_tsne"))]
+pub fn tsne_gpu<T, R>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &TsneParamsGpu<T>,
+    approx_type: &str,
+    device: R::Device,
+    seed: usize,
+    verbose: bool,
+) -> Vec<Vec<T>>
+where
+    T: ManifoldsFloat + AnnSearchGpuFloat + FftwFloat,
+    R: Runtime,
+    StandardNormal: Distribution<T>,
+    NNDescentGpu<T, R>: NNDescentQuery<T>,
+{
+    assert!(
+        params.n_dim == 2,
+        "At the moment, this tSNE implementation only supports n_dim = 2"
+    );
+
+    let (graph, _, _) = construct_tsne_graph_gpu::<T, R>(
+        data,
+        precomputed_knn,
+        params.perplexity,
+        params.ann_type.clone(),
+        &params.nn_params,
+        device,
+        seed,
+        verbose,
+    );
+
+    if verbose {
+        println!("Initialising embedding via {}...", &params.initialisation);
+    }
+
+    let init_type = parse_initilisation(
+        &params.initialisation,
+        params.randomised_init,
+        params.init_range,
+    )
+    .unwrap_or(EmbdInit::PcaInit {
+        randomised: true,
+        range: Some(T::from_f64(1e-2).unwrap()),
+    });
+
+    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
+
+    let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
+
+    let start_optim = Instant::now();
+    match tsne_approx {
+        TsneOpt::BarnesHut => {
+            if verbose {
+                println!(
+                    "Optimising via Barnes-Hut t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, verbose);
+        }
+        TsneOpt::Fft => {
+            if verbose {
+                println!(
+                    "Optimising via FFT Interpolation-based t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft_tsne(&mut embd, &params.optim_params, &graph, verbose);
+        }
+    }
+
+    if verbose {
+        println!("Optimisation complete in {:.2?}.", start_optim.elapsed());
+    }
+
+    let n_samples = embd.len();
+    let mut transposed = vec![vec![T::zero(); n_samples]; params.n_dim];
+
+    for sample_idx in 0..n_samples {
+        for dim_idx in 0..params.n_dim {
+            transposed[dim_idx][sample_idx] = embd[sample_idx][dim_idx];
+        }
+    }
+
+    transposed
+}
+
+/// Run t-SNE with GPU-accelerated nearest neighbour search (non-FFT build)
+///
+/// Identical to `tsne` except the kNN graph is constructed on the GPU.
+/// Barnes-Hut optimisation stays on CPU. Calling with `approx_type = "fft"`
+/// panics; recompile with the `fft_tsne` feature for FFT support.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Optional precomputed kNN, indices and distances
+///   excluding self
+/// * `params` - GPU t-SNE parameters
+/// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"`
+/// * `device` - GPU device to use
+/// * `seed` - Random seed
+/// * `verbose` - Controls verbosity
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+#[cfg(all(feature = "gpu", not(feature = "fft_tsne")))]
+pub fn tsne_gpu<T, R>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &TsneParamsGpu<T>,
+    approx_type: &str,
+    device: R::Device,
+    seed: usize,
+    verbose: bool,
+) -> Vec<Vec<T>>
+where
+    T: ManifoldsFloat + AnnSearchGpuFloat,
+    R: Runtime,
+    StandardNormal: Distribution<T>,
+    NNDescentGpu<T, R>: NNDescentQuery<T>,
+{
+    assert!(
+        params.n_dim == 2,
+        "At the moment, this tSNE implementation only supports n_dim = 2"
+    );
+
+    let (graph, _, _) = construct_tsne_graph_gpu::<T, R>(
+        data,
+        precomputed_knn,
+        params.perplexity,
+        params.ann_type.clone(),
+        &params.nn_params,
+        device,
+        seed,
+        verbose,
+    );
+
+    if verbose {
+        println!("Initialising embedding via {}...", &params.initialisation);
+    }
+
+    let init_type = parse_initilisation(
+        &params.initialisation,
+        params.randomised_init,
+        params.init_range,
+    )
+    .unwrap_or(EmbdInit::PcaInit {
+        randomised: false,
+        range: Some(T::from_f64(1e-2).unwrap()),
+    });
+
+    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
+
+    let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
+
+    let start_optim = Instant::now();
+    match tsne_approx {
+        TsneOpt::BarnesHut => {
+            if verbose {
+                println!(
+                    "Optimising via Barnes-Hut t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, verbose);
+        }
+        TsneOpt::Fft => {
+            panic!("FFT-accelerated t-SNE not available. Recompile with 'fft_tsne' feature or use 'barnes_hut' approximation.");
+        }
+    }
+
+    if verbose {
+        println!("Optimisation complete in {:.2?}.", start_optim.elapsed());
+    }
+
+    let n_samples = embd.len();
+    let mut transposed = vec![vec![T::zero(); n_samples]; params.n_dim];
+
+    for sample_idx in 0..n_samples {
+        for dim_idx in 0..params.n_dim {
             transposed[dim_idx][sample_idx] = embd[sample_idx][dim_idx];
         }
     }

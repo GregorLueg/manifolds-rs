@@ -18,8 +18,10 @@ use std::default::Default;
 /// Default is set to Hnsw
 #[derive(Default)]
 pub enum AnnSearch {
-    /// HNSW
+    /// KmKnn
     #[default]
+    KmKnn,
+    /// HNSW
     Hnsw,
     /// NNDescent
     NNDescent,
@@ -122,7 +124,7 @@ impl<T> NearestNeighbourParams<T> {
         ef_budget: Option<usize>,
         // balltree
         bt_budget: T,
-        // ivf
+        // ivf / kmknn
         n_list: Option<usize>,
         n_probes: Option<usize>,
     ) -> Self {
@@ -191,6 +193,7 @@ pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
         "exhaustive" => Some(AnnSearch::Exhaustive),
         "hnsw" => Some(AnnSearch::Hnsw),
         "ivf" => Some(AnnSearch::Ivf),
+        "kmknn" => Some(AnnSearch::KmKnn),
         "nndescent" => Some(AnnSearch::NNDescent),
         _ => None,
     }
@@ -214,7 +217,7 @@ pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
 ///
 /// ### Returns
 ///
-/// `(knn_indices, knn_dist)` including self.
+/// `(knn_indices, knn_dist)` excluding self.
 pub fn run_ann_search<T>(
     data: MatRef<T>,
     k: usize,
@@ -235,7 +238,7 @@ where
             let index =
                 build_annoy_index(data, params_nn.dist_metric.clone(), params_nn.n_tree, seed);
 
-            query_annoy_index(data, &index, k + 1, params_nn.search_budget, true, verbose)
+            query_annoy_self(&index, k + 1, params_nn.search_budget, true, verbose)
         }
         AnnSearch::Hnsw => {
             let index = build_hnsw_index(
@@ -247,7 +250,7 @@ where
                 verbose,
             );
 
-            query_hnsw_index(data, &index, k + 1, params_nn.ef_search, true, verbose)
+            query_hnsw_self(&index, k + 1, params_nn.ef_search, true, verbose)
         }
         AnnSearch::NNDescent => {
             let index = build_nndescent_index(
@@ -263,19 +266,19 @@ where
                 verbose,
             );
 
-            query_nndescent_index(data, &index, k + 1, params_nn.ef_budget, true, verbose)
+            query_nndescent_self(&index, k + 1, params_nn.ef_budget, true, verbose)
         }
         AnnSearch::BallTree => {
             let index = build_balltree_index(data, params_nn.dist_metric.clone(), seed);
 
             let budget = (data.nrows() as f32 * params_nn.bt_budget.to_f32().unwrap()) as usize;
 
-            query_balltree_index(data, &index, k + 1, Some(budget), true, verbose)
+            query_balltree_self(&index, k + 1, Some(budget), true, verbose)
         }
         AnnSearch::Exhaustive => {
             let index = build_exhaustive_index(data, &params_nn.dist_metric);
 
-            query_exhaustive_index(data, &index, k + 1, true, verbose)
+            query_exhaustive_self(&index, k + 1, true, verbose)
         }
         AnnSearch::Ivf => {
             let index = build_ivf_index(
@@ -288,6 +291,18 @@ where
             );
 
             query_ivf_self(&index, k + 1, params_nn.n_probes, true, verbose)
+        }
+        AnnSearch::KmKnn => {
+            let index = build_kmknn_index(
+                data,
+                &params_nn.dist_metric,
+                params_nn.n_list,
+                None,
+                seed,
+                verbose,
+            );
+
+            query_kmknn_self(&index, k + 1, true, verbose)
         }
     };
 

@@ -63,7 +63,6 @@ pub fn generate_swiss_roll(n_samples: usize, noise: f64, seed: u64) -> Mat<f64> 
 /// * n_samples - Number of samples
 /// * dim - Embedding dimensionality
 /// * n_clusters - Number of distinct clusters
-/// * cluster_std - Standard deviation within clusters
 /// * seed - Random seed for reproducibility
 ///
 /// ### Returns

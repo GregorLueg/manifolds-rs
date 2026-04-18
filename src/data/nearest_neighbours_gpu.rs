@@ -211,7 +211,7 @@ where
 {
     let ann_search = parse_ann_search_gpu(&ann_type).unwrap_or_default();
 
-    let (knn_indices, knn_dist) = match ann_search {
+    let (knn_indices_raw, knn_dist) = match ann_search {
         AnnSearchGpu::ExhaustiveGpu => {
             let index = build_exhaustive_index_gpu::<T, R>(data, &params_nn.dist_metric, device);
 
@@ -259,16 +259,19 @@ where
 
     let knn_dist = knn_dist.unwrap();
 
-    // remove self (first element) from both indices and distances
-    let knn_indices: Vec<Vec<usize>> = knn_indices
+    // remove self from both indices and distances in a single pass
+    let (knn_indices, knn_dist): (Vec<Vec<usize>>, Vec<Vec<T>>) = knn_indices_raw
         .into_par_iter()
-        .map(|mut v| v.drain(1..).collect())
-        .collect();
-
-    let knn_dist: Vec<Vec<T>> = knn_dist
-        .into_par_iter()
-        .map(|mut v| v.drain(1..).collect())
-        .collect();
+        .zip(knn_dist.into_par_iter())
+        .enumerate()
+        .map(|(i, (idx, dist))| {
+            idx.into_iter()
+                .zip(dist)
+                .filter(|(j, _)| *j != i)
+                .take(k)
+                .unzip()
+        })
+        .unzip();
 
     (knn_indices, knn_dist)
 }
