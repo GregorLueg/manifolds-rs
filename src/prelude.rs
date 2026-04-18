@@ -22,5 +22,7 @@ pub use crate::utils::math::landmark_von_neumann_entropy;
 pub use crate::utils::potentials::calculate_potential;
 pub use crate::utils::traits::ManifoldsFloat;
 
+#[cfg(feature = "gpu")]
+pub use crate::data::nearest_neighbours_gpu::*;
 #[cfg(feature = "parametric")]
 pub use crate::parametric::parametric_train::TrainParametricParams;

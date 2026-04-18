@@ -4,31 +4,34 @@ on:
     branches: [main, dev-branch]
   pull_request:
     branches: [main, dev-branch]
+
 jobs:
-  test:
-    name: Test on ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+  test-cpu:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --release --no-default-features
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+  test-gpu:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
 
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+    runs-on: ${{ matrix.os }}
 
-      - name: Run tests
-        run: cargo test --release --no-default-features && cargo test --release --all-features
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Vulkan (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers libgl1-mesa-dri
+          echo "WGPU_BACKEND=vulkan" >> $GITHUB_ENV
+      - run: cargo test --release --all-features

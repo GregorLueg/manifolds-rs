@@ -9,3 +9,6 @@ pub mod nearest_neighbours;
 pub mod pacmap_pairs;
 pub mod structures;
 pub mod synthetic;
+
+#[cfg(feature = "gpu")]
+pub mod nearest_neighbours_gpu;

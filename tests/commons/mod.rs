@@ -50,3 +50,17 @@ pub fn create_diagnostic_data(
     let data = Mat::from_fn(n_total, n_dim, |i, j| data_vec[i * n_dim + j]);
     (data, labels)
 }
+
+/// Transform the type to f32
+///
+/// ### Params
+///
+/// * `input` - The original matrix as `f64`
+///
+/// ### Returns
+///
+/// The matrix as `f32`
+#[allow(unused)]
+pub fn mat_to_f32(input: Mat<f64>) -> Mat<f32> {
+    Mat::from_fn(input.nrows(), input.ncols(), |i, j| input[(i, j)] as f32)
+}
