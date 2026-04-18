@@ -10,11 +10,13 @@ implemented in Rust. Contains as for now:
 - **UMAP**
   - Has different optimisers: SGD (traditional), Adam and a parallelised
   version of Adam for very fast fitting.
+  - Optional GPU-accelerated kNN search via [`cubecl`](https://crates.io/crates/cubecl).
 - **Parametric UMAP** (optional feature)
 - **tSNE**
   - ***Barnes Hut tSNE*** (With a `O(n log n)` complexity).
   - ***Fast Fourier Transform-accelerated Interpolation-based t-SNE (Flt-SNE)***
   (optional feature; with a `O(n)` complexity for large datasets).
+  - Optional GPU-accelerated kNN search.
 - **PHATE**
 - **PaCMAP**
 
@@ -43,9 +45,17 @@ version of ADAM for increased optimisation speed.
 the FFT-accelerated version (optional).
 - **PHATE**: Implementation of Potential of Heat-diffusion for Affinity-based
 Trajectory Embedding with different landmark methods.
+- **GPU acceleration** (optional feature `gpu`): The most expensive part of
+UMAP and tSNE for large datasets is the nearest neighbour search. With the
+`gpu` feature enabled, kNN search runs on the GPU via
+[`cubecl`](https://crates.io/crates/cubecl), with backends for Vulkan, Metal,
+DirectX 12 (through wgpu) and CUDA. Graph construction and optimisation remain
+on CPU.
 - **Multiple ANN backends** via [`ann-search-rs`](https://crates.io/crates/ann-search-rs):
   - *Exhaustive* - If you want precise results and have a small data set in
     which the approximate nearest neighbour index building is actually slower.
+  - *KmKnn* - An exact nearest neighbour search algorithm, leveraging k-means
+    clustering under the hood for speed. If you need exact results.
   - *BallTree* - A small, fast index for smaller data sets with lower
     dimensions.
   - *Annoy (Approximate Nearest Neighbours Oh Yeah)* - Good for medium low-
@@ -55,6 +65,10 @@ Trajectory Embedding with different landmark methods.
   - *HNSW (Hierarchical Navigable Small World)* - good for (very) larger
     datasets with higher dimensionality.
   - *IVF (inversted file index)* - Another fast and optimised index.
+- **GPU ANN backends** (with `gpu` feature):
+  - *Exhaustive GPU* - Brute-force kNN on the GPU; deterministic and accurate.
+  - *IVF GPU* - Inverted-file index on the GPU; good default for larger data.
+  - *NNDescent GPU* - CAGRA-style graph construction on the GPU.
 - **Distance metrics**:
   - Euclidean
   - Cosine
@@ -96,10 +110,27 @@ If you want to enable the FFT-accelerated version of tSNE, please use:
 manifolds-rs = { version = "*", features = [ "fft_tsne" ] }
 ```
 
+If you want to enable GPU-accelerated kNN search, please use:
+
+```toml
+[dependencies]
+manifolds-rs = { version = "*", features = [ "gpu" ] }
+```
+
+Feature flags can be combined, e.g. `features = [ "gpu", "fft_tsne" ]`.
+
 ## Notes
 
 Please use version `0.1.3` and higher. These ones are not extensively tested
 against real data.
+
+Note on GPU support: kNN runs on GPU through `wgpu` (Vulkan, Metal, DX12) or
+CUDA via `cubecl`. Computations on the GPU side are performed in `f32`; this
+is a limitation of WGSL (the wgpu shader language) which has no `f64`, and
+also reflects the fact that `f64` throughput on consumer GPUs is typically
+1/32 to 1/64 of `f32`. If you need double precision, stick to the CPU path.
+GPU results are not bit-reproducible across runs (parallel reductions do not
+have a fixed accumulation order), but structural quality is consistent.
 
 ## Usage
 
@@ -216,6 +247,80 @@ let embedding = umap(
     false,
 );
 ```
+
+### GPU-Accelerated UMAP and tSNE (requires `gpu` feature)
+
+With the `gpu` feature, the nearest neighbour search runs on the GPU while
+graph construction and optimisation stay on CPU. This is typically the
+bottleneck for larger datasets (say, 50k+ samples).
+
+```rust
+use manifolds_rs::prelude::*;
+use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+
+// Generate synthetic clustered data (use f32 for GPU compatibility)
+let (data, _) = generate_clustered_data(
+    10_000,  // n_samples
+    50,      // dimensionality
+    5,       // n_clusters
+    42,      // seed
+);
+
+// Configure GPU UMAP parameters
+let params = UmapParamsGpu::default_2d(
+    Some(2),     // n_dim
+    Some(15),    // k
+    Some(0.1),   // min_dist
+    Some(1.0),   // spread
+);
+
+// Run GPU UMAP. ann_type defaults to "ivf_gpu"; alternatives are
+// "exhaustive_gpu" (deterministic, brute force) and "nndescent_gpu".
+let device = WgpuDevice::default();
+let embedding = umap_gpu::<f32, WgpuRuntime>(
+    data.as_ref(),
+    None,        // precomputed kNN
+    &params,
+    device,
+    42,          // seed
+    true,        // verbose
+);
+```
+
+GPU t-SNE works analogously:
+
+```rust
+use manifolds_rs::prelude::*;
+use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+
+let (data, _) = generate_clustered_data(10_000, 50, 5, 42);
+
+let params = TsneParamsGpu::new(
+    Some(2),                           // n_dim
+    Some(30.0),                        // perplexity
+    Some(1e-4),                        // init_range
+    Some(200.0),                       // learning rate
+    Some(1000),                        // n_epochs
+    Some("ivf_gpu".to_string()),       // ann_type
+    Some(0.5),                         // theta
+    Some(3),                           // n_interp_points
+);
+
+let device = WgpuDevice::default();
+let embedding = tsne_gpu::<f32, WgpuRuntime>(
+    data.as_ref(),
+    None,
+    &params,
+    "bh",        // "bh" or "fft" (fft requires fft_tsne feature)
+    device,
+    42,
+    true,
+);
+```
+
+To use CUDA instead of wgpu, swap `WgpuRuntime`/`WgpuDevice` for
+`CudaRuntime`/`CudaDevice` from `cubecl::cuda`. On Linux CI, Vulkan via
+`mesa-vulkan-drivers` (lavapipe) is the simplest path for headless testing.
 
 ### Parametric UMAP Example (requires `parametric` feature)
 
