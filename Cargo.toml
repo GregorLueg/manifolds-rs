@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Gregor Lueg <gregorlueg@me.com>"]
 license = "MIT"
 repository = "https://github.com/GregorLueg/manifolds-rs"
-description = "Embedding methods implemented in Rust: (parametric) UMAP, tSNE, PHATE, Diffusion Map and PacMAP. Clustering methods include EVoC."
+description = "Embedding methods implemented in Rust: (parametric) UMAP, tSNE, PHATE, Diffusion Map and PacMAP."
 
 [lib]
 name = "manifolds_rs"
