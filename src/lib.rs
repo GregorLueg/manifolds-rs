@@ -1854,35 +1854,6 @@ where
         None => {
             let kernel_norm = apply_anisotropic_normalisation(&kernel, dm_params.alpha_norm);
             let (p_sym, sqrt_degrees) = build_symmetric_diffusion_operator(&kernel_norm);
-
-            // debug
-            let n = p_sym.shape().0;
-            let mut comp = vec![usize::MAX; n];
-            let mut n_comp = 0;
-            for start in 0..n {
-                if comp[start] != usize::MAX {
-                    continue;
-                }
-                let mut stack = vec![start];
-                while let Some(i) = stack.pop() {
-                    if comp[i] != usize::MAX {
-                        continue;
-                    }
-                    comp[i] = n_comp;
-                    let s = p_sym.indptr[i];
-                    let e = p_sym.indptr[i + 1];
-                    for idx in s..e {
-                        let j = p_sym.indices[idx];
-                        if comp[j] == usize::MAX && p_sym.data[idx].to_f64().unwrap().abs() > 1e-12
-                        {
-                            stack.push(j);
-                        }
-                    }
-                }
-                n_comp += 1;
-            }
-            eprintln!("Connected components: {}", n_comp);
-
             Ok(DiffusionMapsOperator::Full {
                 p_sym,
                 sqrt_degrees,
@@ -1985,9 +1956,7 @@ where
                         println!("Finding optimal t (t_max={})...", t_max);
                     }
                     let entropy = landmark_von_neumann_entropy(&p_sym, t_max);
-                    find_knee_point(&entropy);
-
-                    1
+                    find_knee_point(&entropy)
                 }
                 PhateTime::Fixed(t) => t,
             };
@@ -2001,20 +1970,6 @@ where
             let start_eig = Instant::now();
             let n_ask = (dm_params.n_dim + 5).min(sqrt_degrees.len() - 1);
             let (evals, evecs) = compute_largest_eigenpairs_lanczos(&p_sym, n_ask, seed as u64)?;
-
-            eprintln!("Top {} evals: {:?}", evals.len(), evals);
-            for c in 1..=dm_params.n_dim {
-                let col: Vec<f32> = (0..evecs.len()).map(|i| evecs[i][c]).collect();
-                let mn = col.iter().cloned().fold(f32::INFINITY, f32::min);
-                let mx = col.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                eprintln!("evec[{}] min={:.4e} max={:.4e}", c, mn, mx);
-            }
-            let (sd_min, sd_max) = sqrt_degrees
-                .iter()
-                .fold((f64::INFINITY, 0.0f64), |(a, b), &x| {
-                    (a.min(x.to_f64().unwrap()), b.max(x.to_f64().unwrap()))
-                });
-            eprintln!("sqrt_degrees min={:.4e} max={:.4e}", sd_min, sd_max);
 
             if verbose {
                 println!("Eigendecomposition done in {:.2?}.", start_eig.elapsed());
@@ -2048,9 +2003,7 @@ where
                     if verbose {
                         println!("Finding optimal t on landmarks (t_max={})...", t_max);
                     }
-                    landmarks.find_optimal_t(t_max);
-
-                    1
+                    landmarks.find_optimal_t(t_max)
                 }
                 PhateTime::Fixed(t) => t,
             };

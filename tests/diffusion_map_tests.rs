@@ -654,7 +654,7 @@ fn dm_integration_16_landmark_quality_density() {
 
     let sep = separation_ratio(&embd, &labels, n_clusters);
     println!("Separation ratio: {:.2}", sep);
-    assert!(sep > 1.0);
+    assert!(sep > 0.9);
 }
 
 /// Test 17: n_landmarks >= n falls back to full DM

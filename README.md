@@ -19,6 +19,11 @@ implemented in Rust. Contains as for now:
   - Optional GPU-accelerated kNN search.
 - **PHATE**
 - **PaCMAP**
+- **Diffusion Maps**
+  - Classical diffusion maps (Coifman & Lafon, 2006) with anisotropic
+  (alpha) normalisation for density correction.
+  - Optional landmark-based approximation with Nystroem extension for larger
+  datasets.
 
 ## Description
 
@@ -33,7 +38,9 @@ Moreover, the `crate` also provides via the Burn DL framework optionally
 [parametric UMAP](https://arxiv.org/abs/2009.12981) that can be optionally be
 used via the prospective feature flag. Since release `0.1.8`, we also have
 [PHATE](https://pmc.ncbi.nlm.nih.gov/articles/PMC7073148/). With `0.1.9`,
-[PaCMAP](https://arxiv.org/abs/2012.04456) has been also implemented.
+[PaCMAP](https://arxiv.org/abs/2012.04456) has been also implemented. More
+recently, classical [diffusion maps](https://www.sciencedirect.com/science/article/pii/S1063520306000546)
+have been added as well.
 Changelog can be found [here](https://github.com/GregorLueg/manifolds-rs/blob/main/docs/news.md))
 
 ## Features
@@ -45,6 +52,11 @@ version of ADAM for increased optimisation speed.
 the FFT-accelerated version (optional).
 - **PHATE**: Implementation of Potential of Heat-diffusion for Affinity-based
 Trajectory Embedding with different landmark methods.
+- **Diffusion Maps**: Classical diffusion maps with anisotropic normalisation
+(alpha in [0, 1] controlling density correction from the normalised graph
+Laplacian to the Laplace-Beltrami operator), Von Neumann entropy-based
+diffusion time selection, and an optional landmark variant with Nystroem
+extension for larger datasets.
 - **GPU acceleration** (optional feature `gpu`): The most expensive part of
 UMAP and tSNE for large datasets is the nearest neighbour search. With the
 `gpu` feature enabled, kNN search runs on the GPU via
@@ -459,6 +471,54 @@ let embedding = pacmap(
 
 // embedding[0] contains x-coordinates
 // embedding[1] contains y-coordinates
+```
+
+### Diffusion Maps Example
+
+Classical diffusion maps embed the data via the top eigenvectors of a
+row-stochastic diffusion operator, optionally with anisotropic normalisation
+to correct for non-uniform sampling density. Setting `alpha_norm = 1.0`
+recovers the Laplace-Beltrami operator; `0.5` gives the Fokker-Planck
+operator; `0.0` gives the unnormalised graph Laplacian.
+
+```rust
+use manifolds_rs::prelude::*;
+
+// Generate synthetic clustered data
+let (data, _) = generate_clustered_data(
+    1000,  // n_samples
+    50,    // dimensionality
+    5,     // n_clusters
+    42,    // seed
+);
+
+// Configure diffusion maps parameters
+let params = DiffusionMapsParams::new(
+    Some(2),     // n_dim (output dimensions)
+    Some(5),     // k (number of neighbours)
+    None,        // ann_type (None = default "kmknn")
+    None,        // bandwidth_scale (None = default 1.0)
+    None,        // thresh (None = default 1e-4)
+    None,        // graph_symmetry (None = default "add")
+    None,        // alpha_norm (None = default 1.0, Laplace-Beltrami)
+    None,        // t_max (None = default)
+    None,        // t_custom (None = auto-select via VNE knee)
+    None,        // n_landmarks (None = full operator)
+    None,        // landmark_method (None = default "spectral")
+    None,        // n_svd
+);
+
+// Run diffusion maps
+let embedding = diffusion_maps(
+    data.as_ref(),
+    None,        // precomputed kNN (None = compute internally)
+    params,      // note: consumed by value, not borrowed
+    42,          // seed
+    true,        // verbose
+);
+
+// embedding[0] contains the first non-trivial diffusion component
+// embedding[1] contains the second non-trivial diffusion component
 ```
 
 ## Licence
