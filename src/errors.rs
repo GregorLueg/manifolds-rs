@@ -5,6 +5,7 @@ use thiserror::Error;
 /// Errors that can be returned by manifolds-rs
 #[derive(Debug, Error)]
 pub enum ManifoldsError {
+    // -- math errors --
     /// Error when perplexity is set to high
     #[error("perplexity ({perplexity}) must be strictly less than the kNN size ({k})")]
     PerplexityTooLarge {
@@ -16,6 +17,7 @@ pub enum ManifoldsError {
     /// Error for SVDs from faer
     #[error("The faer SVD failed - please verify the data")]
     FaerSvdError,
+    // -- perplexity (tSNE) --
     /// Error for Eigen decomposition from faer
     #[error("The faer Eigen decomposition failed - please verify the data")]
     FaerEigenError,

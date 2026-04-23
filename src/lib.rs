@@ -20,13 +20,14 @@ use ann_search_rs::cpu::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::cpu::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
 use ann_search_rs::utils::dist::parse_ann_dist;
 use faer::MatRef;
-use num_traits::ToPrimitive;
 use rand_distr::{Distribution, StandardNormal};
 use std::{default::Default, time::Instant};
 use thousands::*;
 
 #[cfg(feature = "parametric")]
 use burn::tensor::{backend::AutodiffBackend, Element};
+#[cfg(feature = "parametric")]
+use num_traits::ToPrimitive;
 
 #[cfg(feature = "gpu")]
 use ann_search_rs::gpu::nndescent_gpu::NNDescentGpu;
@@ -48,6 +49,7 @@ use crate::training::pacmap_optimiser::{
 use crate::training::tsne_optimiser::*;
 use crate::training::umap_optimisers::*;
 use crate::utils::diffusions::*;
+use crate::utils::math::compute_largest_eigenpairs_lanczos;
 use crate::utils::potentials::compute_potential_distances;
 use crate::utils::sparse_ops::matrix_power;
 
@@ -97,7 +99,7 @@ pub struct UmapParams<T> {
     /// Which optimiser to use. Defaults to `"adam_parallel"`.
     optimiser: String,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
-    /// `"hnsw"`, `"nndescent"`, `"annoy"` or `"balltree"`.
+    /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
     ann_type: String,
     /// Which embedding initialisation to use. Defaults to spectral clustering.
     initialisation: String,
@@ -159,7 +161,7 @@ where
         let n_dim = n_dim.unwrap_or(2);
         let k = k.unwrap_or(15);
         let optimiser = optimiser.unwrap_or("adam_parallel".to_string());
-        let ann_type = ann_type.unwrap_or("nndescent".to_string());
+        let ann_type = ann_type.unwrap_or("kmknn".to_string());
         let initialisation = initialisation.unwrap_or("spectral".to_string());
         let nn_params = nn_params.unwrap_or_default();
         let optim_params = optim_params.unwrap_or_default();
@@ -212,7 +214,7 @@ where
             n_dim,
             k,
             optimiser: "adam_parallel".into(),
-            ann_type: "nndescent".into(),
+            ann_type: "kmknn".into(),
             initialisation: "spectral".into(),
             init_range: None,
             nn_params: NearestNeighbourParams::default(),
@@ -471,7 +473,7 @@ pub struct TsneParams<T> {
     /// Perplexity parameter controlling neighbourhood size (typical: 5-50)
     pub perplexity: T,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
-    /// `"hnsw"`, `"nndescent"`, `"annoy"` or `"balltree"`.
+    /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
     pub ann_type: String,
     /// Embedding initialisation method: `"pca"`, `"random"`, or `"spectral"`
     pub initialisation: String,
@@ -524,7 +526,7 @@ where
         let perplexity = perplexity.unwrap_or_else(|| T::from_f64(30.0).unwrap());
         let lr = lr.unwrap_or_else(|| T::from_f64(200.0).unwrap());
         let n_epochs = n_epochs.unwrap_or(1000);
-        let ann_type = ann_type.unwrap_or_else(|| "nndescent".to_string());
+        let ann_type = ann_type.unwrap_or_else(|| "kmknn".to_string());
         let theta = theta.unwrap_or_else(|| T::from_f64(0.5).unwrap());
         let n_interp_points = n_interp_points.unwrap_or(3);
 
@@ -930,7 +932,7 @@ pub struct PhateParams<T> {
     /// Number of neighbours to use
     pub k: usize,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
-    /// `"hnsw"`, `"nndescent"`, `"annoy"` or `"balltree"`.
+    /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"`, or `"balltree"`.
     pub ann_type: String,
     /// Nearest neighbour search parameters to use
     pub ann_params: NearestNeighbourParams<T>,
@@ -1017,7 +1019,7 @@ where
             n_dim: n_dim.unwrap_or(2),
             // knn
             k: k.unwrap_or(5),
-            ann_type: ann_type.unwrap_or_else(|| "nndescent".to_string()),
+            ann_type: ann_type.unwrap_or_else(|| "kmknn".to_string()),
             ann_params: NearestNeighbourParams::default(),
             // diffusion
             diffusion_params: phate_diffusion_params,
@@ -1392,7 +1394,7 @@ pub struct PacmapParams<T> {
     /// 15 since PaCMAP is less sensitive to k).
     pub k: usize,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
-    /// `"hnsw"`, `"nndescent"`, `"annoy"` or `"balltree"`.
+    /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
     pub ann_type: String,
     /// Which optimiser to use. Options are `"adam"` and `"adam_parallel"`
     pub optimiser_type: String,
@@ -1469,7 +1471,7 @@ where
         Self {
             n_dim: n_dim.unwrap_or(2),
             k,
-            ann_type: ann_type.unwrap_or("nndescent".to_string()),
+            ann_type: ann_type.unwrap_or("kmknn".to_string()),
             optimiser_type: optimiser_type.unwrap_or("adam_parallel".to_string()),
             n_mid_near: n_mid_near.unwrap_or(2),
             n_further: n_further.unwrap_or(2),
@@ -1644,6 +1646,445 @@ where
         }
     }
 
+    Ok(transposed)
+}
+
+////////////////////
+// Diffusion maps //
+////////////////////
+
+/// Parameters for classical diffusion maps (Coifman & Lafon, 2006).
+#[derive(Debug, Clone)]
+pub struct DiffusionMapsParams<T> {
+    /// Output embedding dimensionality (default: 2)
+    pub n_dim: usize,
+    /// Number of nearest neighbours used to build the graph
+    pub k: usize,
+    /// ANN algorithm name (see `NearestNeighbourParams`)
+    pub ann_type: String,
+    /// Nearest neighbour search parameters
+    pub ann_params: NearestNeighbourParams<T>,
+    /// Multiplicative factor applied to the adaptive kernel bandwidth
+    pub bandwidth_scale: T,
+    /// Sparsity threshold applied to kernel entries
+    pub thresh: T,
+    /// Graph symmetrisation: `"add"`, `"multiply"`, `"mnn"` or `"none"`
+    pub graph_symmetry: String,
+    /// Anisotropic density-correction exponent in [0, 1]. 0 gives the
+    /// normalised graph Laplacian, 0.5 the Fokker-Planck operator, 1 the
+    /// Laplace-Beltrami operator.
+    pub alpha_norm: T,
+    /// Diffusion time: `Auto` picks the VNE knee, `Fixed(t)` uses `t` directly.
+    pub t: PhateTime,
+    /// Landmark count. `None` or `>= n` runs full DM.
+    pub n_landmarks: Option<usize>,
+    /// `"random"`, `"spectral"` or `"density"`
+    pub landmark_method: String,
+    /// Components for spectral landmark selection (ignored otherwise)
+    pub n_svd: Option<usize>,
+}
+
+impl<T> DiffusionMapsParams<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Construct a new `DiffusionMapsParams`.
+    ///
+    /// All parameters are optional; `None` falls back to the stated defaults.
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - Output embedding dimensionality. Default 2.
+    /// * `k` - Number of nearest neighbours for graph construction. Default 5.
+    /// * `ann_type` - ANN algorithm: `"exhaustive"`, `"kmknn"`, `"balltree"`,
+    ///   `"annoy"`, `"hnsw"`, or `"nndescent"`. Default `"kmknn"`.
+    /// * `bandwidth_scale` - Multiplicative factor on the adaptive kernel
+    ///   bandwidth. Default 1.0.
+    /// * `thresh` - Kernel entries below this value are set to zero. Default
+    ///   1e-4.
+    /// * `graph_symmetry` - Symmetrisation method: `"add"`, `"multiply"`,
+    ///   `"mnn"` or `"none"`. Default `"add"`.
+    /// * `alpha_norm` - Anisotropic normalisation exponent in [0, 1]. Default
+    ///   1.0.
+    /// * `t_max` - Maximum diffusion steps for VNE-based optimal t. Default
+    ///   100.
+    /// * `t_custom` - If provided, fixes t to this value instead of
+    ///   auto-detecting.
+    /// * `n_landmarks` - Number of landmarks. `None` or `>= n` runs full DM.
+    /// * `landmark_method` - `"random"`, `"spectral"`, or `"density"`. Default
+    ///   `"spectral"`.
+    /// * `n_svd` - SVD components for spectral landmark selection. Ignored
+    ///   otherwise.
+    ///
+    /// ### Returns
+    ///
+    /// Initialised `DiffusionMapsParams`
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        n_dim: Option<usize>,
+        k: Option<usize>,
+        ann_type: Option<String>,
+        bandwidth_scale: Option<T>,
+        thresh: Option<T>,
+        graph_symmetry: Option<String>,
+        alpha_norm: Option<T>,
+        t_max: Option<usize>,
+        t_custom: Option<usize>,
+        n_landmarks: Option<usize>,
+        landmark_method: Option<String>,
+        n_svd: Option<usize>,
+    ) -> Self {
+        let t_max = t_max.unwrap_or(PHATE_MAX_T);
+        let t = parse_phate_time(t_custom, t_max);
+
+        Self {
+            n_dim: n_dim.unwrap_or(2),
+            k: k.unwrap_or(5),
+            ann_type: ann_type.unwrap_or_else(|| "kmknn".to_string()),
+            ann_params: NearestNeighbourParams::default(),
+            bandwidth_scale: bandwidth_scale.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
+            thresh: thresh.unwrap_or_else(|| T::from_f64(1e-4).unwrap()),
+            graph_symmetry: graph_symmetry.unwrap_or_else(|| "add".to_string()),
+            alpha_norm: alpha_norm.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
+            t,
+            n_landmarks,
+            landmark_method: landmark_method.unwrap_or_else(|| "spectral".to_string()),
+            n_svd,
+        }
+    }
+}
+
+/// Full or landmark diffusion maps operator.
+///
+/// `Full` is used when no landmarks are requested or when the landmark count
+/// meets or exceeds the data size. `Landmark` delegates eigendecomposition and
+/// Nystroem extension to `DiffusionMapsLandmarks`.
+pub enum DiffusionMapsOperator<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Full N×N symmetric diffusion operator.
+    Full {
+        /// Symmetric diffusion operator P_sym = D^{-1/2} K D^{-1/2}
+        p_sym: CompressedSparseData<T>,
+        /// Square-root of node degrees; used to recover right eigenvectors
+        /// of the row-stochastic operator from the symmetric ones
+        sqrt_degrees: Vec<T>,
+    },
+    /// Landmark-based operator for large data sets.
+    Landmark {
+        /// Landmark operator ready for eigendecomposition and Nystroem extension
+        landmarks: DiffusionMapsLandmarks<T>,
+    },
+}
+
+/// Build the diffusion maps operator from raw data.
+///
+/// Runs kNN search, builds a Gaussian kernel via alpha-decay, applies
+/// anisotropic normalisation, then returns either a full or landmark operator
+/// depending on `dm_params.n_landmarks`. Falls back to full if
+/// `n_landmarks >= n`.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (N × features)
+/// * `k` - Number of nearest neighbours
+/// * `precomputed_knn` - Optional precomputed kNN; skips search if provided
+/// * `ann_type` - ANN algorithm name
+/// * `nn_params` - Nearest neighbour search parameters
+/// * `dm_params` - Diffusion maps parameters
+/// * `seed` - RNG seed
+/// * `verbose` - Print progress messages
+///
+/// ### Returns
+///
+/// `DiffusionMapsOperator` (full or landmark)
+#[allow(clippy::too_many_arguments)]
+pub fn construct_diffusion_maps_operator<T>(
+    data: MatRef<T>,
+    k: usize,
+    precomputed_knn: PreComputedKnn<T>,
+    ann_type: &str,
+    nn_params: &NearestNeighbourParams<T>,
+    dm_params: &DiffusionMapsParams<T>,
+    seed: usize,
+    verbose: bool,
+) -> Result<DiffusionMapsOperator<T>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let (knn_indices, knn_dist) = match precomputed_knn {
+        Some((indices, distances)) => {
+            if verbose {
+                println!("Using precomputed kNN graph...");
+            }
+            (indices, distances)
+        }
+        None => {
+            if verbose {
+                println!("Running ANN search using {}...", ann_type);
+            }
+            let start_knn = Instant::now();
+            let res = run_ann_search(data, k, ann_type.to_string(), nn_params, seed, verbose);
+            if verbose {
+                println!("kNN search done in {:.2?}.", start_knn.elapsed());
+            }
+            res
+        }
+    };
+
+    if verbose {
+        println!("Building Gaussian kernel affinities");
+    }
+    let graph = phate_alpha_decay_affinities(
+        &knn_indices,
+        &knn_dist,
+        dm_params.k,
+        Some(T::from_f64(2.0).unwrap()),
+        dm_params.bandwidth_scale,
+        dm_params.thresh,
+        &dm_params.graph_symmetry,
+        nn_params.dist_metric == "euclidean",
+    );
+    let kernel = coo_to_csr(&graph);
+
+    match dm_params.n_landmarks {
+        None => {
+            let kernel_norm = apply_anisotropic_normalisation(&kernel, dm_params.alpha_norm);
+            let (p_sym, sqrt_degrees) = build_symmetric_diffusion_operator(&kernel_norm);
+
+            // debug
+            let n = p_sym.shape().0;
+            let mut comp = vec![usize::MAX; n];
+            let mut n_comp = 0;
+            for start in 0..n {
+                if comp[start] != usize::MAX {
+                    continue;
+                }
+                let mut stack = vec![start];
+                while let Some(i) = stack.pop() {
+                    if comp[i] != usize::MAX {
+                        continue;
+                    }
+                    comp[i] = n_comp;
+                    let s = p_sym.indptr[i];
+                    let e = p_sym.indptr[i + 1];
+                    for idx in s..e {
+                        let j = p_sym.indices[idx];
+                        if comp[j] == usize::MAX && p_sym.data[idx].to_f64().unwrap().abs() > 1e-12
+                        {
+                            stack.push(j);
+                        }
+                    }
+                }
+                n_comp += 1;
+            }
+            eprintln!("Connected components: {}", n_comp);
+
+            Ok(DiffusionMapsOperator::Full {
+                p_sym,
+                sqrt_degrees,
+            })
+        }
+        Some(n_landmarks) if n_landmarks >= data.nrows() => {
+            let kernel_norm = apply_anisotropic_normalisation(&kernel, dm_params.alpha_norm);
+            let (p_sym, sqrt_degrees) = build_symmetric_diffusion_operator(&kernel_norm);
+            Ok(DiffusionMapsOperator::Full {
+                p_sym,
+                sqrt_degrees,
+            })
+        }
+        Some(n_landmarks) => {
+            if verbose {
+                println!(" Building {} landmarks...", n_landmarks);
+            }
+            let start_l = Instant::now();
+            let landmarks = DiffusionMapsLandmarks::build(
+                data,
+                &kernel,
+                n_landmarks,
+                &dm_params.landmark_method,
+                &nn_params.dist_metric,
+                dm_params.alpha_norm,
+                dm_params.k,
+                dm_params.bandwidth_scale,
+                dm_params.thresh,
+                &dm_params.graph_symmetry,
+                seed,
+                dm_params.n_svd,
+                verbose,
+            )?;
+            if verbose {
+                println!(" Landmarks built in {:.2?}.", start_l.elapsed());
+            }
+            Ok(DiffusionMapsOperator::Landmark { landmarks })
+        }
+    }
+}
+
+/// Run diffusion maps end-to-end.
+///
+/// 1. kNN graph on the raw data
+/// 2. Gaussian kernel via alpha-decay with decay = 2 (adaptive bandwidth)
+/// 3. Anisotropic (alpha) normalisation for density correction
+/// 4. Symmetric diffusion operator P_sym = D^{-1/2} K D^{-1/2}
+/// 5. Top (n_dim + 1) eigenpairs of P_sym via Lanczos
+/// 6. Drop the trivial eigenvalue (= 1) and scale each non-trivial eigenvector
+///    phi_k by lambda_k^t
+///
+/// With landmarks, steps 4–6 run on the L×L operator and are Nystroem-extended
+/// back to N points.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (N × features)
+/// * `precomputed_knn` - Optional precomputed kNN; skips search if provided.
+///   Must have been computed with k >= `dm_params.k`.
+/// * `dm_params` - Diffusion maps parameters
+/// * `seed` - RNG seed
+/// * `verbose` - Print progress messages
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`
+pub fn diffusion_maps<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    dm_params: DiffusionMapsParams<T>,
+    seed: usize,
+    verbose: bool,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let start_dm = Instant::now();
+
+    let op = construct_diffusion_maps_operator(
+        data,
+        dm_params.k,
+        precomputed_knn,
+        &dm_params.ann_type,
+        &dm_params.ann_params,
+        &dm_params,
+        seed,
+        verbose,
+    )?;
+
+    let embedding: Vec<Vec<T>> = match op {
+        DiffusionMapsOperator::Full {
+            p_sym,
+            sqrt_degrees,
+        } => {
+            let t = match dm_params.t {
+                PhateTime::Auto { t_max } => {
+                    if verbose {
+                        println!("Finding optimal t (t_max={})...", t_max);
+                    }
+                    let entropy = landmark_von_neumann_entropy(&p_sym, t_max);
+                    find_knee_point(&entropy);
+
+                    1
+                }
+                PhateTime::Fixed(t) => t,
+            };
+            if verbose {
+                println!("Using t = {}.", t);
+                println!(
+                    "Computing top {} eigenpairs of P_sym...",
+                    dm_params.n_dim + 1
+                );
+            }
+            let start_eig = Instant::now();
+            let n_ask = (dm_params.n_dim + 5).min(sqrt_degrees.len() - 1);
+            let (evals, evecs) = compute_largest_eigenpairs_lanczos(&p_sym, n_ask, seed as u64)?;
+
+            eprintln!("Top {} evals: {:?}", evals.len(), evals);
+            for c in 1..=dm_params.n_dim {
+                let col: Vec<f32> = (0..evecs.len()).map(|i| evecs[i][c]).collect();
+                let mn = col.iter().cloned().fold(f32::INFINITY, f32::min);
+                let mx = col.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                eprintln!("evec[{}] min={:.4e} max={:.4e}", c, mn, mx);
+            }
+            let (sd_min, sd_max) = sqrt_degrees
+                .iter()
+                .fold((f64::INFINITY, 0.0f64), |(a, b), &x| {
+                    (a.min(x.to_f64().unwrap()), b.max(x.to_f64().unwrap()))
+                });
+            eprintln!("sqrt_degrees min={:.4e} max={:.4e}", sd_min, sd_max);
+
+            if verbose {
+                println!("Eigendecomposition done in {:.2?}.", start_eig.elapsed());
+            }
+
+            let n = sqrt_degrees.len();
+            let mut embedding = vec![vec![T::zero(); dm_params.n_dim]; n];
+            for comp_idx in 1..=dm_params.n_dim {
+                let lambda = T::from_f32(evals[comp_idx]).unwrap();
+                let lambda_t = lambda.powi(t as i32);
+
+                let mut max_abs = 0.0f32;
+                let mut sign = 1.0f32;
+                for i in 0..n {
+                    let v = evecs[i][comp_idx];
+                    if v.abs() > max_abs {
+                        max_abs = v.abs();
+                        sign = if v >= 0.0 { 1.0 } else { -1.0 };
+                    }
+                }
+                for i in 0..n {
+                    let u = T::from_f32(evecs[i][comp_idx] * sign).unwrap();
+                    embedding[i][comp_idx - 1] = lambda_t * u / sqrt_degrees[i];
+                }
+            }
+            embedding
+        }
+        DiffusionMapsOperator::Landmark { landmarks } => {
+            let t = match dm_params.t {
+                PhateTime::Auto { t_max } => {
+                    if verbose {
+                        println!("Finding optimal t on landmarks (t_max={})...", t_max);
+                    }
+                    landmarks.find_optimal_t(t_max);
+
+                    1
+                }
+                PhateTime::Fixed(t) => t,
+            };
+            if verbose {
+                println!(
+                    "Using t = {}. Eigendecomposing {}x{} landmark operator...",
+                    t,
+                    landmarks.get_n_landmarks(),
+                    landmarks.get_n_landmarks()
+                );
+            }
+            let start_eig = Instant::now();
+            let (evals, evecs) = landmarks.eigendecompose(dm_params.n_dim, seed as u64)?;
+            if verbose {
+                println!("Eigendecomposition done in {:.2?}.", start_eig.elapsed());
+                println!("Nystroem-extending to full data...");
+            }
+            let (landmark_embedding, lambdas) =
+                landmarks.compute_landmark_embedding(&evals, &evecs, dm_params.n_dim, t);
+            landmarks.nystrom_extend(&landmark_embedding, &lambdas)
+        }
+    };
+
+    if verbose {
+        println!("Diffusion maps finished in {:.2?}.", start_dm.elapsed());
+    }
+
+    let n = embedding.len();
+    let mut transposed = vec![vec![T::zero(); n]; dm_params.n_dim];
+    for i in 0..n {
+        for d in 0..dm_params.n_dim {
+            transposed[d][i] = embedding[i][d];
+        }
+    }
     Ok(transposed)
 }
 

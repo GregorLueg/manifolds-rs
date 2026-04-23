@@ -372,7 +372,7 @@ where
     T: ManifoldsFloat,
 {
     let n = matrix.shape.0;
-    let n_iter = (n_components * 2 + 10).max(n_components).min(n);
+    let n_iter = (n_components * 4 + 30).min(n);
 
     let csr = match matrix.cs_type {
         CompressedSparseFormat::Csr => matrix.clone(),

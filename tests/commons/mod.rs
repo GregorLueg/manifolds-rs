@@ -26,13 +26,13 @@ pub fn create_diagnostic_data(
     let centres = [
         vec![0.0; n_dim],
         (0..n_dim)
-            .map(|i| if i == 0 { 20.0 } else { 0.0 })
+            .map(|i| if i == 0 { 5.0 } else { 0.0 })
             .collect::<Vec<_>>(),
         (0..n_dim)
-            .map(|i| if i == 1 { 20.0 } else { 0.0 })
+            .map(|i| if i == 1 { 5.0 } else { 0.0 })
             .collect::<Vec<_>>(),
         (0..n_dim)
-            .map(|i| if i == 2 { 20.0 } else { 0.0 })
+            .map(|i| if i == 2 { 5.0 } else { 0.0 })
             .collect::<Vec<_>>(),
         vec![10.0; n_dim],
     ];
@@ -40,7 +40,7 @@ pub fn create_diagnostic_data(
     for (cluster_id, centre) in centres.iter().enumerate() {
         for _ in 0..n_per_cluster {
             for dim in 0..n_dim {
-                let noise: f64 = rng.random::<f64>() * 0.5 - 0.25;
+                let noise: f64 = rng.random::<f64>() * 3.0 - 1.5;
                 data_vec.push(centre[dim] + noise);
             }
             labels.push(cluster_id);
