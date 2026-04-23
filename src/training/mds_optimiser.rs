@@ -150,7 +150,7 @@ pub fn classic_mds<T>(
     n_components: usize,
     randomised: bool,
     seed: usize,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
     StandardNormal: Distribution<T>,
@@ -189,7 +189,7 @@ where
     let mut embedding = vec![vec![T::zero(); n_components]; n];
 
     if randomised {
-        let rsvd = randomised_svd(d_sq.as_ref(), n_components, seed, None, None);
+        let rsvd = randomised_svd(d_sq.as_ref(), n_components, seed, None, None)?;
         for i in 0..n {
             for k in 0..n_components {
                 let singular_val = rsvd.s[k];
@@ -212,7 +212,7 @@ where
         }
     }
 
-    embedding
+    Ok(embedding)
 }
 
 /// SGD-MDS
@@ -240,7 +240,7 @@ pub fn sgd_mds<T>(
     init: Option<Vec<T>>,
     seed: usize,
     verbose: bool,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
     StandardNormal: Distribution<T>,
@@ -274,7 +274,7 @@ where
         }
     } else {
         // using classic MDS to initialise
-        let init_embedding = classic_mds(dist, n_dim, true, seed);
+        let init_embedding = classic_mds(dist, n_dim, true, seed)?;
         let flat: Vec<T> = init_embedding.into_iter().flatten().collect();
         let y_std = compute_std(&flat);
         if y_std > T::zero() {
@@ -400,7 +400,7 @@ where
         }
     }
 
-    embedding
+    Ok(embedding)
 }
 
 ///////////
@@ -424,7 +424,7 @@ mod test_mds {
 
         let mds_params = MdsOptimParams::new(distances.len(), true, None, None);
 
-        let embedding = sgd_mds(&distances, 2, &mds_params, None, 42, false);
+        let embedding = sgd_mds(&distances, 2, &mds_params, None, 42, false).unwrap();
 
         // Check shape
         assert_eq!(embedding.len(), 3);
@@ -461,7 +461,7 @@ mod test_mds {
 
         let mds_params = MdsOptimParams::new(distances.len(), true, None, None);
 
-        let embedding = sgd_mds(&distances, 2, &mds_params, None, 42, false);
+        let embedding = sgd_mds(&distances, 2, &mds_params, None, 42, false).unwrap();
 
         // Check all pairwise distances
         for i in 0..4 {
@@ -486,7 +486,7 @@ mod test_mds {
             vec![1.0, 1.0, 0.0],
         ];
 
-        let embedding = classic_mds(&distances, 2, true, 42);
+        let embedding = classic_mds(&distances, 2, true, 42).unwrap();
 
         // Check shape
         assert_eq!(embedding.len(), 3);

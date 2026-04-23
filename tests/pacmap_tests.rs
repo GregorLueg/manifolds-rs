@@ -211,7 +211,7 @@ fn pacmap_integration_05_output_shape() {
         None,
     );
 
-    let embd = pacmap(data.as_ref(), None, &params, 42, false);
+    let embd = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 5: Output Shape ===");
     println!("Output shape: [{}][{}]", embd.len(), embd[0].len());
@@ -225,7 +225,7 @@ fn pacmap_integration_06_all_finite() {
     let (data, _) = create_diagnostic_data(50, 10, 42);
 
     let params = PacmapParams::<f64>::default();
-    let embd = pacmap(data.as_ref(), None, &params, 42, false);
+    let embd = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 6: All Finite ===");
 
@@ -254,8 +254,8 @@ fn pacmap_integration_07_reproducibility() {
         None,
         None,
     );
-    let embd1 = pacmap(data.as_ref(), None, &params, 42, false);
-    let embd2 = pacmap(data.as_ref(), None, &params, 42, false);
+    let embd1 = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
+    let embd2 = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 7: Reproducibility ===");
 
@@ -278,8 +278,8 @@ fn pacmap_integration_08_different_seeds_differ() {
     let (data, _) = create_diagnostic_data(50, 10, 42);
 
     let params = PacmapParams::<f64>::default();
-    let embd1 = pacmap(data.as_ref(), None, &params, 42, false);
-    let embd2 = pacmap(data.as_ref(), None, &params, 123, false);
+    let embd1 = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
+    let embd2 = pacmap(data.as_ref(), None, &params, 123, false).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 8: Different Seeds ===");
 
@@ -327,7 +327,7 @@ fn pacmap_integration_09_cluster_separation() {
         )),
     );
 
-    let embd = pacmap(data.as_ref(), None, &params, 42, true);
+    let embd = pacmap(data.as_ref(), None, &params, 42, true).unwrap();
 
     let all_coords: Vec<f64> = embd.iter().flatten().copied().collect();
     let range = all_coords.iter().copied().fold(f64::NEG_INFINITY, f64::max)
@@ -380,8 +380,9 @@ fn pacmap_integration_10_precomputed_knn() {
         &params,
         42,
         false,
-    );
-    let embd_int = pacmap(data.as_ref(), None, &params, 42, false);
+    )
+    .unwrap();
+    let embd_int = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 10: Precomputed kNN ===");
 
@@ -430,8 +431,8 @@ fn pacmap_integration_11_sequential_parallel_identical() {
         None,
     );
 
-    let embd_seq = pacmap(data.as_ref(), None, &params_seq, 42, false);
-    let embd_par = pacmap(data.as_ref(), None, &params_par, 42, false);
+    let embd_seq = pacmap(data.as_ref(), None, &params_seq, 42, false).unwrap();
+    let embd_par = pacmap(data.as_ref(), None, &params_par, 42, false).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 11: Sequential vs Parallel ===");
 
@@ -510,7 +511,7 @@ fn pacmap_integration_13_pca_init_range() {
             parse_initilisation("random", true, Some(1e-4)).unwrap(),
         ),
     ] {
-        let embd = initialise_embedding(init_type, 2, 42, &dummy_graph, data.as_ref());
+        let embd = initialise_embedding(init_type, 2, 42, &dummy_graph, data.as_ref()).unwrap();
         let coords: Vec<f64> = embd.iter().flatten().copied().collect();
         let mean = coords.iter().sum::<f64>() / coords.len() as f64;
         let std =

@@ -152,7 +152,8 @@ fn tsne_gpu_integration_02_graph_construction() {
         device,
         42,
         false,
-    );
+    )
+    .unwrap();
 
     println!("\n=== GPU t-SNE DIAGNOSTIC 2: Graph Construction ===");
     println!("Graph has {} edges", graph.values.len());
@@ -199,7 +200,8 @@ fn tsne_gpu_integration_03_bh_quality() {
     );
 
     let embedding =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device, 42, false);
+        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device, 42, false)
+            .unwrap();
 
     assert!(embedding[0].iter().all(|x| x.is_finite()));
     assert!(embedding[1].iter().all(|x| x.is_finite()));
@@ -227,9 +229,11 @@ fn tsne_gpu_integration_04_reproducibility_structural() {
     );
 
     let device1 = WgpuDevice::default();
-    let e1 = tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device1, 42, false);
+    let e1 = tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device1, 42, false)
+        .unwrap();
     let device2 = WgpuDevice::default();
-    let e2 = tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device2, 42, false);
+    let e2 = tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device2, 42, false)
+        .unwrap();
 
     // GPU ops aren't bit-reproducible across runs; test structural consistency.
     let sep1 = compute_separation(&e1, &labels);
@@ -289,11 +293,13 @@ fn tsne_gpu_integration_05_precomputed_knn() {
         device_pre,
         42,
         false,
-    );
+    )
+    .unwrap();
 
     let device_int = WgpuDevice::default();
     let e_int =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device_int, 42, false);
+        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device_int, 42, false)
+            .unwrap();
 
     // Compare structural quality, not exact coords.
     let sep_pre = compute_separation(&e_pre, &labels);
@@ -331,7 +337,8 @@ fn tsne_gpu_integration_06_fft_quality() {
     );
 
     let embedding =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device, 42, false);
+        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device, 42, false)
+            .unwrap();
 
     assert!(embedding[0].iter().all(|x| x.is_finite()));
     assert!(embedding[1].iter().all(|x| x.is_finite()));
@@ -360,9 +367,11 @@ fn tsne_gpu_integration_07_fft_reproducibility_structural() {
     );
 
     let device1 = WgpuDevice::default();
-    let e1 = tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device1, 123, false);
+    let e1 = tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device1, 123, false)
+        .unwrap();
     let device2 = WgpuDevice::default();
-    let e2 = tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device2, 123, false);
+    let e2 = tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device2, 123, false)
+        .unwrap();
 
     let sep1 = compute_separation(&e1, &labels);
     let sep2 = compute_separation(&e2, &labels);
@@ -396,10 +405,12 @@ fn tsne_gpu_integration_08_bh_vs_fft() {
 
     let device_bh = WgpuDevice::default();
     let e_bh =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device_bh, 42, false);
+        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device_bh, 42, false)
+            .unwrap();
     let device_fft = WgpuDevice::default();
     let e_fft =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device_fft, 42, false);
+        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device_fft, 42, false)
+            .unwrap();
 
     let sep_bh = compute_separation(&e_bh, &labels);
     let sep_fft = compute_separation(&e_fft, &labels);

@@ -126,7 +126,8 @@ fn tsne_integration_02_gaussian_affinities() {
         1e-5,
         200,
         true, // squared distances
-    );
+    )
+    .unwrap();
 
     let adj = graph_to_adj(&graph);
 
@@ -190,7 +191,8 @@ fn tsne_integration_03_symmetrisation() {
     let (knn_indices, knn_dist) =
         run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
 
-    let directed = gaussian_knn_affinities(&knn_indices, &knn_dist, perplexity, 1e-5, 200, true);
+    let directed =
+        gaussian_knn_affinities(&knn_indices, &knn_dist, perplexity, 1e-5, 200, true).unwrap();
     let symmetric = symmetrise_affinities_tsne(directed);
 
     println!("\n=== t-SNE DIAGNOSTIC 3: Symmetrisation ===");
@@ -398,14 +400,15 @@ fn tsne_integration_05_initialisation() {
         &nn_params,
         42,
         false,
-    );
+    )
+    .unwrap();
 
     println!("\n=== t-SNE DIAGNOSTIC 5: Initialisation ===");
 
     for init_name in &["pca", "random", "spectral"] {
         let range = Some(1e-4); // t-SNE standard
         let init_type = parse_initilisation(init_name, false, range).unwrap();
-        let embd = initialise_embedding(&init_type, 2, 42, &graph, data.as_ref());
+        let embd = initialise_embedding(&init_type, 2, 42, &graph, data.as_ref()).unwrap();
 
         println!("\n{} initialisation:", init_name);
 
@@ -459,7 +462,7 @@ fn tsne_integration_06_optimisation_quality() {
         Some(3),
     );
 
-    let embedding = tsne(data.as_ref(), None, &params, "bh", 42, true);
+    let embedding = tsne(data.as_ref(), None, &params, "bh", 42, true).unwrap();
 
     // Check finite
     let mut nan_count = 0;
@@ -567,8 +570,8 @@ fn tsne_integration_07_reproducibility() {
         Some(3),
     );
 
-    let embd1 = tsne(data.as_ref(), None, &params, "bh", 42, false);
-    let embd2 = tsne(data.as_ref(), None, &params, "bh", 42, false);
+    let embd1 = tsne(data.as_ref(), None, &params, "bh", 42, false).unwrap();
+    let embd2 = tsne(data.as_ref(), None, &params, "bh", 42, false).unwrap();
 
     let mut max_diff: f64 = 0.0;
     for i in 0..embd1[0].len() {
@@ -606,8 +609,8 @@ fn tsne_integration_08_different_seeds() {
         Some(3),
     );
 
-    let embd1 = tsne(data.as_ref(), None, &params, "bh", 42, false);
-    let embd2 = tsne(data.as_ref(), None, &params, "bh", 123, false);
+    let embd1 = tsne(data.as_ref(), None, &params, "bh", 42, false).unwrap();
+    let embd2 = tsne(data.as_ref(), None, &params, "bh", 123, false).unwrap();
 
     let mut max_diff: f64 = 0.0;
     for i in 0..embd1[0].len() {
@@ -648,7 +651,7 @@ fn tsne_integration_09_fft_optimisation_quality() {
         Some(3),
     );
 
-    let embedding = tsne(data.as_ref(), None, &params, "fft", 42, true);
+    let embedding = tsne(data.as_ref(), None, &params, "fft", 42, true).unwrap();
 
     // Check finite
     let mut nan_count = 0;
@@ -755,8 +758,8 @@ fn tsne_integration_10_fft_reproducibility() {
         Some(3),
     );
 
-    let embd1 = tsne(data.as_ref(), None, &params, "fft", 123, false);
-    let embd2 = tsne(data.as_ref(), None, &params, "fft", 123, false);
+    let embd1 = tsne(data.as_ref(), None, &params, "fft", 123, false).unwrap();
+    let embd2 = tsne(data.as_ref(), None, &params, "fft", 123, false).unwrap();
 
     let mut max_diff: f64 = 0.0;
     for i in 0..embd1[0].len() {
@@ -795,8 +798,8 @@ fn tsne_integration_11_fft_different_seeds() {
         Some(3),
     );
 
-    let embd1 = tsne(data.as_ref(), None, &params, "fft", 42, false);
-    let embd2 = tsne(data.as_ref(), None, &params, "fft", 123, false);
+    let embd1 = tsne(data.as_ref(), None, &params, "fft", 42, false).unwrap();
+    let embd2 = tsne(data.as_ref(), None, &params, "fft", 123, false).unwrap();
 
     let mut max_diff: f64 = 0.0;
     for i in 0..embd1[0].len() {
@@ -837,8 +840,8 @@ fn tsne_integration_12_bh_vs_fft_comparison() {
         Some(3),
     );
 
-    let embd_bh = tsne(data.as_ref(), None, &params, "bh", 42, false);
-    let embd_fft = tsne(data.as_ref(), None, &params, "fft", 42, false);
+    let embd_bh = tsne(data.as_ref(), None, &params, "bh", 42, false).unwrap();
+    let embd_fft = tsne(data.as_ref(), None, &params, "fft", 42, false).unwrap();
 
     // Helper to compute cluster separation
     let compute_separation = |embedding: &[Vec<f64>]| -> f64 {
@@ -945,10 +948,11 @@ fn tsne_integration_13_precomputed_knn() {
         "bh",
         42,
         false,
-    );
+    )
+    .unwrap();
 
     // Run t-SNE without precomputed kNN (internal computation)
-    let embedding_internal = tsne(data.as_ref(), None, &params, "bh", 42, false);
+    let embedding_internal = tsne(data.as_ref(), None, &params, "bh", 42, false).unwrap();
 
     // Compare results
     let mut max_diff: f64 = 0.0;

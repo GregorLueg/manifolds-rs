@@ -8,6 +8,7 @@
 #![warn(missing_docs)]
 
 pub mod data;
+pub mod errors;
 pub mod prelude;
 pub mod training;
 pub mod utils;
@@ -69,6 +70,19 @@ use crate::utils::fft::FftwFloat;
 /// * `1` - Should be the distances to the nearest neighbours excluding self
 pub type PreComputedKnn<T> = Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>;
 
+/// Result of the tSNE graph
+///
+/// ### Fields
+///
+/// * `0` - The coordinate list
+/// * `1` - The nearest neighbours
+/// * `2` - The distances to the nearest neighbours
+///
+/// ### Errors
+///
+/// Potential errors from the generation of the graph
+pub type TsneGraph<T> = Result<(CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>), ManifoldsError>;
+
 //////////
 // Umap //
 //////////
@@ -82,8 +96,8 @@ pub struct UmapParams<T> {
     k: usize,
     /// Which optimiser to use. Defaults to `"adam_parallel"`.
     optimiser: String,
-    /// Which of the possible approximate nearest neighbour searches to use.
-    /// Defaults to `"nndescent"`.
+    /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
+    /// `"hnsw"`, `"nndescent"`, `"annoy"` or `"balltree"`.
     ann_type: String,
     /// Which embedding initialisation to use. Defaults to spectral clustering.
     initialisation: String,
@@ -114,8 +128,9 @@ where
     /// * `n_dim` - How many dimensions to return. Default `2`.
     /// * `k` - How many neighbours to consider. Default `15`.
     /// * `optimiser` - Which optimiser to use. Default `"adam_parallel"`.
-    /// * `ann_type` - Which approximate nearest neighbour search algorithm
-    ///   to use. Defaults to `"nndescent"`.
+    /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
+    ///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
+    ///   provide a weird string, the function will default to `"kmknn"`
     /// * `initialisation` - Which initialisation of the embedding to use.
     ///   Defaults to `"spectral"`.
     /// * `nn_params` - Further nearest neighbour parameters.
@@ -220,8 +235,8 @@ where
 ///   distances excluding self.
 /// * `k` - Number of nearest neighbours (typically 15-50).
 /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
-///   `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you provide a
-///   weird string, the function will default to `"nndescent"`
+///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
+///   provide a weird string, the function will default to `"kmknn"`
 /// * `umap_params` - UMAP-specific parameters (bandwidth, local_connectivity,
 ///   mix_weight)
 /// * `nn_params` - Nearest neighbour parameters for nearest neighbour search.
@@ -332,7 +347,7 @@ pub fn umap<T>(
     umap_params: &UmapParams<T>,
     seed: usize,
     verbose: bool,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
@@ -376,7 +391,7 @@ where
 
     let start_layout = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data);
+    let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data)?;
 
     let graph_adj = coo_to_adjacency_list(&graph);
 
@@ -441,7 +456,7 @@ where
         }
     }
 
-    transposed
+    Ok(transposed)
 }
 
 //////////
@@ -455,8 +470,8 @@ pub struct TsneParams<T> {
     pub n_dim: usize,
     /// Perplexity parameter controlling neighbourhood size (typical: 5-50)
     pub perplexity: T,
-    /// Approximate nearest neighbour method: `"exhaustive"`, `"annoy"`,
-    /// `"balltree"`, `"hnsw"` or `"nndescent"`
+    /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
+    /// `"hnsw"`, `"nndescent"`, `"annoy"` or `"balltree"`.
     pub ann_type: String,
     /// Embedding initialisation method: `"pca"`, `"random"`, or `"spectral"`
     pub initialisation: String,
@@ -484,8 +499,9 @@ where
     ///   embedding between certain values.
     /// * `lr` - Learning rate. Default: 200.0
     /// * `n_epochs` - Number of optimization epochs. Default: 1000
-    /// * `ann_type` - ANN algorithm: `"exhaustive"`, `"balltree"`, `"annoy"`,
-    ///   `"hnsw"` or `"nndescent"`. Default: "nndescent"
+    /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
+    ///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
+    ///   provide a weird string, the function will default to `"kmknn"`
     /// * `theta` - Barnes-Hut approximation parameter. Default: 0.5
     /// * `n_interp_points` - Number of interpolation points for the FFT version
     ///   of the optimiser.
@@ -548,8 +564,9 @@ where
 ///   distances excluding self.
 /// * `perplexity` - Target perplexity (effective number of neighbours,
 ///   typical: 5-50)
-/// * `ann_type` - ANN algorithm: `"exhaustive"`, `"balltree"`, `"annoy"`,
-///   `"hnsw"` or `"nndescent"`. Default: "nndescent"
+/// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
+///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
+///   provide a weird string, the function will default to `"kmknn"`
 /// * `nn_params` - Nearest neighbour search parameters
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - Print progress information
@@ -574,7 +591,7 @@ pub fn construct_tsne_graph<T>(
     nn_params: &NearestNeighbourParams<T>,
     seed: usize,
     verbose: bool,
-) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
+) -> TsneGraph<T>
 where
     T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
@@ -619,7 +636,7 @@ where
         T::from_f64(1e-5).unwrap(),
         200,
         nn_params.dist_metric == "euclidean",
-    );
+    )?;
 
     let graph = symmetrise_affinities_tsne(directed_graph);
 
@@ -630,7 +647,7 @@ where
         );
     }
 
-    (graph, knn_indices, knn_dist)
+    Ok((graph, knn_indices, knn_dist))
 }
 
 /// Run t-SNE dimensionality reduction
@@ -686,7 +703,7 @@ pub fn tsne<T>(
     approx_type: &str,
     seed: usize,
     verbose: bool,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat + FftwFloat,
     HnswIndex<T>: HnswState<T>,
@@ -707,7 +724,7 @@ where
         &params.nn_params,
         seed,
         verbose,
-    );
+    )?;
 
     if verbose {
         println!("Initialising embedding via {}...", &params.initialisation);
@@ -724,7 +741,7 @@ where
         range: Some(T::from_f64(1e-2).unwrap()),
     });
 
-    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
+    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
 
     // parse the optimisation type
     let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
@@ -767,7 +784,7 @@ where
         }
     }
 
-    transposed
+    Ok(transposed)
 }
 
 /// Run t-SNE dimensionality reduction
@@ -823,7 +840,7 @@ pub fn tsne<T>(
     approx_type: &str,
     seed: usize,
     verbose: bool,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
@@ -844,7 +861,7 @@ where
         &params.nn_params,
         seed,
         verbose,
-    );
+    )?;
 
     // 2. initialise embedding
     if verbose {
@@ -861,7 +878,7 @@ where
         range: Some(T::from_f64(1e-2).unwrap()),
     });
 
-    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
+    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
 
     // parse the optimisation type
     let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
@@ -898,7 +915,7 @@ where
         }
     }
 
-    transposed
+    Ok(transposed)
 }
 
 ///////////
@@ -912,8 +929,8 @@ pub struct PhateParams<T> {
     pub n_dim: usize,
     /// Number of neighbours to use
     pub k: usize,
-    /// Approximate nearest neighbour method: `"exhaustive"`, `"annoy"`,
-    /// `"balltree"`, `"hnsw"` or `"nndescent"`
+    /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
+    /// `"hnsw"`, `"nndescent"`, `"annoy"` or `"balltree"`.
     pub ann_type: String,
     /// Nearest neighbour search parameters to use
     pub ann_params: NearestNeighbourParams<T>,
@@ -938,8 +955,8 @@ where
     /// * `n_dim` - Number of output dimensions (default: 2)
     /// * `k` - Number of nearest neighbours (default: 5)
     /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
-    ///   `"annoy"`, `"balltree"`, `"hnsw"` or `"nndescent"` (default:
-    ///   `"nndescent"`)
+    ///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
+    ///   provide a weird string, the function will default to `"kmknn"`
     /// * `decay` - Alpha decay parameter controlling kernel bandwidth (default:
     ///   40.0)
     /// * `bandwidth_scale` - Scaling factor for the kernel bandwidth (default:
@@ -1029,7 +1046,9 @@ where
 /// * `precomputed_knn` - Precomputed kNN indices and distances as
 ///   `Some((Vec<Vec<usize>>, Vec<Vec<T>>))`, or `None` to run search
 ///   internally. Indices and distances must exclude self.
-/// * `ann_type` - ANN algorithm: `"hnsw"` or `"nndescent"`
+/// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
+///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
+///   provide a weird string, the function will default to `"kmknn"`
 /// * `nn_params` - Nearest neighbour search parameters
 /// * `phate_params` - Full PHATE parameter struct (uses `k`, `decay`,
 ///   `bandwidth_scale`, `thresh`, `symmetrise`, `n_landmarks`,
@@ -1052,7 +1071,7 @@ pub fn construct_phate_diffusion<T>(
     phate_params: &PhateParams<T>,
     seed: usize,
     verbose: bool,
-) -> PhateDiffusion<T>
+) -> Result<PhateDiffusion<T>, ManifoldsError>
 where
     T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
@@ -1108,12 +1127,12 @@ where
     let diffusion_op = build_diffusion_operator(&affinity);
 
     match phate_params.diffusion_params.n_landmarks {
-        None => PhateDiffusion::Full {
+        None => Ok(PhateDiffusion::Full {
             operator: diffusion_op,
-        },
-        Some(n_landmarks) if n_landmarks >= data.nrows() => PhateDiffusion::Full {
+        }),
+        Some(n_landmarks) if n_landmarks >= data.nrows() => Ok(PhateDiffusion::Full {
             operator: diffusion_op,
-        },
+        }),
         Some(n_landmarks) => {
             if verbose {
                 println!(" Building {} landmarks...", n_landmarks);
@@ -1129,14 +1148,14 @@ where
                 seed,
                 Some(100),
                 verbose,
-            );
+            )?;
             if verbose {
                 println!(
                     " Landmarks generated in: {:.2?}.",
                     start_landmarks.elapsed()
                 );
             }
-            PhateDiffusion::Landmark { landmarks }
+            Ok(PhateDiffusion::Landmark { landmarks })
         }
     }
 }
@@ -1188,7 +1207,7 @@ pub fn phate<T>(
     phate_params: PhateParams<T>,
     seed: usize,
     verbose: bool,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
@@ -1206,7 +1225,7 @@ where
         &phate_params,
         seed,
         verbose,
-    );
+    )?;
 
     let start_t = Instant::now();
     let t = match phate_params.diffusion_params.t {
@@ -1256,7 +1275,7 @@ where
                 );
             }
 
-            match mds_method {
+            let res = match mds_method {
                 MdsMethod::ClassicMds => {
                     if verbose {
                         println!("Computing pairwise distances, running classic MDS...");
@@ -1278,7 +1297,9 @@ where
                         verbose,
                     )
                 }
-            }
+            }?;
+
+            res
         }
         PhateDiffusion::Landmark { landmarks } => {
             if verbose {
@@ -1329,7 +1350,7 @@ where
                     seed,
                     verbose,
                 ),
-            };
+            }?;
 
             if verbose {
                 println!("Interpolating to full N points via Nyström...");
@@ -1351,7 +1372,7 @@ where
         }
     }
 
-    transposed
+    Ok(transposed)
 }
 
 ////////////
@@ -1370,8 +1391,8 @@ pub struct PacmapParams<T> {
     /// Number of near neighbours. Default 10 (paper default; lower than UMAP's
     /// 15 since PaCMAP is less sensitive to k).
     pub k: usize,
-    /// Approximate nearest neighbour method: `"exhaustive"`, `"annoy"`,
-    /// `"balltree"`, `"hnsw"` or `"nndescent"`
+    /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
+    /// `"hnsw"`, `"nndescent"`, `"annoy"` or `"balltree"`.
     pub ann_type: String,
     /// Which optimiser to use. Options are `"adam"` and `"adam_parallel"`
     pub optimiser_type: String,
@@ -1408,7 +1429,8 @@ where
     ///   `mn_candidate_end` neighbours for in the k-nearest neighbour searches
     ///   generally speaking.
     /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
-    ///   `"annoy"`, `"balltree"`, `"hnsw"` or `"nndescent"`
+    ///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
+    ///   provide a weird string, the function will default to `"kmknn"`
     /// * `optimiser_type` - Which optimiser to use. Options are `"adam"` and
     ///   `"adam_parallel"`. Defaults to the parallel version.
     /// * `n_mid_near` - Mid-near pairs per point. Default 2.
@@ -1505,7 +1527,7 @@ pub fn pacmap<T>(
     params_pacmap: &PacmapParams<T>,
     seed: usize,
     verbose: bool,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
@@ -1592,7 +1614,7 @@ where
         seed as u64,
         &dummy_graph,
         data,
-    );
+    )?;
 
     let optimiser = parse_pacmap_optimiser(&params_pacmap.optimiser_type).unwrap_or_default();
 
@@ -1622,7 +1644,7 @@ where
         }
     }
 
-    transposed
+    Ok(transposed)
 }
 
 /////////////////////
@@ -1664,10 +1686,15 @@ where
     ///
     /// * `n_dim` - Number of embedding dimensions. Default `2`.
     /// * `k` - Number of nearest neighbours. Default `15`.
-    /// * `ann_type` - Approximate nearest neighbour algorithm. Default `"hnsw"`.
-    /// * `hidden_layers` - Hidden layer sizes for MLP. Default `vec![128, 128, 128]`.
-    /// * `nn_params` - Nearest neighbour parameters. Default uses sensible values.
-    /// * `umap_graph_params` - UMAP graph parameters. Default uses sensible values.
+    /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
+    ///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
+    ///   provide a weird string, the function will default to `"kmknn"`
+    /// * `hidden_layers` - Hidden layer sizes for MLP. Default
+    ///   `vec![128, 128, 128]`.
+    /// * `nn_params` - Nearest neighbour parameters. Default uses sensible
+    ///   values.
+    /// * `umap_graph_params` - UMAP graph parameters. Default uses sensible
+    ///   values.
     /// * `train_param` - Training parameters. Default uses sensible values.
     ///
     /// ### Returns
@@ -2165,7 +2192,7 @@ pub fn umap_gpu<T, R>(
     device: R::Device,
     seed: usize,
     verbose: bool,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat + AnnSearchGpuFloat,
     R: Runtime,
@@ -2209,7 +2236,7 @@ where
 
     let start_layout = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data);
+    let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data)?;
 
     let graph_adj = coo_to_adjacency_list(&graph);
 
@@ -2271,7 +2298,7 @@ where
         }
     }
 
-    transposed
+    Ok(transposed)
 }
 
 //////////////
@@ -2394,7 +2421,7 @@ pub fn construct_tsne_graph_gpu<T, R>(
     device: R::Device,
     seed: usize,
     verbose: bool,
-) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
+) -> TsneGraph<T>
 where
     T: ManifoldsFloat + AnnSearchGpuFloat,
     R: Runtime,
@@ -2440,7 +2467,7 @@ where
         T::from_f64(1e-5).unwrap(),
         200,
         nn_params.dist_metric == "euclidean",
-    );
+    )?;
 
     let graph = symmetrise_affinities_tsne(directed_graph);
 
@@ -2451,7 +2478,7 @@ where
         );
     }
 
-    (graph, knn_indices, knn_dist)
+    Ok((graph, knn_indices, knn_dist))
 }
 
 /// Run t-SNE with GPU-accelerated nearest neighbour search (FFT build)
@@ -2483,7 +2510,7 @@ pub fn tsne_gpu<T, R>(
     device: R::Device,
     seed: usize,
     verbose: bool,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat + AnnSearchGpuFloat + FftwFloat,
     R: Runtime,
@@ -2504,7 +2531,7 @@ where
         device,
         seed,
         verbose,
-    );
+    )?;
 
     if verbose {
         println!("Initialising embedding via {}...", &params.initialisation);
@@ -2520,7 +2547,7 @@ where
         range: Some(T::from_f64(1e-2).unwrap()),
     });
 
-    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
+    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
 
     let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
 
@@ -2559,7 +2586,7 @@ where
         }
     }
 
-    transposed
+    Ok(transposed)
 }
 
 /// Run t-SNE with GPU-accelerated nearest neighbour search (non-FFT build)

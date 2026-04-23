@@ -9,7 +9,7 @@ use rayon::prelude::*;
 
 use crate::assert_same_len;
 use crate::data::structures::*;
-use crate::utils::traits::*;
+use crate::prelude::*;
 
 ////////////////////
 // Randomised SVD //
@@ -59,7 +59,7 @@ pub fn randomised_svd<T>(
     seed: usize,
     oversampling: Option<usize>,
     n_power_iter: Option<usize>,
-) -> RandomSvdResults<T>
+) -> Result<RandomSvdResults<T>, ManifoldsError>
 where
     T: ManifoldsFloat,
     StandardNormal: Distribution<T>,
@@ -95,13 +95,13 @@ where
 
     // Perform the SVD on the low-rank approximation
     let b = q.transpose() * x;
-    let svd = b.thin_svd().unwrap();
+    let svd = b.thin_svd().map_err(|_| ManifoldsError::FaerSvdError)?;
 
-    RandomSvdResults {
+    Ok(RandomSvdResults {
         u: q * svd.U(),
         v: svd.V().cloned(), // Use clone instead of manual copying
         s: svd.S().column_vector().iter().copied().collect(),
-    }
+    })
 }
 
 ///////////////////////////
@@ -129,7 +129,7 @@ pub fn sparse_randomised_svd<T>(
     seed: u64,
     oversampling: Option<usize>,
     n_power_iter: Option<usize>,
-) -> RandomSvdResults<T>
+) -> Result<RandomSvdResults<T>, ManifoldsError>
 where
     T: Into<T> + ManifoldsFloat,
 {
@@ -247,17 +247,29 @@ where
     let b = b_t.transpose().to_owned();
 
     // Final SVD on the small B matrix
-    let svd = b.thin_svd().unwrap();
+    let svd = b.thin_svd().map_err(|_| ManifoldsError::FaerSvdError)?;
     let u = (&q * svd.U()).get(.., ..rank).to_owned();
     let s: Vec<T> = svd.S().column_vector().iter().copied().take(rank).collect();
     let v = svd.V().get(.., ..rank).to_owned();
 
-    RandomSvdResults { u, s, v }
+    Ok(RandomSvdResults { u, s, v })
 }
 
 /////////////////////////////////////
 // Lanczos Eigenvalue calculations //
 /////////////////////////////////////
+
+/// Internal output of a Lanczos tridiagonalisation + tridiagonal eigen-decomp.
+struct LanczosEigendecomp {
+    /// Eigenvalues of the Eigen decomposition
+    tri_evals: Vec<f64>,
+    /// Eigenvectors of the Eigen decomposition
+    tri_evecs: Mat<f64>,
+    /// Basis vector
+    v_basis: Vec<Vec<f64>>,
+    /// Number of samples
+    n: usize,
+}
 
 /// Helper function for dot product of two vectors
 ///
@@ -316,7 +328,7 @@ where
 /// ### Returns
 ///
 /// Tuple of `(eigenvectors, eigenvalues)`
-fn tridiag_eig<T>(alpha: &[T], beta: &[T]) -> (Vec<T::Real>, Mat<T>)
+fn tridiag_eig<T>(alpha: &[T], beta: &[T]) -> Result<(Vec<T::Real>, Mat<T>), ManifoldsError>
 where
     T: ManifoldsFloat,
 {
@@ -331,11 +343,173 @@ where
         }
     }
 
-    let eig = t.self_adjoint_eigen(faer::Side::Lower).unwrap();
+    let eig = t
+        .self_adjoint_eigen(faer::Side::Lower)
+        .map_err(|_| ManifoldsError::FaerEigenError)?;
     let evals = eig.S().column_vector().iter().copied().collect();
     let evecs = eig.U().to_owned();
 
-    (evals, evecs)
+    Ok((evals, evecs))
+}
+
+/// Lanczos Eigen decomposition
+///
+/// ### Params
+///
+/// * `matrix` - The sparse matrix for which to run the Eigen decompositon.
+/// * `n_components` - Number of components to identify
+/// * `seed` - Random seed for reproducibility
+///
+/// ### Returns
+///
+/// The `LanczosEigendecomp`
+fn lanczos_eigendecomp<T>(
+    matrix: &CompressedSparseData<T>,
+    n_components: usize,
+    seed: u64,
+) -> Result<LanczosEigendecomp, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let n = matrix.shape.0;
+    let n_iter = (n_components * 2 + 10).max(n_components).min(n);
+
+    let csr = match matrix.cs_type {
+        CompressedSparseFormat::Csr => matrix.clone(),
+        CompressedSparseFormat::Csc => matrix.transform(),
+    };
+
+    let data_f64: Vec<f64> = csr.data.iter().map(|v| v.to_f64().unwrap()).collect();
+
+    let matvec = |x: &[f64], y: &mut [f64]| {
+        y.fill(0.0);
+        for i in 0..n {
+            for idx in csr.indptr[i]..csr.indptr[i + 1] {
+                let j = csr.indices[idx];
+                y[i] += data_f64[idx] * x[j];
+            }
+        }
+    };
+
+    let mut v = vec![0.0; n];
+    let mut v_old = vec![0.0; n];
+    let mut w = vec![0.0; n];
+    let mut v_basis = vec![vec![0.0; n]; n_iter];
+
+    let mut rng = StdRng::seed_from_u64(seed);
+    for i in 0..n {
+        v[i] = rng.random::<f64>() - 0.5;
+    }
+    normalise(&mut v);
+
+    let mut alpha = vec![0.0; n_iter];
+    let mut beta = vec![0.0; n_iter];
+
+    for j in 0..n_iter {
+        v_basis[j].copy_from_slice(&v);
+
+        matvec(&v, &mut w);
+        alpha[j] = dot(&w, &v);
+
+        for i in 0..n {
+            w[i] -= alpha[j] * v[i];
+            if j > 0 {
+                w[i] -= beta[j - 1] * v_old[i];
+            }
+        }
+
+        for k in 0..=j {
+            let coeff = dot(&w, &v_basis[k]);
+            for i in 0..n {
+                w[i] -= coeff * v_basis[k][i];
+            }
+        }
+
+        beta[j] = norm(&w);
+        if beta[j] < 1e-12 {
+            break;
+        }
+
+        v_old.copy_from_slice(&v);
+        v.copy_from_slice(&w);
+        normalise(&mut v);
+    }
+
+    let (tri_evals, tri_evecs) = tridiag_eig(&alpha[..n_iter], &beta[..n_iter - 1])?;
+
+    Ok(LanczosEigendecomp {
+        tri_evals,
+        tri_evecs,
+        v_basis,
+        n,
+    })
+}
+
+/// Select the Eigen pairs (either largest or smallest)
+///
+/// ### Params
+///
+/// * `decomp` - The Lanczos Eigen decomposition
+/// * `n_components` - The number of components to extract
+/// * `largest` - Return the largest or smallest (boolean)
+///
+/// ### Returns
+///
+/// (eigenvalues, eigenvectors) where eigenvectors[i][j] is element j of
+/// eigenvector i
+fn select_eigenpairs(
+    decomp: &LanczosEigendecomp,
+    n_components: usize,
+    largest: bool,
+) -> (Vec<f32>, Vec<Vec<f32>>) {
+    let n = decomp.n;
+    let n_iter = decomp.v_basis.len();
+
+    let mut indices: Vec<usize> = (0..decomp.tri_evals.len()).collect();
+    if largest {
+        indices.sort_by(|&i, &j| {
+            decomp.tri_evals[j]
+                .partial_cmp(&decomp.tri_evals[i])
+                .unwrap()
+        });
+    } else {
+        indices.sort_by(|&i, &j| {
+            decomp.tri_evals[i]
+                .partial_cmp(&decomp.tri_evals[j])
+                .unwrap()
+        });
+    }
+
+    let mut sel_evals: Vec<f32> = Vec::with_capacity(n_components);
+    let mut sel_evecs: Vec<Vec<f32>> = Vec::with_capacity(n_components);
+
+    for &idx in indices.iter().take(n_components) {
+        let mut evec = vec![0.0; n];
+        for i in 0..n {
+            for j in 0..n_iter {
+                evec[i] += decomp.v_basis[j][i] * decomp.tri_evecs[(j, idx)].to_f64().unwrap();
+            }
+        }
+
+        let norm_e: f64 = evec.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm_e > 0.0 {
+            for x in &mut evec {
+                *x /= norm_e;
+            }
+        }
+
+        sel_evals.push(decomp.tri_evals[idx].to_f64().unwrap() as f32);
+        sel_evecs.push(evec.iter().map(|&x| x as f32).collect());
+    }
+
+    let mut transposed = vec![vec![0.0f32; n_components]; n];
+    for comp_idx in 0..n_components {
+        for point_idx in 0..n {
+            transposed[point_idx][comp_idx] = sel_evecs[comp_idx][point_idx];
+        }
+    }
+
+    (sel_evals, transposed)
 }
 
 /// Compute smallest eigenvalues and eigenvectors using Lanczos
@@ -357,118 +531,38 @@ pub fn compute_smallest_eigenpairs_lanczos<T>(
     matrix: &CompressedSparseData<T>,
     n_components: usize,
     seed: u64,
-) -> (Vec<f32>, Vec<Vec<f32>>)
+) -> Result<(Vec<f32>, Vec<Vec<f32>>), ManifoldsError>
 where
     T: ManifoldsFloat,
 {
-    let n = matrix.shape.0;
-    let n_iter = (n_components * 2 + 10).max(n_components).min(n);
+    let decomp = lanczos_eigendecomp(matrix, n_components, seed)?;
+    Ok(select_eigenpairs(&decomp, n_components, false))
+}
 
-    // Convert to CSR for efficient row access
-    let csr = match matrix.cs_type {
-        CompressedSparseFormat::Csr => matrix.clone(),
-        CompressedSparseFormat::Csc => matrix.transform(),
-    };
-
-    let data_f64: Vec<f64> = csr
-        .data
-        .iter()
-        .map(|v| v.clone().to_f64().unwrap())
-        .collect();
-
-    let matvec = |x: &[f64], y: &mut [f64]| {
-        y.fill(0.0);
-        for i in 0..n {
-            for idx in csr.indptr[i]..csr.indptr[i + 1] {
-                let j = csr.indices[idx];
-                y[i] += data_f64[idx] * x[j];
-            }
-        }
-    };
-
-    // Lanczos iteration
-    let mut v = vec![0.0; n];
-    let mut v_old = vec![0.0; n];
-    let mut w = vec![0.0; n];
-    let mut v_matrix = vec![vec![0.0; n]; n_iter];
-
-    let mut rng = StdRng::seed_from_u64(seed);
-
-    for i in 0..n {
-        v[i] = rng.random::<f64>() - 0.5;
-    }
-    normalise(&mut v);
-
-    let mut alpha = vec![0.0; n_iter];
-    let mut beta = vec![0.0; n_iter];
-
-    for j in 0..n_iter {
-        v_matrix[j].copy_from_slice(&v);
-
-        matvec(&v, &mut w);
-        alpha[j] = dot(&w, &v);
-
-        // w = w - alpha[j]*v - beta[j-1]*v_old
-        for i in 0..n {
-            w[i] -= alpha[j] * v[i];
-            if j > 0 {
-                w[i] -= beta[j - 1] * v_old[i];
-            }
-        }
-
-        // full reorthogonalisation
-        for k in 0..=j {
-            let coeff = dot(&w, &v_matrix[k]);
-            for i in 0..n {
-                w[i] -= coeff * v_matrix[k][i];
-            }
-        }
-
-        beta[j] = norm(&w);
-        if beta[j] < 1e-12 {
-            break;
-        }
-
-        v_old.copy_from_slice(&v);
-        v.copy_from_slice(&w);
-        normalise(&mut v);
-    }
-
-    let (evals, evecs) = tridiag_eig(&alpha[..n_iter], &beta[..n_iter - 1]);
-
-    let mut indices: Vec<usize> = (0..evals.len()).collect();
-    indices.sort_by(|&i, &j| evals[i].partial_cmp(&evals[j]).unwrap());
-
-    let mut smallest_evals: Vec<f32> = Vec::with_capacity(n_components);
-    let mut smallest_evecs: Vec<Vec<f32>> = Vec::with_capacity(n_components);
-
-    for &idx in indices.iter().take(n_components) {
-        // transform eigenvector back to original space: v_original = V * v_tridiag
-        let mut evec = vec![0.0; n];
-        for i in 0..n {
-            for j in 0..n_iter {
-                evec[i] += v_matrix[j][i] * evecs[(j, idx)].to_f64().unwrap();
-            }
-        }
-
-        // normalise the transformed eigenvector... Really should do this...
-        let norm: f64 = evec.iter().map(|x| x * x).sum::<f64>().sqrt();
-        for x in &mut evec {
-            *x /= norm;
-        }
-
-        smallest_evals.push(evals[idx].to_f64().unwrap() as f32);
-        smallest_evecs.push(evec.iter().map(|&x| x as f32).collect());
-    }
-
-    let mut transposed = vec![vec![0.0f32; n_components]; n];
-    for comp_idx in 0..n_components {
-        for point_idx in 0..n {
-            transposed[point_idx][comp_idx] = smallest_evecs[comp_idx][point_idx];
-        }
-    }
-
-    (smallest_evals, transposed)
+/// Compute largest eigenvalues and eigenvectors using Lanczos
+///
+/// This function returns the largest eigenvalues.
+///
+/// ### Params
+///
+/// * `matrix` - Sparse matrix in CSR format
+/// * `n_components` - Number of eigenpairs to compute
+/// * `seed` - For reproducibility
+///
+/// ### Returns
+///
+/// (eigenvalues, eigenvectors) where eigenvectors[i][j] is element j of
+/// eigenvector i
+pub fn compute_largest_eigenpairs_lanczos<T>(
+    matrix: &CompressedSparseData<T>,
+    n_components: usize,
+    seed: u64,
+) -> Result<(Vec<f32>, Vec<Vec<f32>>), ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let decomp = lanczos_eigendecomp(matrix, n_components, seed)?;
+    Ok(select_eigenpairs(&decomp, n_components, true))
 }
 
 /////////////////////////
@@ -500,7 +594,7 @@ where
         }
     }
 
-    // full SVD - singular values are the proxy for eigenvalues, matching Python
+    // thin SVD - singular values are the proxy for eigenvalues, matching Python
     let svd = dense.thin_svd().unwrap();
     let eigenvalues: Vec<T> = svd.S().column_vector().iter().copied().collect();
 
@@ -587,7 +681,7 @@ mod test_utils_math {
         let alpha = vec![2.0, 2.0];
         let beta = vec![1.0];
 
-        let (evals, _evecs) = tridiag_eig(&alpha, &beta);
+        let (evals, _) = tridiag_eig(&alpha, &beta).unwrap();
 
         assert_eq!(evals.len(), 2);
 
@@ -614,7 +708,7 @@ mod test_utils_math {
 
         let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
 
-        let (evals, evecs) = compute_smallest_eigenpairs_lanczos(&matrix, 2, 42);
+        let (evals, evecs) = compute_smallest_eigenpairs_lanczos(&matrix, 2, 42).unwrap();
 
         assert_eq!(evals.len(), 2);
         assert_eq!(evecs.len(), n);
@@ -636,7 +730,7 @@ mod test_utils_math {
 
         let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
 
-        let (evals, evecs) = compute_smallest_eigenpairs_lanczos(&matrix, 3, 42);
+        let (evals, evecs) = compute_smallest_eigenpairs_lanczos(&matrix, 3, 42).unwrap();
 
         assert_eq!(evals.len(), 3);
         assert_eq!(evecs.len(), n);
@@ -676,8 +770,8 @@ mod test_utils_math {
 
         let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
 
-        let (evals1, evecs1) = compute_smallest_eigenpairs_lanczos(&matrix, 3, 42);
-        let (evals2, evecs2) = compute_smallest_eigenpairs_lanczos(&matrix, 3, 42);
+        let (evals1, evecs1) = compute_smallest_eigenpairs_lanczos(&matrix, 3, 42).unwrap();
+        let (evals2, evecs2) = compute_smallest_eigenpairs_lanczos(&matrix, 3, 42).unwrap();
 
         assert_eq!(evals1, evals2);
         assert_eq!(evecs1, evecs2);
@@ -689,5 +783,93 @@ mod test_utils_math {
         let a = vec![1.0, 2.0];
         let b = vec![1.0, 2.0, 3.0];
         let _ = dot(&a, &b);
+    }
+
+    #[test]
+    fn test_compute_largest_eigenpairs_diagonal() {
+        let data = vec![5.0, 4.0, 3.0, 2.0, 1.0];
+        let indices = vec![0, 1, 2, 3, 4];
+        let indptr = vec![0, 1, 2, 3, 4, 5];
+        let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (5, 5));
+
+        let (evals, evecs) = compute_largest_eigenpairs_lanczos(&matrix, 3, 42).unwrap();
+
+        assert_eq!(evals.len(), 3);
+        assert_eq!(evecs.len(), 5);
+        assert_eq!(evecs[0].len(), 3);
+
+        let mut sorted = evals.clone();
+        sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
+
+        assert_relative_eq!(sorted[0], 5.0, epsilon = 0.1);
+        assert_relative_eq!(sorted[1], 4.0, epsilon = 0.1);
+        assert_relative_eq!(sorted[2], 3.0, epsilon = 0.1);
+    }
+
+    #[test]
+    fn test_compute_largest_eigenpairs_path_laplacian() {
+        // Path graph Laplacian, n=3: [[2,-1,0],[-1,2,-1],[0,-1,2]]
+        // Eigenvalues: 2 - sqrt(2), 2, 2 + sqrt(2)
+        let data = vec![2.0, -1.0, -1.0, 2.0, -1.0, -1.0, 2.0];
+        let indices = vec![0, 1, 0, 1, 2, 1, 2];
+        let indptr = vec![0, 2, 5, 7];
+        let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
+
+        let (evals, _) = compute_largest_eigenpairs_lanczos(&matrix, 2, 42).unwrap();
+
+        let mut sorted = evals.clone();
+        sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
+
+        assert_relative_eq!(sorted[0], 2.0 + 2.0_f32.sqrt(), epsilon = 0.05);
+        assert_relative_eq!(sorted[1], 2.0, epsilon = 0.05);
+    }
+
+    #[test]
+    fn test_largest_eigenpairs_reproducibility() {
+        let n = 10;
+        let mut data = Vec::new();
+        let mut indices = Vec::new();
+        let mut indptr = vec![0];
+        for i in 0..n {
+            if i > 0 {
+                data.push(-1.0);
+                indices.push(i - 1);
+            }
+            data.push(2.0);
+            indices.push(i);
+            if i < n - 1 {
+                data.push(-1.0);
+                indices.push(i + 1);
+            }
+            indptr.push(data.len());
+        }
+        let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
+
+        let (e1, v1) = compute_largest_eigenpairs_lanczos(&matrix, 3, 42).unwrap();
+        let (e2, v2) = compute_largest_eigenpairs_lanczos(&matrix, 3, 42).unwrap();
+
+        assert_eq!(e1, e2);
+        assert_eq!(v1, v2);
+    }
+
+    #[test]
+    fn test_smallest_and_largest_agree_on_diagonal() {
+        let data = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        let indices = vec![0, 1, 2, 3, 4];
+        let indptr = vec![0, 1, 2, 3, 4, 5];
+        let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (5, 5));
+
+        let (small, _) = compute_smallest_eigenpairs_lanczos(&matrix, 2, 42).unwrap();
+        let (large, _) = compute_largest_eigenpairs_lanczos(&matrix, 2, 42).unwrap();
+
+        let mut s_sorted = small.clone();
+        s_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let mut l_sorted = large.clone();
+        l_sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
+
+        assert_relative_eq!(s_sorted[0], 1.0, epsilon = 0.1);
+        assert_relative_eq!(s_sorted[1], 2.0, epsilon = 0.1);
+        assert_relative_eq!(l_sorted[0], 5.0, epsilon = 0.1);
+        assert_relative_eq!(l_sorted[1], 4.0, epsilon = 0.1);
     }
 }

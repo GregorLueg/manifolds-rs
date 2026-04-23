@@ -421,7 +421,7 @@ fn phate_integration_07_full_phate_quality() {
         None,
     );
 
-    let embedding = phate(data.as_ref(), None, params, 42, true);
+    let embedding = phate(data.as_ref(), None, params, 42, true).unwrap();
 
     let all_coords: Vec<f64> = embedding.iter().flat_map(|d| d.iter().copied()).collect();
     let nan_count = all_coords.iter().filter(|v| v.is_nan()).count();
@@ -480,7 +480,7 @@ fn phate_integration_08_landmark_phate_quality() {
         None,
     );
 
-    let embedding = phate(data.as_ref(), None, params, 42, true);
+    let embedding = phate(data.as_ref(), None, params, 42, true).unwrap();
 
     let all_coords: Vec<f64> = embedding.iter().flat_map(|d| d.iter().copied()).collect();
     let nan_count = all_coords.iter().filter(|v| v.is_nan()).count();
@@ -532,8 +532,8 @@ fn phate_integration_09_reproducibility() {
         None,     // randomised
     );
 
-    let embd1 = phate(data.as_ref(), None, params.clone(), 42, false);
-    let embd2 = phate(data.as_ref(), None, params, 42, false);
+    let embd1 = phate(data.as_ref(), None, params.clone(), 42, false).unwrap();
+    let embd2 = phate(data.as_ref(), None, params, 42, false).unwrap();
 
     let mut max_diff = 0.0f64;
     for i in 0..embd1[0].len() {
@@ -576,8 +576,8 @@ fn phate_integration_10_different_seeds() {
         None,     // randomised
     );
 
-    let embd1 = phate(data.as_ref(), None, params.clone(), 42, false);
-    let embd2 = phate(data.as_ref(), None, params, 123, false);
+    let embd1 = phate(data.as_ref(), None, params.clone(), 42, false).unwrap();
+    let embd2 = phate(data.as_ref(), None, params, 123, false).unwrap();
 
     let mut max_diff = 0.0f64;
     for i in 0..embd1[0].len() {
@@ -630,8 +630,9 @@ fn phate_integration_11_precomputed_knn() {
         params.clone(),
         42,
         false,
-    );
-    let embd_internal = phate(data.as_ref(), None, params, 42, false);
+    )
+    .unwrap();
+    let embd_internal = phate(data.as_ref(), None, params, 42, false).unwrap();
 
     let mut max_diff = 0.0f64;
     for i in 0..embd_precomputed[0].len() {
@@ -693,8 +694,8 @@ fn phate_integration_12_fixed_vs_auto_t() {
         None,     // randomised
     );
 
-    let embd_auto = phate(data.as_ref(), None, params_auto, 42, false);
-    let embd_fixed = phate(data.as_ref(), None, params_fixed, 42, false);
+    let embd_auto = phate(data.as_ref(), None, params_auto, 42, false).unwrap();
+    let embd_fixed = phate(data.as_ref(), None, params_fixed, 42, false).unwrap();
 
     for (embd, label) in [(&embd_auto, "auto"), (&embd_fixed, "fixed")] {
         let all_coords: Vec<f64> = embd.iter().flat_map(|d| d.iter().copied()).collect();

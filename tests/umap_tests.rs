@@ -317,7 +317,7 @@ fn umap_integration_04_initialisation() {
 
         println!("What is this: {:?}", init_type);
 
-        let embedding = initialise_embedding(&init_type, 2, 42, &graph, data.as_ref());
+        let embedding = initialise_embedding(&init_type, 2, 42, &graph, data.as_ref()).unwrap();
 
         println!("\n{} initialisation:", init_name);
 
@@ -443,7 +443,7 @@ fn umap_integration_05_optimisation_quality() {
             None,
         );
 
-        let embedding = umap(data.as_ref(), None, &params, 42, false);
+        let embedding = umap(data.as_ref(), None, &params, 42, false).unwrap();
 
         // Check that coordinates are finite
         let mut has_nan = false;
@@ -619,8 +619,8 @@ fn umap_integration_06_reproducibility() {
         None,
     );
 
-    let embedding1 = umap(data.as_ref(), None, &params, 42, false);
-    let embedding2 = umap(data.as_ref(), None, &params, 42, false);
+    let embedding1 = umap(data.as_ref(), None, &params, 42, false).unwrap();
+    let embedding2 = umap(data.as_ref(), None, &params, 42, false).unwrap();
 
     // Check if embeddings are identical
     let mut max_diff: f64 = 0.0;
@@ -683,10 +683,11 @@ fn umap_integration_07_precomputed_knn() {
         &params,
         42,
         false,
-    );
+    )
+    .unwrap();
 
     // Run UMAP without precomputed kNN (should compute internally)
-    let embedding_internal = umap(data.as_ref(), None, &params, 42, false);
+    let embedding_internal = umap(data.as_ref(), None, &params, 42, false).unwrap();
 
     // Compare results
     let mut max_diff: f64 = 0.0;
