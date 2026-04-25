@@ -138,7 +138,7 @@ fn phate_integration_02_alpha_decay_affinities() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false);
 
     println!("\n=== PHATE DIAGNOSTIC 2: Alpha Decay Affinities ===");
 
