@@ -889,12 +889,12 @@ where
     /// ### Returns
     ///
     /// P^t at optimal t
-    pub fn power_optimal(&self, t_max: usize) -> CompressedSparseData<T>
+    pub fn power_optimal(&self, t_max: usize) -> Result<CompressedSparseData<T>, ManifoldsError>
     where
         T: AddAssign,
     {
-        let t_opt = self.find_optimal_t(t_max);
-        matrix_power(&self.landmark_op, t_opt)
+        let t_opt = self.find_optimal_t(t_max)?;
+        Ok(matrix_power(&self.landmark_op, t_opt))
     }
 
     /// Interpolate landmark diffusion back to full data space
@@ -929,9 +929,9 @@ where
     /// ### Returns
     ///
     /// Optimal t value (knee point of entropy curve)
-    pub fn find_optimal_t(&self, t_max: usize) -> usize {
-        let entropy = landmark_von_neumann_entropy(&self.landmark_op, t_max);
-        find_knee_point(&entropy)
+    pub fn find_optimal_t(&self, t_max: usize) -> Result<usize, ManifoldsError> {
+        let entropy = landmark_von_neumann_entropy(&self.landmark_op, t_max)?;
+        Ok(find_knee_point(&entropy))
     }
 
     /// Interpolate embedding from landmark embedding
@@ -1156,6 +1156,11 @@ where
         Dist::Euclidean => Vec::new(),
     };
 
+    let bw_factor = match distance {
+        Dist::Euclidean => bandwidth_scale * bandwidth_scale,
+        Dist::Cosine => bandwidth_scale,
+    };
+
     let rows: Vec<(Vec<usize>, Vec<T>)> = (0..n)
         .into_par_iter()
         .map(|i| {
@@ -1165,7 +1170,7 @@ where
                 .map(|l| {
                     let y = &landmark_data[l * dim..(l + 1) * dim];
                     let d = match distance {
-                        Dist::Euclidean => T::euclidean_simd(x, y).sqrt(),
+                        Dist::Euclidean => T::euclidean_simd(x, y),
                         Dist::Cosine => {
                             let dot = T::dot_simd(x, y);
                             let denom = data_norms[i] * landmark_norms[l];
@@ -1184,13 +1189,18 @@ where
             dists.truncate(k_used);
 
             let bandwidth_raw = dists.last().map(|(_, d)| *d).unwrap_or(T::zero());
-            let bandwidth = (bandwidth_raw * bandwidth_scale).max(machine_epsilon);
+            let bandwidth = (bandwidth_raw * bw_factor).max(machine_epsilon);
 
             let mut kept: Vec<(usize, T)> = dists
                 .into_iter()
                 .filter_map(|(l, d)| {
-                    let scaled = d / bandwidth;
-                    let w = (-(scaled * scaled)).exp();
+                    let w = match distance {
+                        Dist::Euclidean => (-(d / bandwidth)).exp(),
+                        Dist::Cosine => {
+                            let scaled = d / bandwidth;
+                            (-(scaled * scaled)).exp()
+                        }
+                    };
                     if w >= thresh {
                         Some((l, w))
                     } else {
@@ -1295,7 +1305,7 @@ where
     #[allow(clippy::too_many_arguments)]
     pub fn build(
         data: MatRef<T>,
-        affinity: &CompressedSparseData<T>,
+        affinity: Option<&CompressedSparseData<T>>,
         n_landmarks: usize,
         method: &str,
         distance: &str,
@@ -1328,6 +1338,7 @@ where
                 if verbose {
                     println!(" Using density landmark selection.");
                 }
+                let affinity = affinity.expect("density landmarks require affinity matrix");
                 let weights: Vec<f64> = (0..n)
                     .into_par_iter()
                     .map(|i| {
@@ -1353,6 +1364,7 @@ where
                 if verbose {
                     println!(" Using spectral landmark selection.");
                 }
+                let affinity = affinity.expect("spectral landmarks require affinity matrix");
                 let svd = sparse_randomised_svd(affinity, n_svd, seed as u64, None, None)?;
                 let v = &svd.v;
                 let k_proj = v.ncols();
@@ -1526,9 +1538,9 @@ where
     /// ### Returns
     ///
     /// Optimal `t` (knee point of the entropy curve)
-    pub fn find_optimal_t(&self, t_max: usize) -> usize {
-        let entropy = landmark_von_neumann_entropy(&self.p_sym_ll, t_max);
-        find_knee_point(&entropy)
+    pub fn find_optimal_t(&self, t_max: usize) -> Result<usize, ManifoldsError> {
+        let entropy = landmark_von_neumann_entropy(&self.p_sym_ll, t_max)?;
+        Ok(find_knee_point(&entropy))
     }
 
     /// Compute diffusion coordinates on the landmarks: y_k(l) = λ_k^t · φ_k(l).

@@ -11,6 +11,16 @@ use crate::assert_same_len;
 use crate::data::structures::*;
 use crate::prelude::*;
 
+////////////
+// Consts //
+////////////
+
+/// Threshold when to go through the sparse path in VNE
+const VNE_DENSE_THRESHOLD: usize = 5000;
+
+/// Number of PCs to return on the sparse path
+const VNE_SPARSE_RANK: usize = 100;
+
 ////////////////////
 // Randomised SVD //
 ////////////////////
@@ -579,24 +589,24 @@ where
 /// ### Returns
 ///
 /// A vector of von Neumann entropies for each power.
-pub fn landmark_von_neumann_entropy<T>(operator: &CompressedSparseData<T>, t_max: usize) -> Vec<T>
+pub fn landmark_von_neumann_entropy<T>(
+    operator: &CompressedSparseData<T>,
+    t_max: usize,
+) -> Result<Vec<T>, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
-    let (n, m) = operator.shape;
+    let (n, _) = operator.shape;
 
-    // convert to dense
-    let mut dense = Mat::<T>::zeros(n, m);
-    for i in 0..n {
-        for idx in operator.indptr[i]..operator.indptr[i + 1] {
-            let j = operator.indices[idx];
-            dense[(i, j)] = operator.data[idx];
-        }
-    }
-
-    // thin SVD - singular values are the proxy for eigenvalues, matching Python
-    let svd = dense.thin_svd().unwrap();
-    let eigenvalues: Vec<T> = svd.S().column_vector().iter().copied().collect();
+    let eigenvalues: Vec<T> = if n < VNE_DENSE_THRESHOLD {
+        let dense = operator.to_dense();
+        let svd = dense.thin_svd().map_err(|_| ManifoldsError::FaerSvdError)?;
+        svd.S().column_vector().iter().copied().collect()
+    } else {
+        let rank = VNE_SPARSE_RANK.min(n.saturating_sub(1));
+        let svd = sparse_randomised_svd(operator, rank, 42, None, None)?;
+        svd.s
+    };
 
     let mut eigenvalues_t = eigenvalues.clone();
     let mut entropy = Vec::with_capacity(t_max);
@@ -622,7 +632,7 @@ where
         }
     }
 
-    entropy
+    Ok(entropy)
 }
 
 ///////////

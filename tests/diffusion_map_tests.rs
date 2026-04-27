@@ -753,7 +753,7 @@ fn dm_integration_19_landmark_coverage() {
 
     let landmarks = DiffusionMapsLandmarks::build(
         data.as_ref(),
-        &kernel,
+        Some(&kernel),
         20,
         "random",
         "euclidean",

@@ -1,8 +1,12 @@
-//! Dimensionality reduction algorithms including UMAP, t-SNE, PHATE and PacMAP.
+//! Dimensionality reduction algorithms including UMAP, t-SNE, PHATE, Diffusion
+//! Maps and PacMAP.
 //!
 //! Provides both standard and approximate nearest-neighbour-based graph
 //! construction, multiple optimisers, and (optionally) parametric UMAP via a
 //! neural network encoder.
+//!
+//! Additionally, optional GPU-accelerated versions (in terms of kNN search)
+//! can be used when the right feature flags are active.
 
 #![allow(clippy::needless_range_loop)] // I like loops ... !
 #![warn(missing_docs)]
@@ -712,10 +716,11 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
-    assert!(
-        params.n_dim == 2,
-        "At the moment, this tSNE implementation only supports n_dim = 2"
-    );
+    if params.n_dim != 2 {
+        return Err(ManifoldsError::IncorrectDim {
+            n_dim: params.n_dim,
+        });
+    }
 
     // 1. graph construction
     let (graph, _, _) = construct_tsne_graph(
@@ -849,10 +854,11 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
-    assert!(
-        params.n_dim == 2,
-        "At the moment, this tSNE implementation only supports n_dim = 2"
-    );
+    if params.n_dim != 2 {
+        return Err(ManifoldsError::IncorrectDim {
+            n_dim: params.n_dim,
+        });
+    }
 
     // 1. graph construction
     let (graph, _, _) = construct_tsne_graph(
@@ -1238,13 +1244,13 @@ where
             match &phate_diffusion {
                 PhateDiffusion::Landmark { landmarks } => landmarks.find_optimal_t(t_max),
                 PhateDiffusion::Full { operator } => {
-                    let entropy = landmark_von_neumann_entropy(operator, t_max);
-                    find_knee_point(&entropy)
+                    let entropy = landmark_von_neumann_entropy(operator, t_max)?;
+                    Ok(find_knee_point(&entropy))
                 }
             }
         }
-        PhateTime::Fixed(t) => t,
-    };
+        PhateTime::Fixed(t) => Ok(t),
+    }?;
     if verbose {
         println!("Identified t = {} in {:.2?}.", t, start_t.elapsed());
     }
@@ -1815,84 +1821,90 @@ where
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
-    let (knn_indices, knn_dist) = match precomputed_knn {
-        Some((indices, distances)) => {
-            if verbose {
-                println!("Using precomputed kNN graph...");
-            }
-            (indices, distances)
-        }
-        None => {
-            if verbose {
-                println!("Running ANN search using {}...", ann_type);
-            }
-            let start_knn = Instant::now();
-            let res = run_ann_search(data, k, ann_type.to_string(), nn_params, seed, verbose);
-            if verbose {
-                println!("kNN search done in {:.2?}.", start_knn.elapsed());
-            }
-            res
-        }
+    let use_full = match dm_params.n_landmarks {
+        None => true,
+        Some(n) => n >= data.nrows(),
     };
 
-    if verbose {
-        println!("Building Gaussian kernel affinities");
+    let needs_affinity =
+        use_full || matches!(dm_params.landmark_method.as_str(), "spectral" | "density");
+
+    let affinity = if needs_affinity {
+        let (knn_indices, knn_dist) = match precomputed_knn {
+            Some((indices, distances)) => {
+                if verbose {
+                    println!("Using precomputed kNN graph...");
+                }
+                (indices, distances)
+            }
+            None => {
+                if verbose {
+                    println!("Running ANN search using {}...", ann_type);
+                }
+                let start_knn = Instant::now();
+                let res = run_ann_search(data, k, ann_type.to_string(), nn_params, seed, verbose);
+                if verbose {
+                    println!("kNN search done in {:.2?}.", start_knn.elapsed());
+                }
+                res
+            }
+        };
+
+        if verbose {
+            println!("Building Gaussian kernel affinities");
+        }
+        let graph = phate_alpha_decay_affinities(
+            &knn_indices,
+            &knn_dist,
+            dm_params.k,
+            Some(T::from_f64(2.0).unwrap()),
+            dm_params.bandwidth_scale,
+            dm_params.thresh,
+            &dm_params.graph_symmetry,
+            nn_params.dist_metric == "euclidean",
+        );
+        Some(coo_to_csr(&graph))
+    } else {
+        if verbose {
+            println!("Skipping full affinity (random landmarks).");
+        }
+        None
+    };
+
+    if use_full {
+        let kernel = affinity.unwrap();
+        let kernel_norm = apply_anisotropic_normalisation(&kernel, dm_params.alpha_norm);
+        let (p_sym, sqrt_degrees) = build_symmetric_diffusion_operator(&kernel_norm);
+        return Ok(DiffusionMapsOperator::Full {
+            p_sym,
+            sqrt_degrees,
+        });
     }
-    let graph = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
+
+    let n_landmarks = dm_params.n_landmarks.unwrap();
+    if verbose {
+        println!(" Building {} landmarks...", n_landmarks);
+    }
+    let start_l = Instant::now();
+    let landmarks = DiffusionMapsLandmarks::build(
+        data,
+        affinity.as_ref(),
+        n_landmarks,
+        &dm_params.landmark_method,
+        &nn_params.dist_metric,
+        dm_params.alpha_norm,
         dm_params.k,
-        Some(T::from_f64(2.0).unwrap()),
         dm_params.bandwidth_scale,
         dm_params.thresh,
         &dm_params.graph_symmetry,
-        nn_params.dist_metric == "euclidean",
-    );
-    let kernel = coo_to_csr(&graph);
-
-    match dm_params.n_landmarks {
-        None => {
-            let kernel_norm = apply_anisotropic_normalisation(&kernel, dm_params.alpha_norm);
-            let (p_sym, sqrt_degrees) = build_symmetric_diffusion_operator(&kernel_norm);
-            Ok(DiffusionMapsOperator::Full {
-                p_sym,
-                sqrt_degrees,
-            })
-        }
-        Some(n_landmarks) if n_landmarks >= data.nrows() => {
-            let kernel_norm = apply_anisotropic_normalisation(&kernel, dm_params.alpha_norm);
-            let (p_sym, sqrt_degrees) = build_symmetric_diffusion_operator(&kernel_norm);
-            Ok(DiffusionMapsOperator::Full {
-                p_sym,
-                sqrt_degrees,
-            })
-        }
-        Some(n_landmarks) => {
-            if verbose {
-                println!(" Building {} landmarks...", n_landmarks);
-            }
-            let start_l = Instant::now();
-            let landmarks = DiffusionMapsLandmarks::build(
-                data,
-                &kernel,
-                n_landmarks,
-                &dm_params.landmark_method,
-                &nn_params.dist_metric,
-                dm_params.alpha_norm,
-                dm_params.k,
-                dm_params.bandwidth_scale,
-                dm_params.thresh,
-                &dm_params.graph_symmetry,
-                seed,
-                dm_params.n_svd,
-                verbose,
-            )?;
-            if verbose {
-                println!(" Landmarks built in {:.2?}.", start_l.elapsed());
-            }
-            Ok(DiffusionMapsOperator::Landmark { landmarks })
-        }
+        seed,
+        dm_params.n_svd,
+        verbose,
+    )?;
+    if verbose {
+        println!(" Landmarks built in {:.2?}.", start_l.elapsed());
     }
+    Ok(DiffusionMapsOperator::Landmark { landmarks })
 }
 
 /// Run diffusion maps end-to-end.
@@ -1955,7 +1967,7 @@ where
                     if verbose {
                         println!("Finding optimal t (t_max={})...", t_max);
                     }
-                    let entropy = landmark_von_neumann_entropy(&p_sym, t_max);
+                    let entropy = landmark_von_neumann_entropy(&p_sym, t_max)?;
                     find_knee_point(&entropy)
                 }
                 PhateTime::Fixed(t) => t,
@@ -2003,7 +2015,7 @@ where
                     if verbose {
                         println!("Finding optimal t on landmarks (t_max={})...", t_max);
                     }
-                    landmarks.find_optimal_t(t_max)
+                    landmarks.find_optimal_t(t_max)?
                 }
                 PhateTime::Fixed(t) => t,
             };
