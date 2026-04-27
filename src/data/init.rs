@@ -216,7 +216,7 @@ fn multi_component_init<T>(
     n_comp: usize,
     seed: u64,
     range: T,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
@@ -253,7 +253,7 @@ where
                 n_comp,
                 seed + comp_idx as u64,
                 component_spread,
-            );
+            )?;
 
             // Place sub-embedding at centroid
             for (local_idx, &global_idx) in component.iter().enumerate() {
@@ -274,7 +274,7 @@ where
         }
     }
 
-    embedding
+    Ok(embedding)
 }
 
 /// Extract subgraph for a connected component
@@ -348,7 +348,7 @@ fn single_component_spectral<T>(
     n_comp: usize,
     seed: u64,
     range: T,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
@@ -363,13 +363,13 @@ where
                 embedding[i][j] = T::from_f64(rng.random_range(-1.0..1.0)).unwrap() * range;
             }
         }
-        return finalise_spectral_embedding(embedding, n_comp, range, seed);
+        return Ok(finalise_spectral_embedding(embedding, n_comp, range, seed));
     }
 
     let laplacian = graph_to_normalised_laplacian(graph);
 
     let n_eigs = (n_comp + 1).min(n);
-    let (_, evecs) = compute_smallest_eigenpairs_lanczos(&laplacian, n_eigs, seed);
+    let (_, evecs) = compute_smallest_eigenpairs_lanczos(&laplacian, n_eigs, seed)?;
 
     let mut embedding = vec![vec![T::zero(); n_comp]; n];
 
@@ -388,7 +388,7 @@ where
         }
     }
 
-    finalise_spectral_embedding(embedding, n_comp, range, seed)
+    Ok(finalise_spectral_embedding(embedding, n_comp, range, seed))
 }
 
 /// Finalise spectral embedding by centring, scaling and adding noise
@@ -485,7 +485,7 @@ pub fn spectral_layout<T>(
     n_comp: usize,
     seed: u64,
     range: Option<T>,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
@@ -568,7 +568,7 @@ pub fn pca_layout<T>(
     randomised: bool,
     range: Option<T>,
     seed: u64,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
     StandardNormal: Distribution<T>,
@@ -587,9 +587,11 @@ where
 
     // Compute SVD
     let svd_result = if randomised {
-        randomised_svd(centred.as_ref(), n_comp, seed as usize, None, None)
+        randomised_svd(centred.as_ref(), n_comp, seed as usize, None, None)?
     } else {
-        let svd = centred.thin_svd().unwrap();
+        let svd = centred
+            .thin_svd()
+            .map_err(|_| ManifoldsError::FaerSvdError)?;
         RandomSvdResults {
             u: svd.U().cloned(),
             v: svd.V().cloned(),
@@ -634,7 +636,7 @@ where
         }
     }
 
-    embedding
+    Ok(embedding)
 }
 
 //////////
@@ -667,7 +669,7 @@ pub fn initialise_embedding<T>(
     seed: u64,
     graph: &CoordinateList<T>,
     data: MatRef<T>,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
     StandardNormal: Distribution<T>,
@@ -676,10 +678,10 @@ where
         EmbdInit::SpectralInit { range } => spectral_layout(graph, n_comp, seed, *range),
         EmbdInit::RandomInit { range } => {
             let n_samples = data.nrows();
-            random_layout(n_samples, n_comp, seed, *range)
+            Ok(random_layout(n_samples, n_comp, seed, *range))
         }
         EmbdInit::PcaInit { randomised, range } => {
-            pca_layout(data, n_comp, *randomised, *range, seed)
+            Ok(pca_layout(data, n_comp, *randomised, *range, seed)?)
         }
     }
 }
@@ -788,7 +790,7 @@ mod test_init {
             n_samples: 3,
         };
 
-        let embedding = spectral_layout(&graph, 2, 42, None);
+        let embedding = spectral_layout(&graph, 2, 42, None).unwrap();
 
         assert_eq!(embedding.len(), 3); // 3 vertices
         assert_eq!(embedding[0].len(), 2); // 2 dimensions
@@ -817,7 +819,7 @@ mod test_init {
             n_samples: 3,
         };
 
-        let embedding = spectral_layout(&graph, 2, 42, Some(1.0));
+        let embedding = spectral_layout(&graph, 2, 42, Some(1.0)).unwrap();
 
         assert_eq!(embedding.len(), 3); // 3 vertices
         assert_eq!(embedding[0].len(), 2); // 2 dimensions
@@ -845,8 +847,8 @@ mod test_init {
             n_samples: 3,
         };
 
-        let embd1 = spectral_layout(&graph, 2, 42, None);
-        let embd2 = spectral_layout(&graph, 2, 42, None);
+        let embd1 = spectral_layout(&graph, 2, 42, None).unwrap();
+        let embd2 = spectral_layout(&graph, 2, 42, None).unwrap();
 
         assert_eq!(embd1, embd2);
     }
@@ -860,7 +862,7 @@ mod test_init {
             n_samples: 4,
         };
 
-        let embedding = spectral_layout(&graph, 3, 42, None);
+        let embedding = spectral_layout(&graph, 3, 42, None).unwrap();
 
         assert_eq!(embedding.len(), 4);
         assert_eq!(embedding[0].len(), 3);
@@ -929,7 +931,7 @@ mod test_init {
             n_samples: 1,
         };
 
-        let embedding = spectral_layout(&graph, 2, 42, None);
+        let embedding = spectral_layout(&graph, 2, 42, None).unwrap();
 
         assert_eq!(embedding.len(), 1);
         assert_eq!(embedding[0].len(), 2);
@@ -945,7 +947,7 @@ mod test_init {
             [4.0, 5.0, 2.5],
             [5.0, 6.0, 2.0],
         ];
-        let embedding = pca_layout(data.as_ref(), 2, false, None, 42);
+        let embedding = pca_layout(data.as_ref(), 2, false, None, 42).unwrap();
         assert_eq!(embedding.len(), 5);
         assert_eq!(embedding[0].len(), 2);
 
@@ -976,7 +978,7 @@ mod test_init {
             [5.0, 6.0, 2.0],
         ];
         let custom_range = 1.0;
-        let embedding = pca_layout(data.as_ref(), 2, false, Some(custom_range), 42);
+        let embedding = pca_layout(data.as_ref(), 2, false, Some(custom_range), 42).unwrap();
         assert_eq!(embedding.len(), 5);
         assert_eq!(embedding[0].len(), 2);
 
@@ -994,8 +996,8 @@ mod test_init {
     fn test_pca_layout_reproducibility() {
         let data = faer::mat![[1.0, 2.0], [3.0, 4.0], [5.0, 6.0],];
 
-        let embd1 = pca_layout(data.as_ref(), 2, false, None, 42);
-        let embd2 = pca_layout(data.as_ref(), 2, false, None, 42);
+        let embd1 = pca_layout(data.as_ref(), 2, false, None, 42).unwrap();
+        let embd2 = pca_layout(data.as_ref(), 2, false, None, 42).unwrap();
 
         assert_eq!(embd1, embd2);
     }
@@ -1008,8 +1010,8 @@ mod test_init {
             [9.0, 10.0, 11.0, 12.0],
         ];
 
-        let embd_standard = pca_layout(data.as_ref(), 2, false, None, 42);
-        let embd_randomised = pca_layout(data.as_ref(), 2, true, None, 42);
+        let embd_standard = pca_layout(data.as_ref(), 2, false, None, 42).unwrap();
+        let embd_randomised = pca_layout(data.as_ref(), 2, true, None, 42).unwrap();
 
         assert_eq!(embd_standard.len(), 3);
         assert_eq!(embd_randomised.len(), 3);
@@ -1031,7 +1033,8 @@ mod test_init {
             42,
             &graph,
             data.as_ref(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(embedding.len(), 2);
         assert_eq!(embedding[0].len(), 2);
@@ -1053,7 +1056,8 @@ mod test_init {
             42,
             &graph,
             data.as_ref(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(embedding.len(), 3);
         assert_eq!(embedding[0].len(), 2);
@@ -1078,7 +1082,8 @@ mod test_init {
             42,
             &graph,
             data.as_ref(),
-        );
+        )
+        .unwrap();
 
         assert_eq!(embedding.len(), 3);
         assert_eq!(embedding[0].len(), 2);

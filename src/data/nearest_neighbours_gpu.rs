@@ -251,6 +251,7 @@ where
                 params_nn.beam_width,
                 params_nn.max_beam_iters,
                 params_nn.n_entry_points,
+                None,
             );
 
             query_nndescent_index_gpu_self(&mut index, k + 1, Some(query_params), true)

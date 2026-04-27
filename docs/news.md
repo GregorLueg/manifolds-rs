@@ -1,5 +1,13 @@
 # News
 
+## 0.2.1
+
+**Features:**
+
+- GPU-accelerated kNN searches available -> supporting a GPU-accelerated version
+  of UMAP and tSNE.
+- Added KmKnn nearest neighbour search as a default.
+
 ## 0.2.0
 
 **Features:**

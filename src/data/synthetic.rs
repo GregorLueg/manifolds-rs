@@ -49,6 +49,56 @@ pub fn generate_swiss_roll(n_samples: usize, noise: f64, seed: u64) -> Mat<f64> 
     data
 }
 
+/// Generate Swiss Roll dataset with non-uniform sampling density
+///
+/// Same shape as `generate_swiss_roll`, but samples are biased along the roll
+/// parameter `t` so that one end is far more densely sampled than the other.
+/// This creates a continuous 2D manifold with non-trivial sampling density,
+/// which is the textbook setup for testing density-correction methods like
+/// the anisotropic normalisation in diffusion maps.
+///
+/// ### Params
+///
+/// * `n_samples` - Number of points
+/// * `noise` - Standard deviation of Gaussian noise added to the data
+/// * `density_bias` - Sampling bias along `t`. `0.0` recovers uniform sampling;
+///   higher values concentrate samples at the inner end of the roll. A value
+///   of `2.5` mirrors the trajectory accumulation behaviour.
+/// * `seed` - Random seed for reproducibility
+///
+/// ### Returns
+///
+/// Tuple of (matrix of shape `(n_samples, 3)`, t parameter for each sample)
+pub fn generate_swiss_roll_biased(
+    n_samples: usize,
+    noise: f64,
+    density_bias: f64,
+    seed: u64,
+) -> (Mat<f64>, Vec<f64>) {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut data = Mat::<f64>::zeros(n_samples, 3);
+    let mut t_values = Vec::with_capacity(n_samples);
+
+    for i in 0..n_samples {
+        let u: f64 = rng.random();
+        let u_biased = u.powf(density_bias);
+        let t = 1.5 * std::f64::consts::PI * (1.0 + 2.0 * u_biased);
+
+        let height = 21.0 * rng.random::<f64>();
+
+        let noise_x = rng.random_range(-noise..noise);
+        let noise_y = rng.random_range(-noise..noise);
+        let noise_z = rng.random_range(-noise..noise);
+
+        data[(i, 0)] = t * t.cos() + noise_x;
+        data[(i, 1)] = height + noise_y;
+        data[(i, 2)] = t * t.sin() + noise_z;
+        t_values.push(t);
+    }
+
+    (data, t_values)
+}
+
 /////////////
 // Cluster //
 /////////////

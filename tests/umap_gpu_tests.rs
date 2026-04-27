@@ -175,7 +175,8 @@ fn umap_gpu_integration_04_optimisation_quality() {
         None,
     );
 
-    let embedding = umap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, device, 42, false);
+    let embedding =
+        umap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, device, 42, false).unwrap();
 
     for i in 0..embedding[0].len() {
         assert!(
@@ -253,9 +254,11 @@ fn umap_gpu_integration_05_reproducibility() {
     );
 
     let device1 = WgpuDevice::default();
-    let embd1 = umap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, device1, 42, false);
+    let embd1 =
+        umap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, device1, 42, false).unwrap();
     let device2 = WgpuDevice::default();
-    let embd2 = umap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, device2, 42, false);
+    let embd2 =
+        umap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, device2, 42, false).unwrap();
 
     let mut max_diff: f32 = 0.0;
     for i in 0..embd1[0].len() {
@@ -308,11 +311,12 @@ fn umap_gpu_integration_06_precomputed_knn() {
         device_pre,
         42,
         false,
-    );
+    )
+    .unwrap();
 
     let device_int = WgpuDevice::default();
     let embd_int =
-        umap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, device_int, 42, false);
+        umap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, device_int, 42, false).unwrap();
 
     let mut max_diff: f32 = 0.0;
     for i in 0..embd_pre[0].len() {
