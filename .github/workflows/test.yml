@@ -34,4 +34,4 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libvulkan1 mesa-vulkan-drivers libgl1-mesa-dri
           echo "WGPU_BACKEND=vulkan" >> $GITHUB_ENV
-      - run: cargo test --release --all-features
+      - run: cargo test --release --all-features && cargo test --release --features gpu
