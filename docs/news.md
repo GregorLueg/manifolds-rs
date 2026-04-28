@@ -1,12 +1,19 @@
 # News
 
-## 0.2.1
+## 0.2.2
 
 **Features:**
 
-- GPU-accelerated kNN searches available -> supporting a GPU-accelerated version
-  of UMAP and tSNE.
-- Added KmKnn nearest neighbour search as a default.
+- Fixed the broken `gpu` feature flag and modified CI/CD to spot this earlier
+
+## 0.2.1
+
+(Yanked - broken `gpu` feature)
+
+**Features:**
+
+- Diffusion maps added.
+- Better error handling added.
 
 ## 0.2.0
 

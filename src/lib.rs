@@ -2923,10 +2923,11 @@ where
     StandardNormal: Distribution<T>,
     NNDescentGpu<T, R>: NNDescentQuery<T>,
 {
-    assert!(
-        params.n_dim == 2,
-        "At the moment, this tSNE implementation only supports n_dim = 2"
-    );
+    if params.n_dim != 2 {
+        return Err(ManifoldsError::IncorrectDim {
+            n_dim: params.n_dim,
+        });
+    }
 
     let (graph, _, _) = construct_tsne_graph_gpu::<T, R>(
         data,
@@ -2949,7 +2950,7 @@ where
         params.init_range,
     )
     .unwrap_or(EmbdInit::PcaInit {
-        randomised: true,
+        randomised: params.randomised_init,
         range: Some(T::from_f64(1e-2).unwrap()),
     });
 
@@ -3024,17 +3025,18 @@ pub fn tsne_gpu<T, R>(
     device: R::Device,
     seed: usize,
     verbose: bool,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat + AnnSearchGpuFloat,
     R: Runtime,
     StandardNormal: Distribution<T>,
     NNDescentGpu<T, R>: NNDescentQuery<T>,
 {
-    assert!(
-        params.n_dim == 2,
-        "At the moment, this tSNE implementation only supports n_dim = 2"
-    );
+    if params.n_dim != 2 {
+        return Err(ManifoldsError::IncorrectDim {
+            n_dim: params.n_dim,
+        });
+    }
 
     let (graph, _, _) = construct_tsne_graph_gpu::<T, R>(
         data,
@@ -3045,7 +3047,7 @@ where
         device,
         seed,
         verbose,
-    );
+    )?;
 
     if verbose {
         println!("Initialising embedding via {}...", &params.initialisation);
@@ -3057,11 +3059,11 @@ where
         params.init_range,
     )
     .unwrap_or(EmbdInit::PcaInit {
-        randomised: false,
+        randomised: params.randomised_init,
         range: Some(T::from_f64(1e-2).unwrap()),
     });
 
-    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data);
+    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
 
     let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
 
@@ -3094,5 +3096,5 @@ where
         }
     }
 
-    transposed
+    Ok(transposed)
 }
