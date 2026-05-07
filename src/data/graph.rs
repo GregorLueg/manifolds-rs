@@ -490,7 +490,7 @@ where
     }
 
     // soft warn: perplexity should be <= (k - 1) / 3 for well-behaved locality
-    let threshold = (min_k.saturating_sub(1)) as f64 / 3.0;
+    let threshold = min_k as f64 / 2.0;
     if perp_f64 > threshold {
         eprintln!(
             "warning: perplexity ({}) is large relative to the kNN size \
