@@ -1,5 +1,12 @@
 # News
 
+## 0.2.4
+
+**Features:**
+
+- Version bump on `burn`.
+- Removed unnecessary warning from tSNE.
+
 ## 0.2.3
 
 **Features:**

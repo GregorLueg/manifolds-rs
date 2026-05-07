@@ -26,7 +26,7 @@ fft_tsne = ["fftw"]
 gpu = ["ann-search-rs/gpu", "cubecl"]
 
 [dependencies]
-burn = { version = "0.19.1", features = [
+burn = { version = "0.20.1", features = [
     "dataset",
     "train",
     "ndarray",
