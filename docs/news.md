@@ -1,5 +1,11 @@
 # News
 
+## 0.2.3
+
+**Features:**
+
+- Version bump on `ann-search-rs`.
+
 ## 0.2.2
 
 **Features:**
