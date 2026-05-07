@@ -477,7 +477,6 @@ where
 
     // perplexity vs kNN size validation
     let min_k = knn_indices.iter().map(|idx| idx.len()).min().unwrap_or(0);
-    let max_k = knn_indices.iter().map(|idx| idx.len()).max().unwrap_or(0);
 
     let perp_f64 = perplexity.to_f64().unwrap_or(f64::NAN);
 
@@ -487,17 +486,6 @@ where
             perplexity: perp_f64,
             k: min_k,
         });
-    }
-
-    // soft warn: perplexity should be <= (k - 1) / 3 for well-behaved locality
-    let threshold = (min_k.saturating_sub(1)) as f64 / 3.0;
-    if perp_f64 > threshold {
-        eprintln!(
-            "warning: perplexity ({}) is large relative to the kNN size \
-             (min k = {}, max k = {}); results may be unreliable when \
-             perplexity > (k - 1) / 3 = {:.2}.",
-            perp_f64, min_k, max_k, threshold
-        );
     }
 
     let target_entropy = perplexity.log2();
