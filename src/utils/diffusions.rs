@@ -2,6 +2,7 @@
 
 use ann_search_rs::cpu::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::cpu::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
+use ann_search_rs::prelude::KMeansTrainingParams;
 use ann_search_rs::utils::dist::{parse_ann_dist, Dist};
 use ann_search_rs::utils::k_means_utils::{assign_all_parallel, train_centroids};
 use faer::MatRef;
@@ -393,11 +394,12 @@ where
     for idx in 0..n_landmark {
         let landmark = &landmark_data[idx * dim..(idx + 1) * dim];
         let dist = match dist {
-            Dist::Euclidean => T::euclidean_simd(landmark, data),
+            Dist::SquaredEuclidean => T::euclidean_simd(landmark, data),
             Dist::Cosine => {
                 let dot = T::dot_simd(landmark, data);
                 T::one() - (dot / (*norm_data * norm_landmark[idx]))
             }
+            Dist::Manhattan => unreachable!(),
         };
         if dist < min_dist {
             min_dist = dist;
@@ -667,20 +669,22 @@ where
                         .into_par_iter()
                         .map(|i| T::calculate_l2_norm(&data[i * dim..(i + 1) * dim]))
                         .collect::<Vec<_>>(),
-                    Dist::Euclidean => Vec::new(),
+                    Dist::SquaredEuclidean => Vec::new(),
+                    Dist::Manhattan => unreachable!(),
                 };
                 let norm_landmark = match distance {
                     Dist::Cosine => (0..n_landmarks)
                         .into_par_iter()
                         .map(|i| T::calculate_l2_norm(&landmark_data[i * dim..(i + 1) * dim]))
                         .collect::<Vec<_>>(),
-                    Dist::Euclidean => Vec::new(),
+                    Dist::SquaredEuclidean => Vec::new(),
+                    Dist::Manhattan => unreachable!(),
                 };
 
                 (0..n)
                     .into_par_iter()
                     .map(|i| {
-                        let norm = if matches!(distance, Dist::Euclidean) {
+                        let norm = if matches!(distance, Dist::SquaredEuclidean) {
                             T::zero() // unused by assign_to_landmark for Euclidean
                         } else {
                             norm_data[i]
@@ -723,17 +727,19 @@ where
                     }
                 }
 
+                let k_means_params = KMeansTrainingParams::new(100, None, None);
+
                 // use ann-search-rs k-means-clustering
                 let centroids = train_centroids(
                     &embedding_flat,
                     k,
                     n,
                     n_landmarks,
-                    &Dist::Euclidean,
-                    100,
+                    &Dist::SquaredEuclidean,
+                    Some(k_means_params),
                     seed,
                     verbose,
-                );
+                )?;
 
                 if verbose {
                     println!(" Centroids identified.")
@@ -750,7 +756,7 @@ where
                     &centroids,
                     &centroid_norms,
                     n_landmarks,
-                    &Dist::Euclidean,
+                    &Dist::SquaredEuclidean,
                 );
 
                 if verbose {
@@ -807,21 +813,23 @@ where
                         .into_par_iter()
                         .map(|i| T::calculate_l2_norm(&data[i * dim..(i + 1) * dim]))
                         .collect::<Vec<_>>(),
-                    Dist::Euclidean => Vec::new(),
+                    Dist::SquaredEuclidean => Vec::new(),
+                    Dist::Manhattan => unreachable!(),
                 };
                 let norm_landmark = match distance {
                     Dist::Cosine => (0..n_landmarks)
                         .into_par_iter()
                         .map(|i| T::calculate_l2_norm(&landmark_data[i * dim..(i + 1) * dim]))
                         .collect::<Vec<_>>(),
-                    Dist::Euclidean => Vec::new(),
+                    Dist::SquaredEuclidean => Vec::new(),
+                    Dist::Manhattan => unreachable!(),
                 };
 
                 // assign
                 (0..n)
                     .into_par_iter()
                     .map(|i| {
-                        let norm = if matches!(distance, Dist::Euclidean) {
+                        let norm = if matches!(distance, Dist::SquaredEuclidean) {
                             T::zero() // unused by assign_to_landmark for Euclidean
                         } else {
                             norm_data[i]
@@ -1146,19 +1154,22 @@ where
             .into_par_iter()
             .map(|i| T::calculate_l2_norm(&data[i * dim..(i + 1) * dim]))
             .collect(),
-        Dist::Euclidean => Vec::new(),
+        Dist::SquaredEuclidean => Vec::new(),
+        Dist::Manhattan => unreachable!(),
     };
     let landmark_norms: Vec<T> = match distance {
         Dist::Cosine => (0..n_landmarks)
             .into_par_iter()
             .map(|l| T::calculate_l2_norm(&landmark_data[l * dim..(l + 1) * dim]))
             .collect(),
-        Dist::Euclidean => Vec::new(),
+        Dist::SquaredEuclidean => Vec::new(),
+        Dist::Manhattan => unreachable!(),
     };
 
     let bw_factor = match distance {
-        Dist::Euclidean => bandwidth_scale * bandwidth_scale,
+        Dist::SquaredEuclidean => bandwidth_scale * bandwidth_scale,
         Dist::Cosine => bandwidth_scale,
+        Dist::Manhattan => unreachable!(),
     };
 
     let rows: Vec<(Vec<usize>, Vec<T>)> = (0..n)
@@ -1170,7 +1181,7 @@ where
                 .map(|l| {
                     let y = &landmark_data[l * dim..(l + 1) * dim];
                     let d = match distance {
-                        Dist::Euclidean => T::euclidean_simd(x, y),
+                        Dist::SquaredEuclidean => T::euclidean_simd(x, y),
                         Dist::Cosine => {
                             let dot = T::dot_simd(x, y);
                             let denom = data_norms[i] * landmark_norms[l];
@@ -1180,6 +1191,7 @@ where
                                 T::zero()
                             }
                         }
+                        Dist::Manhattan => unreachable!(),
                     };
                     (l, d)
                 })
@@ -1195,11 +1207,12 @@ where
                 .into_iter()
                 .filter_map(|(l, d)| {
                     let w = match distance {
-                        Dist::Euclidean => (-(d / bandwidth)).exp(),
+                        Dist::SquaredEuclidean => (-(d / bandwidth)).exp(),
                         Dist::Cosine => {
                             let scaled = d / bandwidth;
                             (-(scaled * scaled)).exp()
                         }
+                        Dist::Manhattan => unreachable!(),
                     };
                     if w >= thresh {
                         Some((l, w))
@@ -1380,16 +1393,18 @@ where
                     }
                 }
 
+                let k_means_params = KMeansTrainingParams::new(100, None, None);
+
                 let centroids = train_centroids(
                     &embedding_flat,
                     k_proj,
                     n,
                     n_landmarks,
-                    &Dist::Euclidean,
-                    100,
+                    &Dist::SquaredEuclidean,
+                    Some(k_means_params),
                     seed,
                     verbose,
-                );
+                )?;
                 let centroid_norms = vec![T::one(); n_landmarks];
                 let data_norms = vec![T::one(); n];
                 let assignments = assign_all_parallel(
@@ -1400,7 +1415,7 @@ where
                     &centroids,
                     &centroid_norms,
                     n_landmarks,
-                    &Dist::Euclidean,
+                    &Dist::SquaredEuclidean,
                 );
 
                 // for each cluster, pick the point closest to its centroid
@@ -1465,7 +1480,7 @@ where
             &nn_params,
             seed,
             verbose,
-        );
+        )?;
         // with this config it behaves like a Gaussian
         let ll_graph = phate_alpha_decay_affinities(
             &ll_indices,

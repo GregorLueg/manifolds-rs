@@ -10,13 +10,15 @@ use num_traits::Float;
 use rayon::prelude::*;
 use std::default::Default;
 
+use crate::prelude::*;
+
 /////////////
 // Helpers //
 /////////////
 
 /// Which search algorithm to use for the approximate nearest neighbour search
 /// Default is set to Hnsw
-#[derive(Default)]
+#[derive(Default, Clone, Copy, Debug)]
 pub enum AnnSearch {
     /// KmKnn
     #[default]
@@ -225,7 +227,7 @@ pub fn run_ann_search<T>(
     params_nn: &NearestNeighbourParams<T>,
     seed: usize,
     verbose: bool,
-) -> (Vec<Vec<usize>>, Vec<Vec<T>>)
+) -> ManifoldsKnnResults<T>
 where
     T: AnnSearchFloat,
     HnswIndex<T>: HnswState<T>,
@@ -235,10 +237,9 @@ where
 
     let (knn_indices, knn_dist) = match ann_search {
         AnnSearch::Annoy => {
-            let index =
-                build_annoy_index(data, params_nn.dist_metric.clone(), params_nn.n_tree, seed);
+            let index = build_annoy_index(data, &params_nn.dist_metric, params_nn.n_tree, seed)?;
 
-            query_annoy_self(&index, k + 1, params_nn.search_budget, true, verbose)
+            query_annoy_self(&index, k + 1, params_nn.search_budget, true, verbose)?
         }
         AnnSearch::Hnsw => {
             let index = build_hnsw_index(
@@ -250,7 +251,7 @@ where
                 verbose,
             );
 
-            query_hnsw_self(&index, k + 1, params_nn.ef_search, true, verbose)
+            query_hnsw_self(&index, k + 1, params_nn.ef_search, true, verbose)?
         }
         AnnSearch::NNDescent => {
             let index = build_nndescent_index(
@@ -264,21 +265,21 @@ where
                 None,
                 seed,
                 verbose,
-            );
+            )?;
 
-            query_nndescent_self(&index, k + 1, params_nn.ef_budget, true, verbose)
+            query_nndescent_self(&index, k + 1, params_nn.ef_budget, true, verbose)?
         }
         AnnSearch::BallTree => {
-            let index = build_balltree_index(data, params_nn.dist_metric.clone(), seed);
+            let index = build_balltree_index(data, &params_nn.dist_metric, seed)?;
 
             let budget = (data.nrows() as f32 * params_nn.bt_budget.to_f32().unwrap()) as usize;
 
-            query_balltree_self(&index, k + 1, Some(budget), true, verbose)
+            query_balltree_self(&index, k + 1, Some(budget), true, verbose)?
         }
         AnnSearch::Exhaustive => {
             let index = build_exhaustive_index(data, &params_nn.dist_metric);
 
-            query_exhaustive_self(&index, k + 1, true, verbose)
+            query_exhaustive_self(&index, k + 1, true, verbose)?
         }
         AnnSearch::Ivf => {
             let index = build_ivf_index(
@@ -288,9 +289,9 @@ where
                 &params_nn.dist_metric,
                 seed,
                 verbose,
-            );
+            )?;
 
-            query_ivf_self(&index, k + 1, params_nn.n_probes, true, verbose)
+            query_ivf_self(&index, k + 1, params_nn.n_probes, true, verbose)?
         }
         AnnSearch::KmKnn => {
             let index = build_kmknn_index(
@@ -300,9 +301,9 @@ where
                 None,
                 seed,
                 verbose,
-            );
+            )?;
 
-            query_kmknn_self(&index, k + 1, true, verbose)
+            query_kmknn_self(&index, k + 1, true, verbose)?
         }
     };
 
@@ -319,5 +320,5 @@ where
         .map(|mut v| v.drain(1..).collect())
         .collect();
 
-    (knn_indices, knn_dist)
+    Ok((knn_indices, knn_dist))
 }

@@ -91,7 +91,8 @@ fn tsne_gpu_integration_01_knn_correctness() {
         device,
         42,
         false,
-    );
+    )
+    .unwrap();
 
     println!("\n=== GPU t-SNE DIAGNOSTIC 1: kNN Search ===");
     println!("k = {} neighbours", k);
@@ -271,7 +272,8 @@ fn tsne_gpu_integration_05_precomputed_knn() {
         device,
         42,
         false,
-    );
+    )
+    .unwrap();
 
     let params = TsneParamsGpu::new(
         Some(2),

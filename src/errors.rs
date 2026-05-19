@@ -20,6 +20,10 @@ pub enum ManifoldsError {
         /// Set dimensions for tSNE
         n_dim: usize,
     },
+    // -- ann-search-rs --
+    /// Propagate errors from the ann-search-rs crate
+    #[error("Error from the ann-search-rs crate: {0}")]
+    AnnSearchRsError(#[from] ann_search_rs::errors::AnnSearchErrors),
     // -- math errors --
     /// Error for SVDs from faer
     #[error("The faer SVD failed - please verify the data")]

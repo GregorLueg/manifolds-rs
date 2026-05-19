@@ -86,7 +86,7 @@ fn phate_integration_01_knn_correctness() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 1: kNN Search ===");
     println!("Points per cluster: 100, k = {}", k);
@@ -138,7 +138,7 @@ fn phate_integration_02_alpha_decay_affinities() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 2: Alpha Decay Affinities ===");
 
@@ -206,7 +206,7 @@ fn phate_integration_03_binary_kernel() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 3: Binary Kernel ===");
 
@@ -255,7 +255,7 @@ fn phate_integration_04_diffusion_operator() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 4: Diffusion Operator ===");
 
@@ -307,7 +307,7 @@ fn phate_integration_05_matrix_power() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 5: Matrix Power ===");
 
@@ -355,7 +355,7 @@ fn phate_integration_06_potential_calculation() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 6: Potential Calculation ===");
 
@@ -604,7 +604,7 @@ fn phate_integration_11_precomputed_knn() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     let params = PhateParams::new(
         Some(2),  // n_dim
@@ -725,7 +725,7 @@ fn phate_integration_13_bandwidth_scale_effect() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 13: Bandwidth Scale Effect ===");
 

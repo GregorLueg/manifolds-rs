@@ -37,13 +37,13 @@ fn graph_to_adj(graph: &CoordinateList<f64>) -> Vec<Vec<(usize, f64)>> {
 #[test]
 fn tsne_integration_01_knn_correctness() {
     // Use more points per cluster so k < cluster_size
-    let (data, labels) = create_diagnostic_data(100, 10, 42); // Changed from 50 to 100
+    let (data, labels) = create_diagnostic_data(100, 10, 42);
     let perplexity = 30.0;
     let k = (perplexity * 3.0) as usize; // k = 90, now < 100
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== t-SNE DIAGNOSTIC 1: kNN Search ===");
     println!("Points per cluster: 100, k = {} neighbours", k);
@@ -115,7 +115,7 @@ fn tsne_integration_02_gaussian_affinities() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== t-SNE DIAGNOSTIC 2: Gaussian Affinities ===");
 
@@ -189,7 +189,7 @@ fn tsne_integration_03_symmetrisation() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     let directed =
         gaussian_knn_affinities(&knn_indices, &knn_dist, perplexity, 1e-5, 200, true).unwrap();
@@ -396,7 +396,7 @@ fn tsne_integration_05_initialisation() {
         data.as_ref(),
         None,
         30.0,
-        "hnsw".to_string(),
+        "kmknn".to_string(),
         &nn_params,
         42,
         false,
@@ -922,7 +922,7 @@ fn tsne_integration_13_precomputed_knn() {
     // Run kNN search separately
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!(
         "Precomputed kNN: {} neighbours per point",
