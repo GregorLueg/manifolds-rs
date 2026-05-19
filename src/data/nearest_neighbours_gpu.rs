@@ -12,6 +12,8 @@ use cubecl::prelude::*;
 use faer::MatRef;
 use rayon::prelude::*;
 
+use crate::prelude::*;
+
 /////////////
 // Helpers //
 /////////////
@@ -203,7 +205,7 @@ pub fn run_ann_search_gpu<T, R>(
     device: R::Device,
     seed: usize,
     verbose: bool,
-) -> (Vec<Vec<usize>>, Vec<Vec<T>>)
+) -> ManifoldsKnnResults<T>
 where
     T: AnnSearchFloat + AnnSearchGpuFloat,
     R: Runtime,
@@ -213,9 +215,9 @@ where
 
     let (knn_indices_raw, knn_dist) = match ann_search {
         AnnSearchGpu::ExhaustiveGpu => {
-            let index = build_exhaustive_index_gpu::<T, R>(data, &params_nn.dist_metric, device);
+            let index = build_exhaustive_index_gpu::<T, R>(data, &params_nn.dist_metric, device)?;
 
-            query_exhaustive_index_gpu_self(&index, k + 1, true, verbose)
+            query_exhaustive_index_gpu_self(&index, k + 1, true, verbose)?
         }
         AnnSearchGpu::IvfGpu => {
             let index = build_ivf_index_gpu::<T, R>(
@@ -226,9 +228,9 @@ where
                 seed,
                 verbose,
                 device,
-            );
+            )?;
 
-            query_ivf_index_gpu_self(&index, k + 1, params_nn.n_probes, None, true, verbose)
+            query_ivf_index_gpu_self(&index, k + 1, params_nn.n_probes, None, true, verbose)?
         }
         AnnSearchGpu::NNDescentGpu => {
             let mut index = build_nndescent_index_gpu::<T, R>(
@@ -245,7 +247,7 @@ where
                 verbose,
                 false,
                 device,
-            );
+            )?;
 
             let query_params = CagraGpuSearchParams::new(
                 params_nn.beam_width,
@@ -274,5 +276,5 @@ where
         })
         .unzip();
 
-    (knn_indices, knn_dist)
+    Ok((knn_indices, knn_dist))
 }

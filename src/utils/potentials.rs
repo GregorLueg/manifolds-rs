@@ -197,7 +197,7 @@ where
     let computed: Vec<T> = pairs
         .par_iter()
         .map(|&(i, j)| match metric {
-            Dist::Euclidean => T::euclidean_simd(&dense_rows[i], &dense_rows[j]).sqrt(),
+            Dist::SquaredEuclidean => T::euclidean_simd(&dense_rows[i], &dense_rows[j]).sqrt(),
             Dist::Cosine => {
                 let dot = T::dot_simd(&dense_rows[i], &dense_rows[j]);
                 let denom = norms[i] * norms[j];
@@ -207,6 +207,7 @@ where
                     T::zero()
                 }
             }
+            Dist::Manhattan => unreachable!(),
         })
         .collect();
 
@@ -421,7 +422,7 @@ mod test_distance_computation {
         let indptr = vec![0, 1, 2, 3];
         let mat = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
 
-        let distances = compute_potential_distances(&mat, &Dist::Euclidean);
+        let distances = compute_potential_distances(&mat, &Dist::SquaredEuclidean);
 
         // Check diagonal is zero
         for i in 0..3 {
@@ -465,7 +466,7 @@ mod test_distance_computation {
         let indptr = vec![0, 2, 4, 6];
         let mat = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
 
-        let distances = compute_potential_distances(&mat, &Dist::Euclidean);
+        let distances = compute_potential_distances(&mat, &Dist::SquaredEuclidean);
 
         // Distance matrix should be symmetric
         for i in 0..3 {

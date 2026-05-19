@@ -73,7 +73,7 @@ fn dm_integration_01_knn_correctness() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== DM DIAGNOSTIC 1: kNN Search ===");
 
@@ -102,7 +102,7 @@ fn dm_integration_02_gaussian_affinities() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== DM DIAGNOSTIC 2: Gaussian Affinities ===");
 
@@ -149,7 +149,7 @@ fn dm_integration_03_alpha_norm_zero() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     let graph = phate_alpha_decay_affinities(
         &knn_indices,
@@ -178,7 +178,7 @@ fn dm_integration_04_alpha_norm_one_symmetry() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     let graph = phate_alpha_decay_affinities(
         &knn_indices,
@@ -219,7 +219,7 @@ fn dm_integration_05_symmetric_operator() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     let graph = phate_alpha_decay_affinities(
         &knn_indices,
@@ -268,7 +268,7 @@ fn dm_integration_06_trivial_eigenvalue() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     let graph = phate_alpha_decay_affinities(
         &knn_indices,
@@ -410,7 +410,8 @@ fn dm_integration_10_precomputed_knn() {
     let k = 10;
 
     let nn_params = NearestNeighbourParams::default();
-    let (ki, kd) = run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+    let (ki, kd) =
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     let params = DiffusionMapsParams::new(
         Some(2),
@@ -542,7 +543,8 @@ fn dm_integration_13_bandwidth_scale_effect() {
     let k = 10;
 
     let nn_params = NearestNeighbourParams::default();
-    let (ki, kd) = run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+    let (ki, kd) =
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     let g_narrow = phate_alpha_decay_affinities(&ki, &kd, k, Some(2.0), 0.5, 1e-4, "none", true);
     let g_wide = phate_alpha_decay_affinities(&ki, &kd, k, Some(2.0), 2.0, 1e-4, "none", true);
@@ -746,7 +748,8 @@ fn dm_integration_19_landmark_coverage() {
     let k = 10;
 
     let nn_params = NearestNeighbourParams::default();
-    let (ki, kd) = run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+    let (ki, kd) =
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     let graph = phate_alpha_decay_affinities(&ki, &kd, k, Some(2.0), 1.0, 1e-4, "add", true);
     let kernel = coo_to_csr(&graph);

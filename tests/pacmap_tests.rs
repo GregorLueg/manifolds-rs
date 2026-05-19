@@ -66,7 +66,7 @@ fn pacmap_integration_01_knn_correctness() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 1: kNN Search ===");
     println!("Points per cluster: 100, k = {} neighbours", k);
@@ -119,7 +119,7 @@ fn pacmap_integration_02_pair_counts() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, _) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     let pairs = construct_pacmap_pairs(&knn_indices, n_mid_near, n_further, 4, 50, 42);
 
@@ -143,7 +143,7 @@ fn pacmap_integration_03_no_self_pairs() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, _) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     let pairs = construct_pacmap_pairs(&knn_indices, 2, 2, 4, 50, 42);
 
@@ -170,7 +170,7 @@ fn pacmap_integration_04_mid_near_candidate_window() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, _) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     let pairs = construct_pacmap_pairs(&knn_indices, 2, 2, candidate_start, candidate_end, 42);
 
@@ -356,7 +356,8 @@ fn pacmap_integration_10_precomputed_knn() {
         &nn_params,
         42,
         false,
-    );
+    )
+    .unwrap();
 
     // Use sequential Adam — parallel has non-deterministic FP accumulation order
     // so precomputed vs internal may diverge even with identical kNN graphs.
@@ -497,8 +498,15 @@ fn pacmap_integration_13_pca_init_range() {
     let (data, _) = create_diagnostic_data(100, 10, 42);
 
     let nn_params = NearestNeighbourParams::default();
-    let (knn_indices, _) =
-        run_ann_search(data.as_ref(), 50, "hnsw".to_string(), &nn_params, 42, false);
+    let (knn_indices, _) = run_ann_search(
+        data.as_ref(),
+        50,
+        "kmknn".to_string(),
+        &nn_params,
+        42,
+        false,
+    )
+    .unwrap();
 
     let dummy_graph = manifolds_rs::data::pacmap_pairs::knn_to_coo_unweighted::<f64>(&knn_indices);
 

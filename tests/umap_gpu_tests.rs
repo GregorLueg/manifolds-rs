@@ -27,7 +27,8 @@ fn umap_gpu_integration_01_knn_correctness() {
         device,
         42,
         false,
-    );
+    )
+    .unwrap();
 
     println!("\n=== GPU UMAP DIAGNOSTIC 1: kNN Search Correctness ===");
     println!("Returned {} neighbours per point", knn_indices[0].len());
@@ -76,7 +77,8 @@ fn umap_gpu_integration_02_ann_dispatch() {
             device,
             42,
             false,
-        );
+        )
+        .unwrap();
         assert_eq!(indices.len(), data.nrows());
         assert_eq!(indices[0].len(), k);
         assert_eq!(dist.len(), data.nrows());
@@ -107,7 +109,8 @@ fn umap_gpu_integration_03_graph_connectivity() {
         device,
         42,
         false,
-    );
+    )
+    .unwrap();
 
     println!("\n=== GPU UMAP DIAGNOSTIC 3: Graph Connectivity ===");
     println!("Graph has {} edges", graph.values.len());
@@ -288,7 +291,8 @@ fn umap_gpu_integration_06_precomputed_knn() {
         device,
         42,
         false,
-    );
+    )
+    .unwrap();
 
     let params = UmapParamsGpu::new(
         Some(2),

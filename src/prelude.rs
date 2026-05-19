@@ -26,4 +26,25 @@ pub use crate::utils::traits::ManifoldsFloat;
 #[cfg(feature = "gpu")]
 pub use crate::data::nearest_neighbours_gpu::*;
 #[cfg(feature = "parametric")]
+pub use crate::parametric::model::TrainedUmapModel;
+#[cfg(feature = "parametric")]
 pub use crate::parametric::parametric_train::TrainParametricParams;
+
+///////////
+// Types //
+///////////
+
+/// The kNN search results in manifolds. If Ok, it's (indices, distances);
+/// otherwise a [ManifoldsError].
+pub type ManifoldsKnnResults<T> = Result<(Vec<Vec<usize>>, Vec<Vec<T>>), ManifoldsError>;
+
+/// The Umap graph results. If Ok it's
+/// `(coordinate_list of umap graph, indices, distances)`
+pub type UmapGraphResults<T> =
+    Result<(CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>), ManifoldsError>;
+
+/// The parametric UMAP results. If Ok, it's (embd, trained model); otherwise
+/// an error
+#[cfg(feature = "parametric")]
+pub type ParametricUmapResults<B, T> =
+    Result<(Vec<Vec<T>>, TrainedUmapModel<B, T>), ManifoldsError>;

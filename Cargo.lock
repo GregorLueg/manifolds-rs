@@ -99,9 +99,9 @@ checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
 name = "ann-search-rs"
-version = "0.2.15"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "89ab79fa0ad824cfc7a0e39bc629edd5cf355afc16fe702be754c605d1607f27"
+checksum = "3a993e44da42ac09088d7f7a801c7a6cd81c44e59ea5f4077dfc6a95efd8c54b"
 dependencies = [
  "approx",
  "clap",
@@ -116,6 +116,7 @@ dependencies = [
  "rayon",
  "rdst",
  "rustc-hash 2.1.1",
+ "thiserror 2.0.18",
  "thousands",
  "wide",
 ]
@@ -7337,9 +7338,9 @@ dependencies = [
 
 [[package]]
 name = "wide"
-version = "1.1.1"
+version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac11b009ebeae802ed758530b6496784ebfee7a87b9abfbcaf3bbe25b814eb25"
+checksum = "9a7714cd0430a663154667c74da5d09325c2387695bee18b3f7f72825aa3693a"
 dependencies = [
  "bytemuck",
  "safe_arch",

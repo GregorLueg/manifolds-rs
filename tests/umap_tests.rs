@@ -16,7 +16,7 @@ fn umap_integration_01_knn_correctness() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== DIAGNOSTIC 1: kNN Search Correctness ===");
     println!(
@@ -94,7 +94,8 @@ fn umap_integration_02_smooth_knn_dist() {
     let k = 15;
 
     let nn_params = NearestNeighbourParams::default();
-    let (_, knn_dist) = run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+    let (_, knn_dist) =
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!("\n=== DIAGNOSTIC 2: smooth_knn_dist Values ===");
 
@@ -177,13 +178,14 @@ fn umap_integration_03_graph_connectivity() {
         data.as_ref(),
         None,
         k,
-        "hnsw".to_string(),
+        "kmknn".to_string(),
         &umap_params,
         &nn_params,
         500,
         42,
         false,
-    );
+    )
+    .unwrap();
 
     println!("\n=== DIAGNOSTIC 3: Graph Connectivity ===");
     println!("Graph has {} edges", graph.values.len());
@@ -301,13 +303,14 @@ fn umap_integration_04_initialisation() {
         data.as_ref(),
         None,
         15,
-        "hnsw".to_string(),
+        "kmknn".to_string(),
         &umap_params,
         &nn_params,
         500,
         42,
         false,
-    );
+    )
+    .unwrap();
 
     println!("\n=== DIAGNOSTIC 4: Initialisation Quality ===");
 
@@ -656,7 +659,7 @@ fn umap_integration_07_precomputed_knn() {
     // First, run kNN search separately
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "hnsw".to_string(), &nn_params, 42, false);
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
     println!(
         "Precomputed kNN: {} neighbours per point",

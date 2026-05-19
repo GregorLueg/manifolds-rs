@@ -263,7 +263,7 @@ pub fn construct_umap_graph<T>(
     n_epochs: usize,
     seed: usize,
     verbose: bool,
-) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
+) -> UmapGraphResults<T>
 where
     T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
@@ -284,7 +284,7 @@ where
                 );
             }
             let start_knn = Instant::now();
-            let result = run_ann_search(data, k, ann_type, nn_params, seed, verbose);
+            let result = run_ann_search(data, k, ann_type, nn_params, seed, verbose)?;
             if verbose {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
             }
@@ -317,7 +317,7 @@ where
         );
     }
 
-    (graph, knn_indices, knn_dist)
+    Ok((graph, knn_indices, knn_dist))
 }
 
 /// Run UMAP dimensionality reduction
@@ -386,7 +386,7 @@ where
         umap_params.optim_params.n_epochs,
         seed,
         verbose,
-    );
+    )?;
 
     if verbose {
         println!(
@@ -619,7 +619,7 @@ where
             }
 
             let start_knn = Instant::now();
-            let result = run_ann_search(data, k, ann_type, nn_params, seed, verbose);
+            let result = run_ann_search(data, k, ann_type, nn_params, seed, verbose)?;
 
             if verbose {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
@@ -1100,7 +1100,7 @@ where
                 );
             }
             let start_knn = Instant::now();
-            let result = run_ann_search(data, k, ann_type.to_string(), nn_params, seed, verbose);
+            let result = run_ann_search(data, k, ann_type.to_string(), nn_params, seed, verbose)?;
             if verbose {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
             }
@@ -1566,7 +1566,7 @@ where
                 &params_pacmap.nn_params,
                 seed,
                 verbose,
-            );
+            )?;
             if verbose {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
             }
@@ -1842,7 +1842,7 @@ where
                     println!("Running ANN search using {}...", ann_type);
                 }
                 let start_knn = Instant::now();
-                let res = run_ann_search(data, k, ann_type.to_string(), nn_params, seed, verbose);
+                let res = run_ann_search(data, k, ann_type.to_string(), nn_params, seed, verbose)?;
                 if verbose {
                     println!("kNN search done in {:.2?}.", start_knn.elapsed());
                 }
@@ -2222,7 +2222,7 @@ pub fn parametric_umap<T, B>(
     device: &B::Device,
     seed: usize,
     verbose: bool,
-) -> Vec<Vec<T>>
+) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat + Element,
     B: AutodiffBackend,
@@ -2250,7 +2250,7 @@ where
         umap_params.train_param.n_epochs,
         seed,
         verbose,
-    );
+    )?;
 
     let model_params = UmapMlpConfig::from_params(
         data.ncols(),
@@ -2268,7 +2268,7 @@ where
         verbose,
     );
 
-    embd
+    Ok(embd)
 }
 
 #[cfg(feature = "parametric")]
@@ -2304,7 +2304,7 @@ pub fn train_parametric_umap_model<T, B>(
     device: &B::Device,
     seed: usize,
     verbose: bool,
-) -> (Vec<Vec<T>>, TrainedUmapModel<B, T>)
+) -> ParametricUmapResults<B, T>
 where
     T: ManifoldsFloat + Element,
     B: AutodiffBackend,
@@ -2332,7 +2332,7 @@ where
         umap_params.train_param.n_epochs,
         seed,
         verbose,
-    );
+    )?;
 
     let model_params = UmapMlpConfig::from_params(
         data.ncols(),
@@ -2350,7 +2350,7 @@ where
         verbose,
     );
 
-    (embd, trained_model)
+    Ok((embd, trained_model))
 }
 
 /////////
@@ -2515,7 +2515,7 @@ pub fn construct_umap_graph_gpu<T, R>(
     device: R::Device,
     seed: usize,
     verbose: bool,
-) -> (CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
+) -> UmapGraphResults<T>
 where
     T: ManifoldsFloat + AnnSearchGpuFloat,
     R: Runtime,
@@ -2534,7 +2534,7 @@ where
             }
             let start_knn = Instant::now();
             let result =
-                run_ann_search_gpu::<T, R>(data, k, ann_type, nn_params, device, seed, verbose);
+                run_ann_search_gpu::<T, R>(data, k, ann_type, nn_params, device, seed, verbose)?;
             if verbose {
                 println!("GPU kNN search done in: {:.2?}.", start_knn.elapsed());
             }
@@ -2567,7 +2567,7 @@ where
         );
     }
 
-    (graph, knn_indices, knn_dist)
+    Ok((graph, knn_indices, knn_dist))
 }
 
 /// Run UMAP with GPU-accelerated nearest neighbour search
@@ -2631,7 +2631,7 @@ where
         device,
         seed,
         verbose,
-    );
+    )?;
 
     if verbose {
         println!(
@@ -2850,7 +2850,7 @@ where
 
             let start_knn = Instant::now();
             let result =
-                run_ann_search_gpu::<T, R>(data, k, ann_type, nn_params, device, seed, verbose);
+                run_ann_search_gpu::<T, R>(data, k, ann_type, nn_params, device, seed, verbose)?;
 
             if verbose {
                 println!("GPU kNN search done in: {:.2?}.", start_knn.elapsed());
