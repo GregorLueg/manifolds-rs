@@ -4,6 +4,7 @@ use ann_search_rs::utils::dist::Dist;
 use rayon::prelude::*;
 
 use crate::data::structures::CompressedSparseData;
+use crate::errors::ManifoldsError;
 use crate::utils::sparse_ops::*;
 use crate::utils::traits::*;
 
@@ -99,23 +100,23 @@ pub fn calculate_potential<T>(
     diffusion_op: &CompressedSparseData<T>,
     t: usize,
     gamma: T,
-) -> CompressedSparseData<T>
+) -> Result<CompressedSparseData<T>, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
     // power the operator
-    let diffused = matrix_power(diffusion_op, t);
+    let diffused = matrix_power(diffusion_op, t)?;
 
     // apply transformation
     if (gamma - T::one()).abs() < T::from(1e-10).unwrap() {
         // log transformation
-        apply_log_potential(&diffused, T::from(1e-7).unwrap())
+        Ok(apply_log_potential(&diffused, T::from(1e-7).unwrap()))
     } else if (gamma + T::one()).abs() < T::from(1e-10).unwrap() {
         // identity transformation
-        diffused
+        Ok(diffused)
     } else {
         // power transformation
-        apply_power_potential(&diffused, gamma)
+        Ok(apply_power_potential(&diffused, gamma))
     }
 }
 
@@ -328,7 +329,7 @@ mod test_potential_transforms {
         let indptr = vec![0, 2, 4, 5];
         let diff_op = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
 
-        let result = calculate_potential(&diff_op, 2, 1.0);
+        let result = calculate_potential(&diff_op, 2, 1.0).unwrap();
 
         // Should be log potential
         // Values can be slightly negative when diffusion probability ≈ 1
@@ -349,10 +350,10 @@ mod test_potential_transforms {
         let indptr = vec![0, 2, 4, 5];
         let diff_op = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
 
-        let result = calculate_potential(&diff_op, 2, -1.0);
+        let result = calculate_potential(&diff_op, 2, -1.0).unwrap();
 
         // Should be P^2 with no transformation
-        let p2 = matrix_power(&diff_op, 2);
+        let p2 = matrix_power(&diff_op, 2).unwrap();
         assert_eq!(result.data.len(), p2.data.len());
         for (res_val, p2_val) in result.data.iter().zip(&p2.data) {
             assert_relative_eq!(res_val, p2_val, epsilon = 1e-10);
@@ -366,7 +367,7 @@ mod test_potential_transforms {
         let indptr = vec![0, 2, 4, 5];
         let diff_op = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
 
-        let result = calculate_potential(&diff_op, 2, 0.5);
+        let result = calculate_potential(&diff_op, 2, 0.5).unwrap();
 
         // Should be power potential
         assert!(!result.data.is_empty());

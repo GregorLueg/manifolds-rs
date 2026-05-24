@@ -1271,8 +1271,8 @@ where
             if verbose {
                 println!("Powering diffusion operator...");
             }
-            let powered = matrix_power(&operator, t);
-            let potential = calculate_potential(&powered, 1, phate_params.diffusion_params.gamma);
+            let powered = matrix_power(&operator, t)?;
+            let potential = calculate_potential(&powered, 1, phate_params.diffusion_params.gamma)?;
 
             if verbose {
                 println!(
@@ -1316,9 +1316,9 @@ where
                     landmarks.get_n_landmarks()
                 );
             }
-            let landmark_powered = landmarks.power(t);
+            let landmark_powered = landmarks.power(t)?;
             let landmark_potential =
-                calculate_potential(&landmark_powered, 1, phate_params.diffusion_params.gamma);
+                calculate_potential(&landmark_powered, 1, phate_params.diffusion_params.gamma)?;
 
             if verbose {
                 println!(

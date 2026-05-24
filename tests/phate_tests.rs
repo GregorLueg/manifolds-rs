@@ -325,7 +325,7 @@ fn phate_integration_05_matrix_power() {
     let diffusion_op = build_diffusion_operator(&kernel_csr);
 
     for t in [1, 2, 5, 10] {
-        let powered = matrix_power(&diffusion_op, t);
+        let powered = matrix_power(&diffusion_op, t).unwrap();
         let sums = row_sums(&powered);
         let min_sum = sums.iter().copied().fold(f64::INFINITY, f64::min);
         let max_sum = sums.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -373,7 +373,7 @@ fn phate_integration_06_potential_calculation() {
     let diffusion_op = build_diffusion_operator(&kernel_csr);
 
     for (gamma, label) in [(1.0, "log"), (-1.0, "identity"), (0.5, "power")] {
-        let potential = calculate_potential(&diffusion_op, 5, gamma);
+        let potential = calculate_potential(&diffusion_op, 5, gamma).unwrap();
 
         let nan_count = potential.data.iter().filter(|v| v.is_nan()).count();
         let inf_count = potential.data.iter().filter(|v| v.is_infinite()).count();

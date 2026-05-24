@@ -199,13 +199,14 @@ impl Dataset<(usize, usize, f32)> for UmapEdgeDataset {
 #[cfg(test)]
 mod dataset_tests {
     use super::*;
-    use burn::backend::ndarray::{NdArray, NdArrayDevice};
+    use burn::backend::flex::FlexDevice;
+    use burn::backend::Flex;
 
-    type TestBackend = NdArray<f32>;
+    type TestBackend = Flex<f32>;
 
     #[test]
     fn test_umap_loss_shape() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let src = Tensor::<TestBackend, 2>::from_floats([[0.0, 0.0], [1.0, 1.0]], &device);
         let dst = Tensor::<TestBackend, 2>::from_floats([[0.1, 0.1], [1.1, 1.1]], &device);
@@ -219,7 +220,7 @@ mod dataset_tests {
 
     #[test]
     fn test_umap_loss_is_finite() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let src = Tensor::<TestBackend, 2>::random(
             [10, 5],
@@ -242,7 +243,7 @@ mod dataset_tests {
 
     #[test]
     fn test_umap_loss_identical_embeddings() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let src = Tensor::<TestBackend, 2>::from_floats([[1.0, 2.0]], &device);
         let dst = Tensor::<TestBackend, 2>::from_floats([[1.0, 2.0]], &device);
@@ -260,7 +261,7 @@ mod dataset_tests {
 
     #[test]
     fn test_umap_loss_distant_embeddings() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let src = Tensor::<TestBackend, 2>::from_floats([[0.0, 0.0]], &device);
         let dst = Tensor::<TestBackend, 2>::from_floats([[10.0, 10.0]], &device);
@@ -278,7 +279,7 @@ mod dataset_tests {
 
     #[test]
     fn test_correlation_loss_shape() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let x_dist = Tensor::<TestBackend, 1>::from_floats([1.0, 2.0, 3.0], &device);
         let z_dist = Tensor::<TestBackend, 1>::from_floats([1.1, 2.1, 3.1], &device);
@@ -291,7 +292,7 @@ mod dataset_tests {
 
     #[test]
     fn test_correlation_loss_perfect_correlation() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let x_dist = Tensor::<TestBackend, 1>::from_floats([1.0, 2.0, 3.0, 4.0], &device);
         let z_dist = Tensor::<TestBackend, 1>::from_floats([2.0, 4.0, 6.0, 8.0], &device);
@@ -309,7 +310,7 @@ mod dataset_tests {
 
     #[test]
     fn test_correlation_loss_no_correlation() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let x_dist = Tensor::<TestBackend, 1>::from_floats([1.0, 2.0, 3.0, 4.0], &device);
         let z_dist = Tensor::<TestBackend, 1>::from_floats([4.0, 3.0, 2.0, 1.0], &device);
@@ -327,7 +328,7 @@ mod dataset_tests {
 
     #[test]
     fn test_umap_loss_with_correlation_shape() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let src_embed = Tensor::<TestBackend, 2>::from_floats([[0.0, 0.0], [1.0, 1.0]], &device);
         let dst_embed = Tensor::<TestBackend, 2>::from_floats([[0.1, 0.1], [1.1, 1.1]], &device);
@@ -347,7 +348,7 @@ mod dataset_tests {
 
     #[test]
     fn test_umap_loss_with_correlation_is_finite() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let src_embed = Tensor::<TestBackend, 2>::random(
             [10, 2],

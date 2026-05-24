@@ -4,7 +4,7 @@
 mod commons;
 use commons::*;
 
-use burn::backend::ndarray::{NdArray, NdArrayDevice};
+use burn::backend::flex::{Flex, FlexDevice};
 use burn::backend::Autodiff;
 use burn::prelude::Backend;
 use faer::Mat;
@@ -14,16 +14,16 @@ use manifolds_rs::prelude::*;
 use manifolds_rs::*;
 
 // Define the TestBackend type
-type TestBackend = Autodiff<NdArray<f64>>;
+type TestBackend = Autodiff<Flex<f32>>;
 
 fn fast_test_params_custom(
     n_dim: Option<usize>,
     n_neighbours: Option<usize>,
-    min_dist: Option<f64>,
-    spread: Option<f64>,
+    min_dist: Option<f32>,
+    spread: Option<f32>,
     hidden_layers: Vec<usize>,
-    corr_weight: Option<f64>,
-) -> ParametricUmapParams<f64> {
+    corr_weight: Option<f32>,
+) -> ParametricUmapParams<f32> {
     let n_dim = n_dim.unwrap_or(2);
     let n_neighbours = n_neighbours.unwrap_or(15);
     let min_dist = min_dist.unwrap_or(0.1);
@@ -51,14 +51,15 @@ fn fast_test_params_custom(
     )
 }
 
-fn fast_test_params() -> ParametricUmapParams<f64> {
+fn fast_test_params() -> ParametricUmapParams<f32> {
     fast_test_params_custom(Some(2), Some(15), Some(0.1), Some(1.0), vec![32], Some(0.0))
 }
 
 #[test]
 fn parametric_01_comprehensive_quality() {
     let (data, labels) = create_diagnostic_data(20, 10, 42);
-    let device = NdArrayDevice::Cpu;
+    let data = mat_to_f32(data);
+    let device = FlexDevice;
 
     println!("\n=== PARAMETRIC TEST 1: Comprehensive Quality ===");
     println!("Data: {} samples, {} features", data.nrows(), data.ncols());
@@ -66,7 +67,7 @@ fn parametric_01_comprehensive_quality() {
 
     let params = fast_test_params();
     let embedding =
-        parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
+        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
             .unwrap();
 
     // Basic shape checks
@@ -97,12 +98,12 @@ fn parametric_01_comprehensive_quality() {
 
     // Coordinate statistics
     for dim in 0..2 {
-        let min = embedding[dim].iter().copied().fold(f64::INFINITY, f64::min);
+        let min = embedding[dim].iter().copied().fold(f32::INFINITY, f32::min);
         let max = embedding[dim]
             .iter()
             .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
-        let mean = embedding[dim].iter().sum::<f64>() / embedding[dim].len() as f64;
+            .fold(f32::NEG_INFINITY, f32::max);
+        let mean = embedding[dim].iter().sum::<f32>() / embedding[dim].len() as f32;
         println!(
             "  Dim {}: min = {:.3}, mean = {:.3}, max = {:.3}",
             dim, min, mean, max
@@ -110,7 +111,7 @@ fn parametric_01_comprehensive_quality() {
     }
 
     // Compute cluster centroids
-    let mut cluster_centres: FxHashMap<usize, (f64, f64, usize)> = FxHashMap::default();
+    let mut cluster_centres: FxHashMap<usize, (f32, f32, usize)> = FxHashMap::default();
     for (i, &label) in labels.iter().enumerate() {
         let entry = cluster_centres.entry(label).or_insert((0.0, 0.0, 0));
         entry.0 += embedding[0][i];
@@ -118,15 +119,15 @@ fn parametric_01_comprehensive_quality() {
         entry.2 += 1;
     }
 
-    let mut centroids: Vec<(usize, f64, f64)> = Vec::new();
+    let mut centroids: Vec<(usize, f32, f32)> = Vec::new();
     for (label, (sum_x, sum_y, count)) in cluster_centres {
-        centroids.push((label, sum_x / count as f64, sum_y / count as f64));
+        centroids.push((label, sum_x / count as f32, sum_y / count as f32));
     }
 
     // Check inter-cluster separation
     println!("\nCluster analysis:");
-    let mut min_inter_dist = f64::INFINITY;
-    let mut max_inter_dist = f64::NEG_INFINITY;
+    let mut min_inter_dist = f32::INFINITY;
+    let mut max_inter_dist = f32::NEG_INFINITY;
     let mut avg_inter_dist = 0.0;
     let mut count = 0;
 
@@ -141,7 +142,7 @@ fn parametric_01_comprehensive_quality() {
             count += 1;
         }
     }
-    avg_inter_dist /= count as f64;
+    avg_inter_dist /= count as f32;
 
     println!(
         "  Inter-cluster distances: min = {:.3}, avg = {:.3}, max = {:.3}",
@@ -188,7 +189,7 @@ fn parametric_01_comprehensive_quality() {
             }
         }
 
-        let connectivity = reachable as f64 / points.len() as f64;
+        let connectivity = reachable as f32 / points.len() as f32;
         println!(
             "  Cluster {}: {}/{} connected ({:.1}%)",
             cluster_id,
@@ -215,11 +216,11 @@ fn parametric_01_comprehensive_quality() {
             .map(|(i, _)| i)
             .collect();
 
-        let intra_dist: f64 = points
+        let intra_dist: f32 = points
             .iter()
             .map(|&i| ((embedding[0][i] - cx).powi(2) + (embedding[1][i] - cy).powi(2)).sqrt())
-            .sum::<f64>()
-            / points.len() as f64;
+            .sum::<f32>()
+            / points.len() as f32;
 
         avg_intra_dist += intra_dist;
     }
@@ -241,7 +242,8 @@ fn parametric_01_comprehensive_quality() {
 #[test]
 fn parametric_02_different_dimensions() {
     let (data, _) = create_diagnostic_data(15, 10, 42);
-    let device = NdArrayDevice::Cpu;
+    let data = mat_to_f32(data);
+    let device = FlexDevice;
 
     println!("\n=== PARAMETRIC TEST 2: Different Output Dimensions ===");
 
@@ -250,7 +252,7 @@ fn parametric_02_different_dimensions() {
 
         let params = fast_test_params_custom(Some(n_dim), None, None, None, vec![32], None);
         let embedding =
-            parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
+            parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
                 .unwrap();
 
         assert_eq!(embedding.len(), n_dim, "Should have {} dimensions", n_dim);
@@ -274,7 +276,8 @@ fn parametric_02_different_dimensions() {
 #[test]
 fn parametric_03_different_architectures() {
     let (data, _) = create_diagnostic_data(15, 10, 42);
-    let device = NdArrayDevice::Cpu;
+    let data = mat_to_f32(data);
+    let device = FlexDevice;
 
     println!("\n=== PARAMETRIC TEST 3: Different Network Architectures ===");
 
@@ -286,7 +289,7 @@ fn parametric_03_different_architectures() {
         let params = fast_test_params_custom(None, None, None, None, hidden_layers.clone(), None);
 
         let embedding =
-            parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
+            parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
                 .unwrap();
 
         assert_eq!(embedding.len(), 2);
@@ -309,13 +312,14 @@ fn parametric_03_different_architectures() {
 #[test]
 fn parametric_04_correlation_loss() {
     let (data, _) = create_diagnostic_data(15, 10, 42);
-    let device = NdArrayDevice::Cpu;
+    let data = mat_to_f32(data);
+    let device = FlexDevice;
 
     println!("\n=== PARAMETRIC TEST 4: Correlation Loss ===");
 
     let params = fast_test_params_custom(None, None, None, None, vec![32], Some(0.5));
     let embedding =
-        parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
+        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
             .unwrap();
 
     assert_eq!(embedding.len(), 2);
@@ -336,7 +340,8 @@ fn parametric_04_correlation_loss() {
 #[test]
 fn parametric_05_min_dist_spread() {
     let (data, _) = create_diagnostic_data(15, 10, 42);
-    let device = NdArrayDevice::Cpu;
+    let data = mat_to_f32(data);
+    let device = FlexDevice;
 
     println!("\n=== PARAMETRIC TEST 5: min_dist and spread ===");
 
@@ -349,7 +354,7 @@ fn parametric_05_min_dist_spread() {
             fast_test_params_custom(None, None, Some(min_dist), Some(spread), vec![32], None);
 
         let embedding =
-            parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
+            parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
                 .unwrap();
 
         let has_non_finite = embedding[0]
@@ -368,8 +373,8 @@ fn parametric_05_min_dist_spread() {
 
 #[test]
 fn parametric_06_small_dataset() {
-    let data = Mat::from_fn(10, 5, |i, j| (i as f64 + j as f64) * 0.1);
-    let device = NdArrayDevice::Cpu;
+    let data = Mat::from_fn(10, 5, |i, j| (i as f32 + j as f32) * 0.1);
+    let device = FlexDevice;
 
     println!("\n=== PARAMETRIC TEST 6: Small Dataset ===");
     println!("Data: {} samples, {} features", data.nrows(), data.ncols());
@@ -377,7 +382,7 @@ fn parametric_06_small_dataset() {
     let params = fast_test_params_custom(None, Some(5), None, None, vec![32], None);
 
     let embedding =
-        parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
+        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
             .unwrap();
 
     assert_eq!(embedding.len(), 2);
@@ -395,7 +400,8 @@ fn parametric_06_small_dataset() {
 #[test]
 fn parametric_07_precomputed_knn() {
     let (data, labels) = create_diagnostic_data(15, 10, 42);
-    let device = NdArrayDevice::Cpu;
+    let data = mat_to_f32(data);
+    let device = FlexDevice;
 
     println!("\n=== PARAMETRIC TEST 7: Precomputed kNN ===");
 
@@ -411,11 +417,11 @@ fn parametric_07_precomputed_knn() {
         knn_indices[0].len()
     );
 
-    NdArray::<f64>::seed(&device, 42);
+    Flex::<f32>::seed(&device, 42);
     let params = fast_test_params();
 
     // Run with precomputed kNN
-    let embedding_precomputed = parametric_umap::<f64, TestBackend>(
+    let embedding_precomputed = parametric_umap::<f32, TestBackend>(
         data.as_ref(),
         Some((knn_indices.clone(), knn_dist.clone())),
         &params,
@@ -425,11 +431,11 @@ fn parametric_07_precomputed_knn() {
     )
     .unwrap();
 
-    NdArray::<f64>::seed(&device, 42);
+    Flex::<f32>::seed(&device, 42);
 
     // Run without precomputed kNN (internal computation)
     let embedding_internal =
-        parametric_umap::<f64, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
+        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
             .unwrap();
 
     // Neural network training is inherently stochastic - verify structural similarity
@@ -440,7 +446,7 @@ fn parametric_07_precomputed_knn() {
         ("precomputed", &embedding_precomputed),
         ("internal", &embedding_internal),
     ] {
-        let mut cluster_centres: FxHashMap<usize, (f64, f64, usize)> = FxHashMap::default();
+        let mut cluster_centres: FxHashMap<usize, (f32, f32, usize)> = FxHashMap::default();
 
         for (i, &label) in labels.iter().enumerate() {
             let entry = cluster_centres.entry(label).or_insert((0.0, 0.0, 0));
@@ -449,12 +455,12 @@ fn parametric_07_precomputed_knn() {
             entry.2 += 1;
         }
 
-        let mut centroids: Vec<(usize, f64, f64)> = Vec::new();
+        let mut centroids: Vec<(usize, f32, f32)> = Vec::new();
         for (label, (sum_x, sum_y, count)) in cluster_centres {
-            centroids.push((label, sum_x / count as f64, sum_y / count as f64));
+            centroids.push((label, sum_x / count as f32, sum_y / count as f32));
         }
 
-        let mut min_inter_dist = f64::INFINITY;
+        let mut min_inter_dist = f32::INFINITY;
         for i in 0..centroids.len() {
             for j in (i + 1)..centroids.len() {
                 let dist = ((centroids[i].1 - centroids[j].1).powi(2)

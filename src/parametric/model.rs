@@ -220,13 +220,14 @@ where
 #[cfg(test)]
 mod model_tests {
     use super::*;
-    use burn::backend::ndarray::{NdArray, NdArrayDevice};
+    use burn::backend::flex::FlexDevice;
+    use burn::backend::Flex;
 
-    type TestBackend = NdArray<f32>;
+    type TestBackend = Flex<f32>;
 
     #[test]
     fn test_model_forward_shape() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
         let config = UmapMlpConfig::from_params(10, vec![64, 32], 2);
         let model: UmapMlp<TestBackend> = config.init(&device);
 
@@ -245,7 +246,7 @@ mod model_tests {
 
     #[test]
     fn test_model_no_hidden_layers() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
         let config = UmapMlpConfig::from_params(10, vec![], 2);
         let model: UmapMlp<TestBackend> = config.init(&device);
 
@@ -262,7 +263,7 @@ mod model_tests {
 
     #[test]
     fn test_model_single_hidden_layer() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
         let config = UmapMlpConfig::from_params(10, vec![64], 2);
         let model: UmapMlp<TestBackend> = config.init(&device);
 
@@ -279,7 +280,7 @@ mod model_tests {
 
     #[test]
     fn test_model_output_is_finite() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
         let config = UmapMlpConfig::from_params(10, vec![64, 32], 2);
         let model: UmapMlp<TestBackend> = config.init(&device);
 
@@ -304,7 +305,7 @@ mod model_tests {
 
     #[test]
     fn test_model_batch_size_one() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
         let config = UmapMlpConfig::from_params(5, vec![32], 3);
         let model: UmapMlp<TestBackend> = config.init(&device);
 
@@ -321,7 +322,7 @@ mod model_tests {
 
     #[test]
     fn test_model_deterministic() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
         let config = UmapMlpConfig::from_params(10, vec![64], 2);
         let model: UmapMlp<TestBackend> = config.init(&device);
 
@@ -339,7 +340,7 @@ mod model_tests {
 
     #[test]
     fn test_model_different_inputs_different_outputs() {
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
         let config = UmapMlpConfig::from_params(10, vec![64], 2);
         let model: UmapMlp<TestBackend> = config.init(&device);
 

@@ -376,18 +376,19 @@ where
 #[cfg(test)]
 mod parametric_train_tests {
     use super::*;
-    use burn::backend::ndarray::{NdArray, NdArrayDevice};
+    use burn::backend::flex::FlexDevice;
     use burn::backend::Autodiff;
+    use burn::backend::Flex;
     use faer::Mat;
 
-    type TestBackend = Autodiff<NdArray<f64>>;
+    type TestBackend = Autodiff<Flex<f32>>;
 
     #[test]
     fn test_data_to_tensor_shape() {
-        let data = Mat::from_fn(10, 5, |i, j| (i * 5 + j) as f64);
-        let device = NdArrayDevice::Cpu;
+        let data = Mat::from_fn(10, 5, |i, j| (i * 5 + j) as f32);
+        let device = FlexDevice;
 
-        let tensor = data_to_tensor::<f64, TestBackend>(data.as_ref(), &device);
+        let tensor = data_to_tensor::<f32, TestBackend>(data.as_ref(), &device);
 
         assert_eq!(tensor.dims()[0], 10);
         assert_eq!(tensor.dims()[1], 5);
