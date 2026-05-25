@@ -401,25 +401,10 @@ fn phate_integration_07_full_phate_quality() {
 
     println!("\n=== PHATE DIAGNOSTIC 7: Full PHATE Quality ===");
 
-    let params = PhateParams::new(
-        Some(2),
-        // knn
-        Some(10),
-        None,
-        // diffusion
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = PhateParams {
+        k: 10,
+        ..PhateParams::default()
+    };
 
     let embedding = phate(data.as_ref(), None, params, 42, true).unwrap();
 
@@ -460,25 +445,22 @@ fn phate_integration_08_landmark_phate_quality() {
 
     println!("\n=== PHATE DIAGNOSTIC 8: Landmark PHATE Quality ===");
 
-    let params = PhateParams::new(
-        Some(2),
-        // knn
-        Some(10),
-        None,
-        // diffusion
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(20),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = PhateParams {
+        k: 10,
+        diffusion_params: PhateDiffusionParams::new(
+            Some(40.0),
+            1.0,
+            1e-4,
+            "average".to_string(),
+            Some(20),
+            "spectral".to_string(),
+            None,
+            None,
+            None,
+            1.0,
+        ),
+        ..PhateParams::default()
+    };
 
     let embedding = phate(data.as_ref(), None, params, 42, true).unwrap();
 
@@ -514,23 +496,22 @@ fn phate_integration_09_reproducibility() {
 
     println!("\n=== PHATE DIAGNOSTIC 9: Reproducibility ===");
 
-    let params = PhateParams::new(
-        Some(2),  // n_dim
-        Some(10), // k
-        None,     // ann_type
-        None,     // decay
-        None,     // bandwidth_scale
-        None,     // graph_symmetry
-        Some(50), // t_max
-        None,     // gamma
-        None,     // n_landmarks
-        None,     // landmark_method
-        None,     // n_svd
-        None,     // t_custom
-        None,     // mds_method
-        None,     // mds_iter
-        None,     // randomised
-    );
+    let params = PhateParams {
+        k: 10,
+        diffusion_params: PhateDiffusionParams::new(
+            Some(40.0),
+            1.0,
+            1e-4,
+            "average".to_string(),
+            None,
+            "spectral".to_string(),
+            None,
+            Some(50),
+            None,
+            1.0,
+        ),
+        ..PhateParams::default()
+    };
 
     let embd1 = phate(data.as_ref(), None, params.clone(), 42, false).unwrap();
     let embd2 = phate(data.as_ref(), None, params, 42, false).unwrap();
@@ -558,23 +539,22 @@ fn phate_integration_10_different_seeds() {
 
     println!("\n=== PHATE DIAGNOSTIC 10: Different Seeds ===");
 
-    let params = PhateParams::new(
-        Some(2),  // n_dim
-        Some(10), // k
-        None,     // ann_type
-        None,     // decay
-        None,     // bandwidth_scale
-        None,     // graph_symmetry
-        Some(50), // t_max
-        None,     // gamma
-        None,     // n_landmarks
-        None,     // landmark_method
-        None,     // n_svd
-        None,     // t_custom
-        None,     // mds_method
-        None,     // mds_iter
-        None,     // randomised
-    );
+    let params = PhateParams {
+        k: 10,
+        diffusion_params: PhateDiffusionParams::new(
+            Some(40.0),
+            1.0,
+            1e-4,
+            "average".to_string(),
+            None,
+            "spectral".to_string(),
+            None,
+            Some(50),
+            None,
+            1.0,
+        ),
+        ..PhateParams::default()
+    };
 
     let embd1 = phate(data.as_ref(), None, params.clone(), 42, false).unwrap();
     let embd2 = phate(data.as_ref(), None, params, 123, false).unwrap();
@@ -606,23 +586,22 @@ fn phate_integration_11_precomputed_knn() {
     let (knn_indices, knn_dist) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
-    let params = PhateParams::new(
-        Some(2),  // n_dim
-        Some(k),  // k
-        None,     // ann_type
-        None,     // decay
-        None,     // bandwidth_scale
-        None,     // graph_symmetry
-        Some(50), // t_max
-        None,     // gamma
-        None,     // n_landmarks
-        None,     // landmark_method
-        None,     // n_svd
-        None,     // t_custom
-        None,     // mds_method
-        None,     // mds_iter
-        None,     // randomised
-    );
+    let params = PhateParams {
+        k,
+        diffusion_params: PhateDiffusionParams::new(
+            Some(40.0),
+            1.0,
+            1e-4,
+            "average".to_string(),
+            None,
+            "spectral".to_string(),
+            None,
+            Some(50),
+            None,
+            1.0,
+        ),
+        ..PhateParams::default()
+    };
 
     let embd_precomputed = phate(
         data.as_ref(),
@@ -658,41 +637,39 @@ fn phate_integration_12_fixed_vs_auto_t() {
 
     println!("\n=== PHATE DIAGNOSTIC 12: Fixed t vs Auto t ===");
 
-    let params_auto = PhateParams::new(
-        Some(2),  // n_dim
-        Some(10), // k
-        None,     // ann_type
-        None,     // decay
-        None,     // bandwidth_scale
-        None,     // graph_symmetry
-        Some(50), // t_max
-        None,     // gamma
-        None,     // n_landmarks
-        None,     // landmark_method
-        None,     // n_svd
-        None,     // t_custom — None means Auto
-        None,     // mds_method
-        None,     // mds_iter
-        None,     // randomised
-    );
+    let params_auto = PhateParams {
+        k: 10,
+        diffusion_params: PhateDiffusionParams::new(
+            Some(40.0),
+            1.0,
+            1e-4,
+            "average".to_string(),
+            None,
+            "spectral".to_string(),
+            None,
+            Some(50),
+            None, // t_custom — None means Auto
+            1.0,
+        ),
+        ..PhateParams::default()
+    };
 
-    let params_fixed = PhateParams::new(
-        Some(2),  // n_dim
-        Some(10), // k
-        None,     // ann_type
-        None,     // decay
-        None,     // bandwidth_scale
-        None,     // graph_symmetry
-        None,     // t_max
-        None,     // gamma
-        None,     // n_landmarks
-        None,     // landmark_method
-        None,     // n_svd
-        Some(10), // t_custom — Some(10) means Fixed(10)
-        None,     // mds_method
-        None,     // mds_iter
-        None,     // randomised
-    );
+    let params_fixed = PhateParams {
+        k: 10,
+        diffusion_params: PhateDiffusionParams::new(
+            Some(40.0),
+            1.0,
+            1e-4,
+            "average".to_string(),
+            None,
+            "spectral".to_string(),
+            None,
+            None,
+            Some(10), // t_custom — Some(10) means Fixed(10)
+            1.0,
+        ),
+        ..PhateParams::default()
+    };
 
     let embd_auto = phate(data.as_ref(), None, params_auto, 42, false).unwrap();
     let embd_fixed = phate(data.as_ref(), None, params_fixed, 42, false).unwrap();

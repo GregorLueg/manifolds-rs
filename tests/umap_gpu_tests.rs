@@ -165,18 +165,10 @@ fn umap_gpu_integration_04_optimisation_quality() {
     println!("\n=== GPU UMAP DIAGNOSTIC 4: Optimisation Quality ===");
 
     let device = WgpuDevice::default();
-    let params = UmapParamsGpu::new(
-        Some(2),
-        Some(15),
-        Some("adam_parallel".to_string()),
-        Some("exhaustive_gpu".to_string()),
-        Some("spectral".to_string()),
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = UmapParamsGpu {
+        ann_type: "exhaustive_gpu".to_string(),
+        ..UmapParamsGpu::default()
+    };
 
     let embedding =
         umap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, device, 42, false).unwrap();
@@ -243,18 +235,10 @@ fn umap_gpu_integration_05_reproducibility() {
     let (data, _) = create_diagnostic_data(50, 10, 42);
     let data = mat_to_f32(data);
 
-    let params = UmapParamsGpu::new(
-        Some(2),
-        Some(15),
-        Some("adam_parallel".to_string()),
-        Some("exhaustive_gpu".to_string()),
-        Some("spectral".to_string()),
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = UmapParamsGpu {
+        ann_type: "exhaustive_gpu".to_string(),
+        ..UmapParamsGpu::default()
+    };
 
     let device1 = WgpuDevice::default();
     let embd1 =
@@ -294,18 +278,10 @@ fn umap_gpu_integration_06_precomputed_knn() {
     )
     .unwrap();
 
-    let params = UmapParamsGpu::new(
-        Some(2),
-        Some(k),
-        Some("adam_parallel".to_string()),
-        Some("exhaustive_gpu".to_string()),
-        Some("spectral".to_string()),
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = UmapParamsGpu {
+        ann_type: "exhaustive_gpu".to_string(),
+        ..UmapParamsGpu::default()
+    };
 
     let device_pre = WgpuDevice::default();
     let embd_pre = umap_gpu::<f32, WgpuRuntime>(

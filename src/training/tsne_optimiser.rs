@@ -45,12 +45,14 @@ const TSNE_EPS: f64 = 1e-12;
 pub struct TsneOptimParams<T> {
     /// Number of epochs (typically n / 12 or 1000)
     pub n_epochs: usize,
-    /// Learning rate
-    pub lr: T,
+    /// Optional learning rate. Will default to `(N / 12.0).max(200.0)`.
+    pub lr: Option<T>,
     /// Early exaggeration iters
     pub early_exag_iter: usize,
     /// The factor to exaggerate in the early iterations
     pub early_exag_factor: T,
+    /// An optional late stage exaggeration factor. Helps with large data sets
+    pub late_exag_factor: Option<T>,
     ///  The Barnes-Hut theta; relevant if you use the `optimise_bh_tsne()`
     pub theta: T,
     /// Interpolation points per box (typically 3); relevant if you use
@@ -66,10 +68,13 @@ where
     ///
     /// ### Params
     ///
-    /// * `n_epochs` - Number of epochs (typically n / 12 or 200 or so)
-    /// * `lr` - Learning rate
+    /// * `n_epochs` - Number of epochs
+    /// * `lr` - Optional learning rate. If not provided, will default to
+    ///   `(N / 12.0).max(200.0)`
     /// * `early_exag_iter` - Early exaggeration iters
     /// * `early_exag_factor` - The factor to exaggerate in the early iterations
+    /// * `late_exag_factor` - An optional late exaggeration factor for large
+    ///   data sets.
     /// * `theta` - The Barnes-Hut theta
     ///
     /// ### Returns
@@ -77,9 +82,10 @@ where
     /// Initialised self
     pub fn new(
         n_epochs: usize,
-        lr: T,
+        lr: Option<T>,
         early_exag_iter: usize,
         early_exag_factor: T,
+        late_exag_factor: Option<T>,
         theta: T,
         n_interp_points: Option<usize>,
     ) -> Self {
@@ -90,9 +96,32 @@ where
             lr,
             early_exag_iter,
             early_exag_factor,
+            late_exag_factor,
             theta,
             n_interp_points,
         }
+    }
+
+    /// Return the learning rate
+    ///
+    /// ### Returns
+    ///
+    /// The learning rate that is stored in the parameter structure or a
+    /// heuristic based on N and early exaggeration factor.
+    pub fn get_lr(&self, n_samples: usize) -> T {
+        self.lr.unwrap_or_else(|| {
+            let exag = self.early_exag_factor.to_f64().unwrap();
+            T::from_f64((n_samples as f64 / exag).max(200.0)).unwrap()
+        })
+    }
+
+    /// An optional late exaggeration factor
+    ///
+    /// ### Returns
+    ///
+    /// Optional late stage exaggeration factor
+    pub fn get_late_exag_factor(&self) -> T {
+        self.late_exag_factor.unwrap_or(T::one())
     }
 }
 
@@ -104,9 +133,10 @@ where
     fn default() -> Self {
         Self {
             n_epochs: 1000,
-            lr: T::from_f64(200.0).unwrap(),
+            lr: None,
             early_exag_iter: 250,
             early_exag_factor: T::from_f64(12.0).unwrap(),
+            late_exag_factor: None,
             theta: T::from_f64(0.5).unwrap(),
             n_interp_points: 3,
         }
@@ -225,6 +255,7 @@ pub fn optimise_bh_tsne<T>(
 {
     let n = embd.len();
     let n_dim = embd[0].len();
+    let lr = params.get_lr(n);
 
     let initial_momentum = T::from_f64(TSNE_INITIAL_MOMENTUM).unwrap();
     let final_momentum = T::from_f64(TSNE_FINAL_MOMENTUM).unwrap();
@@ -257,7 +288,7 @@ pub fn optimise_bh_tsne<T>(
         let exag_factor = if epoch < params.early_exag_iter {
             params.early_exag_factor
         } else {
-            T::one()
+            params.get_late_exag_factor()
         };
 
         // step 1: compute repulsive forces and partial Z in parallel
@@ -316,7 +347,7 @@ pub fn optimise_bh_tsne<T>(
                     &mut u_i[0],
                     &mut g_i[0],
                     grad_x,
-                    params.lr,
+                    lr,
                     momentum,
                     min_gain,
                 );
@@ -325,7 +356,7 @@ pub fn optimise_bh_tsne<T>(
                     &mut u_i[1],
                     &mut g_i[1],
                     grad_y,
-                    params.lr,
+                    lr,
                     momentum,
                     min_gain,
                 );
@@ -390,6 +421,8 @@ pub fn optimise_fft_tsne<T>(
 {
     let n = embd.len();
     let n_dim = embd[0].len();
+    let lr = params.get_lr(n);
+
     assert_eq!(n_dim, 2, "FFT t-SNE only supports 2D output");
 
     let n_terms = 4;
@@ -510,9 +543,9 @@ pub fn optimise_fft_tsne<T>(
         let exag_factor = if epoch < params.early_exag_iter {
             params.early_exag_factor
         } else {
-            T::one()
+            params.get_late_exag_factor()
         };
-        let learning_rate = params.lr;
+        let learning_rate = lr;
         let max_step_norm = T::from_f64(5.0).unwrap();
 
         embd.par_iter_mut()
@@ -653,7 +686,6 @@ mod test_tsne_optimiser {
     fn test_tsne_params_defaults() {
         let params = TsneOptimParams::<f64>::default();
         assert_eq!(params.n_epochs, 1000);
-        assert_relative_eq!(params.lr, 200.0);
         assert_eq!(params.early_exag_iter, 250);
         assert_relative_eq!(params.early_exag_factor, 12.0);
         assert_relative_eq!(params.theta, 0.5);
@@ -675,8 +707,8 @@ mod test_tsne_optimiser {
 
         // Run for a short burst
         let params = TsneOptimParams {
-            n_epochs: 50, // Short run
-            lr: 50.0,     // Aggressive LR to ensure movement
+            n_epochs: 50,   // Short run
+            lr: Some(50.0), // Aggressive LR to ensure movement
             ..TsneOptimParams::default()
         };
 
@@ -714,7 +746,7 @@ mod test_tsne_optimiser {
 
         let params = TsneOptimParams {
             n_epochs: 50,
-            lr: 50.0,
+            lr: Some(50.0),
             n_interp_points: 3, // specific to FFT
             ..TsneOptimParams::default()
         };

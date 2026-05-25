@@ -41,13 +41,13 @@ fn fast_test_params_custom(
     );
 
     ParametricUmapParams::new(
-        Some(n_dim),
-        Some(n_neighbours),
-        Some("annoy".into()),
-        Some(hidden_layers),
-        None,
-        None,
-        Some(fit_params),
+        n_dim,
+        n_neighbours,
+        "annoy".into(),
+        hidden_layers,
+        NearestNeighbourParams::default(),
+        UmapGraphParams::default(),
+        fit_params,
     )
 }
 

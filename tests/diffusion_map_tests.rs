@@ -6,6 +6,7 @@ use commons::*;
 use manifolds_rs::data::graph::phate_alpha_decay_affinities;
 use manifolds_rs::data::structures::{coo_to_csr, CompressedSparseData};
 use manifolds_rs::prelude::*;
+use manifolds_rs::utils::diffusions::parse_phate_time;
 use manifolds_rs::utils::diffusions::{
     apply_anisotropic_normalisation, build_symmetric_diffusion_operator, DiffusionMapsLandmarks,
 };
@@ -304,20 +305,10 @@ fn dm_integration_07_full_dm_quality() {
 
     println!("\n=== DM DIAGNOSTIC 7: Full DM Quality ===");
 
-    let params = DiffusionMapsParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = DiffusionMapsParams {
+        k: 10,
+        ..DiffusionMapsParams::default()
+    };
 
     let embedding = diffusion_maps(data.as_ref(), None, params, 42, true).unwrap();
 
@@ -340,20 +331,11 @@ fn dm_integration_07_full_dm_quality() {
 fn dm_integration_08_reproducibility() {
     let (data, _) = create_diagnostic_data(40, 10, 42);
 
-    let params = DiffusionMapsParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(50),
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = DiffusionMapsParams {
+        k: 10,
+        t: parse_phate_time(None, 50),
+        ..DiffusionMapsParams::default()
+    };
 
     let e1 = diffusion_maps(data.as_ref(), None, params.clone(), 42, false).unwrap();
     let e2 = diffusion_maps(data.as_ref(), None, params, 42, false).unwrap();
@@ -374,20 +356,11 @@ fn dm_integration_08_reproducibility() {
 fn dm_integration_09_different_seeds() {
     let (data, _) = create_diagnostic_data(40, 10, 42);
 
-    let params = DiffusionMapsParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(50),
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = DiffusionMapsParams {
+        k: 10,
+        t: parse_phate_time(None, 50),
+        ..DiffusionMapsParams::default()
+    };
 
     let e1 = diffusion_maps(data.as_ref(), None, params.clone(), 42, false).unwrap();
     let e2 = diffusion_maps(data.as_ref(), None, params, 123, false).unwrap();
@@ -413,20 +386,11 @@ fn dm_integration_10_precomputed_knn() {
     let (ki, kd) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
 
-    let params = DiffusionMapsParams::new(
-        Some(2),
-        Some(k),
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(50),
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = DiffusionMapsParams {
+        k,
+        t: parse_phate_time(None, 50),
+        ..DiffusionMapsParams::default()
+    };
 
     let e_pre = diffusion_maps(data.as_ref(), Some((ki, kd)), params.clone(), 42, false).unwrap();
     let e_int = diffusion_maps(data.as_ref(), None, params, 42, false).unwrap();
@@ -448,34 +412,16 @@ fn dm_integration_11_fixed_vs_auto_t() {
     let (data, labels) = create_diagnostic_data(100, 10, 123);
     let n_clusters = 5;
 
-    let params_auto = DiffusionMapsParams::new(
-        Some(2),
-        Some(15),
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(50),
-        None,
-        None,
-        None,
-        None,
-    );
-    let params_fixed = DiffusionMapsParams::new(
-        Some(2),
-        Some(15),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(5),
-        None,
-        None,
-        None,
-    );
+    let params_auto = DiffusionMapsParams {
+        k: 15,
+        t: parse_phate_time(None, 50),
+        ..DiffusionMapsParams::default()
+    };
+    let params_fixed = DiffusionMapsParams {
+        k: 15,
+        t: parse_phate_time(Some(5), 100),
+        ..DiffusionMapsParams::default()
+    };
 
     let e_auto = diffusion_maps(data.as_ref(), None, params_auto, 42, false).unwrap();
     let e_fixed = diffusion_maps(data.as_ref(), None, params_fixed, 42, false).unwrap();
@@ -493,34 +439,17 @@ fn dm_integration_11_fixed_vs_auto_t() {
 fn dm_integration_12_alpha_norm_effect() {
     let (data, _) = create_diagnostic_data(40, 10, 42);
 
-    let params_a0 = DiffusionMapsParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        None,
-        None,
-        Some(0.0),
-        Some(50),
-        None,
-        None,
-        None,
-        None,
-    );
-    let params_a1 = DiffusionMapsParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        None,
-        None,
-        Some(1.0),
-        Some(50),
-        None,
-        None,
-        None,
-        None,
-    );
+    let params_a0 = DiffusionMapsParams {
+        k: 10,
+        alpha_norm: 0.0,
+        t: parse_phate_time(None, 50),
+        ..DiffusionMapsParams::default()
+    };
+    let params_a1 = DiffusionMapsParams {
+        k: 10,
+        t: parse_phate_time(None, 50),
+        ..DiffusionMapsParams::default()
+    };
 
     let e0 = diffusion_maps(data.as_ref(), None, params_a0, 42, false).unwrap();
     let e1 = diffusion_maps(data.as_ref(), None, params_a1, 42, false).unwrap();
@@ -565,20 +494,12 @@ fn dm_integration_14_landmark_quality_random() {
 
     println!("\n=== DM DIAGNOSTIC 14: Landmark DM (random) ===");
 
-    let params = DiffusionMapsParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(30),
-        Some("random".to_string()),
-        None,
-    );
+    let params = DiffusionMapsParams {
+        k: 10,
+        n_landmarks: Some(30),
+        landmark_method: "random".to_string(),
+        ..DiffusionMapsParams::default()
+    };
 
     let embd = diffusion_maps(data.as_ref(), None, params, 42, true).unwrap();
     let all: Vec<f64> = embd.iter().flat_map(|d| d.iter().copied()).collect();
@@ -603,20 +524,12 @@ fn dm_integration_15_landmark_quality_spectral() {
 
     println!("\n=== DM DIAGNOSTIC 15: Landmark DM (spectral) ===");
 
-    let params = DiffusionMapsParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(30),
-        Some("spectral".to_string()),
-        Some(10),
-    );
+    let params = DiffusionMapsParams {
+        k: 10,
+        n_landmarks: Some(30),
+        n_svd: Some(10),
+        ..DiffusionMapsParams::default()
+    };
 
     let embd = diffusion_maps(data.as_ref(), None, params, 42, false).unwrap();
     let all: Vec<f64> = embd.iter().flat_map(|d| d.iter().copied()).collect();
@@ -635,20 +548,12 @@ fn dm_integration_16_landmark_quality_density() {
 
     println!("\n=== DM DIAGNOSTIC 16: Landmark DM (density) ===");
 
-    let params = DiffusionMapsParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(30),
-        Some("density".to_string()),
-        None,
-    );
+    let params = DiffusionMapsParams {
+        k: 10,
+        n_landmarks: Some(30),
+        landmark_method: "density".to_string(),
+        ..DiffusionMapsParams::default()
+    };
 
     let embd = diffusion_maps(data.as_ref(), None, params, 42, false).unwrap();
     let all: Vec<f64> = embd.iter().flat_map(|d| d.iter().copied()).collect();
@@ -664,34 +569,17 @@ fn dm_integration_16_landmark_quality_density() {
 fn dm_integration_17_landmark_fallback_to_full() {
     let (data, _) = create_diagnostic_data(30, 10, 42);
 
-    let params_full = DiffusionMapsParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(50),
-        None,
-        None,
-        None,
-        None,
-    );
-    let params_fallback = DiffusionMapsParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(50),
-        None,
-        Some(500),
-        None,
-        None,
-    );
+    let params_full = DiffusionMapsParams {
+        k: 10,
+        t: parse_phate_time(None, 50),
+        ..DiffusionMapsParams::default()
+    };
+    let params_fallback = DiffusionMapsParams {
+        k: 10,
+        t: parse_phate_time(None, 50),
+        n_landmarks: Some(500),
+        ..DiffusionMapsParams::default()
+    };
 
     let e_full = diffusion_maps(data.as_ref(), None, params_full, 42, false).unwrap();
     let e_fb = diffusion_maps(data.as_ref(), None, params_fallback, 42, false).unwrap();
@@ -712,20 +600,13 @@ fn dm_integration_17_landmark_fallback_to_full() {
 fn dm_integration_18_landmark_reproducibility() {
     let (data, _) = create_diagnostic_data(50, 10, 42);
 
-    let params = DiffusionMapsParams::new(
-        Some(2),
-        Some(10),
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some(50),
-        None,
-        Some(25),
-        Some("random".to_string()),
-        None,
-    );
+    let params = DiffusionMapsParams {
+        k: 10,
+        t: parse_phate_time(None, 50),
+        n_landmarks: Some(25),
+        landmark_method: "random".to_string(),
+        ..DiffusionMapsParams::default()
+    };
 
     let e1 = diffusion_maps(data.as_ref(), None, params.clone(), 42, false).unwrap();
     let e2 = diffusion_maps(data.as_ref(), None, params, 42, false).unwrap();

@@ -1,6 +1,6 @@
 [package]
 name = "manifolds-rs"
-version = "0.2.6"
+version = "0.3.0"
 edition = "2021"
 authors = ["Gregor Lueg <gregorlueg@me.com>"]
 license = "MIT"
@@ -31,7 +31,7 @@ burn = { version = "0.21.0", features = [
     "train",
     "flex",
 ], optional = true }
-ann-search-rs = { git = "https://github.com/GregorLueg/ann-search-rs", branch = "feat-turboquant-attempt2" }
+ann-search-rs = { version = "0.4.0" }
 approx = "0.5.1"
 faer = "0.23.2"
 faer-traits = "0.23.2"

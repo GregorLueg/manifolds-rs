@@ -1,5 +1,17 @@
 # News
 
+## 0.3.0
+
+**Features:**
+
+- Version updates for `ann-search-rs` and better errors across the board
+- Better default LR based on a heuristic. and optional late exaggeration rate
+  for tSNE.
+- Updated interfaces for the parameters which breaks old interfaces, but is more
+  Rust idiomatic.
+- Better spectral initialisation on disconnected graphs, akin to the
+  scikit-learn approach.
+
 ## 0.2.4
 
 **Features:**

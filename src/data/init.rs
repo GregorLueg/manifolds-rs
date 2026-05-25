@@ -1,4 +1,5 @@
-//! Module containing functions to initialise embeddings
+//! Module containing functions to initialise embeddings. This ranges from
+//! random initialisation, PCA-based initialisation and spectral initialisation.
 
 use faer::MatRef;
 use rand::{
@@ -73,6 +74,10 @@ where
 // Spectral //
 //////////////
 
+/////////////
+// Helpers //
+/////////////
+
 /// Convert COO graph to negative normalised adjacency in CSR format
 ///
 /// Computes `M = - D^(-1/2) * A * D^(-1/2)`
@@ -86,7 +91,7 @@ where
 ///
 /// ### Returns
 ///
-/// Normalised Laplacian as CSR matrix
+/// Negative normalised adjacency matrix as CSR
 fn graph_to_normalised_laplacian<T>(graph: &CoordinateList<T>) -> CompressedSparseData<f64>
 where
     T: ManifoldsFloat,
@@ -141,6 +146,63 @@ where
     }
 
     CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n))
+}
+
+/// Compute raw spectral embedding for a single connected component
+///
+/// Computes eigenvectors of the negative normalised adjacency matrix and
+/// returns them as embedding coordinates. Falls back to random initialisation
+/// for graphs too small for spectral decomposition.
+///
+/// ### Params
+///
+/// * `graph` - Connected graph in COO format
+/// * `n_comp` - Number of embedding dimensions
+/// * `seed` - Random seed
+///
+/// ### Returns
+///
+/// Raw embedding coordinates, one vector per vertex
+fn single_component_spectral_raw<T>(
+    graph: &CoordinateList<T>,
+    n_comp: usize,
+    seed: u64,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let n = graph.n_samples;
+    let mut embedding = vec![vec![T::zero(); n_comp]; n];
+
+    if n <= n_comp + 1 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        for row in &mut embedding {
+            for v in row.iter_mut() {
+                *v = T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
+            }
+        }
+        return Ok(embedding);
+    }
+
+    let laplacian = graph_to_normalised_laplacian(graph);
+    let n_eigs = (n_comp + 1).min(n);
+    let (_, evecs) = compute_smallest_eigenpairs_lanczos(&laplacian, n_eigs, seed)?;
+
+    for comp_idx in 0..n_comp {
+        let evec_idx = comp_idx + 1;
+        if evec_idx < evecs[0].len() {
+            for i in 0..n {
+                embedding[i][comp_idx] = T::from_f32(evecs[i][evec_idx]).unwrap();
+            }
+        } else {
+            let mut rng = StdRng::seed_from_u64(seed + comp_idx as u64);
+            for i in 0..n {
+                embedding[i][comp_idx] = T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
+            }
+        }
+    }
+
+    Ok(embedding)
 }
 
 /// Find connected components in a sparse graph using BFS
@@ -206,6 +268,7 @@ where
 /// * `n_comp` - Number of embedding dimensions
 /// * `seed` - Random seed
 /// * `range` - Scaling range for embedding
+/// * `data` - Optional `MatRef` to the data.
 ///
 /// ### Returns
 ///
@@ -216,65 +279,284 @@ fn multi_component_init<T>(
     n_comp: usize,
     seed: u64,
     range: T,
+    data: Option<MatRef<T>>,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
     let n = graph.n_samples;
-    let n_components = components.len();
     let mut embedding = vec![vec![T::zero(); n_comp]; n];
     let mut rng = StdRng::seed_from_u64(seed);
 
-    // Place component centroids on a circle (or hypersphere for n_comp > 2)
-    let centroid_radius = range * T::from_f64(0.6).unwrap();
-    let component_spread = range * T::from_f64(0.3).unwrap();
+    // Position component centroids relative to each other, unit max-abs.
+    // Final scaling to `range` happens at the end.
+    let meta = component_meta_layout(components, n_comp, data, seed)?;
 
-    for (comp_idx, component) in components.iter().enumerate() {
-        // Compute centroid position for this component
-        let angle = T::from_f64(2.0 * std::f64::consts::PI * comp_idx as f64 / n_components as f64)
-            .unwrap();
+    for (label, component) in components.iter().enumerate() {
+        let centroid = &meta[label];
+        let data_range = meta_data_range(&meta, label);
 
-        let mut centroid = vec![T::zero(); n_comp];
-        if n_comp >= 2 {
-            centroid[0] = centroid_radius * T::from_f64(angle.to_f64().unwrap().cos()).unwrap();
-            centroid[1] = centroid_radius * T::from_f64(angle.to_f64().unwrap().sin()).unwrap();
-        }
-        // For n_comp > 2, add small random offsets to other dimensions
-        for d in 2..n_comp {
-            centroid[d] = T::from_f64(rng.random_range(-0.1..0.1)).unwrap() * centroid_radius;
-        }
-
-        // If component is large enough, do spectral embedding within it
-        if component.len() > n_comp + 1 {
-            // Build subgraph for this component
-            let subgraph = extract_subgraph(graph, component);
-            let sub_embedding = single_component_spectral(
-                &subgraph,
-                n_comp,
-                seed + comp_idx as u64,
-                component_spread,
-            )?;
-
-            // Place sub-embedding at centroid
-            for (local_idx, &global_idx) in component.iter().enumerate() {
+        if component.len() < 2 * n_comp {
+            // Too small for spectral: uniform random within data_range of centroid
+            for &global in component {
                 for d in 0..n_comp {
-                    embedding[global_idx][d] = centroid[d] + sub_embedding[local_idx][d];
+                    let u = T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
+                    embedding[global][d] = centroid[d] + u * data_range;
                 }
             }
-        } else {
-            // Too small for spectral - random placement around centroid
-            for &global_idx in component {
-                for d in 0..n_comp {
-                    let noise = T::from_f64(rng.sample::<f64, _>(StandardNormal)).unwrap()
-                        * component_spread
-                        * T::from_f64(0.1).unwrap();
-                    embedding[global_idx][d] = centroid[d] + noise;
+            continue;
+        }
+
+        // Spectral embedding within the component, expanded to data_range
+        let subgraph = extract_subgraph(graph, component);
+        let sub = single_component_spectral_raw(&subgraph, n_comp, seed + label as u64)?;
+
+        let max_abs = sub
+            .iter()
+            .flat_map(|v| v.iter())
+            .fold(T::zero(), |acc, &x| {
+                let a = x.abs();
+                if a > acc {
+                    a
+                } else {
+                    acc
                 }
+            });
+        let expansion = if max_abs > T::from_f64(1e-8).unwrap() {
+            data_range / max_abs
+        } else {
+            T::one()
+        };
+
+        for (local, &global) in component.iter().enumerate() {
+            for d in 0..n_comp {
+                embedding[global][d] = centroid[d] + sub[local][d] * expansion;
+            }
+        }
+    }
+
+    // Centre and scale to `range`, matching the single-component path's contract
+    let n_t = T::from_usize(n).unwrap();
+    for d in 0..n_comp {
+        let mean = embedding.iter().map(|v| v[d]).sum::<T>() / n_t;
+        for row in &mut embedding {
+            row[d] -= mean;
+        }
+    }
+    let max_abs = embedding
+        .iter()
+        .flat_map(|v| v.iter())
+        .fold(T::zero(), |acc, &x| {
+            let a = x.abs();
+            if a > acc {
+                a
+            } else {
+                acc
+            }
+        });
+    if max_abs > T::from_f64(1e-8).unwrap() {
+        let s = range / max_abs;
+        for row in &mut embedding {
+            for v in row {
+                *v *= s;
             }
         }
     }
 
     Ok(embedding)
+}
+
+/// Compute centroid layout for connected components
+///
+/// Positions component centroids in embedding space. Uses spectral embedding
+/// of the inter-component affinity graph when the number of components exceeds
+/// `2 * n_comp`, otherwise falls back to simplex placement. Normalises the
+/// result so the maximum absolute value is 1.
+///
+/// ### Params
+///
+/// * `components` - Vector of component vertex indices
+/// * `n_comp` - Number of embedding dimensions
+/// * `data` - Optional feature matrix used for spectral meta-layout
+/// * `seed` - Random seed
+///
+/// ### Returns
+///
+/// Centroid coordinates, one vector per component, normalised to unit max-abs
+fn component_meta_layout<T>(
+    components: &[Vec<usize>],
+    n_comp: usize,
+    data: Option<MatRef<T>>,
+    seed: u64,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let n_components = components.len();
+
+    let mut meta = if n_components > 2 * n_comp {
+        match data {
+            Some(d) => component_spectral_meta(components, n_comp, d, seed)?,
+            None => component_simplex_meta(n_components, n_comp),
+        }
+    } else {
+        component_simplex_meta(n_components, n_comp)
+    };
+
+    let max_abs = meta
+        .iter()
+        .flat_map(|v| v.iter())
+        .fold(T::zero(), |acc, &x| {
+            let a = x.abs();
+            if a > acc {
+                a
+            } else {
+                acc
+            }
+        });
+    if max_abs > T::from_f64(1e-8).unwrap() {
+        for row in &mut meta {
+            for v in row {
+                *v /= max_abs;
+            }
+        }
+    }
+    Ok(meta)
+}
+
+/// Place component centroids on a simplex
+///
+/// Assigns centroids by stacking rows of the identity matrix and their
+/// negations, taking the first `n_components` rows. Used when the number of
+/// components is at most `2 * n_comp`.
+///
+/// ### Params
+///
+/// * `n_components` - Number of connected components
+/// * `n_comp` - Number of embedding dimensions
+///
+/// ### Returns
+///
+/// Centroid coordinates, one vector per component
+fn component_simplex_meta<T>(n_components: usize, n_comp: usize) -> Vec<Vec<T>>
+where
+    T: ManifoldsFloat,
+{
+    let k = n_components.div_ceil(2);
+    let mut meta = vec![vec![T::zero(); n_comp]; n_components];
+    for label in 0..n_components {
+        let (idx, sign) = if label < k {
+            (label, T::one())
+        } else {
+            (label - k, -T::one())
+        };
+        if idx < n_comp {
+            meta[label][idx] = sign;
+        }
+    }
+    meta
+}
+
+/// Place component centroids via spectral embedding of their affinity graph
+///
+/// Computes per-component centroids in feature space, builds a fully connected
+/// affinity graph between them using `exp(-d^2)`, and embeds that graph
+/// spectrally. Used when the number of components exceeds `2 * n_comp`.
+///
+/// ### Params
+///
+/// * `components` - Vector of component vertex indices
+/// * `n_comp` - Number of embedding dimensions
+/// * `data` - Feature matrix used to compute centroids
+/// * `seed` - Random seed
+///
+/// ### Returns
+///
+/// Centroid coordinates, one vector per component
+fn component_spectral_meta<T>(
+    components: &[Vec<usize>],
+    n_comp: usize,
+    data: MatRef<T>,
+    seed: u64,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let n_components = components.len();
+    let n_features = data.ncols();
+
+    let mut centroids = vec![vec![T::zero(); n_features]; n_components];
+    for (l, comp) in components.iter().enumerate() {
+        let inv = T::one() / T::from_usize(comp.len()).unwrap();
+        for &i in comp {
+            for f in 0..n_features {
+                centroids[l][f] += data[(i, f)];
+            }
+        }
+        for f in 0..n_features {
+            centroids[l][f] *= inv;
+        }
+    }
+
+    let mut row_indices = Vec::new();
+    let mut col_indices = Vec::new();
+    let mut values = Vec::new();
+    for a in 0..n_components {
+        for b in 0..n_components {
+            if a == b {
+                continue;
+            }
+            let mut d2 = T::zero();
+            for f in 0..n_features {
+                let diff = centroids[a][f] - centroids[b][f];
+                d2 += diff * diff;
+            }
+            let aff = T::from_f64((-d2.to_f64().unwrap()).exp()).unwrap();
+            row_indices.push(a);
+            col_indices.push(b);
+            values.push(aff);
+        }
+    }
+
+    let affinity = CoordinateList {
+        row_indices,
+        col_indices,
+        values,
+        n_samples: n_components,
+    };
+    single_component_spectral_raw(&affinity, n_comp, seed)
+}
+
+/// Compute the spread radius for a component centroid
+///
+/// Returns half the maximum distance from the given centroid to any other
+/// centroid. Used to scale per-component embeddings so they do not overlap.
+///
+/// ### Params
+///
+/// * `meta` - Centroid coordinates, one vector per component
+/// * `label` - Index of the component whose radius is computed
+///
+/// ### Returns
+///
+/// Half the maximum distance to any other centroid
+fn meta_data_range<T>(meta: &[Vec<T>], label: usize) -> T
+where
+    T: ManifoldsFloat,
+{
+    let mut max_d = T::zero();
+    for other in 0..meta.len() {
+        let mut d2 = T::zero();
+        for d in 0..meta[label].len() {
+            let diff = meta[label][d] - meta[other][d];
+            d2 += diff * diff;
+        }
+        let dist = d2.sqrt();
+        if dist > max_d {
+            max_d = dist;
+        }
+    }
+    max_d / T::from_f64(2.0).unwrap()
 }
 
 /// Extract subgraph for a connected component
@@ -352,43 +634,8 @@ fn single_component_spectral<T>(
 where
     T: ManifoldsFloat,
 {
-    let n = graph.n_samples;
-
-    // Handle trivially small graphs
-    if n <= n_comp + 1 {
-        let mut rng = StdRng::seed_from_u64(seed);
-        let mut embedding = vec![vec![T::zero(); n_comp]; n];
-        for i in 0..n {
-            for j in 0..n_comp {
-                embedding[i][j] = T::from_f64(rng.random_range(-1.0..1.0)).unwrap() * range;
-            }
-        }
-        return Ok(finalise_spectral_embedding(embedding, n_comp, range, seed));
-    }
-
-    let laplacian = graph_to_normalised_laplacian(graph);
-
-    let n_eigs = (n_comp + 1).min(n);
-    let (_, evecs) = compute_smallest_eigenpairs_lanczos(&laplacian, n_eigs, seed)?;
-
-    let mut embedding = vec![vec![T::zero(); n_comp]; n];
-
-    // Use eigenvectors 1 through n_comp (skip trivial eigenvector 0)
-    for comp_idx in 0..n_comp {
-        let evec_idx = comp_idx + 1;
-        if evec_idx < evecs[0].len() {
-            for i in 0..n {
-                embedding[i][comp_idx] = T::from_f32(evecs[i][evec_idx]).unwrap();
-            }
-        } else {
-            let mut rng = StdRng::seed_from_u64(seed + comp_idx as u64);
-            for i in 0..n {
-                embedding[i][comp_idx] = T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
-            }
-        }
-    }
-
-    Ok(finalise_spectral_embedding(embedding, n_comp, range, seed))
+    let raw = single_component_spectral_raw(graph, n_comp, seed)?;
+    Ok(finalise_spectral_embedding(raw, n_comp, range, seed))
 }
 
 /// Finalise spectral embedding by centring, scaling and adding noise
@@ -464,6 +711,10 @@ where
     embedding
 }
 
+//////////////////////////
+// Main spectral layout //
+//////////////////////////
+
 /// Compute spectral layout initialisation for graph
 ///
 /// Uses spectral decomposition of the normalised Laplacian to initialise
@@ -485,21 +736,18 @@ pub fn spectral_layout<T>(
     n_comp: usize,
     seed: u64,
     range: Option<T>,
+    data: Option<MatRef<T>>,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
     let range = range.unwrap_or(T::from_f64(SPECTRAL_RANGE).unwrap());
-
-    // Find connected components
     let components = find_connected_components(graph);
 
     if components.len() > 1 {
-        // Multiple components - place each at different location
-        return multi_component_init(graph, &components, n_comp, seed, range);
+        return multi_component_init(graph, &components, n_comp, seed, range, data);
     }
 
-    // Single connected component - standard spectral embedding
     single_component_spectral(graph, n_comp, seed, range)
 }
 
@@ -675,7 +923,9 @@ where
     StandardNormal: Distribution<T>,
 {
     match init_method {
-        EmbdInit::SpectralInit { range } => spectral_layout(graph, n_comp, seed, *range),
+        EmbdInit::SpectralInit { range } => {
+            spectral_layout(graph, n_comp, seed, *range, Some(data))
+        }
         EmbdInit::RandomInit { range } => {
             let n_samples = data.nrows();
             Ok(random_layout(n_samples, n_comp, seed, *range))
@@ -790,7 +1040,7 @@ mod test_init {
             n_samples: 3,
         };
 
-        let embedding = spectral_layout(&graph, 2, 42, None).unwrap();
+        let embedding = spectral_layout(&graph, 2, 42, None, None).unwrap();
 
         assert_eq!(embedding.len(), 3); // 3 vertices
         assert_eq!(embedding[0].len(), 2); // 2 dimensions
@@ -819,7 +1069,7 @@ mod test_init {
             n_samples: 3,
         };
 
-        let embedding = spectral_layout(&graph, 2, 42, Some(1.0)).unwrap();
+        let embedding = spectral_layout(&graph, 2, 42, Some(1.0), None).unwrap();
 
         assert_eq!(embedding.len(), 3); // 3 vertices
         assert_eq!(embedding[0].len(), 2); // 2 dimensions
@@ -847,8 +1097,8 @@ mod test_init {
             n_samples: 3,
         };
 
-        let embd1 = spectral_layout(&graph, 2, 42, None).unwrap();
-        let embd2 = spectral_layout(&graph, 2, 42, None).unwrap();
+        let embd1 = spectral_layout(&graph, 2, 42, None, None).unwrap();
+        let embd2 = spectral_layout(&graph, 2, 42, None, None).unwrap();
 
         assert_eq!(embd1, embd2);
     }
@@ -862,10 +1112,53 @@ mod test_init {
             n_samples: 4,
         };
 
-        let embedding = spectral_layout(&graph, 3, 42, None).unwrap();
+        let embedding = spectral_layout(&graph, 3, 42, None, None).unwrap();
 
         assert_eq!(embedding.len(), 4);
         assert_eq!(embedding[0].len(), 3);
+    }
+
+    #[test]
+    fn test_spectral_layout_disconnected() {
+        // Two disjoint edges: {0,1} and {2,3}
+        let graph = CoordinateList {
+            row_indices: vec![0, 1, 2, 3],
+            col_indices: vec![1, 0, 3, 2],
+            values: vec![1.0, 1.0, 1.0, 1.0],
+            n_samples: 4,
+        };
+
+        // No data: forces the simplex meta-layout path
+        let embedding = spectral_layout::<f64>(&graph, 2, 42, None, None).unwrap();
+
+        assert_eq!(embedding.len(), 4);
+        assert_eq!(embedding[0].len(), 2);
+
+        // Centred and within range
+        for dim in 0..2 {
+            let mean: f64 = embedding.iter().map(|p| p[dim]).sum::<f64>() / 4.0;
+            assert_relative_eq!(mean, 0.0, epsilon = 0.01);
+        }
+        for point in &embedding {
+            for &coord in point {
+                assert!((-10.01..=10.01).contains(&coord));
+            }
+        }
+    }
+
+    #[test]
+    fn test_spectral_layout_disconnected_reproducibility() {
+        let graph = CoordinateList {
+            row_indices: vec![0, 1, 2, 3],
+            col_indices: vec![1, 0, 3, 2],
+            values: vec![1.0, 1.0, 1.0, 1.0],
+            n_samples: 4,
+        };
+
+        let embd1 = spectral_layout::<f64>(&graph, 2, 42, None, None).unwrap();
+        let embd2 = spectral_layout::<f64>(&graph, 2, 42, None, None).unwrap();
+
+        assert_eq!(embd1, embd2);
     }
 
     #[test]
@@ -931,7 +1224,7 @@ mod test_init {
             n_samples: 1,
         };
 
-        let embedding = spectral_layout(&graph, 2, 42, None).unwrap();
+        let embedding = spectral_layout(&graph, 2, 42, None, None).unwrap();
 
         assert_eq!(embedding.len(), 1);
         assert_eq!(embedding[0].len(), 2);
@@ -1041,6 +1334,31 @@ mod test_init {
     }
 
     #[test]
+    fn test_initialise_embedding_spectral_disconnected() {
+        // Two disjoint edges, exercised through the full dispatch so the data
+        // matrix is forwarded into the multi-component path
+        let graph = CoordinateList {
+            row_indices: vec![0, 1, 2, 3],
+            col_indices: vec![1, 0, 3, 2],
+            values: vec![1.0, 1.0, 1.0, 1.0],
+            n_samples: 4,
+        };
+        let data = faer::mat![[1.0, 2.0], [1.5, 2.5], [8.0, 9.0], [8.5, 9.5],];
+
+        let embedding = initialise_embedding(
+            &EmbdInit::SpectralInit { range: None },
+            2,
+            42,
+            &graph,
+            data.as_ref(),
+        )
+        .unwrap();
+
+        assert_eq!(embedding.len(), 4);
+        assert_eq!(embedding[0].len(), 2);
+    }
+
+    #[test]
     fn test_initialise_embedding_random() {
         let graph = CoordinateList {
             row_indices: vec![],
@@ -1087,5 +1405,48 @@ mod test_init {
 
         assert_eq!(embedding.len(), 3);
         assert_eq!(embedding[0].len(), 2);
+    }
+
+    #[test]
+    fn test_spectral_layout_disconnected_within_component_spectral() {
+        // Two disjoint 5-cycles: {0,1,2,3,4} and {5,6,7,8,9}. Each component is
+        // large enough (5 >= 2 * n_comp) to take the within-component spectral
+        // branch rather than random placement.
+        let graph = CoordinateList {
+            row_indices: vec![
+                0, 1, 1, 2, 2, 3, 3, 4, 4, 0, // first cycle
+                5, 6, 6, 7, 7, 8, 8, 9, 9, 5, // second cycle
+            ],
+            col_indices: vec![
+                1, 0, 2, 1, 3, 2, 4, 3, 0, 4, // first cycle
+                6, 5, 7, 6, 8, 7, 9, 8, 5, 9, // second cycle
+            ],
+            values: vec![1.0; 20],
+            n_samples: 10,
+        };
+
+        let embedding = spectral_layout::<f64>(&graph, 2, 42, None, None).unwrap();
+
+        assert_eq!(embedding.len(), 10);
+        assert_eq!(embedding[0].len(), 2);
+
+        // Centred and within range
+        for dim in 0..2 {
+            let mean: f64 = embedding.iter().map(|p| p[dim]).sum::<f64>() / 10.0;
+            assert_relative_eq!(mean, 0.0, epsilon = 0.01);
+        }
+        for point in &embedding {
+            for &coord in point {
+                assert!((-10.01..=10.01).contains(&coord));
+            }
+        }
+
+        // The two components should occupy separable regions: the spread of
+        // component-1 centroids vs component-2 centroids should be non-trivial
+        let c1: Vec<f64> = (0..5).map(|i| embedding[i][0]).collect();
+        let c2: Vec<f64> = (5..10).map(|i| embedding[i][0]).collect();
+        let mean1: f64 = c1.iter().sum::<f64>() / 5.0;
+        let mean2: f64 = c2.iter().sum::<f64>() / 5.0;
+        assert!((mean1 - mean2).abs() > 1e-3);
     }
 }
