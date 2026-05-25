@@ -403,7 +403,7 @@ where
         component_simplex_meta(n_components, n_comp)
     };
 
-    let max_abs = meta
+    let mut max_abs = meta
         .iter()
         .flat_map(|v| v.iter())
         .fold(T::zero(), |acc, &x| {
@@ -414,6 +414,23 @@ where
                 acc
             }
         });
+
+    // spectral meta can still degenerate; fall back rather than collapse.
+    if max_abs <= T::from_f64(1e-8).unwrap() {
+        meta = component_simplex_meta(n_components, n_comp);
+        max_abs = meta
+            .iter()
+            .flat_map(|v| v.iter())
+            .fold(T::zero(), |acc, &x| {
+                let a = x.abs();
+                if a > acc {
+                    a
+                } else {
+                    acc
+                }
+            });
+    }
+
     if max_abs > T::from_f64(1e-8).unwrap() {
         for row in &mut meta {
             for v in row {
@@ -498,6 +515,32 @@ where
         }
     }
 
+    // squared distances between centroids, with the max for normalisation.
+    // without normalising, exp(-d^2) on separated clusters underflows the
+    // affinity to exactly zero and the whole meta-layout collapses
+    // completely...
+    let mut sq_dists = vec![vec![T::zero(); n_components]; n_components];
+    let mut max_d2 = T::zero();
+    for a in 0..n_components {
+        for b in (a + 1)..n_components {
+            let mut d2 = T::zero();
+            for f in 0..n_features {
+                let diff = centroids[a][f] - centroids[b][f];
+                d2 += diff * diff;
+            }
+            sq_dists[a][b] = d2;
+            sq_dists[b][a] = d2;
+            if d2 > max_d2 {
+                max_d2 = d2;
+            }
+        }
+    }
+    let scale = if max_d2 > T::from_f64(1e-12).unwrap() {
+        T::one() / max_d2
+    } else {
+        T::one()
+    };
+
     let mut row_indices = Vec::new();
     let mut col_indices = Vec::new();
     let mut values = Vec::new();
@@ -506,12 +549,7 @@ where
             if a == b {
                 continue;
             }
-            let mut d2 = T::zero();
-            for f in 0..n_features {
-                let diff = centroids[a][f] - centroids[b][f];
-                d2 += diff * diff;
-            }
-            let aff = T::from_f64((-d2.to_f64().unwrap()).exp()).unwrap();
+            let aff = T::from_f64((-(sq_dists[a][b] * scale).to_f64().unwrap()).exp()).unwrap();
             row_indices.push(a);
             col_indices.push(b);
             values.push(aff);
