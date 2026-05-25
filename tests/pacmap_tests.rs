@@ -197,19 +197,7 @@ fn pacmap_integration_05_output_shape() {
     let n = data.nrows();
     let n_dim = 2;
 
-    let params = PacmapParams::new(
-        Some(n_dim),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = PacmapParams::default();
 
     let embd = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
 
@@ -241,19 +229,7 @@ fn pacmap_integration_06_all_finite() {
 fn pacmap_integration_07_reproducibility() {
     let (data, _) = create_diagnostic_data(50, 10, 42);
 
-    let params = PacmapParams::new(
-        Some(2),
-        None,
-        Some("balltree".to_string()),
-        Some("adam".to_string()),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = PacmapParams::default();
     let embd1 = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
     let embd2 = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
 
@@ -305,27 +281,10 @@ fn pacmap_integration_09_cluster_separation() {
 
     println!("\n=== PaCMAP DIAGNOSTIC 9: Cluster Separation ===");
 
-    let params = PacmapParams::new(
-        Some(2),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        Some("pca".to_string()),
-        None,
-        Some(PacmapOptimParams::new(
-            Some(450),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )),
-    );
+    let params = PacmapParams {
+        optim_params: PacmapOptimParams::new(Some(450), None, None, None, None, None, None),
+        ..PacmapParams::default()
+    };
 
     let embd = pacmap(data.as_ref(), None, &params, 42, true).unwrap();
 
@@ -361,19 +320,11 @@ fn pacmap_integration_10_precomputed_knn() {
 
     // Use sequential Adam — parallel has non-deterministic FP accumulation order
     // so precomputed vs internal may diverge even with identical kNN graphs.
-    let params = PacmapParams::new(
-        Some(2),
-        None,
-        Some("nndescent".to_string()),
-        Some("adam".to_string()),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = PacmapParams {
+        ann_type: "nndescent".to_string(),
+        optimiser_type: "adam".to_string(),
+        ..PacmapParams::default()
+    };
 
     let embd_pre = pacmap(
         data.as_ref(),
@@ -405,32 +356,14 @@ fn pacmap_integration_10_precomputed_knn() {
 fn pacmap_integration_11_sequential_parallel_identical() {
     let (data, _) = create_diagnostic_data(50, 10, 42);
 
-    let params_seq = PacmapParams::new(
-        Some(2),
-        None,
-        None,
-        Some("adam".to_string()),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
-    let params_par = PacmapParams::new(
-        Some(2),
-        None,
-        None,
-        Some("adam_parallel".to_string()),
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let params_seq = PacmapParams {
+        optimiser_type: "adam".to_string(),
+        ..PacmapParams::default()
+    };
+    let params_par = PacmapParams {
+        optimiser_type: "adam_parallel".to_string(),
+        ..PacmapParams::default()
+    };
 
     let embd_seq = pacmap(data.as_ref(), None, &params_seq, 42, false).unwrap();
     let embd_par = pacmap(data.as_ref(), None, &params_par, 42, false).unwrap();

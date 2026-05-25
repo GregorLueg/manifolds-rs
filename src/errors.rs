@@ -20,6 +20,28 @@ pub enum ManifoldsError {
         /// Set dimensions for tSNE
         n_dim: usize,
     },
+    // -- sparse errors --
+    /// Error if the sparse matrix is not of CSR
+    #[error("The matrix is not of CSR type. Please double check the inputs")]
+    SparseMatrixIsNotCsr,
+    // -- sparse errors --
+    /// Error for sparse multiplication dimension mismatches
+    #[error("The dimensions of the matrix do not support sparse multiplication (matrix a n_col: {n_col_a}; matrix b n_row: {n_row_b})")]
+    SparseMatrixMultiplication {
+        /// Number of columns in matrix a
+        n_col_a: usize,
+        /// Number of rows in matrix b
+        n_row_b: usize,
+    },
+    /// The matrix is not square, but should be.
+    #[error("The sparse matrix must be square")]
+    SpareMatrixMustBeSquare,
+    /// Power value is not positive
+    #[error("The chosen power must be positive, but is {power}.")]
+    PowerMustBePositive {
+        /// Chosen power by the user
+        power: usize,
+    },
     // -- ann-search-rs --
     /// Propagate errors from the ann-search-rs crate
     #[error("Error from the ann-search-rs crate: {0}")]

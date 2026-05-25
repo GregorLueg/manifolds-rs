@@ -97,81 +97,89 @@ pub type TsneGraph<T> = Result<(CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
 #[derive(Debug, Clone)]
 pub struct UmapParams<T> {
     /// How many dimensions to return
-    n_dim: usize,
+    pub n_dim: usize,
     /// Number of neighbours
-    k: usize,
+    pub k: usize,
     /// Which optimiser to use. Defaults to `"adam_parallel"`.
-    optimiser: String,
+    pub optimiser: String,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
-    ann_type: String,
+    pub ann_type: String,
     /// Which embedding initialisation to use. Defaults to spectral clustering.
-    initialisation: String,
+    pub initialisation: String,
     /// Optional initialisation range to use
-    init_range: Option<T>,
+    pub init_range: Option<T>,
     /// Nearest neighbour parameters.
-    nn_params: NearestNeighbourParams<T>,
+    pub nn_params: NearestNeighbourParams<T>,
     /// Parameters for the UMAP graph generation.
-    umap_graph_params: UmapGraphParams<T>,
+    pub umap_graph_params: UmapGraphParams<T>,
     /// Parameters to use for the UMAP optimiser.
-    optim_params: UmapOptimParams<T>,
+    pub optim_params: UmapOptimParams<T>,
     /// Shall randomised SVC be used for PCA-based embedding
-    randomised: bool,
+    pub randomised: bool,
+}
+
+impl<T> Default for UmapParams<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            n_dim: 2,
+            k: 15,
+            optimiser: "adam_parallel".to_string(),
+            ann_type: "kmknn".to_string(),
+            initialisation: "spectral".to_string(),
+            init_range: None,
+            nn_params: NearestNeighbourParams::default(),
+            optim_params: UmapOptimParams::default(),
+            umap_graph_params: UmapGraphParams::default(),
+            randomised: false,
+        }
+    }
 }
 
 impl<T> UmapParams<T>
 where
     T: ManifoldsFloat,
 {
-    /// Generate new UMAP parameters
+    /// Generate new UMAP parameters with full control over every field.
     ///
-    /// This function will generate new UMAP parameters and has a lot of
-    /// options that give fine-grained control. If everything is set to `None`,
-    /// sensible (hopefully) defaults will be provided.
+    /// This constructor exposes every field directly. For sensible defaults,
+    /// use [`UmapParams::default`] or [`UmapParams::new_default_2d`] instead.
     ///
     /// ### Params
     ///
-    /// * `n_dim` - How many dimensions to return. Default `2`.
-    /// * `k` - How many neighbours to consider. Default `15`.
-    /// * `optimiser` - Which optimiser to use. Default `"adam_parallel"`.
-    /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
-    ///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
-    ///   provide a weird string, the function will default to `"kmknn"`
-    /// * `initialisation` - Which initialisation of the embedding to use.
-    ///   Defaults to `"spectral"`.
-    /// * `nn_params` - Further nearest neighbour parameters.
-    /// * `optim_params` - Further optimiser parameters.
-    /// * `umap_graph_params` - Further UMAP graph generation parameters
-    /// * `randomised` - If initialisation is set to `"PCA"`, shall randomised
-    ///   SVD be used. Defaults to `false`.
+    /// * `n_dim` - How many dimensions to return.
+    /// * `k` - How many neighbours to consider.
+    /// * `optimiser` - Which optimiser to use, e.g. `"adam_parallel"`.
+    /// * `ann_type` - (Approximate) nearest neighbour method. One of
+    ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
+    ///   `"kmknn"` or `"balltree"`.
+    /// * `initialisation` - Which embedding initialisation to use, e.g.
+    ///   `"spectral"`.
+    /// * `init_range` - Optional initialisation range.
+    /// * `nn_params` - Nearest neighbour parameters.
+    /// * `optim_params` - Parameters for the UMAP optimiser.
+    /// * `umap_graph_params` - Parameters for the UMAP graph generation.
+    /// * `randomised` - Whether randomised SVD is used for PCA-based embedding.
     ///
     /// ### Returns
     ///
-    /// Hopefully sensible standard parameters.
+    /// A fully specified set of UMAP parameters.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        n_dim: Option<usize>,
-        k: Option<usize>,
-        optimiser: Option<String>,
-        ann_type: Option<String>,
-        initialisation: Option<String>,
+        n_dim: usize,
+        k: usize,
+        optimiser: String,
+        ann_type: String,
+        initialisation: String,
         init_range: Option<T>,
-        nn_params: Option<NearestNeighbourParams<T>>,
-        optim_params: Option<UmapOptimParams<T>>,
-        umap_graph_params: Option<UmapGraphParams<T>>,
-        randomised: Option<bool>,
+        nn_params: NearestNeighbourParams<T>,
+        optim_params: UmapOptimParams<T>,
+        umap_graph_params: UmapGraphParams<T>,
+        randomised: bool,
     ) -> Self {
-        // sensible defaults
-        let n_dim = n_dim.unwrap_or(2);
-        let k = k.unwrap_or(15);
-        let optimiser = optimiser.unwrap_or("adam_parallel".to_string());
-        let ann_type = ann_type.unwrap_or("kmknn".to_string());
-        let initialisation = initialisation.unwrap_or("spectral".to_string());
-        let nn_params = nn_params.unwrap_or_default();
-        let optim_params = optim_params.unwrap_or_default();
-        let umap_graph_params = umap_graph_params.unwrap_or_default();
-        let randomised = randomised.unwrap_or(false);
-
         Self {
             n_dim,
             k,
@@ -186,47 +194,29 @@ where
         }
     }
 
-    /// Default 2D parameters
+    /// Default parameters for standard 2D visualisation.
     ///
-    /// This function will generate new UMAP parameters and has a lot of
-    /// options that give fine-grained control. If everything is set to `None`,
-    /// sensible (hopefully) defaults will be provided.
+    /// Returns the default parameters but lets you tune `min_dist` and
+    /// `spread`, which feed into the optimiser parameters and control how
+    /// tightly points are packed in the embedding.
     ///
     /// ### Params
     ///
-    /// * `n_dim` - How many dimensions to return. Default `2`.
-    /// * `k` - How many neighbours to consider. Default `15`.
-    /// * `min_dist` - Minimum distance between the data points. Defaults to
-    ///   `0.5`.
-    /// * `spread` - Spread paramter. Defaults to `1.0`.
+    /// * `min_dist` - Minimum distance between data points. Defaults to `0.5`.
+    /// * `spread` - Spread parameter. Defaults to `1.0`.
     ///
     /// ### Returns
     ///
-    /// Hopefully sensible standard parameters for standard 2D visualisation.
-    pub fn default_2d(
-        n_dim: Option<usize>,
-        k: Option<usize>,
-        min_dist: Option<T>,
-        spread: Option<T>,
-    ) -> Self {
-        let n_dim = n_dim.unwrap_or(2);
-        let k = k.unwrap_or(15);
+    /// Hopefully sensible standard parameters for 2D visualisation.
+    pub fn new_default_2d(min_dist: Option<T>, spread: Option<T>) -> Self {
         let min_dist = min_dist.unwrap_or(T::from_f64(0.5).unwrap());
         let spread = spread.unwrap_or(T::from_f64(1.0).unwrap());
 
         Self {
-            n_dim,
-            k,
-            optimiser: "adam_parallel".into(),
-            ann_type: "kmknn".into(),
-            initialisation: "spectral".into(),
-            init_range: None,
-            nn_params: NearestNeighbourParams::default(),
             optim_params: UmapOptimParams::from_min_dist_spread(
                 min_dist, spread, None, None, None, None, None, None, None,
             ),
-            umap_graph_params: UmapGraphParams::default(),
-            randomised: false,
+            ..Self::default()
         }
     }
 }
@@ -491,65 +481,106 @@ pub struct TsneParams<T> {
     pub randomised_init: bool,
 }
 
+impl<T> Default for TsneParams<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            n_dim: 2,
+            perplexity: T::from_f64(30.0).unwrap(),
+            ann_type: "kmknn".to_string(),
+            initialisation: "pca".to_string(),
+            init_range: None,
+            nn_params: NearestNeighbourParams::default(),
+            optim_params: TsneOptimParams {
+                n_epochs: 1000,
+                lr: None,
+                early_exag_iter: 250,
+                early_exag_factor: T::from_f64(12.0).unwrap(),
+                late_exag_factor: None,
+                theta: T::from_f64(0.5).unwrap(),
+                n_interp_points: 3,
+            },
+            randomised_init: true,
+        }
+    }
+}
+
 impl<T> TsneParams<T>
 where
     T: ManifoldsFloat,
 {
-    /// Create new t-SNE parameters with sensible defaults
+    /// Create new t-SNE parameters with full control over every field.
+    ///
+    /// This constructor exposes every field directly, including the
+    /// optimiser parameters. For sensible defaults, use
+    /// [`TsneParams::default`] or [`TsneParams::new_default_2d`] instead.
     ///
     /// ### Params
     ///
-    /// * `n_dim` - Number of output dimensions. Default: 2
-    /// * `perplexity` - Perplexity parameter. Default: 30.0
+    /// * `n_dim` - Number of output dimensions.
+    /// * `perplexity` - Perplexity parameter controlling neighbourhood size
+    ///   (typical: 5-50).
+    /// * `ann_type` - (Approximate) nearest neighbour method. One of
+    ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
+    ///   `"kmknn"` or `"balltree"`.
+    /// * `initialisation` - Embedding initialisation method: `"pca"`,
+    ///   `"random"`, or `"spectral"`.
     /// * `init_range` - Optional initialisation range to fix the initial
     ///   embedding between certain values.
-    /// * `lr` - Learning rate. Default: 200.0
-    /// * `n_epochs` - Number of optimization epochs. Default: 1000
-    /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
-    ///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
-    ///   provide a weird string, the function will default to `"kmknn"`
-    /// * `theta` - Barnes-Hut approximation parameter. Default: 0.5
-    /// * `n_interp_points` - Number of interpolation points for the FFT version
-    ///   of the optimiser.
+    /// * `nn_params` - Nearest neighbour parameters.
+    /// * `optim_params` - t-SNE optimisation parameters. These cover the
+    ///   learning rate, number of epochs, early/late exaggeration, the
+    ///   Barnes-Hut `theta`, and the number of FFT interpolation points.
+    /// * `randomised_init` - Whether randomised SVD is used for PCA
+    ///   initialisation.
     ///
     /// ### Returns
     ///
-    /// `TsneParams` with sensible defaults for standard t-SNE
+    /// A fully specified set of t-SNE parameters.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        n_dim: Option<usize>,
-        perplexity: Option<T>,
+        n_dim: usize,
+        perplexity: T,
+        ann_type: String,
+        initialisation: String,
         init_range: Option<T>,
-        lr: Option<T>,
-        n_epochs: Option<usize>,
-        ann_type: Option<String>,
-        theta: Option<T>,
-        n_interp_points: Option<usize>,
+        nn_params: NearestNeighbourParams<T>,
+        optim_params: TsneOptimParams<T>,
+        randomised_init: bool,
     ) -> Self {
-        let n_dim = n_dim.unwrap_or(2);
-        let perplexity = perplexity.unwrap_or_else(|| T::from_f64(30.0).unwrap());
-        let lr = lr.unwrap_or_else(|| T::from_f64(200.0).unwrap());
-        let n_epochs = n_epochs.unwrap_or(1000);
-        let ann_type = ann_type.unwrap_or_else(|| "kmknn".to_string());
-        let theta = theta.unwrap_or_else(|| T::from_f64(0.5).unwrap());
-        let n_interp_points = n_interp_points.unwrap_or(3);
-
         Self {
             n_dim,
             perplexity,
             ann_type,
-            initialisation: "pca".to_string(),
+            initialisation,
             init_range,
-            nn_params: NearestNeighbourParams::default(),
-            optim_params: TsneOptimParams {
-                n_epochs,
-                lr,
-                early_exag_iter: 250,
-                early_exag_factor: T::from_f64(12.0).unwrap(),
-                theta,
-                n_interp_points,
-            },
-            randomised_init: true,
+            nn_params,
+            optim_params,
+            randomised_init,
+        }
+    }
+
+    /// Default parameters for standard 2D visualisation.
+    ///
+    /// Returns the default parameters but lets you tune `perplexity`, the
+    /// characteristic t-SNE knob controlling neighbourhood size.
+    ///
+    /// ### Params
+    ///
+    /// * `perplexity` - Perplexity parameter (typical: 5-50). Defaults to
+    ///   `30.0`.
+    ///
+    /// ### Returns
+    ///
+    /// Hopefully sensible standard parameters for 2D visualisation.
+    pub fn new_default_2d(perplexity: Option<T>) -> Self {
+        let perplexity = perplexity.unwrap_or_else(|| T::from_f64(30.0).unwrap());
+
+        Self {
+            perplexity,
+            ..Self::default()
         }
     }
 }
@@ -952,87 +983,109 @@ pub struct PhateParams<T> {
     pub randomised: bool,
 }
 
+impl<T> Default for PhateParams<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        let diffusion_params = PhateDiffusionParams::new(
+            Some(T::from_f64(40.0).unwrap()),
+            T::from_f64(1.0).unwrap(),
+            T::from_f64(1e-4).unwrap(),
+            "average".to_string(),
+            None,
+            "spectral".to_string(),
+            None,
+            None,
+            None,
+            T::from_f64(1.0).unwrap(),
+        );
+
+        Self {
+            n_dim: 2,
+            k: 5,
+            ann_type: "kmknn".to_string(),
+            ann_params: NearestNeighbourParams::default(),
+            diffusion_params,
+            mds_method: "sgd_dense".to_string(),
+            mds_iter: None,
+            randomised: true,
+        }
+    }
+}
+
 impl<T> PhateParams<T>
 where
     T: ManifoldsFloat,
 {
-    /// Create new PHATE parameters with sensible defaults
+    /// Create new PHATE parameters with full control over every field.
+    ///
+    /// This constructor exposes every field directly, including the
+    /// diffusion parameters. For sensible defaults, use
+    /// [`PhateParams::default`] or [`PhateParams::new_default_2d`] instead.
     ///
     /// ### Params
     ///
-    /// * `n_dim` - Number of output dimensions (default: 2)
-    /// * `k` - Number of nearest neighbours (default: 5)
-    /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
-    ///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
-    ///   provide a weird string, the function will default to `"kmknn"`
-    /// * `decay` - Alpha decay parameter controlling kernel bandwidth (default:
-    ///   40.0)
-    /// * `bandwidth_scale` - Scaling factor for the kernel bandwidth (default:
-    ///   1.0)
-    /// * `graph_symmetry` - Method for symmetrising the affinity graph:
-    ///   `"average"` or `"max"` (default: `"average"`)
-    /// * `t_max` - Maximum number of diffusion steps for optimal `t` selection
-    /// * `gamma` - Informational distance constant; `1.0` gives PHATE, `-1.0`
-    ///   gives MDS (default: 1.0)
-    /// * `n_landmarks` - Number of landmark points for large-scale
-    ///   approximation; `None` disables landmarks
-    /// * `landmark_method`: Method for selecting landmarks: `"spectral"`,
-    ///   `"random"` or `"density"`
-    /// * `n_svd` - Number of SVD components to retain during diffusion
-    ///   (default: determined by diffusion params)
-    /// * `t_custom` - Fixed diffusion time `t`; overrides automatic selection
-    ///   if provided
-    /// * `mds_method` - MDS implementation to use (default: `"sgd_dense"`)
-    /// * `mds_iter` - Number of iterations for MDS fitting; `None` uses the MDS
-    ///   default
-    /// * `randomised` - Whether to use randomised SVD for PCA-based initialisation (default: `true`)
+    /// * `n_dim` - Number of output dimensions.
+    /// * `k` - Number of nearest neighbours.
+    /// * `ann_type` - (Approximate) nearest neighbour method. One of
+    ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
+    ///   `"kmknn"` or `"balltree"`.
+    /// * `ann_params` - Nearest neighbour search parameters.
+    /// * `diffusion_params` - Diffusion parameters. These cover the alpha
+    ///   decay, kernel bandwidth scaling, graph symmetry, landmarks, SVD
+    ///   components, diffusion time selection, and the informational distance
+    ///   constant `gamma`.
+    /// * `mds_method` - Which MDS implementation to use, e.g. `"sgd_dense"`.
+    /// * `mds_iter` - Optional number of iterations for MDS fitting; `None`
+    ///   uses the MDS default.
+    /// * `randomised` - Whether randomised SVD is used for PCA-based
+    ///   initialisation.
     ///
     /// ### Returns
     ///
-    /// `PhateParams` with sensible defaults for standard PHATE
+    /// A fully specified set of PHATE parameters.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        n_dim: Option<usize>,
-        k: Option<usize>,
-        ann_type: Option<String>,
-        decay: Option<T>,
-        bandwidth_scale: Option<T>,
-        graph_symmetry: Option<String>,
-        t_max: Option<usize>,
-        gamma: Option<T>,
-        n_landmarks: Option<usize>,
-        landmark_method: Option<String>,
-        n_svd: Option<usize>,
-        t_custom: Option<usize>,
-        mds_method: Option<String>,
+        n_dim: usize,
+        k: usize,
+        ann_type: String,
+        ann_params: NearestNeighbourParams<T>,
+        diffusion_params: PhateDiffusionParams<T>,
+        mds_method: String,
         mds_iter: Option<usize>,
-        randomised: Option<bool>,
+        randomised: bool,
     ) -> Self {
-        let phate_diffusion_params = PhateDiffusionParams::new(
-            Some(decay.unwrap_or_else(|| T::from_f64(40.0).unwrap())),
-            bandwidth_scale.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
-            T::from_f64(1e-4).unwrap(),
-            graph_symmetry.unwrap_or("average".to_string()),
-            n_landmarks,
-            landmark_method.unwrap_or("spectral".to_string()),
-            n_svd,
-            t_max,
-            t_custom,
-            gamma.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
-        );
+        Self {
+            n_dim,
+            k,
+            ann_type,
+            ann_params,
+            diffusion_params,
+            mds_method,
+            mds_iter,
+            randomised,
+        }
+    }
+
+    /// Default parameters for standard 2D visualisation.
+    ///
+    /// Returns the default parameters but lets you tune `k`, the number of
+    /// nearest neighbours used to build the affinity graph.
+    ///
+    /// ### Params
+    ///
+    /// * `k` - Number of nearest neighbours. Defaults to `5`.
+    ///
+    /// ### Returns
+    ///
+    /// Hopefully sensible standard parameters for 2D visualisation.
+    pub fn new_default_2d(k: Option<usize>) -> Self {
+        let k = k.unwrap_or(5);
 
         Self {
-            n_dim: n_dim.unwrap_or(2),
-            // knn
-            k: k.unwrap_or(5),
-            ann_type: ann_type.unwrap_or_else(|| "kmknn".to_string()),
-            ann_params: NearestNeighbourParams::default(),
-            // diffusion
-            diffusion_params: phate_diffusion_params,
-            // mds
-            mds_method: mds_method.unwrap_or_else(|| "sgd_dense".to_string()),
-            mds_iter,
-            randomised: randomised.unwrap_or(true),
+            k,
+            ..Self::default()
         }
     }
 }
@@ -1271,8 +1324,8 @@ where
             if verbose {
                 println!("Powering diffusion operator...");
             }
-            let powered = matrix_power(&operator, t);
-            let potential = calculate_potential(&powered, 1, phate_params.diffusion_params.gamma);
+            let powered = matrix_power(&operator, t)?;
+            let potential = calculate_potential(&powered, 1, phate_params.diffusion_params.gamma)?;
 
             if verbose {
                 println!(
@@ -1316,9 +1369,9 @@ where
                     landmarks.get_n_landmarks()
                 );
             }
-            let landmark_powered = landmarks.power(t);
+            let landmark_powered = landmarks.power(t)?;
             let landmark_potential =
-                calculate_potential(&landmark_powered, 1, phate_params.diffusion_params.gamma);
+                calculate_potential(&landmark_powered, 1, phate_params.diffusion_params.gamma)?;
 
             if verbose {
                 println!(
@@ -1423,82 +1476,114 @@ pub struct PacmapParams<T> {
     pub optim_params: PacmapOptimParams<T>,
 }
 
-impl<T> PacmapParams<T>
-where
-    T: ManifoldsFloat,
-{
-    /// Generate a new instance of the PaCMAP parameters
-    ///
-    /// ### Params
-    ///
-    /// * `n_dim` - Number of dimensions for the embedding
-    /// * `k` - Number of near neighbours. Default 10 (paper default; lower than
-    ///   UMAP's 15 since PaCMAP is less sensitive to k). The function will use
-    ///   `mn_candidate_end` neighbours for in the k-nearest neighbour searches
-    ///   generally speaking.
-    /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
-    ///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
-    ///   provide a weird string, the function will default to `"kmknn"`
-    /// * `optimiser_type` - Which optimiser to use. Options are `"adam"` and
-    ///   `"adam_parallel"`. Defaults to the parallel version.
-    /// * `n_mid_near` - Mid-near pairs per point. Default 2.
-    /// * `n_further` - Start index into kNN list for mid-near candidate window. ]
-    ///   Default 4 (skip the 4 nearest).
-    /// * `mn_candidate_start` - Start index into kNN list for mid-near
-    ///   candidate window. Default 4 (skip the 4 nearest).
-    /// * `mn_candidate_end` - End index into kNN list for mid-near candidate
-    ///   window. Default 50. Requires k >= this value.
-    /// * `initialisation` - Embedding initialisation. Default `"pca"`. PCA is
-    ///   strongly recommended for PaCMAP as random init degrades global
-    ///   structure.
-    /// * `nn_params` - Nearest neighbour search parameters.
-    /// * `optim_params` - Optimiser parameters.
-    ///
-    /// ### Returns
-    ///
-    /// Initialised self
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        n_dim: Option<usize>,
-        k: Option<usize>,
-        ann_type: Option<String>,
-        optimiser_type: Option<String>,
-        n_mid_near: Option<usize>,
-        n_further: Option<usize>,
-        mn_candidate_start: Option<usize>,
-        mn_candidate_end: Option<usize>,
-        initialisation: Option<String>,
-        nn_params: Option<NearestNeighbourParams<T>>,
-        optim_params: Option<PacmapOptimParams<T>>,
-    ) -> Self {
-        let mn_candidate_end = mn_candidate_end.unwrap_or(50);
-        let k = k.unwrap_or(10).max(mn_candidate_end);
-
-        Self {
-            n_dim: n_dim.unwrap_or(2),
-            k,
-            ann_type: ann_type.unwrap_or("kmknn".to_string()),
-            optimiser_type: optimiser_type.unwrap_or("adam_parallel".to_string()),
-            n_mid_near: n_mid_near.unwrap_or(2),
-            n_further: n_further.unwrap_or(2),
-            mn_candidate_start: mn_candidate_start.unwrap_or(4),
-            mn_candidate_end,
-            initialisation: initialisation.unwrap_or("pca".to_string()),
-            nn_params: nn_params.unwrap_or_default(),
-            optim_params: optim_params.unwrap_or_default(),
-        }
-    }
-}
-
-/// Default implementation of PaCMAP
 impl<T> Default for PacmapParams<T>
 where
     T: ManifoldsFloat,
 {
     fn default() -> Self {
-        Self::new(
-            None, None, None, None, None, None, None, None, None, None, None,
-        )
+        Self {
+            n_dim: 2,
+            k: 50,
+            ann_type: "kmknn".to_string(),
+            optimiser_type: "adam_parallel".to_string(),
+            n_mid_near: 2,
+            n_further: 2,
+            mn_candidate_start: 4,
+            mn_candidate_end: 50,
+            initialisation: "pca".to_string(),
+            nn_params: NearestNeighbourParams::default(),
+            optim_params: PacmapOptimParams::default(),
+        }
+    }
+}
+
+impl<T> PacmapParams<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Generate a new instance of the PaCMAP parameters with full control over
+    /// every field.
+    ///
+    /// For sensible defaults, use [`PacmapParams::default`] or
+    /// [`PacmapParams::new_default_2d`] instead.
+    ///
+    /// Note: `k` is clamped to at least `mn_candidate_end`, since the mid-near
+    /// candidate window indexes into the kNN list and must not run past its
+    /// end.
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - Number of dimensions for the embedding.
+    /// * `k` - Number of near neighbours. Clamped to at least
+    ///   `mn_candidate_end`.
+    /// * `ann_type` - (Approximate) nearest neighbour method. One of
+    ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
+    ///   `"kmknn"` or `"balltree"`.
+    /// * `optimiser_type` - Which optimiser to use. Options are `"adam"` and
+    ///   `"adam_parallel"`.
+    /// * `n_mid_near` - Mid-near pairs per point.
+    /// * `n_further` - Further (random) pairs per point.
+    /// * `mn_candidate_start` - Start index into the kNN list for the mid-near
+    ///   candidate window.
+    /// * `mn_candidate_end` - End index into the kNN list for the mid-near
+    ///   candidate window. Requires `k >= this value`.
+    /// * `initialisation` - Embedding initialisation. PCA is strongly
+    ///   recommended for PaCMAP as random init degrades global structure.
+    /// * `nn_params` - Nearest neighbour search parameters.
+    /// * `optim_params` - Optimiser parameters.
+    ///
+    /// ### Returns
+    ///
+    /// A fully specified set of PaCMAP parameters.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        n_dim: usize,
+        k: usize,
+        ann_type: String,
+        optimiser_type: String,
+        n_mid_near: usize,
+        n_further: usize,
+        mn_candidate_start: usize,
+        mn_candidate_end: usize,
+        initialisation: String,
+        nn_params: NearestNeighbourParams<T>,
+        optim_params: PacmapOptimParams<T>,
+    ) -> Self {
+        let k = k.max(mn_candidate_end);
+
+        Self {
+            n_dim,
+            k,
+            ann_type,
+            optimiser_type,
+            n_mid_near,
+            n_further,
+            mn_candidate_start,
+            mn_candidate_end,
+            initialisation,
+            nn_params,
+            optim_params,
+        }
+    }
+
+    /// Default parameters for standard 2D visualisation.
+    ///
+    /// Returns the default parameters but lets you tune `k`, the number of
+    /// near neighbours. Note that `k` is clamped to at least
+    /// `mn_candidate_end` (default `50`).
+    ///
+    /// ### Params
+    ///
+    /// * `k` - Number of near neighbours. Defaults to `50`.
+    ///
+    /// ### Returns
+    ///
+    /// Hopefully sensible standard parameters for 2D visualisation.
+    pub fn new_default_2d(k: Option<usize>) -> Self {
+        let default = Self::default();
+        let k = k.unwrap_or(default.k).max(default.mn_candidate_end);
+
+        Self { k, ..default }
     }
 }
 
@@ -1690,72 +1775,112 @@ pub struct DiffusionMapsParams<T> {
     pub n_svd: Option<usize>,
 }
 
+impl<T> Default for DiffusionMapsParams<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            n_dim: 2,
+            k: 5,
+            ann_type: "kmknn".to_string(),
+            ann_params: NearestNeighbourParams::default(),
+            bandwidth_scale: T::from_f64(1.0).unwrap(),
+            thresh: T::from_f64(1e-4).unwrap(),
+            graph_symmetry: "add".to_string(),
+            alpha_norm: T::from_f64(1.0).unwrap(),
+            t: parse_phate_time(None, PHATE_MAX_T),
+            n_landmarks: None,
+            landmark_method: "spectral".to_string(),
+            n_svd: None,
+        }
+    }
+}
+
 impl<T> DiffusionMapsParams<T>
 where
     T: ManifoldsFloat,
 {
-    /// Construct a new `DiffusionMapsParams`.
+    /// Construct a new `DiffusionMapsParams` with full control over every
+    /// field.
     ///
-    /// All parameters are optional; `None` falls back to the stated defaults.
+    /// For sensible defaults, use [`DiffusionMapsParams::default`] or
+    /// [`DiffusionMapsParams::new_default_2d`] instead.
     ///
     /// ### Params
     ///
-    /// * `n_dim` - Output embedding dimensionality. Default 2.
-    /// * `k` - Number of nearest neighbours for graph construction. Default 5.
+    /// * `n_dim` - Output embedding dimensionality.
+    /// * `k` - Number of nearest neighbours for graph construction.
     /// * `ann_type` - ANN algorithm: `"exhaustive"`, `"kmknn"`, `"balltree"`,
-    ///   `"annoy"`, `"hnsw"`, or `"nndescent"`. Default `"kmknn"`.
+    ///   `"annoy"`, `"hnsw"`, or `"nndescent"`.
+    /// * `ann_params` - Nearest neighbour search parameters.
     /// * `bandwidth_scale` - Multiplicative factor on the adaptive kernel
-    ///   bandwidth. Default 1.0.
-    /// * `thresh` - Kernel entries below this value are set to zero. Default
-    ///   1e-4.
+    ///   bandwidth.
+    /// * `thresh` - Kernel entries below this value are set to zero.
     /// * `graph_symmetry` - Symmetrisation method: `"add"`, `"multiply"`,
-    ///   `"mnn"` or `"none"`. Default `"add"`.
-    /// * `alpha_norm` - Anisotropic normalisation exponent in [0, 1]. Default
-    ///   1.0.
-    /// * `t_max` - Maximum diffusion steps for VNE-based optimal t. Default
-    ///   100.
-    /// * `t_custom` - If provided, fixes t to this value instead of
-    ///   auto-detecting.
+    ///   `"mnn"` or `"none"`.
+    /// * `alpha_norm` - Anisotropic normalisation exponent in [0, 1]. 0 gives
+    ///   the normalised graph Laplacian, 0.5 the Fokker-Planck operator, 1 the
+    ///   Laplace-Beltrami operator.
+    /// * `t` - Diffusion time: `Auto` picks the VNE knee, `Fixed(t)` uses `t`
+    ///   directly.
     /// * `n_landmarks` - Number of landmarks. `None` or `>= n` runs full DM.
-    /// * `landmark_method` - `"random"`, `"spectral"`, or `"density"`. Default
-    ///   `"spectral"`.
+    /// * `landmark_method` - `"random"`, `"spectral"`, or `"density"`.
     /// * `n_svd` - SVD components for spectral landmark selection. Ignored
     ///   otherwise.
     ///
     /// ### Returns
     ///
-    /// Initialised `DiffusionMapsParams`
+    /// A fully specified set of diffusion maps parameters.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        n_dim: Option<usize>,
-        k: Option<usize>,
-        ann_type: Option<String>,
-        bandwidth_scale: Option<T>,
-        thresh: Option<T>,
-        graph_symmetry: Option<String>,
-        alpha_norm: Option<T>,
-        t_max: Option<usize>,
-        t_custom: Option<usize>,
+        n_dim: usize,
+        k: usize,
+        ann_type: String,
+        ann_params: NearestNeighbourParams<T>,
+        bandwidth_scale: T,
+        thresh: T,
+        graph_symmetry: String,
+        alpha_norm: T,
+        t: PhateTime,
         n_landmarks: Option<usize>,
-        landmark_method: Option<String>,
+        landmark_method: String,
         n_svd: Option<usize>,
     ) -> Self {
-        let t_max = t_max.unwrap_or(PHATE_MAX_T);
-        let t = parse_phate_time(t_custom, t_max);
-
         Self {
-            n_dim: n_dim.unwrap_or(2),
-            k: k.unwrap_or(5),
-            ann_type: ann_type.unwrap_or_else(|| "kmknn".to_string()),
-            ann_params: NearestNeighbourParams::default(),
-            bandwidth_scale: bandwidth_scale.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
-            thresh: thresh.unwrap_or_else(|| T::from_f64(1e-4).unwrap()),
-            graph_symmetry: graph_symmetry.unwrap_or_else(|| "add".to_string()),
-            alpha_norm: alpha_norm.unwrap_or_else(|| T::from_f64(1.0).unwrap()),
+            n_dim,
+            k,
+            ann_type,
+            ann_params,
+            bandwidth_scale,
+            thresh,
+            graph_symmetry,
+            alpha_norm,
             t,
             n_landmarks,
-            landmark_method: landmark_method.unwrap_or_else(|| "spectral".to_string()),
+            landmark_method,
             n_svd,
+        }
+    }
+
+    /// Default parameters for standard 2D visualisation.
+    ///
+    /// Returns the default parameters but lets you tune `k`, the number of
+    /// nearest neighbours used to build the graph.
+    ///
+    /// ### Params
+    ///
+    /// * `k` - Number of nearest neighbours. Defaults to `5`.
+    ///
+    /// ### Returns
+    ///
+    /// Hopefully sensible standard parameters for 2D visualisation.
+    pub fn new_default_2d(k: Option<usize>) -> Self {
+        let k = k.unwrap_or(5);
+
+        Self {
+            k,
+            ..Self::default()
         }
     }
 }
@@ -2079,50 +2204,58 @@ pub struct ParametricUmapParams<T> {
 }
 
 #[cfg(feature = "parametric")]
+impl<T> Default for ParametricUmapParams<T>
+where
+    T: ManifoldsFloat + Element,
+{
+    fn default() -> Self {
+        Self {
+            n_dim: 2,
+            k: 15,
+            ann_type: "hnsw".to_string(),
+            hidden_layers: vec![128, 128, 128],
+            nn_params: NearestNeighbourParams::default(),
+            umap_graph_params: UmapGraphParams::default(),
+            train_param: TrainParametricParams::default(),
+        }
+    }
+}
+
+#[cfg(feature = "parametric")]
 impl<T> ParametricUmapParams<T>
 where
     T: ManifoldsFloat + Element,
 {
-    /// Generate new parametric UMAP parameters
+    /// Generate new parametric UMAP parameters with full control over every
+    /// field.
     ///
-    /// Provides fine-grained control over all parametric UMAP settings.
-    /// If parameters are set to `None`, sensible defaults will be provided.
+    /// For sensible defaults, use [`ParametricUmapParams::default`] or
+    /// [`ParametricUmapParams::new_default_2d`] instead.
     ///
     /// ### Params
     ///
-    /// * `n_dim` - Number of embedding dimensions. Default `2`.
-    /// * `k` - Number of nearest neighbours. Default `15`.
-    /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
-    ///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
-    ///   provide a weird string, the function will default to `"kmknn"`
-    /// * `hidden_layers` - Hidden layer sizes for MLP. Default
-    ///   `vec![128, 128, 128]`.
-    /// * `nn_params` - Nearest neighbour parameters. Default uses sensible
-    ///   values.
-    /// * `umap_graph_params` - UMAP graph parameters. Default uses sensible
-    ///   values.
-    /// * `train_param` - Training parameters. Default uses sensible values.
+    /// * `n_dim` - Number of embedding dimensions.
+    /// * `k` - Number of nearest neighbours.
+    /// * `ann_type` - (Approximate) nearest neighbour method. One of
+    ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
+    ///   `"kmknn"` or `"balltree"`.
+    /// * `hidden_layers` - Hidden layer sizes for the MLP encoder.
+    /// * `nn_params` - Nearest neighbour parameters.
+    /// * `umap_graph_params` - UMAP graph generation parameters.
+    /// * `train_param` - Training parameters for the neural network.
     ///
     /// ### Returns
     ///
-    /// Configured `ParametricUmapParams` instance
+    /// A fully specified set of parametric UMAP parameters.
     pub fn new(
-        n_dim: Option<usize>,
-        k: Option<usize>,
-        ann_type: Option<String>,
-        hidden_layers: Option<Vec<usize>>,
-        nn_params: Option<NearestNeighbourParams<T>>,
-        umap_graph_params: Option<UmapGraphParams<T>>,
-        train_param: Option<TrainParametricParams<T>>,
+        n_dim: usize,
+        k: usize,
+        ann_type: String,
+        hidden_layers: Vec<usize>,
+        nn_params: NearestNeighbourParams<T>,
+        umap_graph_params: UmapGraphParams<T>,
+        train_param: TrainParametricParams<T>,
     ) -> Self {
-        let n_dim = n_dim.unwrap_or(2);
-        let k = k.unwrap_or(15);
-        let ann_type = ann_type.unwrap_or("hnsw".to_string());
-        let hidden_layers = hidden_layers.unwrap_or(vec![128, 128, 128]);
-        let nn_params = nn_params.unwrap_or_default();
-        let umap_graph_params = umap_graph_params.unwrap_or_default();
-        let train_param = train_param.unwrap_or_default();
-
         Self {
             n_dim,
             k,
@@ -2134,42 +2267,27 @@ where
         }
     }
 
-    /// Default parameters for 2D parametric UMAP
+    /// Default parameters for standard 2D parametric UMAP.
     ///
-    /// Generates sensible defaults for standard 2D visualisation using
-    /// parametric UMAP with a neural network encoder.
+    /// Returns the default parameters but lets you tune `min_dist`, `spread`
+    /// and `corr_weight`, which feed into the training parameters.
     ///
     /// ### Params
     ///
-    /// * `n_dim` - Number of embedding dimensions. Default `2`.
-    /// * `k` - Number of nearest neighbours. Default `15`.
-    /// * `min_dist` - Minimum distance between embedded points. Default `0.1`.
-    /// * `spread` - Effective scale of embedded points. Default `1.0`.
-    /// * `corr_weight` -
+    /// * `min_dist` - Minimum distance between embedded points. Defaults to
+    ///   `0.1`.
+    /// * `spread` - Effective scale of embedded points. Defaults to `1.0`.
+    /// * `corr_weight` - Correlation loss weight. Defaults to `0.0`.
     ///
     /// ### Returns
     ///
-    /// Configured `ParametricUmapParams` suitable for 2D visualisation
-    pub fn default_2d(
-        n_dim: Option<usize>,
-        k: Option<usize>,
-        min_dist: Option<T>,
-        spread: Option<T>,
-        corr_weight: Option<T>,
-    ) -> Self {
-        let n_dim = n_dim.unwrap_or(2);
-        let k = k.unwrap_or(15);
+    /// Hopefully sensible standard parameters for 2D visualisation.
+    pub fn new_default_2d(min_dist: Option<T>, spread: Option<T>, corr_weight: Option<T>) -> Self {
         let min_dist = min_dist.unwrap_or(T::from_f64(0.1).unwrap());
         let spread = spread.unwrap_or(T::from_f64(1.0).unwrap());
         let corr_weight = corr_weight.unwrap_or(T::from_f64(0.0).unwrap());
 
         Self {
-            n_dim,
-            k,
-            ann_type: "hnsw".to_string(),
-            hidden_layers: vec![128, 128, 128],
-            nn_params: NearestNeighbourParams::default(),
-            umap_graph_params: UmapGraphParams::default(),
             train_param: TrainParametricParams::from_min_dist_spread(
                 min_dist,
                 spread,
@@ -2179,6 +2297,7 @@ where
                 None,
                 None,
             ),
+            ..Self::default()
         }
     }
 }
@@ -2389,90 +2508,107 @@ pub struct UmapParamsGpu<T> {
 }
 
 #[cfg(feature = "gpu")]
+impl<T> Default for UmapParamsGpu<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            n_dim: 2,
+            k: 15,
+            optimiser: "adam_parallel".to_string(),
+            ann_type: "ivf_gpu".to_string(),
+            initialisation: "spectral".to_string(),
+            init_range: None,
+            nn_params: NearestNeighbourParamsGpu::default(),
+            umap_graph_params: UmapGraphParams::default(),
+            optim_params: UmapOptimParams::default(),
+            randomised: false,
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
 impl<T> UmapParamsGpu<T>
 where
     T: ManifoldsFloat,
 {
-    /// Generate new GPU UMAP parameters
+    /// Generate new GPU UMAP parameters with full control over every field.
+    ///
+    /// This constructor exposes every field directly. For sensible defaults,
+    /// use [`UmapParamsGpu::default`] or [`UmapParamsGpu::new_default_2d`]
+    /// instead.
     ///
     /// ### Params
     ///
-    /// * `n_dim` - How many dimensions to return. Default `2`.
-    /// * `k` - How many neighbours to consider. Default `15`.
-    /// * `optimiser` - Which optimiser to use. Default `"adam_parallel"`.
+    /// * `n_dim` - How many dimensions to return.
+    /// * `k` - How many neighbours to consider.
+    /// * `optimiser` - Which optimiser to use, e.g. `"adam_parallel"`.
     /// * `ann_type` - Which GPU ANN search to use. One of `"exhaustive_gpu"`,
-    ///   `"ivf_gpu"` or `"nndescent_gpu"`. Default `"ivf_gpu"`.
-    /// * `initialisation` - Embedding initialisation. Default `"spectral"`.
+    ///   `"ivf_gpu"` or `"nndescent_gpu"`.
+    /// * `initialisation` - Which embedding initialisation to use, e.g.
+    ///   `"spectral"`.
     /// * `init_range` - Optional initialisation range.
     /// * `nn_params` - GPU nearest neighbour parameters.
-    /// * `optim_params` - Optimiser parameters.
-    /// * `umap_graph_params` - UMAP graph generation parameters.
-    /// * `randomised` - Use randomised SVD for PCA init. Default `false`.
+    /// * `umap_graph_params` - Parameters for the UMAP graph generation.
+    /// * `optim_params` - Parameters for the UMAP optimiser.
+    /// * `randomised` - Whether randomised SVD is used for PCA-based
+    ///   initialisation.
     ///
     /// ### Returns
     ///
-    /// Configured `UmapParamsGpu` with sensible defaults.
+    /// A fully specified set of GPU UMAP parameters.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        n_dim: Option<usize>,
-        k: Option<usize>,
-        optimiser: Option<String>,
-        ann_type: Option<String>,
-        initialisation: Option<String>,
+        n_dim: usize,
+        k: usize,
+        optimiser: String,
+        ann_type: String,
+        initialisation: String,
         init_range: Option<T>,
-        nn_params: Option<NearestNeighbourParamsGpu<T>>,
-        optim_params: Option<UmapOptimParams<T>>,
-        umap_graph_params: Option<UmapGraphParams<T>>,
-        randomised: Option<bool>,
+        nn_params: NearestNeighbourParamsGpu<T>,
+        umap_graph_params: UmapGraphParams<T>,
+        optim_params: UmapOptimParams<T>,
+        randomised: bool,
     ) -> Self {
         Self {
-            n_dim: n_dim.unwrap_or(2),
-            k: k.unwrap_or(15),
-            optimiser: optimiser.unwrap_or("adam_parallel".to_string()),
-            ann_type: ann_type.unwrap_or("ivf_gpu".to_string()),
-            initialisation: initialisation.unwrap_or("spectral".to_string()),
+            n_dim,
+            k,
+            optimiser,
+            ann_type,
+            initialisation,
             init_range,
-            nn_params: nn_params.unwrap_or_default(),
-            optim_params: optim_params.unwrap_or_default(),
-            umap_graph_params: umap_graph_params.unwrap_or_default(),
-            randomised: randomised.unwrap_or(false),
+            nn_params,
+            umap_graph_params,
+            optim_params,
+            randomised,
         }
     }
 
-    /// Default 2D parameters for GPU UMAP
+    /// Default parameters for standard 2D visualisation.
+    ///
+    /// Returns the default parameters but lets you tune `min_dist` and
+    /// `spread`, which feed into the optimiser parameters and control how
+    /// tightly points are packed in the embedding.
     ///
     /// ### Params
     ///
-    /// * `n_dim` - Number of dimensions. Default `2`.
-    /// * `k` - Number of neighbours. Default `15`.
-    /// * `min_dist` - Minimum distance. Default `0.5`.
-    /// * `spread` - Spread parameter. Default `1.0`.
+    /// * `min_dist` - Minimum distance between data points. Defaults to `0.5`.
+    /// * `spread` - Spread parameter. Defaults to `1.0`.
     ///
     /// ### Returns
     ///
-    /// Sensible defaults for 2D visualisation with GPU kNN search.
-    pub fn default_2d(
-        n_dim: Option<usize>,
-        k: Option<usize>,
-        min_dist: Option<T>,
-        spread: Option<T>,
-    ) -> Self {
+    /// Hopefully sensible standard parameters for 2D visualisation with GPU
+    /// kNN search.
+    pub fn new_default_2d(min_dist: Option<T>, spread: Option<T>) -> Self {
         let min_dist = min_dist.unwrap_or(T::from_f64(0.5).unwrap());
         let spread = spread.unwrap_or(T::from_f64(1.0).unwrap());
 
         Self {
-            n_dim: n_dim.unwrap_or(2),
-            k: k.unwrap_or(15),
-            optimiser: "adam_parallel".into(),
-            ann_type: "ivf_gpu".into(),
-            initialisation: "spectral".into(),
-            init_range: None,
-            nn_params: NearestNeighbourParamsGpu::default(),
             optim_params: UmapOptimParams::from_min_dist_spread(
                 min_dist, spread, None, None, None, None, None, None, None,
             ),
-            umap_graph_params: UmapGraphParams::default(),
-            randomised: false,
+            ..Self::default()
         }
     }
 }
@@ -2735,63 +2871,106 @@ pub struct TsneParamsGpu<T> {
 }
 
 #[cfg(feature = "gpu")]
+impl<T> Default for TsneParamsGpu<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            n_dim: 2,
+            perplexity: T::from_f64(30.0).unwrap(),
+            ann_type: "ivf_gpu".to_string(),
+            initialisation: "pca".to_string(),
+            init_range: None,
+            nn_params: NearestNeighbourParamsGpu::default(),
+            optim_params: TsneOptimParams {
+                n_epochs: 1000,
+                lr: None,
+                early_exag_iter: 250,
+                early_exag_factor: T::from_f64(12.0).unwrap(),
+                late_exag_factor: None,
+                theta: T::from_f64(0.5).unwrap(),
+                n_interp_points: 3,
+            },
+            randomised_init: true,
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
 impl<T> TsneParamsGpu<T>
 where
     T: ManifoldsFloat,
 {
-    /// Create new GPU t-SNE parameters with sensible defaults
+    /// Create new GPU t-SNE parameters with full control over every field.
+    ///
+    /// This constructor exposes every field directly, including the
+    /// optimiser parameters. For sensible defaults, use
+    /// [`TsneParamsGpu::default`] or [`TsneParamsGpu::new_default_2d`] instead.
     ///
     /// ### Params
     ///
-    /// * `n_dim` - Number of output dimensions. Default: 2
-    /// * `perplexity` - Perplexity parameter. Default: 30.0
-    /// * `init_range` - Optional initialisation range
-    /// * `lr` - Learning rate. Default: 200.0
-    /// * `n_epochs` - Number of optimisation epochs. Default: 1000
-    /// * `ann_type` - GPU ANN algorithm: `"exhaustive_gpu"`, `"ivf_gpu"` or
-    ///   `"nndescent_gpu"`. Default: `"ivf_gpu"`
-    /// * `theta` - Barnes-Hut approximation parameter. Default: 0.5
-    /// * `n_interp_points` - Number of interpolation points for the FFT
-    ///   version of the optimiser.
+    /// * `n_dim` - Number of output dimensions.
+    /// * `perplexity` - Perplexity parameter controlling neighbourhood size
+    ///   (typical: 5-50).
+    /// * `ann_type` - GPU ANN algorithm. One of `"exhaustive_gpu"`,
+    ///   `"ivf_gpu"` or `"nndescent_gpu"`.
+    /// * `initialisation` - Embedding initialisation method: `"pca"`,
+    ///   `"random"`, or `"spectral"`.
+    /// * `init_range` - Optional initialisation range.
+    /// * `nn_params` - GPU nearest neighbour parameters.
+    /// * `optim_params` - t-SNE optimisation parameters. These cover the
+    ///   learning rate, number of epochs, early/late exaggeration, the
+    ///   Barnes-Hut `theta`, and the number of FFT interpolation points.
+    /// * `randomised_init` - Whether randomised SVD is used for PCA
+    ///   initialisation.
     ///
     /// ### Returns
     ///
-    /// `TsneParamsGpu` with sensible defaults for GPU-accelerated t-SNE
+    /// A fully specified set of GPU t-SNE parameters.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        n_dim: Option<usize>,
-        perplexity: Option<T>,
+        n_dim: usize,
+        perplexity: T,
+        ann_type: String,
+        initialisation: String,
         init_range: Option<T>,
-        lr: Option<T>,
-        n_epochs: Option<usize>,
-        ann_type: Option<String>,
-        theta: Option<T>,
-        n_interp_points: Option<usize>,
+        nn_params: NearestNeighbourParamsGpu<T>,
+        optim_params: TsneOptimParams<T>,
+        randomised_init: bool,
     ) -> Self {
-        let n_dim = n_dim.unwrap_or(2);
-        let perplexity = perplexity.unwrap_or_else(|| T::from_f64(30.0).unwrap());
-        let lr = lr.unwrap_or_else(|| T::from_f64(200.0).unwrap());
-        let n_epochs = n_epochs.unwrap_or(1000);
-        let ann_type = ann_type.unwrap_or_else(|| "ivf_gpu".to_string());
-        let theta = theta.unwrap_or_else(|| T::from_f64(0.5).unwrap());
-        let n_interp_points = n_interp_points.unwrap_or(3);
-
         Self {
             n_dim,
             perplexity,
             ann_type,
-            initialisation: "pca".to_string(),
+            initialisation,
             init_range,
-            nn_params: NearestNeighbourParamsGpu::default(),
-            optim_params: TsneOptimParams {
-                n_epochs,
-                lr,
-                early_exag_iter: 250,
-                early_exag_factor: T::from_f64(12.0).unwrap(),
-                theta,
-                n_interp_points,
-            },
-            randomised_init: true,
+            nn_params,
+            optim_params,
+            randomised_init,
+        }
+    }
+
+    /// Default parameters for standard 2D visualisation.
+    ///
+    /// Returns the default parameters but lets you tune `perplexity`, the
+    /// characteristic t-SNE knob controlling neighbourhood size.
+    ///
+    /// ### Params
+    ///
+    /// * `perplexity` - Perplexity parameter (typical: 5-50). Defaults to
+    ///   `30.0`.
+    ///
+    /// ### Returns
+    ///
+    /// Hopefully sensible standard parameters for 2D visualisation with GPU
+    /// kNN search.
+    pub fn new_default_2d(perplexity: Option<T>) -> Self {
+        let perplexity = perplexity.unwrap_or_else(|| T::from_f64(30.0).unwrap());
+
+        Self {
+            perplexity,
+            ..Self::default()
         }
     }
 }

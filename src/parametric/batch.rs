@@ -111,16 +111,16 @@ impl<B: Backend> Batcher<B, (usize, usize, f32), UmapBatch<B>> for UmapBatcher {
 #[cfg(test)]
 mod batch_tests {
     use super::*;
-    use burn::backend::ndarray::NdArrayDevice;
-    use burn::backend::NdArray;
+    use burn::backend::flex::FlexDevice;
+    use burn::backend::Flex;
 
-    type TestBackend = NdArray<f32>;
+    type TestBackend = Flex<f32>;
 
     #[test]
     fn test_batcher_creates_correct_batch_size() {
         let batcher = UmapBatcher::new(5, 100, 42);
         let items = vec![(0, 1, 1.0), (2, 3, 1.0), (4, 5, 1.0)];
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let batch: UmapBatch<TestBackend> = batcher.batch(items.clone(), &device);
 
@@ -151,7 +151,7 @@ mod batch_tests {
         // Test case where negative sampling might pick the source node
         let batcher = UmapBatcher::new(20, 10, 42);
         let items = vec![(5, 1, 1.0)];
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let batch: UmapBatch<TestBackend> = batcher.batch(items.clone(), &device);
 
@@ -168,7 +168,7 @@ mod batch_tests {
     fn test_batcher_positive_edges_are_first() {
         let batcher = UmapBatcher::new(3, 100, 42);
         let items = vec![(0, 1, 1.0), (2, 3, 0.5)];
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let batch: UmapBatch<TestBackend> = batcher.batch(items.clone(), &device);
 
@@ -192,12 +192,12 @@ mod batch_tests {
     fn test_batcher_src_indices_match() {
         let batcher = UmapBatcher::new(5, 100, 42);
         let items = vec![(10, 20, 1.0), (30, 40, 1.0)];
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let batch: UmapBatch<TestBackend> = batcher.batch(items.clone(), &device);
 
         let src_data = batch.src_indices.to_data();
-        let src_vec: Vec<i64> = src_data.to_vec().unwrap();
+        let src_vec: Vec<i32> = src_data.to_vec().unwrap();
 
         // First positive edge
         assert_eq!(src_vec[0], 10);
@@ -220,13 +220,13 @@ mod batch_tests {
         let batcher1 = UmapBatcher::new(5, 100, 42);
         let batcher2 = UmapBatcher::new(5, 100, 42);
         let items = vec![(0, 1, 1.0), (2, 3, 1.0)];
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let batch1: UmapBatch<TestBackend> = batcher1.batch(items.clone(), &device);
         let batch2: UmapBatch<TestBackend> = batcher2.batch(items.clone(), &device);
 
-        let dst1: Vec<i64> = batch1.dst_indices.to_data().to_vec().unwrap();
-        let dst2: Vec<i64> = batch2.dst_indices.to_data().to_vec().unwrap();
+        let dst1: Vec<i32> = batch1.dst_indices.to_data().to_vec().unwrap();
+        let dst2: Vec<i32> = batch2.dst_indices.to_data().to_vec().unwrap();
 
         assert_eq!(
             dst1, dst2,
@@ -238,12 +238,12 @@ mod batch_tests {
     fn test_batcher_no_self_loops() {
         let batcher = UmapBatcher::new(10, 50, 42);
         let items = vec![(5, 10, 1.0), (15, 20, 1.0)];
-        let device = NdArrayDevice::Cpu;
+        let device = FlexDevice;
 
         let batch: UmapBatch<TestBackend> = batcher.batch(items.clone(), &device);
 
-        let src_data: Vec<i64> = batch.src_indices.to_data().to_vec().unwrap();
-        let dst_data: Vec<i64> = batch.dst_indices.to_data().to_vec().unwrap();
+        let src_data: Vec<i32> = batch.src_indices.to_data().to_vec().unwrap();
+        let dst_data: Vec<i32> = batch.dst_indices.to_data().to_vec().unwrap();
 
         // Check negative samples don't create self-loops
         for i in 2..src_data.len() {

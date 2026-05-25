@@ -5,6 +5,7 @@ use rayon::prelude::*;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use crate::data::structures::*;
+use crate::errors::ManifoldsError;
 use crate::utils::traits::*;
 
 ////////////////////
@@ -181,12 +182,22 @@ where
 pub fn csr_matmul_csr<T>(
     a: &CompressedSparseData<T>,
     b: &CompressedSparseData<T>,
-) -> CompressedSparseData<T>
+) -> Result<CompressedSparseData<T>, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
-    assert!(a.cs_type.is_csr() && b.cs_type.is_csr());
-    assert_eq!(a.shape.1, b.shape.0, "Dimension mismatch");
+    if !a.cs_type.is_csr() {
+        return Err(ManifoldsError::SparseMatrixIsNotCsr);
+    }
+    if !b.cs_type.is_csr() {
+        return Err(ManifoldsError::SparseMatrixIsNotCsr);
+    }
+    if a.shape.1 != b.shape.0 {
+        return Err(ManifoldsError::SparseMatrixMultiplication {
+            n_col_a: a.shape.1,
+            n_row_b: b.shape.0,
+        });
+    }
 
     let nrows = a.shape.0;
     let ncols = b.shape.1;
@@ -242,7 +253,12 @@ where
         indptr.push(data.len());
     }
 
-    CompressedSparseData::new_csr(&data, &indices, &indptr, (nrows, ncols))
+    Ok(CompressedSparseData::new_csr(
+        &data,
+        &indices,
+        &indptr,
+        (nrows, ncols),
+    ))
 }
 
 /////////////
@@ -254,11 +270,13 @@ where
 /// ### Params
 ///
 /// * `csr` - Mutable reference to the CSR matrix (modified in-place)
-pub fn normalise_csr_rows_l1<T>(csr: &mut CompressedSparseData<T>)
+pub fn normalise_csr_rows_l1<T>(csr: &mut CompressedSparseData<T>) -> Result<(), ManifoldsError>
 where
     T: ManifoldsFloat,
 {
-    assert!(csr.cs_type.is_csr(), "Matrix must be in CSR format");
+    if !csr.cs_type.is_csr() {
+        return Err(ManifoldsError::SparseMatrixIsNotCsr);
+    }
     let nrows = csr.shape.0;
 
     for i in 0..nrows {
@@ -275,6 +293,8 @@ where
             }
         }
     }
+
+    Ok(())
 }
 
 //////////////////////////////
@@ -294,24 +314,33 @@ where
 /// ### Returns
 ///
 /// P^t in CSR format
-pub fn matrix_power_naive<T>(matrix: &CompressedSparseData<T>, t: usize) -> CompressedSparseData<T>
+pub fn matrix_power_naive<T>(
+    matrix: &CompressedSparseData<T>,
+    t: usize,
+) -> Result<CompressedSparseData<T>, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
-    assert!(matrix.cs_type.is_csr(), "Matrix must be CSR format");
-    assert!(t > 0, "Power must be positive");
-
-    if t == 1 {
-        return matrix.clone();
+    if !matrix.cs_type.is_csr() {
+        return Err(ManifoldsError::SparseMatrixIsNotCsr);
+    }
+    if t == 0 {
+        return Err(ManifoldsError::PowerMustBePositive { power: t });
     }
 
-    assert!(matrix.shape.0 == matrix.shape.1, "Matrix must be square");
+    if t == 1 {
+        return Ok(matrix.clone());
+    }
+
+    if matrix.shape.0 != matrix.shape.1 {
+        return Err(ManifoldsError::SpareMatrixMustBeSquare);
+    }
 
     let mut result = matrix.clone();
     for _ in 1..t {
-        result = csr_matmul_csr(&result, matrix);
+        result = csr_matmul_csr(&result, matrix)?;
     }
-    result
+    Ok(result.clone())
 }
 
 /// Raise a CSR matrix to an integer power (binary exponentiation)
@@ -331,18 +360,27 @@ where
 /// ### Returns
 ///
 /// P^t in CSR format
-pub fn matrix_power<T>(matrix: &CompressedSparseData<T>, t: usize) -> CompressedSparseData<T>
+pub fn matrix_power<T>(
+    matrix: &CompressedSparseData<T>,
+    t: usize,
+) -> Result<CompressedSparseData<T>, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
-    assert!(matrix.cs_type.is_csr(), "Matrix must be CSR format");
-    assert!(t > 0, "Power must be positive");
-
-    if t == 1 {
-        return matrix.clone();
+    if !matrix.cs_type.is_csr() {
+        return Err(ManifoldsError::SparseMatrixIsNotCsr);
+    }
+    if t == 0 {
+        return Err(ManifoldsError::PowerMustBePositive { power: t });
     }
 
-    assert!(matrix.shape.0 == matrix.shape.1, "Matrix must be square");
+    if t == 1 {
+        return Ok(matrix.clone());
+    }
+
+    if matrix.shape.0 != matrix.shape.1 {
+        return Err(ManifoldsError::SpareMatrixMustBeSquare);
+    }
 
     // binary exponentiation
     let mut base = matrix.clone();
@@ -354,17 +392,17 @@ where
             // odd exponent - multiply result by base
             result = Some(match result {
                 None => base.clone(),
-                Some(r) => csr_matmul_csr(&r, &base),
+                Some(r) => csr_matmul_csr(&r, &base)?,
             });
         }
         exp >>= 1;
         if exp > 0 {
             // square the base for next iteration
-            base = csr_matmul_csr(&base, &base);
+            base = csr_matmul_csr(&base, &base)?;
         }
     }
 
-    result.unwrap()
+    Ok(result.unwrap())
 }
 
 ///////////
@@ -391,7 +429,7 @@ mod test_matrix_power {
     #[test]
     fn test_matrix_power_t1() {
         let mat = create_simple_stochastic_matrix();
-        let result = matrix_power(&mat, 1);
+        let result = matrix_power(&mat, 1).unwrap();
 
         // Should be identical
         assert_eq!(result.data, mat.data);
@@ -402,7 +440,7 @@ mod test_matrix_power {
     #[test]
     fn test_matrix_power_t2_manual() {
         let mat = create_simple_stochastic_matrix();
-        let result = matrix_power(&mat, 2);
+        let result = matrix_power(&mat, 2).unwrap();
 
         // Manually compute P^2 for row 0:
         // [0.5, 0.5, 0.0] × [[0.5, 0.5, 0.0], [0.3, 0.4, 0.3], [0.0, 0.6, 0.4]]
@@ -427,7 +465,7 @@ mod test_matrix_power {
         let mat = create_simple_stochastic_matrix();
 
         for t in [2, 5, 10, 20] {
-            let result = matrix_power(&mat, t);
+            let result = matrix_power(&mat, t).unwrap();
 
             // Check each row sums to 1.0
             for i in 0..result.shape.0 {
@@ -444,8 +482,8 @@ mod test_matrix_power {
         let mat = create_simple_stochastic_matrix();
 
         for t in [2, 3, 5, 7, 15] {
-            let result_binary = matrix_power(&mat, t);
-            let result_naive = matrix_power_naive(&mat, t);
+            let result_binary = matrix_power(&mat, t).unwrap();
+            let result_naive = matrix_power_naive(&mat, t).unwrap();
 
             // Both should produce identical results
             assert_eq!(result_binary.data.len(), result_naive.data.len());
@@ -459,7 +497,7 @@ mod test_matrix_power {
     #[test]
     fn test_matrix_power_large_t() {
         let mat = create_simple_stochastic_matrix();
-        let result = matrix_power(&mat, 100);
+        let result = matrix_power(&mat, 100).unwrap();
 
         // Should still be valid and row-stochastic
         assert!(!result.data.is_empty());
@@ -482,7 +520,7 @@ mod test_matrix_power {
 
         // I^t = I for any t
         for t in [1, 2, 5, 100] {
-            let result = matrix_power(&identity, t);
+            let result = matrix_power(&identity, t).unwrap();
             assert_eq!(result.data, vec![1.0, 1.0, 1.0]);
             assert_eq!(result.indices, vec![0, 1, 2]);
         }
@@ -494,8 +532,8 @@ mod test_matrix_power {
         // P^t should converge to a rank-1 matrix as t → ∞
         let mat = create_simple_stochastic_matrix();
 
-        let p100 = matrix_power(&mat, 100);
-        let p200 = matrix_power(&mat, 200);
+        let p100 = matrix_power(&mat, 100).unwrap();
+        let p200 = matrix_power(&mat, 200).unwrap();
 
         // Rows should become increasingly similar (convergence)
         // Just check that we don't diverge
@@ -515,21 +553,24 @@ mod test_matrix_power {
     }
 
     #[test]
-    #[should_panic(expected = "Power must be positive")]
     fn test_matrix_power_zero_t() {
         let mat = create_simple_stochastic_matrix();
-        matrix_power(&mat, 0);
+        assert!(matches!(
+            matrix_power(&mat, 0),
+            Err(ManifoldsError::PowerMustBePositive { power: 0 })
+        ));
     }
 
     #[test]
-    #[should_panic(expected = "Matrix must be square")]
     fn test_matrix_power_non_square() {
-        // Create a 2x3 matrix
         let data = vec![1.0, 2.0, 3.0];
         let indices = vec![0, 1, 2];
         let indptr = vec![0, 2, 3];
         let mat = CompressedSparseData::new_csr(&data, &indices, &indptr, (2, 3));
 
-        matrix_power(&mat, 2);
+        assert!(matches!(
+            matrix_power(&mat, 2),
+            Err(ManifoldsError::SpareMatrixMustBeSquare)
+        ));
     }
 }

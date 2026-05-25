@@ -851,10 +851,10 @@ where
         let mut p_mn = build_landmarks_to_data(diffusion_op, &assignments, n_landmarks);
         let mut p_nm = p_mn.transpose();
 
-        normalise_csr_rows_l1(&mut p_mn);
-        normalise_csr_rows_l1(&mut p_nm);
+        normalise_csr_rows_l1(&mut p_mn)?;
+        normalise_csr_rows_l1(&mut p_nm)?;
 
-        let landmark_op = csr_matmul_csr(&p_mn, &p_nm);
+        let landmark_op = csr_matmul_csr(&p_mn, &p_nm)?;
 
         Ok(Self {
             n_landmarks,
@@ -874,7 +874,7 @@ where
     /// ### Returns
     ///
     /// L^t (n_landmarks × n_landmarks matrix)
-    pub fn power(&self, t: usize) -> CompressedSparseData<T>
+    pub fn power(&self, t: usize) -> Result<CompressedSparseData<T>, ManifoldsError>
     where
         T: AddAssign,
     {
@@ -882,7 +882,7 @@ where
             // Return identity matrix
             unimplemented!("Return identity for t = 0");
         } else if t == 1 {
-            return self.landmark_op.clone();
+            return Ok(self.landmark_op.clone());
         }
 
         matrix_power(&self.landmark_op, t)
@@ -902,7 +902,8 @@ where
         T: AddAssign,
     {
         let t_opt = self.find_optimal_t(t_max)?;
-        Ok(matrix_power(&self.landmark_op, t_opt))
+        let res = matrix_power(&self.landmark_op, t_opt)?;
+        Ok(res)
     }
 
     /// Interpolate landmark diffusion back to full data space
@@ -919,7 +920,7 @@ where
     pub fn interpolate(
         &self,
         landmark_diffusion: &CompressedSparseData<T>,
-    ) -> CompressedSparseData<T>
+    ) -> Result<CompressedSparseData<T>, ManifoldsError>
     where
         T: AddAssign,
     {

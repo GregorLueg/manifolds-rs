@@ -189,16 +189,14 @@ fn tsne_gpu_integration_03_bh_quality() {
     let data = mat_to_f32(data);
 
     let device = WgpuDevice::default();
-    let params = TsneParamsGpu::new(
-        Some(2),
-        Some(20.0),
-        Some(1e-4),
-        Some(200.0),
-        Some(500),
-        Some("exhaustive_gpu".to_string()),
-        Some(0.5),
-        Some(3),
-    );
+    let mut params = TsneParamsGpu {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.ann_type = "exhaustive_gpu".to_string();
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 500;
 
     let embedding =
         tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device, 42, false)
@@ -218,16 +216,14 @@ fn tsne_gpu_integration_04_reproducibility_structural() {
     let (data, labels) = create_diagnostic_data(40, 10, 42);
     let data = mat_to_f32(data);
 
-    let params = TsneParamsGpu::new(
-        Some(2),
-        Some(20.0),
-        Some(1e-4),
-        Some(200.0),
-        Some(200),
-        Some("exhaustive_gpu".to_string()),
-        Some(0.5),
-        Some(3),
-    );
+    let mut params = TsneParamsGpu {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.ann_type = "exhaustive_gpu".to_string();
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 200;
 
     let device1 = WgpuDevice::default();
     let e1 = tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device1, 42, false)
@@ -275,16 +271,14 @@ fn tsne_gpu_integration_05_precomputed_knn() {
     )
     .unwrap();
 
-    let params = TsneParamsGpu::new(
-        Some(2),
-        Some(perplexity),
-        Some(1e-4),
-        Some(200.0),
-        Some(300),
-        Some("exhaustive_gpu".to_string()),
-        Some(0.5),
-        Some(3),
-    );
+    let mut params = TsneParamsGpu {
+        perplexity,
+        ..Default::default()
+    };
+    params.ann_type = "exhaustive_gpu".to_string();
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 300;
 
     let device_pre = WgpuDevice::default();
     let e_pre = tsne_gpu::<f32, WgpuRuntime>(
@@ -327,16 +321,14 @@ fn tsne_gpu_integration_06_fft_quality() {
     let data = mat_to_f32(data);
 
     let device = WgpuDevice::default();
-    let params = TsneParamsGpu::new(
-        Some(2),
-        Some(20.0),
-        Some(1e-4),
-        Some(100.0),
-        Some(500),
-        Some("exhaustive_gpu".to_string()),
-        Some(0.5),
-        Some(3),
-    );
+    let mut params = TsneParamsGpu {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.ann_type = "exhaustive_gpu".to_string();
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(100.0);
+    params.optim_params.n_epochs = 500;
 
     let embedding =
         tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device, 42, false)
@@ -357,16 +349,14 @@ fn tsne_gpu_integration_07_fft_reproducibility_structural() {
     let (data, labels) = create_diagnostic_data(100, 10, 42);
     let data = mat_to_f32(data);
 
-    let params = TsneParamsGpu::new(
-        Some(2),
-        Some(20.0),
-        Some(1e-4),
-        Some(200.0),
-        Some(200),
-        Some("exhaustive_gpu".to_string()),
-        Some(0.5),
-        Some(3),
-    );
+    let mut params = TsneParamsGpu {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.ann_type = "exhaustive_gpu".to_string();
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 200;
 
     let device1 = WgpuDevice::default();
     let e1 = tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device1, 123, false)
@@ -394,16 +384,14 @@ fn tsne_gpu_integration_08_bh_vs_fft() {
     let (data, labels) = create_diagnostic_data(100, 10, 42);
     let data = mat_to_f32(data);
 
-    let params = TsneParamsGpu::new(
-        Some(2),
-        Some(20.0),
-        Some(1e-4),
-        Some(200.0),
-        Some(300),
-        Some("exhaustive_gpu".to_string()),
-        Some(0.5),
-        Some(3),
-    );
+    let mut params = TsneParamsGpu {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.ann_type = "exhaustive_gpu".to_string();
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 300;
 
     let device_bh = WgpuDevice::default();
     let e_bh =

@@ -433,18 +433,11 @@ fn umap_integration_05_optimisation_quality() {
     for (init, opt) in configs {
         println!("\n--- Testing: init = {}, optimiser = {} ---", init, opt);
 
-        let params = UmapParams::new(
-            Some(2),
-            Some(15),
-            Some(opt.to_string()),
-            None,
-            Some(init.to_string()),
-            None,
-            None,
-            None,
-            None,
-            None,
-        );
+        let params = UmapParams {
+            optimiser: opt.to_string(),
+            initialisation: init.to_string(),
+            ..UmapParams::default()
+        };
 
         let embedding = umap(data.as_ref(), None, &params, 42, false).unwrap();
 
@@ -609,18 +602,7 @@ fn umap_integration_06_reproducibility() {
     println!("\n=== DIAGNOSTIC 6: Reproducibility ===");
 
     // Run UMAP twice with same seed
-    let params = UmapParams::new(
-        Some(2),
-        Some(15),
-        Some("adam_parallel".to_string()),
-        None,
-        Some("spectral".to_string()),
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = UmapParams::default();
 
     let embedding1 = umap(data.as_ref(), None, &params, 42, false).unwrap();
     let embedding2 = umap(data.as_ref(), None, &params, 42, false).unwrap();
@@ -667,18 +649,7 @@ fn umap_integration_07_precomputed_knn() {
     );
 
     // Run UMAP with precomputed kNN
-    let params = UmapParams::new(
-        Some(2),
-        Some(k),
-        Some("adam_parallel".to_string()),
-        None,
-        Some("spectral".to_string()),
-        None,
-        None,
-        None,
-        None,
-        None,
-    );
+    let params = UmapParams::default();
 
     let embedding_precomputed = umap(
         data.as_ref(),

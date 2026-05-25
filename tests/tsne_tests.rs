@@ -451,16 +451,13 @@ fn tsne_integration_06_optimisation_quality() {
 
     println!("\n=== t-SNE DIAGNOSTIC 6: Optimisation Quality ===");
 
-    let params = TsneParams::new(
-        Some(2),     // n_dim
-        Some(20.0),  // perplexity
-        Some(1e-4),  // init_range
-        Some(200.0), // learning rate
-        Some(500),   // epochs (fewer for test speed)
-        None,        // ann_type
-        Some(0.5),   // theta
-        Some(3),
-    );
+    let mut params = TsneParams {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 500;
 
     let embedding = tsne(data.as_ref(), None, &params, "bh", 42, true).unwrap();
 
@@ -559,16 +556,13 @@ fn tsne_integration_07_reproducibility() {
 
     println!("\n=== t-SNE DIAGNOSTIC 7: Reproducibility ===");
 
-    let params = TsneParams::new(
-        Some(2),
-        Some(20.0),
-        Some(1e-4),
-        Some(200.0),
-        Some(200), // fewer epochs for speed
-        None,
-        Some(0.5),
-        Some(3),
-    );
+    let mut params = TsneParams {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 200;
 
     let embd1 = tsne(data.as_ref(), None, &params, "bh", 42, false).unwrap();
     let embd2 = tsne(data.as_ref(), None, &params, "bh", 42, false).unwrap();
@@ -598,16 +592,13 @@ fn tsne_integration_08_different_seeds() {
 
     println!("\n=== t-SNE DIAGNOSTIC 8: Different Seeds ===");
 
-    let params = TsneParams::new(
-        Some(2),
-        Some(20.0),
-        Some(1e-4),
-        Some(200.0),
-        Some(200),
-        None,
-        Some(0.5),
-        Some(3),
-    );
+    let mut params = TsneParams {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 200;
 
     let embd1 = tsne(data.as_ref(), None, &params, "bh", 42, false).unwrap();
     let embd2 = tsne(data.as_ref(), None, &params, "bh", 123, false).unwrap();
@@ -640,16 +631,13 @@ fn tsne_integration_09_fft_optimisation_quality() {
 
     println!("\n=== t-SNE DIAGNOSTIC 9: FFT Optimisation Quality ===");
 
-    let params = TsneParams::new(
-        Some(2),
-        Some(20.0),
-        Some(1e-4),
-        Some(100.0),
-        Some(500),
-        None,
-        Some(0.5),
-        Some(3),
-    );
+    let mut params = TsneParams {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(100.0);
+    params.optim_params.n_epochs = 500;
 
     let embedding = tsne(data.as_ref(), None, &params, "fft", 42, true).unwrap();
 
@@ -747,16 +735,13 @@ fn tsne_integration_10_fft_reproducibility() {
 
     println!("\n=== t-SNE DIAGNOSTIC 10: FFT Reproducibility ===");
 
-    let params = TsneParams::new(
-        Some(2),
-        Some(20.0),
-        Some(1e-4),
-        Some(200.0),
-        Some(200),
-        None,
-        Some(0.5),
-        Some(3),
-    );
+    let mut params = TsneParams {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 200;
 
     let embd1 = tsne(data.as_ref(), None, &params, "fft", 123, false).unwrap();
     let embd2 = tsne(data.as_ref(), None, &params, "fft", 123, false).unwrap();
@@ -787,16 +772,13 @@ fn tsne_integration_11_fft_different_seeds() {
 
     println!("\n=== t-SNE DIAGNOSTIC 11: FFT Different Seeds ===");
 
-    let params = TsneParams::new(
-        Some(2),
-        Some(20.0),
-        Some(1e-4),
-        Some(200.0),
-        Some(200),
-        None,
-        Some(0.5),
-        Some(3),
-    );
+    let mut params = TsneParams {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 200;
 
     let embd1 = tsne(data.as_ref(), None, &params, "fft", 42, false).unwrap();
     let embd2 = tsne(data.as_ref(), None, &params, "fft", 123, false).unwrap();
@@ -829,16 +811,13 @@ fn tsne_integration_12_bh_vs_fft_comparison() {
 
     println!("\n=== t-SNE DIAGNOSTIC 12: Barnes-Hut vs FFT Comparison ===");
 
-    let params = TsneParams::new(
-        Some(2),
-        Some(20.0),
-        Some(1e-4),
-        Some(200.0),
-        Some(300),
-        None,
-        Some(0.5),
-        Some(3),
-    );
+    let mut params = TsneParams {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 300;
 
     let embd_bh = tsne(data.as_ref(), None, &params, "bh", 42, false).unwrap();
     let embd_fft = tsne(data.as_ref(), None, &params, "fft", 42, false).unwrap();
@@ -930,16 +909,13 @@ fn tsne_integration_13_precomputed_knn() {
     );
 
     // Run t-SNE with precomputed kNN
-    let params = TsneParams::new(
-        Some(2),
-        Some(perplexity),
-        Some(1e-4),
-        Some(200.0),
-        Some(300),
-        None,
-        Some(0.5),
-        Some(3),
-    );
+    let mut params = TsneParams {
+        perplexity,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 300;
 
     let embedding_precomputed = tsne(
         data.as_ref(),

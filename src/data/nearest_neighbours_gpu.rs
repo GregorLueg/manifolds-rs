@@ -256,7 +256,7 @@ where
                 None,
             );
 
-            query_nndescent_index_gpu_self(&mut index, k + 1, Some(query_params), true)
+            query_nndescent_index_gpu_self(&mut index, k + 1, Some(query_params), true)?
         }
     };
 
