@@ -226,7 +226,8 @@ where
 /// * `params` - Optimisation parameters
 /// * `init` - Optional flat initial embedding (n * n_dim, row-major)
 /// * `seed` - Random seed
-/// * `verbose` - Controls verbosity
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -239,15 +240,21 @@ pub fn sgd_mds<T>(
     params: &MdsOptimParams<T>,
     init: Option<Vec<T>>,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
     StandardNormal: Distribution<T>,
 {
     let n = dist.len();
-    assert!(n > 0, "Empty distance matrix");
-    assert_eq!(dist[0].len(), n, "Distance matrix must be square");
+    if n == 0 {
+        return Err(ManifoldsError::NoData);
+    }
+    if dist[0].len() != n {
+        return Err(ManifoldsError::NotSquareMatrix);
+    }
+
+    let verbosity = parse_verbosity_level(verbose);
 
     let mut rng = StdRng::seed_from_u64(seed as u64);
 
@@ -299,7 +306,7 @@ where
         T::zero()
     };
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
                "SGD-MDS: n={}, pairs_per_iter={}, n_iter={}, eta_max={:.6}, eta_min={:.6}, batch_scale={:.2}",
                n.separate_with_underscores(),
@@ -363,7 +370,7 @@ where
 
         let stress = total_err / T::from(contribs.len()).unwrap();
 
-        if verbose && iteration % 100 == 0 {
+        if verbosity.normal_verbosity() && iteration % 100 == 0 {
             println!(
                 " Iter {}: stress={:.6}, lr={:.6}",
                 iteration.separate_with_underscores(),
@@ -375,7 +382,7 @@ where
         if let Some(prev) = prev_stress {
             let rel_change = ((stress - prev) / (prev + T::from(1e-10).unwrap())).abs();
             if rel_change < T::from(1e-6).unwrap() && iteration > 50 {
-                if verbose {
+                if verbosity.normal_verbosity() {
                     println!(
                         " Converged at iteration {} (rel_change={:.2e})",
                         iteration,
@@ -424,7 +431,7 @@ mod test_mds {
 
         let mds_params = MdsOptimParams::new(distances.len(), true, None, None);
 
-        let embedding = sgd_mds(&distances, 2, &mds_params, None, 42, false).unwrap();
+        let embedding = sgd_mds(&distances, 2, &mds_params, None, 42, 0).unwrap();
 
         // Check shape
         assert_eq!(embedding.len(), 3);
@@ -461,7 +468,7 @@ mod test_mds {
 
         let mds_params = MdsOptimParams::new(distances.len(), true, None, None);
 
-        let embedding = sgd_mds(&distances, 2, &mds_params, None, 42, false).unwrap();
+        let embedding = sgd_mds(&distances, 2, &mds_params, None, 42, 0).unwrap();
 
         // Check all pairwise distances
         for i in 0..4 {

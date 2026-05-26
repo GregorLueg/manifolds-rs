@@ -74,7 +74,7 @@ fn dm_integration_01_knn_correctness() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!("\n=== DM DIAGNOSTIC 1: kNN Search ===");
 
@@ -103,7 +103,7 @@ fn dm_integration_02_gaussian_affinities() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!("\n=== DM DIAGNOSTIC 2: Gaussian Affinities ===");
 
@@ -150,7 +150,7 @@ fn dm_integration_03_alpha_norm_zero() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     let graph = phate_alpha_decay_affinities(
         &knn_indices,
@@ -179,7 +179,7 @@ fn dm_integration_04_alpha_norm_one_symmetry() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     let graph = phate_alpha_decay_affinities(
         &knn_indices,
@@ -220,7 +220,7 @@ fn dm_integration_05_symmetric_operator() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     let graph = phate_alpha_decay_affinities(
         &knn_indices,
@@ -269,7 +269,7 @@ fn dm_integration_06_trivial_eigenvalue() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     let graph = phate_alpha_decay_affinities(
         &knn_indices,
@@ -310,7 +310,7 @@ fn dm_integration_07_full_dm_quality() {
         ..DiffusionMapsParams::default()
     };
 
-    let embedding = diffusion_maps(data.as_ref(), None, params, 42, true).unwrap();
+    let embedding = diffusion_maps(data.as_ref(), None, params, 42, 0).unwrap();
 
     let all: Vec<f64> = embedding.iter().flat_map(|d| d.iter().copied()).collect();
     assert_eq!(all.iter().filter(|v| v.is_nan()).count(), 0);
@@ -337,8 +337,8 @@ fn dm_integration_08_reproducibility() {
         ..DiffusionMapsParams::default()
     };
 
-    let e1 = diffusion_maps(data.as_ref(), None, params.clone(), 42, false).unwrap();
-    let e2 = diffusion_maps(data.as_ref(), None, params, 42, false).unwrap();
+    let e1 = diffusion_maps(data.as_ref(), None, params.clone(), 42, 0).unwrap();
+    let e2 = diffusion_maps(data.as_ref(), None, params, 42, 0).unwrap();
 
     let mut max_diff = 0.0f64;
     for i in 0..e1[0].len() {
@@ -362,8 +362,8 @@ fn dm_integration_09_different_seeds() {
         ..DiffusionMapsParams::default()
     };
 
-    let e1 = diffusion_maps(data.as_ref(), None, params.clone(), 42, false).unwrap();
-    let e2 = diffusion_maps(data.as_ref(), None, params, 123, false).unwrap();
+    let e1 = diffusion_maps(data.as_ref(), None, params.clone(), 42, 0).unwrap();
+    let e2 = diffusion_maps(data.as_ref(), None, params, 123, 0).unwrap();
 
     let mut max_diff = 0.0f64;
     for i in 0..e1[0].len() {
@@ -384,7 +384,7 @@ fn dm_integration_10_precomputed_knn() {
 
     let nn_params = NearestNeighbourParams::default();
     let (ki, kd) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     let params = DiffusionMapsParams {
         k,
@@ -392,8 +392,8 @@ fn dm_integration_10_precomputed_knn() {
         ..DiffusionMapsParams::default()
     };
 
-    let e_pre = diffusion_maps(data.as_ref(), Some((ki, kd)), params.clone(), 42, false).unwrap();
-    let e_int = diffusion_maps(data.as_ref(), None, params, 42, false).unwrap();
+    let e_pre = diffusion_maps(data.as_ref(), Some((ki, kd)), params.clone(), 42, 0).unwrap();
+    let e_int = diffusion_maps(data.as_ref(), None, params, 42, 0).unwrap();
 
     let mut max_diff = 0.0f64;
     for i in 0..e_pre[0].len() {
@@ -423,8 +423,8 @@ fn dm_integration_11_fixed_vs_auto_t() {
         ..DiffusionMapsParams::default()
     };
 
-    let e_auto = diffusion_maps(data.as_ref(), None, params_auto, 42, false).unwrap();
-    let e_fixed = diffusion_maps(data.as_ref(), None, params_fixed, 42, false).unwrap();
+    let e_auto = diffusion_maps(data.as_ref(), None, params_auto, 42, 0).unwrap();
+    let e_fixed = diffusion_maps(data.as_ref(), None, params_fixed, 42, 0).unwrap();
 
     println!("\n=== DM DIAGNOSTIC 11: Fixed vs Auto t ===");
     for (embd, label) in [(&e_auto, "auto"), (&e_fixed, "fixed")] {
@@ -451,8 +451,8 @@ fn dm_integration_12_alpha_norm_effect() {
         ..DiffusionMapsParams::default()
     };
 
-    let e0 = diffusion_maps(data.as_ref(), None, params_a0, 42, false).unwrap();
-    let e1 = diffusion_maps(data.as_ref(), None, params_a1, 42, false).unwrap();
+    let e0 = diffusion_maps(data.as_ref(), None, params_a0, 42, 0).unwrap();
+    let e1 = diffusion_maps(data.as_ref(), None, params_a1, 42, 0).unwrap();
 
     let mut max_diff = 0.0f64;
     for i in 0..e0[0].len() {
@@ -473,7 +473,7 @@ fn dm_integration_13_bandwidth_scale_effect() {
 
     let nn_params = NearestNeighbourParams::default();
     let (ki, kd) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     let g_narrow = phate_alpha_decay_affinities(&ki, &kd, k, Some(2.0), 0.5, 1e-4, "none", true);
     let g_wide = phate_alpha_decay_affinities(&ki, &kd, k, Some(2.0), 2.0, 1e-4, "none", true);
@@ -501,7 +501,7 @@ fn dm_integration_14_landmark_quality_random() {
         ..DiffusionMapsParams::default()
     };
 
-    let embd = diffusion_maps(data.as_ref(), None, params, 42, true).unwrap();
+    let embd = diffusion_maps(data.as_ref(), None, params, 42, 0).unwrap();
     let all: Vec<f64> = embd.iter().flat_map(|d| d.iter().copied()).collect();
 
     assert_eq!(all.iter().filter(|v| v.is_nan()).count(), 0);
@@ -531,7 +531,7 @@ fn dm_integration_15_landmark_quality_spectral() {
         ..DiffusionMapsParams::default()
     };
 
-    let embd = diffusion_maps(data.as_ref(), None, params, 42, false).unwrap();
+    let embd = diffusion_maps(data.as_ref(), None, params, 42, 0).unwrap();
     let all: Vec<f64> = embd.iter().flat_map(|d| d.iter().copied()).collect();
     assert_eq!(all.iter().filter(|v| v.is_nan()).count(), 0);
 
@@ -555,7 +555,7 @@ fn dm_integration_16_landmark_quality_density() {
         ..DiffusionMapsParams::default()
     };
 
-    let embd = diffusion_maps(data.as_ref(), None, params, 42, false).unwrap();
+    let embd = diffusion_maps(data.as_ref(), None, params, 42, 0).unwrap();
     let all: Vec<f64> = embd.iter().flat_map(|d| d.iter().copied()).collect();
     assert_eq!(all.iter().filter(|v| v.is_nan()).count(), 0);
 
@@ -581,8 +581,8 @@ fn dm_integration_17_landmark_fallback_to_full() {
         ..DiffusionMapsParams::default()
     };
 
-    let e_full = diffusion_maps(data.as_ref(), None, params_full, 42, false).unwrap();
-    let e_fb = diffusion_maps(data.as_ref(), None, params_fallback, 42, false).unwrap();
+    let e_full = diffusion_maps(data.as_ref(), None, params_full, 42, 0).unwrap();
+    let e_fb = diffusion_maps(data.as_ref(), None, params_fallback, 42, 0).unwrap();
 
     let mut max_diff = 0.0f64;
     for i in 0..e_full[0].len() {
@@ -608,8 +608,8 @@ fn dm_integration_18_landmark_reproducibility() {
         ..DiffusionMapsParams::default()
     };
 
-    let e1 = diffusion_maps(data.as_ref(), None, params.clone(), 42, false).unwrap();
-    let e2 = diffusion_maps(data.as_ref(), None, params, 42, false).unwrap();
+    let e1 = diffusion_maps(data.as_ref(), None, params.clone(), 42, 0).unwrap();
+    let e2 = diffusion_maps(data.as_ref(), None, params, 42, 0).unwrap();
 
     let mut max_diff = 0.0f64;
     for i in 0..e1[0].len() {
@@ -630,7 +630,7 @@ fn dm_integration_19_landmark_coverage() {
 
     let nn_params = NearestNeighbourParams::default();
     let (ki, kd) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     let graph = phate_alpha_decay_affinities(&ki, &kd, k, Some(2.0), 1.0, 1e-4, "add", true);
     let kernel = coo_to_csr(&graph);
@@ -648,7 +648,7 @@ fn dm_integration_19_landmark_coverage() {
         "add",
         42,
         None,
-        false,
+        0,
     )
     .unwrap();
 

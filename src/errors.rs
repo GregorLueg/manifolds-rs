@@ -53,4 +53,16 @@ pub enum ManifoldsError {
     /// Error for Eigen decomposition from faer
     #[error("The faer Eigen decomposition failed - please verify the data")]
     FaerEigenError,
+    // -- input errors --
+    /// Error if a square matrix is not square
+    #[error("The matrix needs to be square")]
+    NotSquareMatrix,
+
+    /// Error if the data is empty
+    #[error("Empty data was parsed through - upstream error?")]
+    NoData,
+
+    /// Error if the data is empty
+    #[error("UMAP: no edges to optimise - upstream error?")]
+    NoGraphEdges,
 }

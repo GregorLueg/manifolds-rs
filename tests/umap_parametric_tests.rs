@@ -67,8 +67,7 @@ fn parametric_01_comprehensive_quality() {
 
     let params = fast_test_params();
     let embedding =
-        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
-            .unwrap();
+        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
 
     // Basic shape checks
     assert_eq!(embedding.len(), 2, "Should have 2 dimensions");
@@ -252,7 +251,7 @@ fn parametric_02_different_dimensions() {
 
         let params = fast_test_params_custom(Some(n_dim), None, None, None, vec![32], None);
         let embedding =
-            parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
+            parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0)
                 .unwrap();
 
         assert_eq!(embedding.len(), n_dim, "Should have {} dimensions", n_dim);
@@ -289,7 +288,7 @@ fn parametric_03_different_architectures() {
         let params = fast_test_params_custom(None, None, None, None, hidden_layers.clone(), None);
 
         let embedding =
-            parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
+            parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0)
                 .unwrap();
 
         assert_eq!(embedding.len(), 2);
@@ -319,8 +318,7 @@ fn parametric_04_correlation_loss() {
 
     let params = fast_test_params_custom(None, None, None, None, vec![32], Some(0.5));
     let embedding =
-        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
-            .unwrap();
+        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
 
     assert_eq!(embedding.len(), 2);
     assert_eq!(embedding[0].len(), 75);
@@ -354,7 +352,7 @@ fn parametric_05_min_dist_spread() {
             fast_test_params_custom(None, None, Some(min_dist), Some(spread), vec![32], None);
 
         let embedding =
-            parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
+            parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0)
                 .unwrap();
 
         let has_non_finite = embedding[0]
@@ -382,8 +380,7 @@ fn parametric_06_small_dataset() {
     let params = fast_test_params_custom(None, Some(5), None, None, vec![32], None);
 
     let embedding =
-        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
-            .unwrap();
+        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
 
     assert_eq!(embedding.len(), 2);
     assert_eq!(embedding[0].len(), 10);
@@ -410,7 +407,7 @@ fn parametric_07_precomputed_knn() {
     // Run kNN search separately
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!(
         "Precomputed kNN: {} neighbours per point",
@@ -427,7 +424,7 @@ fn parametric_07_precomputed_knn() {
         &params,
         &device,
         42,
-        false,
+        0,
     )
     .unwrap();
 
@@ -435,8 +432,7 @@ fn parametric_07_precomputed_knn() {
 
     // Run without precomputed kNN (internal computation)
     let embedding_internal =
-        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, false)
-            .unwrap();
+        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
 
     // Neural network training is inherently stochastic - verify structural similarity
     println!("\nVerifying structural similarity...");

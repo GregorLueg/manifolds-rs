@@ -215,7 +215,8 @@ pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
 ///   `"annoy"`, `"hnsw"`, `"balltree"` or `"nndesccent"`.
 /// * `params_nn` - The parameters for the approximate nearest neighbour search.
 /// * `seed` - Seed for reproducibility.
-/// * `verbose` - Controls verbosity of the function
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -226,20 +227,34 @@ pub fn run_ann_search<T>(
     ann_type: String,
     params_nn: &NearestNeighbourParams<T>,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> ManifoldsKnnResults<T>
 where
     T: AnnSearchFloat,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
-    let ann_search = parse_ann_search(&ann_type).unwrap_or_default();
+    let verbosity = parse_verbosity_level(verbose);
+
+    let ann_search = parse_ann_search(&ann_type).unwrap_or_else(|| {
+        println!(
+            "Unrecognised approximate nearest neighbour method provided: {:?}. Default to KmKnn.",
+            ann_type
+        );
+        AnnSearch::default()
+    });
 
     let (knn_indices, knn_dist) = match ann_search {
         AnnSearch::Annoy => {
             let index = build_annoy_index(data, &params_nn.dist_metric, params_nn.n_tree, seed)?;
 
-            query_annoy_self(&index, k + 1, params_nn.search_budget, true, verbose)?
+            query_annoy_self(
+                &index,
+                k + 1,
+                params_nn.search_budget,
+                true,
+                verbosity.detailed_verbosity(),
+            )?
         }
         AnnSearch::Hnsw => {
             let index = build_hnsw_index(
@@ -248,10 +263,16 @@ where
                 params_nn.ef_construction,
                 &params_nn.dist_metric,
                 seed,
-                verbose,
+                verbosity.detailed_verbosity(),
             );
 
-            query_hnsw_self(&index, k + 1, params_nn.ef_search, true, verbose)?
+            query_hnsw_self(
+                &index,
+                k + 1,
+                params_nn.ef_search,
+                true,
+                verbosity.normal_verbosity(),
+            )?
         }
         AnnSearch::NNDescent => {
             let index = build_nndescent_index(
@@ -264,22 +285,34 @@ where
                 None,
                 None,
                 seed,
-                verbose,
+                verbosity.detailed_verbosity(),
             )?;
 
-            query_nndescent_self(&index, k + 1, params_nn.ef_budget, true, verbose)?
+            query_nndescent_self(
+                &index,
+                k + 1,
+                params_nn.ef_budget,
+                true,
+                verbosity.normal_verbosity(),
+            )?
         }
         AnnSearch::BallTree => {
             let index = build_balltree_index(data, &params_nn.dist_metric, seed)?;
 
             let budget = (data.nrows() as f32 * params_nn.bt_budget.to_f32().unwrap()) as usize;
 
-            query_balltree_self(&index, k + 1, Some(budget), true, verbose)?
+            query_balltree_self(
+                &index,
+                k + 1,
+                Some(budget),
+                true,
+                verbosity.normal_verbosity(),
+            )?
         }
         AnnSearch::Exhaustive => {
             let index = build_exhaustive_index(data, &params_nn.dist_metric);
 
-            query_exhaustive_self(&index, k + 1, true, verbose)?
+            query_exhaustive_self(&index, k + 1, true, verbosity.normal_verbosity())?
         }
         AnnSearch::Ivf => {
             let index = build_ivf_index(
@@ -288,10 +321,16 @@ where
                 None,
                 &params_nn.dist_metric,
                 seed,
-                verbose,
+                verbosity.detailed_verbosity(),
             )?;
 
-            query_ivf_self(&index, k + 1, params_nn.n_probes, true, verbose)?
+            query_ivf_self(
+                &index,
+                k + 1,
+                params_nn.n_probes,
+                true,
+                verbosity.normal_verbosity(),
+            )?
         }
         AnnSearch::KmKnn => {
             let index = build_kmknn_index(
@@ -300,10 +339,10 @@ where
                 params_nn.n_list,
                 None,
                 seed,
-                verbose,
+                verbosity.detailed_verbosity(),
             )?;
 
-            query_kmknn_self(&index, k + 1, true, verbose)?
+            query_kmknn_self(&index, k + 1, true, verbosity.normal_verbosity())?
         }
     };
 

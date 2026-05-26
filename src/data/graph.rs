@@ -338,6 +338,8 @@ where
 ///
 /// * `graph` - Input graph in COO format
 /// * `n_epochs` - Optimization parameters (uses n_epochs for threshold)
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -345,11 +347,13 @@ where
 pub fn filter_weak_edges<T>(
     graph: CoordinateList<T>,
     n_epochs: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> CoordinateList<T>
 where
     T: ManifoldsFloat,
 {
+    let verbosity = parse_verbosity_level(verbose);
+
     let max_weight = graph
         .values
         .iter()
@@ -379,7 +383,7 @@ where
 
     let filtered_edge_no = filtered_cols.len();
 
-    if verbose {
+    if verbosity.detailed_verbosity() {
         println!(
             " Filtered out {} weak edges.",
             (original_edge_no - filtered_edge_no).separate_with_underscores(),

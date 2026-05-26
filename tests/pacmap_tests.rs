@@ -66,7 +66,7 @@ fn pacmap_integration_01_knn_correctness() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 1: kNN Search ===");
     println!("Points per cluster: 100, k = {} neighbours", k);
@@ -119,7 +119,7 @@ fn pacmap_integration_02_pair_counts() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, _) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     let pairs = construct_pacmap_pairs(&knn_indices, n_mid_near, n_further, 4, 50, 42);
 
@@ -143,7 +143,7 @@ fn pacmap_integration_03_no_self_pairs() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, _) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     let pairs = construct_pacmap_pairs(&knn_indices, 2, 2, 4, 50, 42);
 
@@ -170,7 +170,7 @@ fn pacmap_integration_04_mid_near_candidate_window() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, _) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     let pairs = construct_pacmap_pairs(&knn_indices, 2, 2, candidate_start, candidate_end, 42);
 
@@ -199,7 +199,7 @@ fn pacmap_integration_05_output_shape() {
 
     let params = PacmapParams::default();
 
-    let embd = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
+    let embd = pacmap(data.as_ref(), None, &params, 42, 0).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 5: Output Shape ===");
     println!("Output shape: [{}][{}]", embd.len(), embd[0].len());
@@ -213,7 +213,7 @@ fn pacmap_integration_06_all_finite() {
     let (data, _) = create_diagnostic_data(50, 10, 42);
 
     let params = PacmapParams::<f64>::default();
-    let embd = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
+    let embd = pacmap(data.as_ref(), None, &params, 42, 0).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 6: All Finite ===");
 
@@ -230,8 +230,8 @@ fn pacmap_integration_07_reproducibility() {
     let (data, _) = create_diagnostic_data(50, 10, 42);
 
     let params = PacmapParams::default();
-    let embd1 = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
-    let embd2 = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
+    let embd1 = pacmap(data.as_ref(), None, &params, 42, 0).unwrap();
+    let embd2 = pacmap(data.as_ref(), None, &params, 42, 0).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 7: Reproducibility ===");
 
@@ -254,8 +254,8 @@ fn pacmap_integration_08_different_seeds_differ() {
     let (data, _) = create_diagnostic_data(50, 10, 42);
 
     let params = PacmapParams::<f64>::default();
-    let embd1 = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
-    let embd2 = pacmap(data.as_ref(), None, &params, 123, false).unwrap();
+    let embd1 = pacmap(data.as_ref(), None, &params, 42, 0).unwrap();
+    let embd2 = pacmap(data.as_ref(), None, &params, 123, 0).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 8: Different Seeds ===");
 
@@ -286,7 +286,7 @@ fn pacmap_integration_09_cluster_separation() {
         ..PacmapParams::default()
     };
 
-    let embd = pacmap(data.as_ref(), None, &params, 42, true).unwrap();
+    let embd = pacmap(data.as_ref(), None, &params, 42, 0).unwrap();
 
     let all_coords: Vec<f64> = embd.iter().flatten().copied().collect();
     let range = all_coords.iter().copied().fold(f64::NEG_INFINITY, f64::max)
@@ -308,15 +308,8 @@ fn pacmap_integration_10_precomputed_knn() {
     let k = 50;
 
     let nn_params = NearestNeighbourParams::default();
-    let (knn_indices, knn_dist) = run_ann_search(
-        data.as_ref(),
-        k,
-        "nndescent".to_string(),
-        &nn_params,
-        42,
-        false,
-    )
-    .unwrap();
+    let (knn_indices, knn_dist) =
+        run_ann_search(data.as_ref(), k, "nndescent".to_string(), &nn_params, 42, 0).unwrap();
 
     // Use sequential Adam — parallel has non-deterministic FP accumulation order
     // so precomputed vs internal may diverge even with identical kNN graphs.
@@ -331,10 +324,10 @@ fn pacmap_integration_10_precomputed_knn() {
         Some((knn_indices.clone(), knn_dist.clone())),
         &params,
         42,
-        false,
+        0,
     )
     .unwrap();
-    let embd_int = pacmap(data.as_ref(), None, &params, 42, false).unwrap();
+    let embd_int = pacmap(data.as_ref(), None, &params, 42, 0).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 10: Precomputed kNN ===");
 
@@ -365,8 +358,8 @@ fn pacmap_integration_11_sequential_parallel_identical() {
         ..PacmapParams::default()
     };
 
-    let embd_seq = pacmap(data.as_ref(), None, &params_seq, 42, false).unwrap();
-    let embd_par = pacmap(data.as_ref(), None, &params_par, 42, false).unwrap();
+    let embd_seq = pacmap(data.as_ref(), None, &params_seq, 42, 0).unwrap();
+    let embd_par = pacmap(data.as_ref(), None, &params_par, 42, 0).unwrap();
 
     println!("\n=== PaCMAP DIAGNOSTIC 11: Sequential vs Parallel ===");
 
@@ -408,8 +401,8 @@ fn pacmap_integration_12_further_pairs_influence() {
 
     let mut embd_full = make_embd();
     let mut embd_no_fp = make_embd();
-    optimise_pacmap(&mut embd_full, &pairs_full, &optim_params, false);
-    optimise_pacmap(&mut embd_no_fp, &pairs_no_fp, &optim_params, false);
+    let _ = optimise_pacmap(&mut embd_full, &pairs_full, &optim_params, 0);
+    let _ = optimise_pacmap(&mut embd_no_fp, &pairs_no_fp, &optim_params, 0);
 
     println!("\n=== PaCMAP DIAGNOSTIC 12: Further Pairs Influence ===");
 
@@ -431,15 +424,8 @@ fn pacmap_integration_13_pca_init_range() {
     let (data, _) = create_diagnostic_data(100, 10, 42);
 
     let nn_params = NearestNeighbourParams::default();
-    let (knn_indices, _) = run_ann_search(
-        data.as_ref(),
-        50,
-        "kmknn".to_string(),
-        &nn_params,
-        42,
-        false,
-    )
-    .unwrap();
+    let (knn_indices, _) =
+        run_ann_search(data.as_ref(), 50, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     let dummy_graph = manifolds_rs::data::pacmap_pairs::knn_to_coo_unweighted::<f64>(&knn_indices);
 

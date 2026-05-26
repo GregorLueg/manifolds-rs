@@ -48,3 +48,50 @@ pub type UmapGraphResults<T> =
 #[cfg(feature = "parametric")]
 pub type ParametricUmapResults<B, T> =
     Result<(Vec<Vec<T>>, TrainedUmapModel<B, T>), ManifoldsError>;
+
+///////////
+// Enums //
+///////////
+
+/// Enum that controls verbosity
+#[derive(Clone, Copy, Debug, Default)]
+pub enum Verbosity {
+    /// No verbosity at all
+    #[default]
+    Quiet,
+    /// Normal levels of verbosity
+    Normal,
+    /// Detailed verbosity with increased messages
+    Detailed,
+}
+
+impl Verbosity {
+    /// Returns true if normal or detailed verbosity is set
+    pub fn normal_verbosity(&self) -> bool {
+        matches!(self, Verbosity::Normal | Verbosity::Detailed)
+    }
+
+    /// Returns true if detailed verbosity is set
+    pub fn detailed_verbosity(&self) -> bool {
+        matches!(self, Verbosity::Detailed)
+    }
+}
+
+/// Parse verbosity leverl
+///
+/// ### Params
+///
+/// * `level` - If `1` returns [Verbosity::Normal], with `2`
+///   [Verbosity::Detailed]
+///
+/// ### Returns
+///
+/// The desired [Verbosity] level.
+pub fn parse_verbosity_level(level: usize) -> Verbosity {
+    match level {
+        0 => Verbosity::Quiet,
+        1 => Verbosity::Normal,
+        2 => Verbosity::Detailed,
+        _ => Verbosity::Quiet,
+    }
+}

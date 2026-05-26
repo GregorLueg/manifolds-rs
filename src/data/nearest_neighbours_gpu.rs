@@ -191,7 +191,8 @@ pub fn parse_ann_search_gpu(s: &str) -> Option<AnnSearchGpu> {
 /// * `params_nn` - Parameters for the GPU nearest neighbour search.
 /// * `device` - The GPU device to use.
 /// * `seed` - Seed for reproducibility.
-/// * `verbose` - Controls verbosity.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -204,20 +205,25 @@ pub fn run_ann_search_gpu<T, R>(
     params_nn: &NearestNeighbourParamsGpu<T>,
     device: R::Device,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> ManifoldsKnnResults<T>
 where
     T: AnnSearchFloat + AnnSearchGpuFloat,
     R: Runtime,
     NNDescentGpu<T, R>: NNDescentQuery<T>,
 {
-    let ann_search = parse_ann_search_gpu(&ann_type).unwrap_or_default();
+    let verbosity = parse_verbosity_level(verbose);
+
+    let ann_search = parse_ann_search_gpu(&ann_type).unwrap_or_else(|| {
+        println!("Unrecognised GPU-accelerated approximate nearest neighbour method provided: {:?}. Default to GPU IVF.", ann_type);
+        AnnSearchGpu::default()
+    });
 
     let (knn_indices_raw, knn_dist) = match ann_search {
         AnnSearchGpu::ExhaustiveGpu => {
             let index = build_exhaustive_index_gpu::<T, R>(data, &params_nn.dist_metric, device)?;
 
-            query_exhaustive_index_gpu_self(&index, k + 1, true, verbose)?
+            query_exhaustive_index_gpu_self(&index, k + 1, true, verbosity.detailed_verbosity())?
         }
         AnnSearchGpu::IvfGpu => {
             let index = build_ivf_index_gpu::<T, R>(
@@ -226,11 +232,18 @@ where
                 None,
                 &params_nn.dist_metric,
                 seed,
-                verbose,
+                verbosity.detailed_verbosity(),
                 device,
             )?;
 
-            query_ivf_index_gpu_self(&index, k + 1, params_nn.n_probes, None, true, verbose)?
+            query_ivf_index_gpu_self(
+                &index,
+                k + 1,
+                params_nn.n_probes,
+                None,
+                true,
+                verbosity.normal_verbosity(),
+            )?
         }
         AnnSearchGpu::NNDescentGpu => {
             let mut index = build_nndescent_index_gpu::<T, R>(
@@ -244,7 +257,7 @@ where
                 params_nn.rho.map(|r| r.to_f32().unwrap()),
                 None,
                 seed,
-                verbose,
+                verbosity.detailed_verbosity(),
                 false,
                 device,
             )?;
