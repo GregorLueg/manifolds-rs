@@ -167,10 +167,8 @@ let (data, labels) = generate_clustered_data(
 );
 
 // Configure UMAP parameters
-let params = UmapParams::default_2d(
-    Some(2),     // n_dim (output dimensions)
-    Some(15),    // k (number of neighbours)
-    Some(0.1),   // min_dist
+let params = UmapParams::new_default_2d(
+    Some(0.5),   // min_dist
     Some(1.0),   // spread
 );
 
@@ -203,15 +201,8 @@ let (data, labels) = generate_clustered_data(
 );
 
 // Configure t-SNE parameters
-let params = TsneParams::new(
-    Some(2),      // n_dim (output dimensions)
+let params = TsneParams::new_default_2d(
     Some(30.0),   // perplexity
-    Some(1e-4),   // init_range
-    Some(200.0),  // learning_rate
-    Some(1000),   // n_epochs
-    None,         // ann_type (None = default "hnsw")
-    Some(0.5),    // theta (Barnes-Hut angle)
-    Some(3),      // n_interp_points (FFT interpolation grid points)
 );
 
 // Run t-SNE (Barnes-Hut)
@@ -250,7 +241,7 @@ let (knn_indices, knn_dist) = run_ann_search(
 );
 
 // Use precomputed k-NN for UMAP
-let params = UmapParams::default_2d(None, Some(15), None, None);
+let params = UmapParams::new_default_2d(None, None);
 let embedding = umap(
     data.as_ref(),
     Some((knn_indices.clone(), knn_dist.clone())),
@@ -279,10 +270,8 @@ let (data, _) = generate_clustered_data(
 );
 
 // Configure GPU UMAP parameters
-let params = UmapParamsGpu::default_2d(
-    Some(2),     // n_dim
-    Some(15),    // k
-    Some(0.1),   // min_dist
+let params = UmapParamsGpu::new_default_2d(
+    Some(0.5),   // min_dist
     Some(1.0),   // spread
 );
 
@@ -307,15 +296,8 @@ use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
 
 let (data, _) = generate_clustered_data(10_000, 50, 5, 42);
 
-let params = TsneParamsGpu::new(
-    Some(2),                           // n_dim
-    Some(30.0),                        // perplexity
-    Some(1e-4),                        // init_range
-    Some(200.0),                       // learning rate
-    Some(1000),                        // n_epochs
-    Some("ivf_gpu".to_string()),       // ann_type
-    Some(0.5),                         // theta
-    Some(3),                           // n_interp_points
+let params = TsneParamsGpu::new_default_2d(
+    Some(30.0),   // perplexity
 );
 
 let device = WgpuDevice::default();
@@ -341,10 +323,10 @@ points:
 
 ```rust
 use manifolds_rs::prelude::*;
-use burn::backend::ndarray::{NdArray, NdArrayDevice};
+use burn::backend::flex::{Flex, FlexDevice};
 use burn::backend::Autodiff;
 
-type Backend = Autodiff<NdArray<f64>>;
+type Backend = Autodiff<Flex<f32>>;
 
 // Generate synthetic clustered data
 let (data, labels) = generate_clustered_data(
@@ -366,20 +348,20 @@ let fit_params = TrainParametricParams::from_min_dist_spread(
 );
 
 let params = ParametricUmapParams::new(
-    Some(2),              // n_dim (output dimensions)
-    Some(15),             // n_neighbours
-    Some("hnsw".into()),  // ann_type
-    Some(vec![128, 64]),  // hidden_layers (neural network architecture)
-    None,                 // nn_params
-    None,                 // umap_graph_params
-    Some(fit_params),     // training parameters
+    2,                                   // n_dim (output dimensions)
+    15,                                  // k (number of neighbours)
+    "hnsw".into(),                       // ann_type
+    vec![128, 64],                       // hidden_layers (neural network architecture)
+    NearestNeighbourParams::default(),   // nn_params
+    UmapGraphParams::default(),          // umap_graph_params
+    fit_params,                          // training parameters
 );
 
 // Set up device
-let device = NdArrayDevice::Cpu;
+let device = FlexDevice;
 
 // Train parametric UMAP
-let embedding = parametric_umap::<f64, Backend>(
+let embedding = parametric_umap::<f32, Backend>(
     data.as_ref(),
     None,        // precomputed kNN (None = compute internally)
     &params,
@@ -411,22 +393,28 @@ let (data, branch_assignments) = generate_trajectory(
 );
 
 // Configure PHATE parameters
+let diffusion_params = PhateDiffusionParams::new(
+    Some(40.0),              // decay
+    1.0,                     // bandwidth_scale
+    1e-4,                    // thresh
+    "average".to_string(),   // graph_symmetry
+    None,                    // n_landmarks (None = full operator)
+    "spectral".to_string(),  // landmark_method
+    None,                    // n_svd
+    None,                    // t_max (None = auto)
+    None,                    // t_custom (None = auto-select via VNE knee)
+    1.0,                     // gamma
+);
+
 let params = PhateParams::new(
-    Some(2),     // n_dim (output dimensions)
-    Some(5),     // k (number of neighbours)
-    None,        // ann_type (None = default "hnsw")
-    None,        // decay (None = default 40.0)
-    None,        // bandwidth_scale (None = default 1.0)
-    None,        // graph_symmetry (None = default "average")
-    None,        // t_max (None = auto)
-    None,        // gamma (None = default 1.0)
-    None,        // n_landmarks (None = full operator)
-    None,        // landmark_method (None = default "spectral")
-    None,        // n_svd
-    None,        // t_custom
-    None,        // mds_method (None = default "sgd_dense")
-    None,        // mds_iter
-    None,        // randomised (None = default true)
+    2,                                   // n_dim (output dimensions)
+    5,                                   // k (number of neighbours)
+    "kmknn".to_string(),                  // ann_type
+    NearestNeighbourParams::default(),   // ann_params
+    diffusion_params,
+    "sgd_dense".to_string(),             // mds_method
+    None,                                // mds_iter
+    true,                                // randomised
 );
 
 // Run PHATE
@@ -446,6 +434,7 @@ let embedding = phate(
 
 PaCMAP preserves both local and global structure via three pair types (near,
 mid-near, and further pairs) and a phased optimisation schedule.
+
 ```rust
 use manifolds_rs::prelude::*;
 
@@ -494,18 +483,18 @@ let (data, _) = generate_clustered_data(
 
 // Configure diffusion maps parameters
 let params = DiffusionMapsParams::new(
-    Some(2),     // n_dim (output dimensions)
-    Some(5),     // k (number of neighbours)
-    None,        // ann_type (None = default "kmknn")
-    None,        // bandwidth_scale (None = default 1.0)
-    None,        // thresh (None = default 1e-4)
-    None,        // graph_symmetry (None = default "add")
-    None,        // alpha_norm (None = default 1.0, Laplace-Beltrami)
-    None,        // t_max (None = default)
-    None,        // t_custom (None = auto-select via VNE knee)
-    None,        // n_landmarks (None = full operator)
-    None,        // landmark_method (None = default "spectral")
-    None,        // n_svd
+    2,                                   // n_dim (output dimensions)
+    5,                                   // k (number of neighbours)
+    "kmknn".to_string(),                 // ann_type
+    NearestNeighbourParams::default(),   // ann_params
+    1.0,                                 // bandwidth_scale
+    1e-4,                                // thresh
+    "add".to_string(),                   // graph_symmetry
+    1.0,                                 // alpha_norm (Laplace-Beltrami)
+    PhateTime::Auto,                     // t (Auto = VNE knee selection)
+    None,                                // n_landmarks (None = full operator)
+    "spectral".to_string(),              // landmark_method
+    None,                                // n_svd
 );
 
 // Run diffusion maps
