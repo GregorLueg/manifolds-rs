@@ -9,6 +9,7 @@
   control over verbosity.
 - Reduced number of k means clustering iterations for the landmark approach ->
   approximation anyways and exact centroids are not needed here.
+- Pull in the fixes for GPU-based methods when dimensionality is very high.
 
 ## 0.3.0
 
