@@ -2053,8 +2053,8 @@ where
 
     if use_full {
         let kernel = affinity.unwrap();
-        let kernel_norm = apply_anisotropic_normalisation(&kernel, dm_params.alpha_norm);
-        let (p_sym, sqrt_degrees) = build_symmetric_diffusion_operator(&kernel_norm);
+        let kernel_norm = apply_anisotropic_normalisation(&kernel, dm_params.alpha_norm)?;
+        let (p_sym, sqrt_degrees) = build_symmetric_diffusion_operator(&kernel_norm)?;
         return Ok(DiffusionMapsOperator::Full {
             p_sym,
             sqrt_degrees,

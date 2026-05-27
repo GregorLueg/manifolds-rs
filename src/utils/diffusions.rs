@@ -1021,14 +1021,16 @@ where
 pub fn apply_anisotropic_normalisation<T>(
     kernel: &CompressedSparseData<T>,
     alpha: T,
-) -> CompressedSparseData<T>
+) -> Result<CompressedSparseData<T>, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
-    assert!(kernel.cs_type.is_csr(), "Kernel must be CSR format");
+    if !kernel.cs_type.is_csr() {
+        return Err(ManifoldsError::SparseMatrixIsNotCsr);
+    }
 
     if alpha.abs() < T::epsilon() {
-        return kernel.clone();
+        return Ok(kernel.clone());
     }
 
     let (nrows, _) = kernel.shape();
@@ -1063,7 +1065,12 @@ where
         })
         .collect();
 
-    CompressedSparseData::new_csr(&data, &kernel.indices, &kernel.indptr, kernel.shape())
+    Ok(CompressedSparseData::new_csr(
+        &data,
+        &kernel.indices,
+        &kernel.indptr,
+        kernel.shape(),
+    ))
 }
 
 /// Build the symmetric diffusion operator P_sym = D^{-1/2} K D^{-1/2}.
@@ -1081,11 +1088,13 @@ where
 /// `(P_sym, sqrt(degrees))`
 pub fn build_symmetric_diffusion_operator<T>(
     kernel: &CompressedSparseData<T>,
-) -> (CompressedSparseData<T>, Vec<T>)
+) -> Result<(CompressedSparseData<T>, Vec<T>), ManifoldsError>
 where
     T: ManifoldsFloat,
 {
-    assert!(kernel.cs_type.is_csr(), "Kernel must be CSR format");
+    if !kernel.cs_type.is_csr() {
+        return Err(ManifoldsError::SparseMatrixIsNotCsr);
+    }
 
     let (nrows, _) = kernel.shape();
 
@@ -1123,7 +1132,7 @@ where
     let p_sym =
         CompressedSparseData::new_csr(&data, &kernel.indices, &kernel.indptr, kernel.shape());
 
-    (p_sym, sqrt_d)
+    Ok((p_sym, sqrt_d))
 }
 
 /// For each data point, compute Gaussian-weighted transitions to its k
@@ -1514,8 +1523,8 @@ where
             distance == "euclidean",
         );
         let kernel_ll = coo_to_csr(&ll_graph);
-        let kernel_ll_norm = apply_anisotropic_normalisation(&kernel_ll, alpha_norm);
-        let (p_sym_ll, sqrt_degrees_l) = build_symmetric_diffusion_operator(&kernel_ll_norm);
+        let kernel_ll_norm = apply_anisotropic_normalisation(&kernel_ll, alpha_norm)?;
+        let (p_sym_ll, sqrt_degrees_l) = build_symmetric_diffusion_operator(&kernel_ll_norm)?;
 
         // data-to-landmark transitions (for Nystroem)
         let p_nl = build_data_to_landmark_transitions(
@@ -1811,7 +1820,7 @@ mod test_data_diffusion {
         let indptr = vec![0, 2, 5, 7];
         let kernel = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
 
-        let (p_sym, _) = build_symmetric_diffusion_operator(&kernel);
+        let (p_sym, _) = build_symmetric_diffusion_operator(&kernel).unwrap();
         let dense = p_sym.to_dense();
         use approx::assert_relative_eq;
         for i in 0..3 {
@@ -1828,7 +1837,7 @@ mod test_data_diffusion {
         let indptr = vec![0, 2, 5, 7];
         let kernel = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
 
-        let (_, sqrt_d) = build_symmetric_diffusion_operator(&kernel);
+        let (_, sqrt_d) = build_symmetric_diffusion_operator(&kernel).unwrap();
         use approx::assert_relative_eq;
         assert_relative_eq!(sqrt_d[0], 1.5_f64.sqrt(), epsilon = 1e-10);
         assert_relative_eq!(sqrt_d[1], 1.8_f64.sqrt(), epsilon = 1e-10);
@@ -1846,7 +1855,7 @@ mod test_data_diffusion {
         let indptr = vec![0, 2, 5, 7];
         let kernel = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
 
-        let (p_sym, _) = build_symmetric_diffusion_operator(&kernel);
+        let (p_sym, _) = build_symmetric_diffusion_operator(&kernel).unwrap();
         let (evals, _) = compute_largest_eigenpairs_lanczos(&p_sym, 1, 42).unwrap();
         use approx::assert_relative_eq;
         assert_relative_eq!(evals[0], 1.0, epsilon = 1e-4);

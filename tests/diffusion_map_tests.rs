@@ -233,8 +233,8 @@ fn dm_integration_05_symmetric_operator() {
         true,
     );
     let kernel = coo_to_csr(&graph);
-    let kernel_norm = apply_anisotropic_normalisation(&kernel, 1.0);
-    let (p_sym, sqrt_d) = build_symmetric_diffusion_operator(&kernel_norm);
+    let kernel_norm = apply_anisotropic_normalisation(&kernel, 1.0).unwrap();
+    let (p_sym, sqrt_d) = build_symmetric_diffusion_operator(&kernel_norm).unwrap();
 
     println!("\n=== DM DIAGNOSTIC 5: Symmetric Operator ===");
 
@@ -282,8 +282,8 @@ fn dm_integration_06_trivial_eigenvalue() {
         true,
     );
     let kernel = coo_to_csr(&graph);
-    let kernel_norm = apply_anisotropic_normalisation(&kernel, 1.0);
-    let (p_sym, _) = build_symmetric_diffusion_operator(&kernel_norm);
+    let kernel_norm = apply_anisotropic_normalisation(&kernel, 1.0).unwrap();
+    let (p_sym, _) = build_symmetric_diffusion_operator(&kernel_norm).unwrap();
 
     let (evals, _) = compute_largest_eigenpairs_lanczos(&p_sym, 3, 42).unwrap();
 
