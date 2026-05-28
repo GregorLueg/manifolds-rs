@@ -1773,7 +1773,7 @@ mod test_data_diffusion {
         let indptr = vec![0, 2, 4];
         let kernel = CompressedSparseData::new_csr(&data, &indices, &indptr, (2, 2));
 
-        let result = apply_anisotropic_normalisation(&kernel, 0.0);
+        let result = apply_anisotropic_normalisation(&kernel, 0.0).unwrap();
         assert_eq!(result.data, kernel.data);
         assert_eq!(result.indices, kernel.indices);
         assert_eq!(result.indptr, kernel.indptr);
@@ -1788,7 +1788,7 @@ mod test_data_diffusion {
         let indptr = vec![0, 2, 4];
         let kernel = CompressedSparseData::new_csr(&data, &indices, &indptr, (2, 2));
 
-        let result = apply_anisotropic_normalisation(&kernel, 1.0);
+        let result = apply_anisotropic_normalisation(&kernel, 1.0).unwrap();
         use approx::assert_relative_eq;
         assert_relative_eq!(result.data[0], 1.0 / 9.0, epsilon = 1e-10);
         assert_relative_eq!(result.data[1], 2.0 / 9.0, epsilon = 1e-10);
@@ -1803,7 +1803,7 @@ mod test_data_diffusion {
         let indptr = vec![0, 2, 5, 7];
         let kernel = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
 
-        let result = apply_anisotropic_normalisation(&kernel, 0.5);
+        let result = apply_anisotropic_normalisation(&kernel, 0.5).unwrap();
         let dense = result.to_dense();
         use approx::assert_relative_eq;
         for i in 0..3 {

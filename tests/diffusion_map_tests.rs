@@ -163,7 +163,7 @@ fn dm_integration_03_alpha_norm_zero() {
         true,
     );
     let kernel = coo_to_csr(&graph);
-    let result = apply_anisotropic_normalisation(&kernel, 0.0);
+    let result = apply_anisotropic_normalisation(&kernel, 0.0).unwrap();
 
     println!("\n=== DM DIAGNOSTIC 3: Alpha-Norm Zero is Identity ===");
     assert_eq!(result.data, kernel.data);
@@ -192,7 +192,7 @@ fn dm_integration_04_alpha_norm_one_symmetry() {
         true,
     );
     let kernel = coo_to_csr(&graph);
-    let result = apply_anisotropic_normalisation(&kernel, 1.0);
+    let result = apply_anisotropic_normalisation(&kernel, 1.0).unwrap();
 
     println!("\n=== DM DIAGNOSTIC 4: Alpha-Norm One Preserves Symmetry ===");
 
