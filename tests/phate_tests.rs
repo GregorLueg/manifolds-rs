@@ -86,7 +86,7 @@ fn phate_integration_01_knn_correctness() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 1: kNN Search ===");
     println!("Points per cluster: 100, k = {}", k);
@@ -138,7 +138,7 @@ fn phate_integration_02_alpha_decay_affinities() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 2: Alpha Decay Affinities ===");
 
@@ -206,7 +206,7 @@ fn phate_integration_03_binary_kernel() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 3: Binary Kernel ===");
 
@@ -255,7 +255,7 @@ fn phate_integration_04_diffusion_operator() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 4: Diffusion Operator ===");
 
@@ -307,7 +307,7 @@ fn phate_integration_05_matrix_power() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 5: Matrix Power ===");
 
@@ -355,7 +355,7 @@ fn phate_integration_06_potential_calculation() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 6: Potential Calculation ===");
 
@@ -406,7 +406,7 @@ fn phate_integration_07_full_phate_quality() {
         ..PhateParams::default()
     };
 
-    let embedding = phate(data.as_ref(), None, params, 42, true).unwrap();
+    let embedding = phate(data.as_ref(), None, params, 42, 0).unwrap();
 
     let all_coords: Vec<f64> = embedding.iter().flat_map(|d| d.iter().copied()).collect();
     let nan_count = all_coords.iter().filter(|v| v.is_nan()).count();
@@ -462,7 +462,7 @@ fn phate_integration_08_landmark_phate_quality() {
         ..PhateParams::default()
     };
 
-    let embedding = phate(data.as_ref(), None, params, 42, true).unwrap();
+    let embedding = phate(data.as_ref(), None, params, 42, 0).unwrap();
 
     let all_coords: Vec<f64> = embedding.iter().flat_map(|d| d.iter().copied()).collect();
     let nan_count = all_coords.iter().filter(|v| v.is_nan()).count();
@@ -513,8 +513,8 @@ fn phate_integration_09_reproducibility() {
         ..PhateParams::default()
     };
 
-    let embd1 = phate(data.as_ref(), None, params.clone(), 42, false).unwrap();
-    let embd2 = phate(data.as_ref(), None, params, 42, false).unwrap();
+    let embd1 = phate(data.as_ref(), None, params.clone(), 42, 0).unwrap();
+    let embd2 = phate(data.as_ref(), None, params, 42, 0).unwrap();
 
     let mut max_diff = 0.0f64;
     for i in 0..embd1[0].len() {
@@ -556,8 +556,8 @@ fn phate_integration_10_different_seeds() {
         ..PhateParams::default()
     };
 
-    let embd1 = phate(data.as_ref(), None, params.clone(), 42, false).unwrap();
-    let embd2 = phate(data.as_ref(), None, params, 123, false).unwrap();
+    let embd1 = phate(data.as_ref(), None, params.clone(), 42, 0).unwrap();
+    let embd2 = phate(data.as_ref(), None, params, 123, 0).unwrap();
 
     let mut max_diff = 0.0f64;
     for i in 0..embd1[0].len() {
@@ -584,7 +584,7 @@ fn phate_integration_11_precomputed_knn() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     let params = PhateParams {
         k,
@@ -608,10 +608,10 @@ fn phate_integration_11_precomputed_knn() {
         Some((knn_indices, knn_dist)),
         params.clone(),
         42,
-        false,
+        0,
     )
     .unwrap();
-    let embd_internal = phate(data.as_ref(), None, params, 42, false).unwrap();
+    let embd_internal = phate(data.as_ref(), None, params, 42, 0).unwrap();
 
     let mut max_diff = 0.0f64;
     for i in 0..embd_precomputed[0].len() {
@@ -671,8 +671,8 @@ fn phate_integration_12_fixed_vs_auto_t() {
         ..PhateParams::default()
     };
 
-    let embd_auto = phate(data.as_ref(), None, params_auto, 42, false).unwrap();
-    let embd_fixed = phate(data.as_ref(), None, params_fixed, 42, false).unwrap();
+    let embd_auto = phate(data.as_ref(), None, params_auto, 42, 0).unwrap();
+    let embd_fixed = phate(data.as_ref(), None, params_fixed, 42, 0).unwrap();
 
     for (embd, label) in [(&embd_auto, "auto"), (&embd_fixed, "fixed")] {
         let all_coords: Vec<f64> = embd.iter().flat_map(|d| d.iter().copied()).collect();
@@ -702,7 +702,7 @@ fn phate_integration_13_bandwidth_scale_effect() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!("\n=== PHATE DIAGNOSTIC 13: Bandwidth Scale Effect ===");
 

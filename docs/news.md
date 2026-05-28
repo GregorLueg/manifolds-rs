@@ -1,5 +1,17 @@
 # News
 
+## 0.3.1
+
+**Features:**
+
+- Breaking change in terms of how the verbosity parameter is supplied (`usize`
+  with options `0`, `1` or `2`, instead of a `bool`) given more finegrained
+  control over verbosity.
+- Reduced number of k means clustering iterations for the landmark approach ->
+  approximation anyways and exact centroids are not needed here.
+- Pull in the fixes for GPU-based methods when dimensionality is very high.
+- More errors over panics.
+
 ## 0.3.0
 
 **Features:**

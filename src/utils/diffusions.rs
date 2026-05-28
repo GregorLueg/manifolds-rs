@@ -17,6 +17,7 @@ use rand_distr::weighted::WeightedIndex;
 use rayon::prelude::*;
 use rustc_hash::{FxBuildHasher, FxHashSet};
 use std::ops::{AddAssign, Range};
+use std::time::Instant;
 
 use crate::data::graph::phate_alpha_decay_affinities;
 use crate::data::structures::*;
@@ -630,6 +631,8 @@ where
     /// * `distance` - Distance metric used
     /// * `seed` - Seed for random number generator
     /// * `n_svd` - Number of SVD components to use
+    /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for
+    ///   detailed verbosity.
     ///
     /// ### Returns
     ///
@@ -644,15 +647,17 @@ where
         distance: &str,
         seed: usize,
         n_svd: Option<usize>,
-        verbose: bool,
+        verbose: usize,
     ) -> Result<Self, ManifoldsError> {
+        let verbosity = parse_verbosity_level(verbose);
+
         let (data, n, dim) = matrix_to_flat(data);
         let landmark_method = parse_landmark_method(method, Some(seed), n_svd).unwrap_or_default();
         let distance = parse_ann_dist(distance).unwrap_or_default();
 
         let assignments: Vec<usize> = match landmark_method {
             LandmarkMethod::Random { seed } => {
-                if verbose {
+                if verbosity.normal_verbosity() {
                     println!(" Using random selection of landmarks.")
                 }
 
@@ -670,7 +675,9 @@ where
                         .map(|i| T::calculate_l2_norm(&data[i * dim..(i + 1) * dim]))
                         .collect::<Vec<_>>(),
                     Dist::SquaredEuclidean => Vec::new(),
-                    Dist::Manhattan => unreachable!(),
+                    Dist::Manhattan => {
+                        unreachable!("PHATE Landmark does not support Manhattan distance.")
+                    }
                 };
                 let norm_landmark = match distance {
                     Dist::Cosine => (0..n_landmarks)
@@ -678,7 +685,9 @@ where
                         .map(|i| T::calculate_l2_norm(&landmark_data[i * dim..(i + 1) * dim]))
                         .collect::<Vec<_>>(),
                     Dist::SquaredEuclidean => Vec::new(),
-                    Dist::Manhattan => unreachable!(),
+                    Dist::Manhattan => {
+                        unreachable!("PHATE Landmark does not support Manhattan distance.")
+                    }
                 };
 
                 (0..n)
@@ -703,13 +712,13 @@ where
             }
             #[allow(unused_variables)]
             LandmarkMethod::Spectral { n_svd } => {
-                if verbose {
+                if verbosity.normal_verbosity() {
                     println!(" Using spectral detection of landmarks.")
                 }
 
                 let svd = sparse_randomised_svd(affinity, n_svd, seed as u64, None, None)?;
 
-                if verbose {
+                if verbosity.detailed_verbosity() {
                     println!(" Finished calculation of randomised SVD on the affinity matrix.")
                 }
 
@@ -727,7 +736,9 @@ where
                     }
                 }
 
-                let k_means_params = KMeansTrainingParams::new(100, None, None);
+                // reduce the number of iterations here...
+                // doesn't have to be perfect
+                let k_means_params = KMeansTrainingParams::new(30, None, None);
 
                 // use ann-search-rs k-means-clustering
                 let centroids = train_centroids(
@@ -738,10 +749,10 @@ where
                     &Dist::SquaredEuclidean,
                     Some(k_means_params),
                     seed,
-                    verbose,
+                    verbosity.detailed_verbosity(),
                 )?;
 
-                if verbose {
+                if verbosity.detailed_verbosity() {
                     println!(" Centroids identified.")
                 }
 
@@ -759,14 +770,14 @@ where
                     &Dist::SquaredEuclidean,
                 );
 
-                if verbose {
+                if verbosity.normal_verbosity() {
                     println!(" Landmark assignments done.")
                 }
 
                 assignemnts
             }
             LandmarkMethod::Density { seed } => {
-                if verbose {
+                if verbosity.normal_verbosity() {
                     println!(" Using degree-weighted (density) selection of landmarks.")
                 }
 
@@ -814,7 +825,9 @@ where
                         .map(|i| T::calculate_l2_norm(&data[i * dim..(i + 1) * dim]))
                         .collect::<Vec<_>>(),
                     Dist::SquaredEuclidean => Vec::new(),
-                    Dist::Manhattan => unreachable!(),
+                    Dist::Manhattan => {
+                        unreachable!("PHATE Landmark does not support Manhattan distance.")
+                    }
                 };
                 let norm_landmark = match distance {
                     Dist::Cosine => (0..n_landmarks)
@@ -822,7 +835,9 @@ where
                         .map(|i| T::calculate_l2_norm(&landmark_data[i * dim..(i + 1) * dim]))
                         .collect::<Vec<_>>(),
                     Dist::SquaredEuclidean => Vec::new(),
-                    Dist::Manhattan => unreachable!(),
+                    Dist::Manhattan => {
+                        unreachable!("PHATE Landmark does not support Manhattan distance.")
+                    }
                 };
 
                 // assign
@@ -1006,14 +1021,16 @@ where
 pub fn apply_anisotropic_normalisation<T>(
     kernel: &CompressedSparseData<T>,
     alpha: T,
-) -> CompressedSparseData<T>
+) -> Result<CompressedSparseData<T>, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
-    assert!(kernel.cs_type.is_csr(), "Kernel must be CSR format");
+    if !kernel.cs_type.is_csr() {
+        return Err(ManifoldsError::SparseMatrixIsNotCsr);
+    }
 
     if alpha.abs() < T::epsilon() {
-        return kernel.clone();
+        return Ok(kernel.clone());
     }
 
     let (nrows, _) = kernel.shape();
@@ -1048,7 +1065,12 @@ where
         })
         .collect();
 
-    CompressedSparseData::new_csr(&data, &kernel.indices, &kernel.indptr, kernel.shape())
+    Ok(CompressedSparseData::new_csr(
+        &data,
+        &kernel.indices,
+        &kernel.indptr,
+        kernel.shape(),
+    ))
 }
 
 /// Build the symmetric diffusion operator P_sym = D^{-1/2} K D^{-1/2}.
@@ -1066,11 +1088,13 @@ where
 /// `(P_sym, sqrt(degrees))`
 pub fn build_symmetric_diffusion_operator<T>(
     kernel: &CompressedSparseData<T>,
-) -> (CompressedSparseData<T>, Vec<T>)
+) -> Result<(CompressedSparseData<T>, Vec<T>), ManifoldsError>
 where
     T: ManifoldsFloat,
 {
-    assert!(kernel.cs_type.is_csr(), "Kernel must be CSR format");
+    if !kernel.cs_type.is_csr() {
+        return Err(ManifoldsError::SparseMatrixIsNotCsr);
+    }
 
     let (nrows, _) = kernel.shape();
 
@@ -1108,7 +1132,7 @@ where
     let p_sym =
         CompressedSparseData::new_csr(&data, &kernel.indices, &kernel.indptr, kernel.shape());
 
-    (p_sym, sqrt_d)
+    Ok((p_sym, sqrt_d))
 }
 
 /// For each data point, compute Gaussian-weighted transitions to its k
@@ -1311,7 +1335,8 @@ where
     ///   `"none"`
     /// * `seed` - RNG seed
     /// * `n_svd` - Number of SVD components for spectral landmark selection
-    /// * `verbose` - Controls verbosity
+    /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for
+    ///   detailed verbosity.
     ///
     /// ### Returns
     ///
@@ -1330,12 +1355,16 @@ where
         graph_symmetry: &str,
         seed: usize,
         n_svd: Option<usize>,
-        verbose: bool,
+        verbose: usize,
     ) -> Result<Self, ManifoldsError>
     where
         HnswIndex<T>: HnswState<T>,
         NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
     {
+        let verbosity = parse_verbosity_level(verbose);
+
+        let start = Instant::now();
+
         let (data_flat, n, dim) = matrix_to_flat(data);
         let landmark_method = parse_landmark_method(method, Some(seed), n_svd).unwrap_or_default();
         let dist_enum = parse_ann_dist(distance).unwrap_or_default();
@@ -1343,13 +1372,13 @@ where
         // landmark selection
         let landmark_indices: Vec<usize> = match landmark_method {
             LandmarkMethod::Random { seed } => {
-                if verbose {
+                if verbosity.normal_verbosity() {
                     println!(" Using random landmark selection.");
                 }
                 random_sample(0..n, n_landmarks, seed)
             }
             LandmarkMethod::Density { seed } => {
-                if verbose {
+                if verbosity.normal_verbosity() {
                     println!(" Using density landmark selection.");
                 }
                 let affinity = affinity.expect("density landmarks require affinity matrix");
@@ -1375,7 +1404,7 @@ where
                 set.into_iter().collect()
             }
             LandmarkMethod::Spectral { n_svd } => {
-                if verbose {
+                if verbosity.normal_verbosity() {
                     println!(" Using spectral landmark selection.");
                 }
                 let affinity = affinity.expect("spectral landmarks require affinity matrix");
@@ -1394,7 +1423,7 @@ where
                     }
                 }
 
-                let k_means_params = KMeansTrainingParams::new(100, None, None);
+                let k_means_params = KMeansTrainingParams::new(30, None, None);
 
                 let centroids = train_centroids(
                     &embedding_flat,
@@ -1404,7 +1433,7 @@ where
                     &Dist::SquaredEuclidean,
                     Some(k_means_params),
                     seed,
-                    verbose,
+                    verbosity.detailed_verbosity(),
                 )?;
                 let centroid_norms = vec![T::one(); n_landmarks];
                 let data_norms = vec![T::one(); n];
@@ -1494,8 +1523,8 @@ where
             distance == "euclidean",
         );
         let kernel_ll = coo_to_csr(&ll_graph);
-        let kernel_ll_norm = apply_anisotropic_normalisation(&kernel_ll, alpha_norm);
-        let (p_sym_ll, sqrt_degrees_l) = build_symmetric_diffusion_operator(&kernel_ll_norm);
+        let kernel_ll_norm = apply_anisotropic_normalisation(&kernel_ll, alpha_norm)?;
+        let (p_sym_ll, sqrt_degrees_l) = build_symmetric_diffusion_operator(&kernel_ll_norm)?;
 
         // data-to-landmark transitions (for Nystroem)
         let p_nl = build_data_to_landmark_transitions(
@@ -1509,6 +1538,10 @@ where
             thresh,
             &dist_enum,
         );
+
+        if verbosity.normal_verbosity() {
+            println!(" Finished landmark generation in {:.2?}", start.elapsed());
+        }
 
         Ok(Self {
             n_landmarks,
@@ -1740,7 +1773,7 @@ mod test_data_diffusion {
         let indptr = vec![0, 2, 4];
         let kernel = CompressedSparseData::new_csr(&data, &indices, &indptr, (2, 2));
 
-        let result = apply_anisotropic_normalisation(&kernel, 0.0);
+        let result = apply_anisotropic_normalisation(&kernel, 0.0).unwrap();
         assert_eq!(result.data, kernel.data);
         assert_eq!(result.indices, kernel.indices);
         assert_eq!(result.indptr, kernel.indptr);
@@ -1755,7 +1788,7 @@ mod test_data_diffusion {
         let indptr = vec![0, 2, 4];
         let kernel = CompressedSparseData::new_csr(&data, &indices, &indptr, (2, 2));
 
-        let result = apply_anisotropic_normalisation(&kernel, 1.0);
+        let result = apply_anisotropic_normalisation(&kernel, 1.0).unwrap();
         use approx::assert_relative_eq;
         assert_relative_eq!(result.data[0], 1.0 / 9.0, epsilon = 1e-10);
         assert_relative_eq!(result.data[1], 2.0 / 9.0, epsilon = 1e-10);
@@ -1770,7 +1803,7 @@ mod test_data_diffusion {
         let indptr = vec![0, 2, 5, 7];
         let kernel = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
 
-        let result = apply_anisotropic_normalisation(&kernel, 0.5);
+        let result = apply_anisotropic_normalisation(&kernel, 0.5).unwrap();
         let dense = result.to_dense();
         use approx::assert_relative_eq;
         for i in 0..3 {
@@ -1787,7 +1820,7 @@ mod test_data_diffusion {
         let indptr = vec![0, 2, 5, 7];
         let kernel = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
 
-        let (p_sym, _) = build_symmetric_diffusion_operator(&kernel);
+        let (p_sym, _) = build_symmetric_diffusion_operator(&kernel).unwrap();
         let dense = p_sym.to_dense();
         use approx::assert_relative_eq;
         for i in 0..3 {
@@ -1804,7 +1837,7 @@ mod test_data_diffusion {
         let indptr = vec![0, 2, 5, 7];
         let kernel = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
 
-        let (_, sqrt_d) = build_symmetric_diffusion_operator(&kernel);
+        let (_, sqrt_d) = build_symmetric_diffusion_operator(&kernel).unwrap();
         use approx::assert_relative_eq;
         assert_relative_eq!(sqrt_d[0], 1.5_f64.sqrt(), epsilon = 1e-10);
         assert_relative_eq!(sqrt_d[1], 1.8_f64.sqrt(), epsilon = 1e-10);
@@ -1822,7 +1855,7 @@ mod test_data_diffusion {
         let indptr = vec![0, 2, 5, 7];
         let kernel = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
 
-        let (p_sym, _) = build_symmetric_diffusion_operator(&kernel);
+        let (p_sym, _) = build_symmetric_diffusion_operator(&kernel).unwrap();
         let (evals, _) = compute_largest_eigenpairs_lanczos(&p_sym, 1, 42).unwrap();
         use approx::assert_relative_eq;
         assert_relative_eq!(evals[0], 1.0, epsilon = 1e-4);

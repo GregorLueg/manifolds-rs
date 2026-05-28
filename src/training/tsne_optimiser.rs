@@ -245,15 +245,18 @@ fn update_parameter<T>(
 /// * `embd` - Mutable 2D embedding to optimise in-place
 /// * `params` - Optimisation parameters (learning rate, epochs, etc.)
 /// * `graph` - Symmetric sparse graph of high-dimensional affinities P_ij
-/// * `verbose` - Print progress every 50 epochs
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 pub fn optimise_bh_tsne<T>(
     embd: &mut [Vec<T>],
     params: &TsneOptimParams<T>,
     graph: &CoordinateList<T>,
-    verbose: bool,
+    verbose: usize,
 ) where
     T: ManifoldsFloat,
 {
+    let verbosity = parse_verbosity_level(verbose);
+
     let n = embd.len();
     let n_dim = embd[0].len();
     let lr = params.get_lr(n);
@@ -376,7 +379,7 @@ pub fn optimise_bh_tsne<T>(
             p[1] -= mean_y;
         });
 
-        if verbose && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
+        if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
             println!(
                 " Epoch {}/{} | Z = {}",
                 epoch,
@@ -410,21 +413,27 @@ pub fn optimise_bh_tsne<T>(
 /// * `embd` - Mutable 2D embedding to optimise in-place
 /// * `params` - Optimisation parameters (learning rate, epochs, etc.)
 /// * `graph` - Symmetric sparse graph of high-dimensional affinities P_ij
-/// * `verbose` - Print progress every 50 epochs
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 #[cfg(feature = "fft_tsne")]
 pub fn optimise_fft_tsne<T>(
     embd: &mut [Vec<T>],
     params: &TsneOptimParams<T>,
     graph: &CoordinateList<T>,
-    verbose: bool,
-) where
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
     T: FftwFloat + ManifoldsFloat,
 {
+    let verbosity = parse_verbosity_level(verbose);
+
     let n = embd.len();
     let n_dim = embd[0].len();
     let lr = params.get_lr(n);
 
-    assert_eq!(n_dim, 2, "FFT t-SNE only supports 2D output");
+    if n_dim != 2 {
+        return Err(ManifoldsError::IncorrectDim { n_dim });
+    }
 
     let n_terms = 4;
 
@@ -630,7 +639,7 @@ pub fn optimise_fft_tsne<T>(
             p[1] -= mean_y;
         });
 
-        if verbose && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
+        if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
             let sum_q_f64 = sum_q.to_f64().unwrap();
             println!(
                 " Epoch {}/{} | Z = {}",
@@ -640,6 +649,8 @@ pub fn optimise_fft_tsne<T>(
             );
         }
     }
+
+    Ok(())
 }
 
 ///////////
@@ -713,7 +724,7 @@ mod test_tsne_optimiser {
             ..TsneOptimParams::default()
         };
 
-        optimise_bh_tsne(&mut embd, &params, &graph, false);
+        optimise_bh_tsne(&mut embd, &params, &graph, 0);
 
         // Check for NaNs
         for point in &embd {
@@ -752,7 +763,7 @@ mod test_tsne_optimiser {
             ..TsneOptimParams::default()
         };
 
-        optimise_fft_tsne(&mut embd, &params, &graph, false);
+        let _ = optimise_fft_tsne(&mut embd, &params, &graph, 0);
 
         for point in &embd {
             for val in point {
@@ -785,8 +796,8 @@ mod test_tsne_optimiser {
             ..TsneOptimParams::default()
         };
 
-        optimise_bh_tsne(&mut embd1, &params, &graph, false);
-        optimise_bh_tsne(&mut embd2, &params, &graph, false);
+        optimise_bh_tsne(&mut embd1, &params, &graph, 0);
+        optimise_bh_tsne(&mut embd2, &params, &graph, 0);
 
         for (p1, p2) in embd1.iter().zip(embd2.iter()) {
             assert_relative_eq!(p1[0], p2[0]);

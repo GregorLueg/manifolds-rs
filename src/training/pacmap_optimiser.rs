@@ -257,19 +257,23 @@ where
 /// * `embd` - Embedding, shape [n_samples][n_dim]. Modified in place.
 /// * `pairs` - The three pair sets from `construct_pacmap_pairs`.
 /// * `params` - Optimisation parameters.
-/// * `verbose` - Progress reporting.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 pub fn optimise_pacmap<T>(
     embd: &mut [Vec<T>],
     pairs: &PacmapPairs,
     params: &PacmapOptimParams<T>,
-    verbose: bool,
-) where
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
     T: ManifoldsFloat,
 {
     let n = embd.len();
     if n == 0 {
-        return;
+        return Err(ManifoldsError::NoData);
     }
+    let verbosity = parse_verbosity_level(verbose);
+
     let n_dim = embd[0].len();
 
     // Flatten embedding for cache locality
@@ -377,7 +381,7 @@ pub fn optimise_pacmap<T>(
         beta1t *= params.beta1;
         beta2t *= params.beta2;
 
-        if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
@@ -387,6 +391,8 @@ pub fn optimise_pacmap<T>(
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
     }
+
+    Ok(())
 }
 
 /// Optimise a PaCMAP embedding using Adam (parallel).
@@ -396,19 +402,23 @@ pub fn optimise_pacmap<T>(
 /// * `embd` - Embedding, shape [n_samples][n_dim]. Modified in place.
 /// * `pairs` - The three pair sets from `construct_pacmap_pairs`.
 /// * `params` - Optimisation parameters.
-/// * `verbose` - Progress reporting.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 pub fn optimise_pacmap_parallel<T>(
     embd: &mut [Vec<T>],
     pairs: &PacmapPairs,
     params: &PacmapOptimParams<T>,
-    verbose: bool,
-) where
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
     T: Float + FromPrimitive + AddAssign + Send + Sync + SubAssign,
 {
     let n = embd.len();
     if n == 0 {
-        return;
+        return Err(ManifoldsError::NoData);
     }
+    let verbosity = parse_verbosity_level(verbose);
+
     let n_dim = embd[0].len();
 
     // flatten embedding for cache locality
@@ -520,7 +530,7 @@ pub fn optimise_pacmap_parallel<T>(
         beta1t = beta1t * params.beta1;
         beta2t = beta2t * params.beta2;
 
-        if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
@@ -530,6 +540,8 @@ pub fn optimise_pacmap_parallel<T>(
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
     }
+
+    Ok(())
 }
 
 ///////////
@@ -573,7 +585,7 @@ mod test_pacmap_optimiser {
         let pairs = simple_pairs(6);
         let mut embd = simple_embd(6);
         let initial = embd.clone();
-        optimise_pacmap(&mut embd, &pairs, &default_params(), false);
+        let _ = optimise_pacmap(&mut embd, &pairs, &default_params(), 0);
         assert!(total_movement(&initial, &embd) > 0.01);
     }
 
@@ -582,7 +594,7 @@ mod test_pacmap_optimiser {
         let pairs = simple_pairs(6);
         let mut embd = simple_embd(6);
         let initial = embd.clone();
-        optimise_pacmap_parallel(&mut embd, &pairs, &default_params(), false);
+        let _ = optimise_pacmap_parallel(&mut embd, &pairs, &default_params(), 0);
         assert!(total_movement(&initial, &embd) > 0.01);
     }
 
@@ -590,7 +602,7 @@ mod test_pacmap_optimiser {
     fn test_sequential_all_finite() {
         let pairs = simple_pairs(8);
         let mut embd = simple_embd(8);
-        optimise_pacmap(&mut embd, &pairs, &default_params(), false);
+        let _ = optimise_pacmap(&mut embd, &pairs, &default_params(), 0);
         for point in &embd {
             for &coord in point {
                 assert!(coord.is_finite(), "non-finite coordinate: {}", coord);
@@ -602,7 +614,7 @@ mod test_pacmap_optimiser {
     fn test_parallel_all_finite() {
         let pairs = simple_pairs(8);
         let mut embd = simple_embd(8);
-        optimise_pacmap_parallel(&mut embd, &pairs, &default_params(), false);
+        let _ = optimise_pacmap_parallel(&mut embd, &pairs, &default_params(), 0);
         for point in &embd {
             for &coord in point {
                 assert!(coord.is_finite(), "non-finite coordinate: {}", coord);
@@ -616,8 +628,8 @@ mod test_pacmap_optimiser {
         let params = default_params();
         let mut embd1 = simple_embd(6);
         let mut embd2 = simple_embd(6);
-        optimise_pacmap(&mut embd1, &pairs, &params, false);
-        optimise_pacmap(&mut embd2, &pairs, &params, false);
+        let _ = optimise_pacmap(&mut embd1, &pairs, &params, 0);
+        let _ = optimise_pacmap(&mut embd2, &pairs, &params, 0);
         assert_eq!(embd1, embd2);
     }
 
@@ -627,8 +639,8 @@ mod test_pacmap_optimiser {
         let params = default_params();
         let mut embd1 = simple_embd(6);
         let mut embd2 = simple_embd(6);
-        optimise_pacmap_parallel(&mut embd1, &pairs, &params, false);
-        optimise_pacmap_parallel(&mut embd2, &pairs, &params, false);
+        let _ = optimise_pacmap_parallel(&mut embd1, &pairs, &params, 0);
+        let _ = optimise_pacmap_parallel(&mut embd2, &pairs, &params, 0);
         assert_eq!(embd1, embd2);
     }
 
@@ -640,8 +652,8 @@ mod test_pacmap_optimiser {
             further: vec![],
         };
         let mut embd: Vec<Vec<f64>> = vec![];
-        optimise_pacmap(&mut embd, &pairs, &default_params(), false);
-        optimise_pacmap_parallel(&mut embd, &pairs, &default_params(), false);
+        let _ = optimise_pacmap(&mut embd, &pairs, &default_params(), 0);
+        let _ = optimise_pacmap_parallel(&mut embd, &pairs, &default_params(), 0);
     }
 
     #[test]
@@ -662,8 +674,8 @@ mod test_pacmap_optimiser {
         let mut embd_no_mn = simple_embd(n);
         let initial = simple_embd(n);
 
-        optimise_pacmap(&mut embd_full, &pairs_full, &params, false);
-        optimise_pacmap(&mut embd_no_mn, &pairs_no_mn, &params, false);
+        let _ = optimise_pacmap(&mut embd_full, &pairs_full, &params, 0);
+        let _ = optimise_pacmap(&mut embd_no_mn, &pairs_no_mn, &params, 0);
 
         let movement_full = total_movement(&initial, &embd_full);
         let movement_no_mn = total_movement(&initial, &embd_no_mn);
@@ -687,8 +699,8 @@ mod test_pacmap_optimiser {
         let mut embd_seq = simple_embd(10);
         let mut embd_par = simple_embd(10);
 
-        optimise_pacmap(&mut embd_seq, &pairs, &params, false);
-        optimise_pacmap_parallel(&mut embd_par, &pairs, &params, false);
+        let _ = optimise_pacmap(&mut embd_seq, &pairs, &params, 0);
+        let _ = optimise_pacmap_parallel(&mut embd_par, &pairs, &params, 0);
 
         let diff = total_movement(&embd_seq, &embd_par);
         let scale = total_movement(&simple_embd(10), &embd_seq);

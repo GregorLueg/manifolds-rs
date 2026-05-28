@@ -178,7 +178,7 @@ let embedding = umap(
     None,        // precomputed kNN (None = compute internally)
     &params,
     42,          // seed
-    true,        // verbose
+    1,           // verbose -> light levels of verbosity
 );
 
 // embedding[0] contains x-coordinates
@@ -212,7 +212,7 @@ let embedding = tsne(
     &params,
     "bh",        // approximation type: "bh" or "fft" (requires fft_tsne feature)
     42,          // seed
-    true,        // verbose
+    1,           // verbose -> light levels of verbosity
 );
 
 // embedding[0] contains x-coordinates
@@ -237,7 +237,7 @@ let (knn_indices, knn_dist) = run_ann_search(
     "hnsw".to_string(),
     &nn_params,
     42,              // seed
-    true             // verbosity
+    1,               // verbose -> light levels of verbosity
 );
 
 // Use precomputed k-NN for UMAP
@@ -247,7 +247,7 @@ let embedding = umap(
     Some((knn_indices.clone(), knn_dist.clone())),
     &params,
     42,
-    false,
+    0,              // no verbose
 );
 ```
 
@@ -284,7 +284,7 @@ let embedding = umap_gpu::<f32, WgpuRuntime>(
     &params,
     device,
     42,          // seed
-    true,        // verbose
+    1,           // verbose -> light levels of verbosity
 );
 ```
 
@@ -308,7 +308,7 @@ let embedding = tsne_gpu::<f32, WgpuRuntime>(
     "bh",        // "bh" or "fft" (fft requires fft_tsne feature)
     device,
     42,
-    true,
+    1,           // verbose -> light levels of verbosity
 );
 ```
 
@@ -367,7 +367,7 @@ let embedding = parametric_umap::<f32, Backend>(
     &params,
     &device,
     42,          // seed
-    true,        // verbose
+    1,           // verbose -> light levels of verbosity
 );
 
 // embedding[0] contains x-coordinates
@@ -423,7 +423,7 @@ let embedding = phate(
     None,        // precomputed kNN (None = compute internally)
     params,      // note: consumed by value, not borrowed
     42,          // seed
-    true,        // verbose
+    1,           // verbose -> light levels of verbosity
 );
 
 // embedding[0] contains x-coordinates
@@ -455,7 +455,7 @@ let embedding = pacmap(
     None,    // precomputed kNN (None = compute internally)
     &params,
     42,      // seed
-    true,    // verbose
+    1,       // verbose -> light levels of verbosity
 );
 
 // embedding[0] contains x-coordinates
@@ -503,7 +503,7 @@ let embedding = diffusion_maps(
     None,        // precomputed kNN (None = compute internally)
     params,      // note: consumed by value, not borrowed
     42,          // seed
-    true,        // verbose
+    1,           // verbose -> light levels of verbosity
 );
 
 // embedding[0] contains the first non-trivial diffusion component

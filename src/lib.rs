@@ -237,7 +237,8 @@ where
 ///   mix_weight)
 /// * `nn_params` - Nearest neighbour parameters for nearest neighbour search.
 /// * `seed` - Random seed
-/// * `verbose` - Controls verbosity
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -252,37 +253,39 @@ pub fn construct_umap_graph<T>(
     nn_params: &NearestNeighbourParams<T>,
     n_epochs: usize,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> UmapGraphResults<T>
 where
     T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let verbosity = parse_verbosity_level(verbose);
+
     let (knn_indices, knn_dist) = match precomputed_knn {
         Some((indices, distances)) => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Using precomputed kNN graph...");
             }
             (indices, distances)
         }
         None => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(
-                    "Running approximate nearest neighbour search using {}...",
+                    "Running (approximate) nearest neighbour search using {}...",
                     ann_type
                 );
             }
             let start_knn = Instant::now();
             let result = run_ann_search(data, k, ann_type, nn_params, seed, verbose)?;
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
             }
             result
         }
     };
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Constructing fuzzy simplicial set...");
     }
 
@@ -300,7 +303,7 @@ where
     let graph = symmetrise_graph(graph, umap_params.mix_weight);
     let graph = filter_weak_edges(graph, n_epochs, verbose);
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Finalised graph generation in {:.2?}.",
             start_graph.elapsed()
@@ -330,7 +333,8 @@ where
 ///   distances excluding self.
 /// * `umap_params` - The UMAP parameters.
 /// * `seed` - Seed for reproducibility.
-/// * `verbose` - Controls verbosity of the function.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -342,7 +346,7 @@ pub fn umap<T>(
     precomputed_knn: PreComputedKnn<T>,
     umap_params: &UmapParams<T>,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
@@ -350,16 +354,27 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let verbosity = parse_verbosity_level(verbose);
+
     // parse various parameters
     let init_type = parse_initilisation(
         &umap_params.initialisation,
         umap_params.randomised,
         umap_params.init_range,
     )
-    .unwrap_or(EmbdInit::RandomInit { range: None });
+    .unwrap_or_else(|| {
+        println!(
+            "Unknown initialisation provided: {:?}. Defaulting to PCA.",
+            umap_params.initialisation,
+        );
+        EmbdInit::PcaInit {
+            range: None,
+            randomised: true,
+        }
+    });
     let optimiser = parse_umap_optimiser(&umap_params.optimiser).unwrap_or_default();
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Running umap with alpha: {:.2?} and beta: {:.2?}",
             umap_params.optim_params.a, umap_params.optim_params.b
@@ -378,7 +393,7 @@ where
         verbose,
     )?;
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Initialising embedding via {} layout...",
             umap_params.initialisation
@@ -391,7 +406,7 @@ where
 
     let graph_adj = coo_to_adjacency_list(&graph);
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Optimising embedding via {} ({} epochs) on {} edges...",
             match optimiser {
@@ -411,7 +426,7 @@ where
             &umap_params.optim_params,
             seed as u64,
             verbose,
-        ),
+        )?,
         UmapOptimiser::Sgd => {
             optimise_embedding_sgd(
                 &mut embd,
@@ -419,7 +434,7 @@ where
                 &umap_params.optim_params,
                 seed as u64,
                 verbose,
-            );
+            )?;
         }
         UmapOptimiser::AdamParallel => {
             optimise_embedding_adam_parallel(
@@ -428,13 +443,13 @@ where
                 &umap_params.optim_params,
                 seed as u64,
                 verbose,
-            );
+            )?;
         }
     }
 
     let end_layout = start_layout.elapsed();
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Initialised and optimised embedding in: {:.2?}.",
             end_layout
@@ -606,7 +621,8 @@ where
 ///   provide a weird string, the function will default to `"kmknn"`
 /// * `nn_params` - Nearest neighbour search parameters
 /// * `seed` - Random seed for reproducibility
-/// * `verbose` - Print progress information
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -627,16 +643,18 @@ pub fn construct_tsne_graph<T>(
     ann_type: String,
     nn_params: &NearestNeighbourParams<T>,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> TsneGraph<T>
 where
     T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let verbosity = parse_verbosity_level(verbose);
+
     let (knn_indices, knn_dist) = match precomputed_knn {
         Some((indices, distances)) => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Using precomputed kNN graph...");
             }
             (indices, distances)
@@ -645,14 +663,14 @@ where
             let k_float = perplexity * T::from_f64(3.0).unwrap();
             let k = k_float.to_usize().unwrap().max(5).min(data.nrows() - 1);
 
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Running kNN search (k={}) using {}...", k, ann_type);
             }
 
             let start_knn = Instant::now();
             let result = run_ann_search(data, k, ann_type, nn_params, seed, verbose)?;
 
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
             }
 
@@ -660,7 +678,7 @@ where
         }
     };
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Computing Gaussian affinities and symmetrising...");
     }
 
@@ -677,7 +695,7 @@ where
 
     let graph = symmetrise_affinities_tsne(directed_graph);
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Finalised graph generation in {:.2?}.",
             start_graph.elapsed()
@@ -718,7 +736,8 @@ where
 /// * `approx_type` - Type of approximation to use for repulsive forces.
 ///   Options: `"barnes_hut" | "bh"`, `"fft"`
 /// * `seed` - Random seed for reproducibility
-/// * `verbose` - Print progress information
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -739,7 +758,7 @@ pub fn tsne<T>(
     params: &TsneParams<T>,
     approx_type: &str,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat + FftwFloat,
@@ -753,6 +772,8 @@ where
         });
     }
 
+    let verbosity = parse_verbosity_level(verbose);
+
     // 1. graph construction
     let (graph, _, _) = construct_tsne_graph(
         data,
@@ -764,7 +785,7 @@ where
         verbose,
     )?;
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Initialising embedding via {}...", &params.initialisation);
     }
 
@@ -774,9 +795,15 @@ where
         params.randomised_init,
         params.init_range,
     )
-    .unwrap_or(EmbdInit::PcaInit {
-        randomised: true,
-        range: Some(T::from_f64(1e-2).unwrap()),
+    .unwrap_or_else(|| {
+        println!(
+            "Unknown initialisation provided: {:?}. Defaulting to PCA.",
+            params.initialisation,
+        );
+        EmbdInit::PcaInit {
+            range: Some(T::from_f64(1e-2).unwrap()),
+            randomised: true,
+        }
     });
 
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
@@ -788,7 +815,7 @@ where
     let start_optim = Instant::now();
     match tsne_approx {
         TsneOpt::BarnesHut => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(
                     "Optimising via Barnes-Hut t-SNE ({} epochs)...",
                     params.optim_params.n_epochs
@@ -798,17 +825,17 @@ where
         }
         #[cfg(feature = "fft_tsne")]
         TsneOpt::Fft => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(
                     "Optimising via FFT Interpolation-based t-SNE ({} epochs)...",
                     params.optim_params.n_epochs
                 );
             }
-            optimise_fft_tsne(&mut embd, &params.optim_params, &graph, verbose);
+            let _ = optimise_fft_tsne(&mut embd, &params.optim_params, &graph, verbose);
         }
     }
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Optimisation complete in {:.2?}.", start_optim.elapsed());
     }
 
@@ -856,7 +883,8 @@ where
 /// * `approx_type` - Type of approximation to use for repulsive forces.
 ///   Options: `"barnes_hut" | "bh"`, `"fft"`
 /// * `seed` - Random seed for reproducibility
-/// * `verbose` - Print progress information
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -877,7 +905,7 @@ pub fn tsne<T>(
     params: &TsneParams<T>,
     approx_type: &str,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
@@ -890,6 +918,7 @@ where
             n_dim: params.n_dim,
         });
     }
+    let verbosity = parse_verbosity_level(verbose);
 
     // 1. graph construction
     let (graph, _, _) = construct_tsne_graph(
@@ -903,7 +932,7 @@ where
     )?;
 
     // 2. initialise embedding
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Initialising embedding via {}...", &params.initialisation);
     }
 
@@ -912,9 +941,15 @@ where
         params.randomised_init,
         params.init_range,
     )
-    .unwrap_or(EmbdInit::PcaInit {
-        randomised: false,
-        range: Some(T::from_f64(1e-2).unwrap()),
+    .unwrap_or_else(|| {
+        println!(
+            "Unknown initialisation provided: {:?}. Defaulting to PCA.",
+            params.initialisation,
+        );
+        EmbdInit::PcaInit {
+            range: Some(T::from_f64(1e-2).unwrap()),
+            randomised: true,
+        }
     });
 
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
@@ -926,7 +961,7 @@ where
     let start_optim = Instant::now();
     match tsne_approx {
         TsneOpt::BarnesHut => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(
                     "Optimising via Barnes-Hut t-SNE ({} epochs)...",
                     params.optim_params.n_epochs
@@ -940,7 +975,7 @@ where
         }
     }
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Optimisation complete in {:.2?}.", start_optim.elapsed());
     }
 
@@ -1115,7 +1150,8 @@ where
 ///   `bandwidth_scale`, `thresh`, `symmetrise`, `n_landmarks`,
 ///   `landmark_mode`)
 /// * `seed` - Random seed for reproducibility
-/// * `verbose` - Print progress information
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -1131,37 +1167,39 @@ pub fn construct_phate_diffusion<T>(
     nn_params: &NearestNeighbourParams<T>,
     phate_params: &PhateParams<T>,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<PhateDiffusion<T>, ManifoldsError>
 where
     T: ManifoldsFloat,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let verbosity = parse_verbosity_level(verbose);
+
     let (knn_indices, knn_dist) = match precomputed_knn {
         Some((indices, distances)) => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Using precomputed kNN graph...");
             }
             (indices, distances)
         }
         None => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(
-                    "Running approximate nearest neighbour search using {}...",
+                    "Running (approximate) nearest neighbour search using {}...",
                     ann_type
                 );
             }
             let start_knn = Instant::now();
             let result = run_ann_search(data, k, ann_type.to_string(), nn_params, seed, verbose)?;
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
             }
             result
         }
     };
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Calculating alpha decay affinities");
     }
     let start_alpha_affinities = Instant::now();
@@ -1177,7 +1215,7 @@ where
         nn_params.dist_metric == "euclidean",
     );
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Alpha decay affinity calculations done in: {:.2?}.",
             start_alpha_affinities.elapsed()
@@ -1195,7 +1233,7 @@ where
             operator: diffusion_op,
         }),
         Some(n_landmarks) => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(" Building {} landmarks...", n_landmarks);
             }
             let start_landmarks = Instant::now();
@@ -1210,7 +1248,7 @@ where
                 Some(100),
                 verbose,
             )?;
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(
                     " Landmarks generated in: {:.2?}.",
                     start_landmarks.elapsed()
@@ -1250,7 +1288,8 @@ where
 /// * `phate_params` - PHATE parameters. See `PhateParams` for full
 ///   documentation of each field.
 /// * `seed` - Random seed for reproducibility
-/// * `verbose` - Print progress information
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -1267,7 +1306,7 @@ pub fn phate<T>(
     precomputed_knn: PreComputedKnn<T>,
     phate_params: PhateParams<T>,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
@@ -1276,6 +1315,7 @@ where
     StandardNormal: Distribution<T>,
 {
     let start_phate = Instant::now();
+    let verbosity = parse_verbosity_level(verbose);
 
     let phate_diffusion = construct_phate_diffusion(
         data,
@@ -1291,7 +1331,7 @@ where
     let start_t = Instant::now();
     let t = match phate_params.diffusion_params.t {
         PhateTime::Auto { t_max } => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Finding optimal t (t_max={})...", t_max);
             }
             match &phate_diffusion {
@@ -1304,7 +1344,7 @@ where
         }
         PhateTime::Fixed(t) => Ok(t),
     }?;
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Identified t = {} in {:.2?}.", t, start_t.elapsed());
     }
 
@@ -1321,13 +1361,13 @@ where
 
     let embedding = match phate_diffusion {
         PhateDiffusion::Full { operator } => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Powering diffusion operator...");
             }
             let powered = matrix_power(&operator, t)?;
             let potential = calculate_potential(&powered, 1, phate_params.diffusion_params.gamma)?;
 
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(
                     "Potential shape: {} × {} - calculated in {:.2?}.",
                     potential.shape().0,
@@ -1338,14 +1378,14 @@ where
 
             let res = match mds_method {
                 MdsMethod::ClassicMds => {
-                    if verbose {
+                    if verbosity.normal_verbosity() {
                         println!("Computing pairwise distances, running classic MDS...");
                     }
                     let distances = compute_potential_distances(&potential, &dist);
                     classic_mds(&distances, phate_params.n_dim, mds_params.randomised, seed)
                 }
                 MdsMethod::SgdDense => {
-                    if verbose {
+                    if verbosity.normal_verbosity() {
                         println!("Computing pairwise distances, running SGD-MDS...");
                     }
                     let distances = compute_potential_distances(&potential, &dist);
@@ -1363,7 +1403,7 @@ where
             res
         }
         PhateDiffusion::Landmark { landmarks } => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(
                     "Powering landmark operator ({} landmarks)...",
                     landmarks.get_n_landmarks()
@@ -1373,7 +1413,7 @@ where
             let landmark_potential =
                 calculate_potential(&landmark_powered, 1, phate_params.diffusion_params.gamma)?;
 
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(
                     "Landmark potential shape: {} × {} - calculated in {:.2?}.",
                     landmark_potential.shape().0,
@@ -1392,7 +1432,7 @@ where
                 None,
             );
 
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Running MDS on landmarks...");
             }
 
@@ -1413,14 +1453,14 @@ where
                 ),
             }?;
 
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Interpolating to full N points via Nyström...");
             }
             landmarks.interpolate_embedding(&landmark_embedding)
         }
     };
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Ran MDS in {:.2?}.", start_embed.elapsed());
         println!("Finished running PHATE in {:.2?}.", start_phate.elapsed());
     }
@@ -1609,7 +1649,8 @@ where
 ///   with k >= `params.mn_candidate_end` to support mid-near sampling.
 /// * `params` - PaCMAP parameters.
 /// * `seed` - Seed for reproducibility.
-/// * `verbose` - Controls verbosity.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -1619,7 +1660,7 @@ pub fn pacmap<T>(
     precomputed_knn: PreComputedKnn<T>,
     params_pacmap: &PacmapParams<T>,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
@@ -1629,17 +1670,19 @@ where
 {
     let n_samples = data.nrows();
 
+    let verbosity = parse_verbosity_level(verbose);
+
     let (knn_indices, _) = match precomputed_knn {
         Some((indices, distances)) => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Using precomputed kNN graph...");
             }
             (indices, distances)
         }
         None => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(
-                    "Running approximate nearest neighbour search using {} (k={})...",
+                    "Running (approximate) nearest neighbour search using {} (k={})...",
                     params_pacmap.ann_type, params_pacmap.k
                 );
             }
@@ -1652,14 +1695,14 @@ where
                 seed,
                 verbose,
             )?;
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("kNN search done in: {:.2?}.", start_knn.elapsed());
             }
             result
         }
     };
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Constructing PaCMAP pairs...");
     }
 
@@ -1676,7 +1719,7 @@ where
 
     let end_pairs = start_pairs.elapsed();
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Pairs generated in {:.2?}: {} near, {} mid-near, {} further.",
             end_pairs,
@@ -1686,14 +1729,19 @@ where
         );
     }
 
-    let init_type = parse_initilisation(&params_pacmap.initialisation, true, None).unwrap_or(
-        EmbdInit::PcaInit {
-            randomised: true,
-            range: None,
-        },
-    );
+    let init_type =
+        parse_initilisation(&params_pacmap.initialisation, true, None).unwrap_or_else(|| {
+            println!(
+                "Unknown initialisation provided: {:?}. Defaulting to PCA.",
+                params_pacmap.initialisation,
+            );
+            EmbdInit::PcaInit {
+                range: None,
+                randomised: true,
+            }
+        });
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Initialising embedding via {} layout...",
             params_pacmap.initialisation
@@ -1715,16 +1763,17 @@ where
 
     match optimiser {
         PacMapOptimiser::AdamParallel => {
-            optimise_pacmap_parallel(&mut embd, &pairs, &params_pacmap.optim_params, verbose);
+            let _ =
+                optimise_pacmap_parallel(&mut embd, &pairs, &params_pacmap.optim_params, verbose);
         }
         PacMapOptimiser::Adam => {
-            optimise_pacmap(&mut embd, &pairs, &params_pacmap.optim_params, verbose);
+            let _ = optimise_pacmap(&mut embd, &pairs, &params_pacmap.optim_params, verbose);
         }
     }
 
     let end_optim = start_optim.elapsed();
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Optimisation done in {:.2?}.", end_optim);
         println!("PaCMAP complete!");
     }
@@ -1925,7 +1974,8 @@ where
 /// * `nn_params` - Nearest neighbour search parameters
 /// * `dm_params` - Diffusion maps parameters
 /// * `seed` - RNG seed
-/// * `verbose` - Print progress messages
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -1939,7 +1989,7 @@ pub fn construct_diffusion_maps_operator<T>(
     nn_params: &NearestNeighbourParams<T>,
     dm_params: &DiffusionMapsParams<T>,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<DiffusionMapsOperator<T>, ManifoldsError>
 where
     T: ManifoldsFloat,
@@ -1951,31 +2001,36 @@ where
         Some(n) => n >= data.nrows(),
     };
 
+    let verbosity = parse_verbosity_level(verbose);
+
     let needs_affinity =
         use_full || matches!(dm_params.landmark_method.as_str(), "spectral" | "density");
 
     let affinity = if needs_affinity {
         let (knn_indices, knn_dist) = match precomputed_knn {
             Some((indices, distances)) => {
-                if verbose {
+                if verbosity.normal_verbosity() {
                     println!("Using precomputed kNN graph...");
                 }
                 (indices, distances)
             }
             None => {
-                if verbose {
-                    println!("Running ANN search using {}...", ann_type);
+                if verbosity.normal_verbosity() {
+                    println!(
+                        "Running (approximate) nearest neighbour search using {}...",
+                        ann_type
+                    );
                 }
                 let start_knn = Instant::now();
                 let res = run_ann_search(data, k, ann_type.to_string(), nn_params, seed, verbose)?;
-                if verbose {
+                if verbosity.normal_verbosity() {
                     println!("kNN search done in {:.2?}.", start_knn.elapsed());
                 }
                 res
             }
         };
 
-        if verbose {
+        if verbosity.normal_verbosity() {
             println!("Building Gaussian kernel affinities");
         }
         let graph = phate_alpha_decay_affinities(
@@ -1990,7 +2045,7 @@ where
         );
         Some(coo_to_csr(&graph))
     } else {
-        if verbose {
+        if verbosity.normal_verbosity() {
             println!("Skipping full affinity (random landmarks).");
         }
         None
@@ -1998,8 +2053,8 @@ where
 
     if use_full {
         let kernel = affinity.unwrap();
-        let kernel_norm = apply_anisotropic_normalisation(&kernel, dm_params.alpha_norm);
-        let (p_sym, sqrt_degrees) = build_symmetric_diffusion_operator(&kernel_norm);
+        let kernel_norm = apply_anisotropic_normalisation(&kernel, dm_params.alpha_norm)?;
+        let (p_sym, sqrt_degrees) = build_symmetric_diffusion_operator(&kernel_norm)?;
         return Ok(DiffusionMapsOperator::Full {
             p_sym,
             sqrt_degrees,
@@ -2007,7 +2062,7 @@ where
     }
 
     let n_landmarks = dm_params.n_landmarks.unwrap();
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(" Building {} landmarks...", n_landmarks);
     }
     let start_l = Instant::now();
@@ -2026,7 +2081,7 @@ where
         dm_params.n_svd,
         verbose,
     )?;
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(" Landmarks built in {:.2?}.", start_l.elapsed());
     }
     Ok(DiffusionMapsOperator::Landmark { landmarks })
@@ -2052,7 +2107,8 @@ where
 ///   Must have been computed with k >= `dm_params.k`.
 /// * `dm_params` - Diffusion maps parameters
 /// * `seed` - RNG seed
-/// * `verbose` - Print progress messages
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -2062,7 +2118,7 @@ pub fn diffusion_maps<T>(
     precomputed_knn: PreComputedKnn<T>,
     dm_params: DiffusionMapsParams<T>,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
@@ -2070,6 +2126,8 @@ where
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
     let start_dm = Instant::now();
+
+    let verbosity = parse_verbosity_level(verbose);
 
     let op = construct_diffusion_maps_operator(
         data,
@@ -2089,7 +2147,7 @@ where
         } => {
             let t = match dm_params.t {
                 PhateTime::Auto { t_max } => {
-                    if verbose {
+                    if verbosity.normal_verbosity() {
                         println!("Finding optimal t (t_max={})...", t_max);
                     }
                     let entropy = landmark_von_neumann_entropy(&p_sym, t_max)?;
@@ -2097,7 +2155,7 @@ where
                 }
                 PhateTime::Fixed(t) => t,
             };
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Using t = {}.", t);
                 println!(
                     "Computing top {} eigenpairs of P_sym...",
@@ -2108,7 +2166,7 @@ where
             let n_ask = (dm_params.n_dim + 5).min(sqrt_degrees.len() - 1);
             let (evals, evecs) = compute_largest_eigenpairs_lanczos(&p_sym, n_ask, seed as u64)?;
 
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Eigendecomposition done in {:.2?}.", start_eig.elapsed());
             }
 
@@ -2137,14 +2195,14 @@ where
         DiffusionMapsOperator::Landmark { landmarks } => {
             let t = match dm_params.t {
                 PhateTime::Auto { t_max } => {
-                    if verbose {
+                    if verbosity.normal_verbosity() {
                         println!("Finding optimal t on landmarks (t_max={})...", t_max);
                     }
                     landmarks.find_optimal_t(t_max)?
                 }
                 PhateTime::Fixed(t) => t,
             };
-            if verbose {
+            if verbosity.detailed_verbosity() {
                 println!(
                     "Using t = {}. Eigendecomposing {}x{} landmark operator...",
                     t,
@@ -2154,8 +2212,11 @@ where
             }
             let start_eig = Instant::now();
             let (evals, evecs) = landmarks.eigendecompose(dm_params.n_dim, seed as u64)?;
-            if verbose {
+
+            if verbosity.detailed_verbosity() {
                 println!("Eigendecomposition done in {:.2?}.", start_eig.elapsed());
+            }
+            if verbosity.normal_verbosity() {
                 println!("Nystroem-extending to full data...");
             }
             let (landmark_embedding, lambdas) =
@@ -2164,7 +2225,7 @@ where
         }
     };
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Diffusion maps finished in {:.2?}.", start_dm.elapsed());
     }
 
@@ -2175,6 +2236,7 @@ where
             transposed[d][i] = embedding[i][d];
         }
     }
+
     Ok(transposed)
 }
 
@@ -2327,7 +2389,8 @@ where
 /// * `umap_params` - Configuration parameters for parametric UMAP
 /// * `device` - Burn backend device for neural network training
 /// * `seed` - Random seed for reproducibility
-/// * `verbose` - Whether to print progress information
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -2340,7 +2403,7 @@ pub fn parametric_umap<T, B>(
     umap_params: &ParametricUmapParams<T>,
     device: &B::Device,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat + Element,
@@ -2351,7 +2414,9 @@ where
     // parse various parameters
     let nn_params = umap_params.nn_params.clone();
 
-    if verbose {
+    let verbosity = parse_verbosity_level(verbose);
+
+    if verbosity.normal_verbosity() {
         println!(
             "Running parametric umap with alpha: {:.2?} and beta: {:.2?}",
             ToPrimitive::to_f32(&umap_params.train_param.a).unwrap(),
@@ -2384,7 +2449,7 @@ where
         &umap_params.train_param,
         device,
         seed,
-        verbose,
+        verbosity.normal_verbosity(),
     );
 
     Ok(embd)
@@ -2399,7 +2464,8 @@ where
 /// * `umap_params` - Configuration parameters for parametric UMAP
 /// * `device` - Burn backend device for neural network training
 /// * `seed` - Random seed for reproducibility
-/// * `verbose` - Whether to print progress information
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// Parametric UMAP learns a neural network encoder that maps high-dimensional
 /// data to a low-dimensional embedding space. Unlike standard UMAP, this
@@ -2422,7 +2488,7 @@ pub fn train_parametric_umap_model<T, B>(
     umap_params: &ParametricUmapParams<T>,
     device: &B::Device,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> ParametricUmapResults<B, T>
 where
     T: ManifoldsFloat + Element,
@@ -2432,8 +2498,9 @@ where
 {
     // parse various parameters
     let nn_params = umap_params.nn_params.clone();
+    let verbosity = parse_verbosity_level(verbose);
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Training parametric umap model with alpha: {:.2?} and beta: {:.2?}",
             ToPrimitive::to_f32(&umap_params.train_param.a).unwrap(),
@@ -2466,7 +2533,7 @@ where
         &umap_params.train_param,
         device,
         seed,
-        verbose,
+        verbosity.normal_verbosity(),
     );
 
     Ok((embd, trained_model))
@@ -2633,7 +2700,8 @@ where
 /// * `n_epochs` - Number of optimisation epochs (used for edge filtering).
 /// * `device` - The GPU device to use.
 /// * `seed` - Random seed.
-/// * `verbose` - Controls verbosity.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -2650,35 +2718,37 @@ pub fn construct_umap_graph_gpu<T, R>(
     n_epochs: usize,
     device: R::Device,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> UmapGraphResults<T>
 where
     T: ManifoldsFloat + AnnSearchGpuFloat,
     R: Runtime,
     NNDescentGpu<T, R>: NNDescentQuery<T>,
 {
+    let verbosity = parse_verbosity_level(verbose);
+
     let (knn_indices, knn_dist) = match precomputed_knn {
         Some((indices, distances)) => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Using precomputed kNN graph...");
             }
             (indices, distances)
         }
         None => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Running GPU nearest neighbour search using {}...", ann_type);
             }
             let start_knn = Instant::now();
             let result =
                 run_ann_search_gpu::<T, R>(data, k, ann_type, nn_params, device, seed, verbose)?;
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("GPU kNN search done in: {:.2?}.", start_knn.elapsed());
             }
             result
         }
     };
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Constructing fuzzy simplicial set...");
     }
 
@@ -2696,7 +2766,7 @@ where
     let graph = symmetrise_graph(graph, umap_params.mix_weight);
     let graph = filter_weak_edges(graph, n_epochs, verbose);
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Finalised graph generation in {:.2?}.",
             start_graph.elapsed()
@@ -2720,7 +2790,8 @@ where
 /// * `umap_params` - GPU UMAP parameters.
 /// * `device` - The GPU device to use.
 /// * `seed` - Random seed.
-/// * `verbose` - Controls verbosity.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -2733,7 +2804,7 @@ pub fn umap_gpu<T, R>(
     umap_params: &UmapParamsGpu<T>,
     device: R::Device,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat + AnnSearchGpuFloat,
@@ -2741,15 +2812,26 @@ where
     StandardNormal: Distribution<T>,
     NNDescentGpu<T, R>: NNDescentQuery<T>,
 {
+    let verbosity = parse_verbosity_level(verbose);
+
     let init_type = parse_initilisation(
         &umap_params.initialisation,
         umap_params.randomised,
         umap_params.init_range,
     )
-    .unwrap_or(EmbdInit::RandomInit { range: None });
+    .unwrap_or_else(|| {
+        println!(
+            "Unknown initialisation provided: {:?}. Defaulting to PCA.",
+            umap_params.initialisation,
+        );
+        EmbdInit::PcaInit {
+            range: None,
+            randomised: true,
+        }
+    });
     let optimiser = parse_umap_optimiser(&umap_params.optimiser).unwrap_or_default();
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Running umap (GPU kNN) with alpha: {:.2?} and beta: {:.2?}",
             umap_params.optim_params.a, umap_params.optim_params.b
@@ -2769,7 +2851,7 @@ where
         verbose,
     )?;
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Initialising embedding via {} layout...",
             umap_params.initialisation
@@ -2782,7 +2864,7 @@ where
 
     let graph_adj = coo_to_adjacency_list(&graph);
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Optimising embedding via {} ({} epochs) on {} edges...",
             match optimiser {
@@ -2802,7 +2884,7 @@ where
             &umap_params.optim_params,
             seed as u64,
             verbose,
-        ),
+        )?,
         UmapOptimiser::Sgd => {
             optimise_embedding_sgd(
                 &mut embd,
@@ -2810,7 +2892,7 @@ where
                 &umap_params.optim_params,
                 seed as u64,
                 verbose,
-            );
+            )?;
         }
         UmapOptimiser::AdamParallel => {
             optimise_embedding_adam_parallel(
@@ -2819,11 +2901,11 @@ where
                 &umap_params.optim_params,
                 seed as u64,
                 verbose,
-            );
+            )?;
         }
     }
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Initialised and optimised embedding in: {:.2?}.",
             start_layout.elapsed()
@@ -2990,7 +3072,8 @@ where
 /// * `nn_params` - GPU nearest neighbour search parameters
 /// * `device` - GPU device to use
 /// * `seed` - Random seed
-/// * `verbose` - Controls verbosity
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -3005,16 +3088,18 @@ pub fn construct_tsne_graph_gpu<T, R>(
     nn_params: &NearestNeighbourParamsGpu<T>,
     device: R::Device,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> TsneGraph<T>
 where
     T: ManifoldsFloat + AnnSearchGpuFloat,
     R: Runtime,
     NNDescentGpu<T, R>: NNDescentQuery<T>,
 {
+    let verbosity = parse_verbosity_level(verbose);
+
     let (knn_indices, knn_dist) = match precomputed_knn {
         Some((indices, distances)) => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Using precomputed kNN graph...");
             }
             (indices, distances)
@@ -3023,7 +3108,7 @@ where
             let k_float = perplexity * T::from_f64(3.0).unwrap();
             let k = k_float.to_usize().unwrap().max(5).min(data.nrows() - 1);
 
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("Running GPU kNN search (k={}) using {}...", k, ann_type);
             }
 
@@ -3031,7 +3116,7 @@ where
             let result =
                 run_ann_search_gpu::<T, R>(data, k, ann_type, nn_params, device, seed, verbose)?;
 
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!("GPU kNN search done in: {:.2?}.", start_knn.elapsed());
             }
 
@@ -3039,7 +3124,7 @@ where
         }
     };
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Computing Gaussian affinities and symmetrising...");
     }
 
@@ -3056,7 +3141,7 @@ where
 
     let graph = symmetrise_affinities_tsne(directed_graph);
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!(
             "Finalised graph generation in {:.2?}.",
             start_graph.elapsed()
@@ -3081,7 +3166,8 @@ where
 ///   `"fft"`
 /// * `device` - GPU device to use
 /// * `seed` - Random seed
-/// * `verbose` - Controls verbosity
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -3094,7 +3180,7 @@ pub fn tsne_gpu<T, R>(
     approx_type: &str,
     device: R::Device,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat + AnnSearchGpuFloat + FftwFloat,
@@ -3108,6 +3194,8 @@ where
         });
     }
 
+    let verbosity = parse_verbosity_level(verbose);
+
     let (graph, _, _) = construct_tsne_graph_gpu::<T, R>(
         data,
         precomputed_knn,
@@ -3119,7 +3207,7 @@ where
         verbose,
     )?;
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Initialising embedding via {}...", &params.initialisation);
     }
 
@@ -3128,9 +3216,15 @@ where
         params.randomised_init,
         params.init_range,
     )
-    .unwrap_or(EmbdInit::PcaInit {
-        randomised: params.randomised_init,
-        range: Some(T::from_f64(1e-2).unwrap()),
+    .unwrap_or_else(|| {
+        println!(
+            "Unknown initialisation provided: {:?}. Defaulting to PCA.",
+            params.initialisation,
+        );
+        EmbdInit::PcaInit {
+            range: Some(T::from_f64(1e-2).unwrap()),
+            randomised: true,
+        }
     });
 
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
@@ -3140,7 +3234,7 @@ where
     let start_optim = Instant::now();
     match tsne_approx {
         TsneOpt::BarnesHut => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(
                     "Optimising via Barnes-Hut t-SNE ({} epochs)...",
                     params.optim_params.n_epochs
@@ -3149,17 +3243,17 @@ where
             optimise_bh_tsne(&mut embd, &params.optim_params, &graph, verbose);
         }
         TsneOpt::Fft => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(
                     "Optimising via FFT Interpolation-based t-SNE ({} epochs)...",
                     params.optim_params.n_epochs
                 );
             }
-            optimise_fft_tsne(&mut embd, &params.optim_params, &graph, verbose);
+            optimise_fft_tsne(&mut embd, &params.optim_params, &graph, verbose)?;
         }
     }
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Optimisation complete in {:.2?}.", start_optim.elapsed());
     }
 
@@ -3190,7 +3284,8 @@ where
 /// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"`
 /// * `device` - GPU device to use
 /// * `seed` - Random seed
-/// * `verbose` - Controls verbosity
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Returns
 ///
@@ -3203,7 +3298,7 @@ pub fn tsne_gpu<T, R>(
     approx_type: &str,
     device: R::Device,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat + AnnSearchGpuFloat,
@@ -3217,6 +3312,8 @@ where
         });
     }
 
+    let verbosity = parse_verbosity_level(verbose);
+
     let (graph, _, _) = construct_tsne_graph_gpu::<T, R>(
         data,
         precomputed_knn,
@@ -3228,7 +3325,7 @@ where
         verbose,
     )?;
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Initialising embedding via {}...", &params.initialisation);
     }
 
@@ -3237,9 +3334,15 @@ where
         params.randomised_init,
         params.init_range,
     )
-    .unwrap_or(EmbdInit::PcaInit {
-        randomised: params.randomised_init,
-        range: Some(T::from_f64(1e-2).unwrap()),
+    .unwrap_or_else(|| {
+        println!(
+            "Unknown initialisation provided: {:?}. Defaulting to PCA.",
+            params.initialisation,
+        );
+        EmbdInit::PcaInit {
+            range: Some(T::from_f64(1e-2).unwrap()),
+            randomised: true,
+        }
     });
 
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
@@ -3249,7 +3352,7 @@ where
     let start_optim = Instant::now();
     match tsne_approx {
         TsneOpt::BarnesHut => {
-            if verbose {
+            if verbosity.normal_verbosity() {
                 println!(
                     "Optimising via Barnes-Hut t-SNE ({} epochs)...",
                     params.optim_params.n_epochs
@@ -3262,7 +3365,7 @@ where
         }
     }
 
-    if verbose {
+    if verbosity.normal_verbosity() {
         println!("Optimisation complete in {:.2?}.", start_optim.elapsed());
     }
 

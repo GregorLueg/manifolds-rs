@@ -418,7 +418,8 @@ fn fast_pow<T: ManifoldsFloat>(x: T, b: T, b_is_one: bool, b_is_half: bool) -> T
 /// * `params` - Optimisation parameters (n_epochs, lr, a, b, gamma,
 ///   neg_sample_rate)
 /// * `seed` - Random seed for negative sampling reproducibility
-/// * `verbose` - Controls verbosity
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Notes
 ///
@@ -430,15 +431,17 @@ pub fn optimise_embedding_sgd<T>(
     graph: &[Vec<(usize, T)>],
     params: &UmapOptimParams<T>,
     seed: u64,
-    verbose: bool,
-) where
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
     T: ManifoldsFloat,
 {
     let n = embd.len();
     if n == 0 {
-        return;
+        return Err(ManifoldsError::NoData);
     }
     let n_dim = embd[0].len();
+    let verbosity = parse_verbosity_level(verbose);
 
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
     for point in embd.iter() {
@@ -466,7 +469,7 @@ pub fn optimise_embedding_sgd<T>(
     }
 
     if edges.is_empty() {
-        return;
+        return Err(ManifoldsError::NoGraphEdges);
     }
 
     let max_weight = edges
@@ -584,7 +587,7 @@ pub fn optimise_embedding_sgd<T>(
                 T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
         }
 
-        if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
@@ -593,6 +596,8 @@ pub fn optimise_embedding_sgd<T>(
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
     }
+
+    Ok(())
 }
 
 /// Optimise UMAP embedding using Adam optimiser (sequential version)
@@ -624,7 +629,8 @@ pub fn optimise_embedding_sgd<T>(
 /// * `params` - Optimisation parameters including Adam hyperparameters (beta1,
 ///   beta2, eps)
 /// * `seed` - Random seed for negative sampling
-/// * `verbose` - If true, prints progress every 100 epochs
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 ///
 /// ### Notes
 ///
@@ -639,15 +645,17 @@ pub fn optimise_embedding_adam<T>(
     graph: &[Vec<(usize, T)>],
     params: &UmapOptimParams<T>,
     seed: u64,
-    verbose: bool,
-) where
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
     T: ManifoldsFloat,
 {
     let n = embd.len();
     if n == 0 {
-        return;
+        return Err(ManifoldsError::NoData);
     }
     let n_dim = embd[0].len();
+    let verbosity = parse_verbosity_level(verbose);
 
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
     for point in embd.iter() {
@@ -673,7 +681,7 @@ pub fn optimise_embedding_adam<T>(
     }
 
     if edges.is_empty() {
-        return;
+        return Err(ManifoldsError::NoGraphEdges);
     }
 
     let max_weight = edges
@@ -817,7 +825,7 @@ pub fn optimise_embedding_adam<T>(
         beta1t *= params.beta1;
         beta2t *= params.beta2;
 
-        if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
@@ -826,6 +834,8 @@ pub fn optimise_embedding_adam<T>(
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
     }
+
+    Ok(())
 }
 
 /// Optimise UMAP embedding using Adam optimiser (parallel batch version)
@@ -844,21 +854,24 @@ pub fn optimise_embedding_adam<T>(
 /// * `graph` - Adjacency list representation
 /// * `params` - Includes Adam hyperparameters
 /// * `seed` - Random seed
-/// * `verbose` - Progress reporting
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
 pub fn optimise_embedding_adam_parallel<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
     params: &UmapOptimParams<T>,
     seed: u64,
-    verbose: bool,
-) where
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
     T: ManifoldsFloat,
 {
     let n = embd.len();
     if n == 0 {
-        return;
+        return Err(ManifoldsError::NoData);
     }
     let n_dim = embd[0].len();
+    let verbosity = parse_verbosity_level(verbose);
 
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
     for point in embd.iter() {
@@ -886,7 +899,7 @@ pub fn optimise_embedding_adam_parallel<T>(
     }
 
     if edges.is_empty() {
-        return;
+        return Err(ManifoldsError::NoGraphEdges);
     }
 
     let max_weight =
@@ -1105,7 +1118,7 @@ pub fn optimise_embedding_adam_parallel<T>(
                 }
             });
 
-        if verbose && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
@@ -1115,6 +1128,8 @@ pub fn optimise_embedding_adam_parallel<T>(
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
     });
+
+    Ok(())
 }
 
 ///////////
@@ -1244,7 +1259,7 @@ mod test_umap_optimiser {
         let initial_embd = embd.clone();
 
         let params = UmapOptimParams::default_2d();
-        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
+        let _ = optimise_embedding_adam(&mut embd, &graph, &params, 42, 0);
 
         let total_movement: f64 = embd
             .iter()
@@ -1278,7 +1293,7 @@ mod test_umap_optimiser {
         let initial_embd = embd.clone();
 
         let params = UmapOptimParams::default_2d();
-        optimise_embedding_adam_parallel(&mut embd, &graph, &params, 42, false);
+        let _ = optimise_embedding_adam_parallel(&mut embd, &graph, &params, 42, 0);
 
         let total_movement: f64 = embd
             .iter()
@@ -1306,7 +1321,7 @@ mod test_umap_optimiser {
         let mut embd = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
 
         let params = UmapOptimParams::default_2d();
-        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
+        let _ = optimise_embedding_adam(&mut embd, &graph, &params, 42, 0);
 
         for point in &embd {
             for &coord in point {
@@ -1334,8 +1349,8 @@ mod test_umap_optimiser {
             eps: 1e-7,
         };
 
-        optimise_embedding_adam(&mut embd1, &graph, &params, 42, false);
-        optimise_embedding_adam(&mut embd2, &graph, &params, 42, false);
+        let _ = optimise_embedding_adam(&mut embd1, &graph, &params, 42, 0);
+        let _ = optimise_embedding_adam(&mut embd2, &graph, &params, 42, 0);
 
         assert_eq!(embd1, embd2);
     }
@@ -1359,8 +1374,8 @@ mod test_umap_optimiser {
             eps: 1e-7,
         };
 
-        optimise_embedding_adam_parallel(&mut embd1, &graph, &params, 42, false);
-        optimise_embedding_adam_parallel(&mut embd2, &graph, &params, 42, false);
+        let _ = optimise_embedding_adam_parallel(&mut embd1, &graph, &params, 42, 0);
+        let _ = optimise_embedding_adam_parallel(&mut embd2, &graph, &params, 42, 0);
 
         assert_eq!(embd1, embd2);
     }
@@ -1386,7 +1401,7 @@ mod test_umap_optimiser {
             eps: 1e-7,
         };
 
-        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
+        let _ = optimise_embedding_adam(&mut embd, &graph, &params, 42, 0);
 
         let embd_flat: Vec<f64> = embd.iter().flatten().copied().collect();
         let final_dist = squared_dist_flat(&embd_flat, 0, 1, 2).sqrt();
@@ -1418,10 +1433,10 @@ mod test_umap_optimiser {
         };
 
         let mut embd_sgd = initial_embd.clone();
-        optimise_embedding_sgd(&mut embd_sgd, &graph, &params, 42, false);
+        let _ = optimise_embedding_sgd(&mut embd_sgd, &graph, &params, 42, 0);
 
         let mut embd_adam = initial_embd.clone();
-        optimise_embedding_adam(&mut embd_adam, &graph, &params, 42, false);
+        let _ = optimise_embedding_adam(&mut embd_adam, &graph, &params, 42, 0);
 
         let movement_sgd: f64 = embd_sgd
             .iter()
@@ -1479,13 +1494,13 @@ mod test_umap_optimiser {
         };
 
         let mut embd_sgd = initial_embd.clone();
-        optimise_embedding_sgd(&mut embd_sgd, &graph, &params, 42, false);
+        let _ = optimise_embedding_sgd(&mut embd_sgd, &graph, &params, 42, 0);
 
         let mut embd_adam = initial_embd.clone();
-        optimise_embedding_adam(&mut embd_adam, &graph, &params, 42, false);
+        let _ = optimise_embedding_adam(&mut embd_adam, &graph, &params, 42, 0);
 
         let mut embd_adam_par = initial_embd.clone();
-        optimise_embedding_adam_parallel(&mut embd_adam_par, &graph, &params, 42, false);
+        let _ = optimise_embedding_adam_parallel(&mut embd_adam_par, &graph, &params, 42, 0);
 
         let movement_sgd: f64 = embd_sgd
             .iter()
@@ -1539,8 +1554,8 @@ mod test_umap_optimiser {
             eps: 1e-7,
         };
 
-        optimise_embedding_sgd(&mut embd1, &graph, &params, 42, false);
-        optimise_embedding_sgd(&mut embd2, &graph, &params, 42, false);
+        let _ = optimise_embedding_sgd(&mut embd1, &graph, &params, 42, 0);
+        let _ = optimise_embedding_sgd(&mut embd2, &graph, &params, 42, 0);
 
         assert_eq!(embd1, embd2);
     }
@@ -1570,7 +1585,7 @@ mod test_umap_optimiser {
             ..UmapOptimParams::default_2d()
         };
 
-        optimise_embedding_adam(&mut embd, &graph, &params, 42, false);
+        let _ = optimise_embedding_adam(&mut embd, &graph, &params, 42, 0);
 
         let dist = |a: &[f64], b: &[f64]| -> f64 {
             ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
@@ -1625,7 +1640,7 @@ mod test_umap_optimiser {
             ..UmapOptimParams::default_2d()
         };
 
-        optimise_embedding_adam_parallel(&mut embd, &graph, &params, 42, false);
+        let _ = optimise_embedding_adam_parallel(&mut embd, &graph, &params, 42, 0);
 
         let dist = |a: &[f64], b: &[f64]| -> f64 {
             ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
@@ -1680,7 +1695,7 @@ mod test_umap_optimiser {
             ..UmapOptimParams::default_2d()
         };
 
-        optimise_embedding_sgd(&mut embd, &graph, &params, 42, false);
+        let _ = optimise_embedding_sgd(&mut embd, &graph, &params, 42, 0);
 
         let dist = |a: &[f64], b: &[f64]| -> f64 {
             ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()

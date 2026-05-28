@@ -16,7 +16,7 @@ fn umap_integration_01_knn_correctness() {
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!("\n=== DIAGNOSTIC 1: kNN Search Correctness ===");
     println!(
@@ -95,7 +95,7 @@ fn umap_integration_02_smooth_knn_dist() {
 
     let nn_params = NearestNeighbourParams::default();
     let (_, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!("\n=== DIAGNOSTIC 2: smooth_knn_dist Values ===");
 
@@ -183,7 +183,7 @@ fn umap_integration_03_graph_connectivity() {
         &nn_params,
         500,
         42,
-        false,
+        0,
     )
     .unwrap();
 
@@ -308,7 +308,7 @@ fn umap_integration_04_initialisation() {
         &nn_params,
         500,
         42,
-        false,
+        0,
     )
     .unwrap();
 
@@ -439,7 +439,7 @@ fn umap_integration_05_optimisation_quality() {
             ..UmapParams::default()
         };
 
-        let embedding = umap(data.as_ref(), None, &params, 42, false).unwrap();
+        let embedding = umap(data.as_ref(), None, &params, 42, 0).unwrap();
 
         // Check that coordinates are finite
         let mut has_nan = false;
@@ -604,8 +604,8 @@ fn umap_integration_06_reproducibility() {
     // Run UMAP twice with same seed
     let params = UmapParams::default();
 
-    let embedding1 = umap(data.as_ref(), None, &params, 42, false).unwrap();
-    let embedding2 = umap(data.as_ref(), None, &params, 42, false).unwrap();
+    let embedding1 = umap(data.as_ref(), None, &params, 42, 0).unwrap();
+    let embedding2 = umap(data.as_ref(), None, &params, 42, 0).unwrap();
 
     // Check if embeddings are identical
     let mut max_diff: f64 = 0.0;
@@ -641,7 +641,7 @@ fn umap_integration_07_precomputed_knn() {
     // First, run kNN search separately
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, false).unwrap();
+        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
     println!(
         "Precomputed kNN: {} neighbours per point",
@@ -656,12 +656,12 @@ fn umap_integration_07_precomputed_knn() {
         Some((knn_indices.clone(), knn_dist.clone())),
         &params,
         42,
-        false,
+        0,
     )
     .unwrap();
 
     // Run UMAP without precomputed kNN (should compute internally)
-    let embedding_internal = umap(data.as_ref(), None, &params, 42, false).unwrap();
+    let embedding_internal = umap(data.as_ref(), None, &params, 42, 0).unwrap();
 
     // Compare results
     let mut max_diff: f64 = 0.0;
