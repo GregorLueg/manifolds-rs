@@ -3298,7 +3298,7 @@ pub fn tsne_gpu<T, R>(
     approx_type: &str,
     device: R::Device,
     seed: usize,
-    verbose: bool,
+    verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat + AnnSearchGpuFloat,
