@@ -576,6 +576,27 @@ where
     let mut grid: Option<FftGrid<T>> = None;
     let mut workspace: Option<FftWorkspace<T>> = None;
 
+    // DEBUG
+    let init_min = embd
+        .iter()
+        .flat_map(|p| p.iter())
+        .fold(f64::INFINITY, |a, &x| a.min(x.to_f64().unwrap()));
+    let init_max = embd
+        .iter()
+        .flat_map(|p| p.iter())
+        .fold(f64::NEG_INFINITY, |a, &x| a.max(x.to_f64().unwrap()));
+    let init_nan = embd
+        .iter()
+        .flat_map(|p| p.iter())
+        .any(|x| !x.to_f64().unwrap().is_finite());
+    println!(
+        "init: min={} max={} half_span={} has_non_finite={}",
+        init_min,
+        init_max,
+        init_min.abs().max(init_max.abs()),
+        init_nan
+    );
+
     for epoch in 0..params.n_epochs {
         // snapshot positions in parallel.
         embd.par_iter()
