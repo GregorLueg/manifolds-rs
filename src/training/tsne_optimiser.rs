@@ -46,7 +46,7 @@ pub struct TsneOptimParams<T> {
     /// Number of epochs (typically n / 12 or 1000)
     pub n_epochs: usize,
     /// Optional learning rate. Will default to
-    /// `((N / 12.0).max(200.0)).min(1000.0)`.
+    /// `(N / early_exag_factor).max(200.0)`.
     pub lr: Option<T>,
     /// Early exaggeration iters
     pub early_exag_iter: usize,
@@ -71,7 +71,7 @@ where
     ///
     /// * `n_epochs` - Number of epochs
     /// * `lr` - Optional learning rate. If not provided, will default to
-    ///   `(N / early_exag_factor).clamp(200.0, 1000.0)`
+    ///   `(N / early_exag_factor).max(200.0)`
     /// * `early_exag_iter` - Early exaggeration iters
     /// * `early_exag_factor` - The factor to exaggerate in the early iterations
     /// * `late_exag_factor` - An optional late exaggeration factor for large
@@ -112,7 +112,7 @@ where
     pub fn get_lr(&self, n_samples: usize) -> T {
         self.lr.unwrap_or_else(|| {
             let exag = self.early_exag_factor.to_f64().unwrap();
-            T::from_f64((n_samples as f64 / exag).clamp(200.0, 1000.0)).unwrap()
+            T::from_f64((n_samples as f64 / exag).max(200.0)).unwrap()
         })
     }
 
@@ -385,7 +385,7 @@ pub fn optimise_bh_tsne<T>(
 
         if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
             println!(
-                " Epoch {}/{} | Z = {}",
+                " Epoch {}/{} | Z = {:.1}",
                 epoch,
                 params.n_epochs,
                 z_total.separate_with_underscores()
@@ -649,7 +649,7 @@ where
 
         if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
             println!(
-                " Epoch {}/{} | Z = {}",
+                " Epoch {}/{} | Z = {:.1}",
                 epoch,
                 params.n_epochs,
                 sum_q.separate_with_underscores()
