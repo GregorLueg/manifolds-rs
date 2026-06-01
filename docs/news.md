@@ -2,6 +2,11 @@
 
 ## 0.3.2
 
+**Features:**
+
+- Added the option for late exaggeration to tSNE to keep structure on data sets
+  with large N.
+
 **Fix:**
 
 - Numerical stability problems for very large data sets with tSNE. It now

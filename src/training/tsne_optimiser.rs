@@ -109,11 +109,8 @@ where
     ///
     /// The learning rate that is stored in the parameter structure or a
     /// heuristic based on N and early exaggeration factor.
-    pub fn get_lr(&self, n_samples: usize) -> T {
-        self.lr.unwrap_or_else(|| {
-            let exag = self.early_exag_factor.to_f64().unwrap();
-            T::from_f64((n_samples as f64 / exag).max(200.0)).unwrap()
-        })
+    pub fn get_lr(&self) -> T {
+        self.lr.unwrap_or_else(|| T::from_f64(200.0).unwrap())
     }
 
     /// An optional late exaggeration factor
@@ -259,7 +256,7 @@ pub fn optimise_bh_tsne<T>(
 
     let n = embd.len();
     let n_dim = embd[0].len();
-    let lr = params.get_lr(n);
+    let lr = params.get_lr();
 
     let initial_momentum = T::from_f64(TSNE_INITIAL_MOMENTUM).unwrap();
     let final_momentum = T::from_f64(TSNE_FINAL_MOMENTUM).unwrap();
@@ -433,7 +430,7 @@ where
 
     let n = embd.len();
     let n_dim = embd[0].len();
-    let lr = params.get_lr(n);
+    let lr = params.get_lr();
 
     if n_dim != 2 {
         return Err(ManifoldsError::IncorrectDim { n_dim });
@@ -447,6 +444,15 @@ where
 
     let mut uy = vec![vec![T::zero(); n_dim]; n];
     let mut gains = vec![vec![T::one(); n_dim]; n];
+
+    let max_row_sum: f64 = {
+        let mut sums = vec![0.0f64; n];
+        for (&i, &w) in graph.row_indices.iter().zip(&graph.values) {
+            sums[i] += w.to_f64().unwrap();
+        }
+        sums.into_iter().fold(0.0, f64::max)
+    };
+    let auto_exag = 1.0 / (lr.to_f64().unwrap() * max_row_sum);
 
     // build adjacency list ONCE... makes it faster...
     let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
@@ -498,8 +504,7 @@ where
             .max(max_val.to_f64().unwrap().abs());
         let span = 2.0 * half_span * 1.05; // small margin against the step clip
 
-        let mut n_boxes = choose_grid_size(0.0, span, box_width, min_intervals);
-        n_boxes = n_boxes.max(cached_n_boxes); // grow-only
+        let n_boxes = choose_grid_size(0.0, span, box_width, min_intervals);
 
         if n_boxes != cached_n_boxes {
             let half = T::from_f64(n_boxes as f64 * box_width / 2.0).unwrap();
@@ -552,7 +557,7 @@ where
             final_momentum
         };
         let exag_factor = if epoch < params.early_exag_iter {
-            params.early_exag_factor
+            T::from(auto_exag).unwrap()
         } else {
             params.get_late_exag_factor()
         };
