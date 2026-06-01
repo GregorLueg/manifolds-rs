@@ -264,7 +264,6 @@ pub fn optimise_bh_tsne<T>(
     let initial_momentum = T::from_f64(TSNE_INITIAL_MOMENTUM).unwrap();
     let final_momentum = T::from_f64(TSNE_FINAL_MOMENTUM).unwrap();
     let min_gain = T::from_f64(TSNE_MIN_GAIN).unwrap();
-    let eps = T::from_f64(TSNE_EPS).unwrap();
 
     // pre-allocate update and gains buffers
     let mut update_flat = vec![T::zero(); n * n_dim];
@@ -312,9 +311,14 @@ pub fn optimise_bh_tsne<T>(
             .collect();
 
         // global normalisation constant
-        let z_total: T = rep_forces.iter().map(|r| r.2).fold(T::zero(), |a, b| a + b);
-        let z_inv = if z_total > eps {
-            T::one() / z_total
+        // explicit cast to fp64
+        let z_total: f64 = rep_forces
+            .iter()
+            .map(|r| r.2.to_f64().unwrap())
+            .sum::<f64>();
+        let eps_f64 = TSNE_EPS;
+        let z_inv = if z_total > eps_f64 {
+            T::from_f64(1.0 / z_total).unwrap()
         } else {
             T::zero()
         };
@@ -384,7 +388,7 @@ pub fn optimise_bh_tsne<T>(
                 " Epoch {}/{} | Z = {}",
                 epoch,
                 params.n_epochs,
-                z_total.to_f32().unwrap().separate_with_underscores()
+                z_total.separate_with_underscores()
             );
         }
     }
@@ -530,20 +534,20 @@ where
         n_body_fft_2d(&xs, &ys, &charges, n_terms, grid_ref, ws, &mut potentials);
 
         // compute Z
-        let sum_q: T = (0..n)
+        // implicit cast to f64 to avoid numerical instability!
+        let sum_q: f64 = (0..n)
             .map(|i| {
                 let idx = i * n_terms;
-                let phi1 = potentials[idx];
-                let phi2 = potentials[idx + 1];
-                let phi3 = potentials[idx + 2];
-                let phi4 = potentials[idx + 3];
-                let x = xs[i];
-                let y = ys[i];
-                (T::one() + x * x + y * y) * phi1 - (T::one() + T::one()) * (x * phi2 + y * phi3)
-                    + phi4
+                let phi1 = potentials[idx].to_f64().unwrap();
+                let phi2 = potentials[idx + 1].to_f64().unwrap();
+                let phi3 = potentials[idx + 2].to_f64().unwrap();
+                let phi4 = potentials[idx + 3].to_f64().unwrap();
+                let x = xs[i].to_f64().unwrap();
+                let y = ys[i].to_f64().unwrap();
+                (1.0 + x * x + y * y) * phi1 - 2.0 * (x * phi2 + y * phi3) + phi4
             })
-            .sum::<T>()
-            - T::from_usize(n).unwrap();
+            .sum::<f64>()
+            - n as f64;
 
         let momentum = if epoch < TSNE_MOMENTUM_SWITCH_ITER {
             initial_momentum
@@ -583,13 +587,17 @@ where
                 }
 
                 // repulsive forces (FFT-approximated)
+                // explicit cast to fp64
                 let pot_idx = i * n_terms;
-                let phi1 = potentials[pot_idx];
-                let phi2 = potentials[pot_idx + 1];
-                let phi3 = potentials[pot_idx + 2];
+                let phi1 = potentials[pot_idx].to_f64().unwrap();
+                let phi2 = potentials[pot_idx + 1].to_f64().unwrap();
+                let phi3 = potentials[pot_idx + 2].to_f64().unwrap();
 
-                let rep_x = (x * phi1 - phi2) / sum_q;
-                let rep_y = (y * phi1 - phi3) / sum_q;
+                let xf = x.to_f64().unwrap();
+                let yf = y.to_f64().unwrap();
+
+                let rep_x = T::from_f64((xf * phi1 - phi2) / sum_q).unwrap();
+                let rep_y = T::from_f64((yf * phi1 - phi3) / sum_q).unwrap();
 
                 // no factor of 4 — matches C++
                 let grad_x = attr_x - rep_x;
@@ -640,12 +648,11 @@ where
         });
 
         if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
-            let sum_q_f64 = sum_q.to_f64().unwrap();
             println!(
                 " Epoch {}/{} | Z = {}",
                 epoch,
                 params.n_epochs,
-                sum_q_f64.separate_with_underscores()
+                sum_q.separate_with_underscores()
             );
         }
     }

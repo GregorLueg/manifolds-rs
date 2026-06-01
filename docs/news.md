@@ -1,5 +1,12 @@
 # News
 
+## 0.3.2
+
+**Fix:**
+
+- Numerical stability problems for very large data sets with tSNE. It now
+  casts to `fp64` independent of initial input.
+
 ## 0.3.1
 
 **Features:**
