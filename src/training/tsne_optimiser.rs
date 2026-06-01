@@ -1,6 +1,6 @@
 //! Optimisers for tSNE fitting. Contains the BarnesHut version from Laurens
-//! van der Maarten and the FFT-accelerated Interpolation-based version of tSNE
-//! from Lindermann, et al.
+//! van der Maaten and the FFT-accelerated Interpolation-based version of tSNE
+//! from Linderman et al.
 
 use num_traits::{Float, FromPrimitive};
 use rayon::prelude::*;
@@ -36,17 +36,34 @@ const TSNE_MIN_GAIN: f64 = 0.01;
 /// tSNE epsilon
 const TSNE_EPS: f64 = 1e-12;
 
-/// Maximum per-point step norm. Bounds a single update so a large learning
-/// rate cannot fling points across the embedding in one epoch. Applied
-/// identically in both the Barnes-Hut and FFT paths.
-const TSNE_MAX_STEP_NORM: f64 = 5.0;
+/// Per-point step cap as a fraction of `lr`, floored at `TSNE_MAX_STEP_FLOOR`.
+/// The Belkina lr scales as N/12, so a fixed cap forces every step at large N
+/// onto the cap and erases gradient direction information; scaling the cap
+/// with lr preserves it. At the lr floor (N small), the cap equals 5.
+const TSNE_MAX_STEP_FRACTION: f64 = 0.025;
+const TSNE_MAX_STEP_FLOOR: f64 = 5.0;
 
 /// Divisor for the default learning rate heuristic (`lr = N / this`).
-/// This is the Belkina et al. (2019) value adopted by FIt-SNE for large data.
 const TSNE_LR_DIVISOR: f64 = 12.0;
 
 /// Floor for the default learning rate heuristic.
 const TSNE_LR_FLOOR: f64 = 200.0;
+
+/// Cap on `n_boxes` per dimension in the FFT grid. FFT cost per epoch is
+/// O(n_boxes^2 log n_boxes); without a cap, n_boxes grows with the embedding
+/// span and per-epoch cost blows up. Box width adapts upward once this cap
+/// binds, keeping the grid covering the embedding.
+#[cfg(feature = "fft_tsne")]
+const TSNE_FFT_MAX_BOXES: usize = 140;
+
+/// Lower bound on the FFT box width (the original fixed value).
+#[cfg(feature = "fft_tsne")]
+const TSNE_FFT_MIN_BOX_WIDTH: f64 = 1.0;
+
+/// Headroom added to the grid bounds once the box-cap regime is active, so
+/// the embedding can move between rebuilds.
+#[cfg(feature = "fft_tsne")]
+const TSNE_FFT_GRID_MARGIN: f64 = 0.15;
 
 ////////////////
 // Structures //
@@ -55,23 +72,22 @@ const TSNE_LR_FLOOR: f64 = 200.0;
 /// t-SNE specific optimization parameters
 #[derive(Clone, Debug)]
 pub struct TsneOptimParams<T> {
-    /// Number of epochs (typically n / 12 or 1000)
+    /// Number of epochs
     pub n_epochs: usize,
     /// Optional learning rate. Defaults to `(N / 12).max(200)`, the
-    /// FIt-SNE/Belkina N-invariant heuristic. Because the affinities P are
-    /// normalised to sum to 1, the gradient is O(1/N) per point; scaling the
-    /// learning rate with N keeps the dynamics independent of data set size.
+    /// FIt-SNE/Belkina N-invariant heuristic.
     pub lr: Option<T>,
     /// Early exaggeration iters
     pub early_exag_iter: usize,
     /// The factor to exaggerate in the early iterations
     pub early_exag_factor: T,
-    /// An optional late stage exaggeration factor. Helps with large data sets
+    /// Optional late stage exaggeration factor. For N >= ~100k a value of ~4
+    /// is typically needed to preserve cluster structure that would otherwise
+    /// disperse after early exaggeration ends.
     pub late_exag_factor: Option<T>,
-    ///  The Barnes-Hut theta; relevant if you use the `optimise_bh_tsne()`
+    /// The Barnes-Hut theta; relevant if you use `optimise_bh_tsne()`
     pub theta: T,
-    /// Interpolation points per box (typically 3); relevant if you use
-    /// `optimise_fft_tsne()`
+    /// Interpolation points per box (typically 3); relevant for FFT path.
     pub n_interp_points: usize,
 }
 
@@ -80,21 +96,6 @@ where
     T: Float + FromPrimitive,
 {
     /// Generate a new instance
-    ///
-    /// ### Params
-    ///
-    /// * `n_epochs` - Number of epochs
-    /// * `lr` - Optional learning rate. If not provided, defaults to
-    ///   `(N / 12).max(200)`.
-    /// * `early_exag_iter` - Early exaggeration iters
-    /// * `early_exag_factor` - The factor to exaggerate in the early iterations
-    /// * `late_exag_factor` - An optional late exaggeration factor for large
-    ///   data sets.
-    /// * `theta` - The Barnes-Hut theta
-    ///
-    /// ### Returns
-    ///
-    /// Initialised self
     pub fn new(
         n_epochs: usize,
         lr: Option<T>,
@@ -117,33 +118,19 @@ where
         }
     }
 
-    /// Return the learning rate
-    ///
-    /// ### Params
-    ///
-    /// * `n_samples` - Number of points in the embedding
-    ///
-    /// ### Returns
-    ///
-    /// The learning rate stored in the parameters, or the `(N / 12).max(200)`
-    /// heuristic when none was supplied.
+    /// Return the learning rate (explicit, or N-invariant heuristic).
     pub fn get_lr(&self, n_samples: usize) -> T {
         self.lr.unwrap_or_else(|| {
             T::from_f64((n_samples as f64 / TSNE_LR_DIVISOR).max(TSNE_LR_FLOOR)).unwrap()
         })
     }
 
-    /// An optional late exaggeration factor
-    ///
-    /// ### Returns
-    ///
-    /// Optional late stage exaggeration factor
+    /// Late exaggeration factor (defaults to 1.0 when unset).
     pub fn get_late_exag_factor(&self) -> T {
         self.late_exag_factor.unwrap_or(T::one())
     }
 }
 
-/// Default implementation for TsneOptimParams
 impl<T> Default for TsneOptimParams<T>
 where
     T: Float + FromPrimitive,
@@ -165,7 +152,7 @@ where
 // Optimiser //
 ///////////////
 
-/// Type of optimisation to use for tSNE. Choice of BarnesHut or FFT
+/// Type of optimisation to use for tSNE.
 #[derive(Default)]
 pub enum TsneOpt {
     #[default]
@@ -176,15 +163,6 @@ pub enum TsneOpt {
 }
 
 /// Parse the tSNE Optimiser to use
-///
-/// ### Params
-///
-/// * `s` - String defining the optimiser. Choice of `"barnes hut" | "bh"` or
-///   `"fft"`.
-///
-/// ### Return
-///
-/// Option of Optimiser
 pub fn parse_tsne_optimiser(s: &str) -> Option<TsneOpt> {
     match s.to_lowercase().as_str() {
         "barnes hut" | "bh" => Some(TsneOpt::BarnesHut),
@@ -193,24 +171,13 @@ pub fn parse_tsne_optimiser(s: &str) -> Option<TsneOpt> {
     }
 }
 
-////////////////
-// Barnes Hut //
-////////////////
+/////////////
+// Helpers //
+/////////////
 
-/// Adaptive gain update for t-SNE gradient descent
-///
-/// Implements per-parameter adaptive learning rates: gains increase when
-/// gradient maintains direction, decrease when oscillating.
-///
-/// ### Params
-///
-/// * `val` - Current parameter value to update
-/// * `update` - Accumulated momentum vector for this parameter
-/// * `gain` - Adaptive gain (learning rate multiplier) for this parameter
-/// * `grad` - Current gradient for this parameter
-/// * `lr` - Base learning rate
-/// * `momentum` - Momentum coefficient (typically 0.5 early, 0.8 later)
-/// * `min_gain` - Minimum allowed gain value (typically 0.01)
+/// Adaptive gain update for t-SNE gradient descent (van der Maaten convention:
+/// gain += 0.2 when grad and update disagree, gain *= 0.8 otherwise; floored
+/// at `min_gain`).
 #[inline(always)]
 fn update_parameter<T>(
     val: &mut T,
@@ -223,7 +190,6 @@ fn update_parameter<T>(
 ) where
     T: ManifoldsFloat,
 {
-    // adjust gain based on gradient-update alignment
     if (grad > T::zero()) != (*update > T::zero()) {
         *gain += T::from_f64(0.2).unwrap();
     } else {
@@ -231,26 +197,11 @@ fn update_parameter<T>(
     }
     *gain = (*gain).max(min_gain);
 
-    // momentum update with adaptive gain
     *update = momentum * *update - lr * *gain * grad;
     *val += *update;
 }
 
 /// Clip a 2D momentum step in place to `max_step_norm` and rewrite the point.
-///
-/// `point` is assumed to already equal `(prev_x, prev_y) + (u0, u1)` from the
-/// preceding `update_parameter` calls. When the step exceeds the cap, the
-/// momentum components are rescaled and the point recomputed from the
-/// pre-update snapshot.
-///
-/// ### Params
-///
-/// * `point` - Mutable embedding coordinates for this point
-/// * `u0` - Mutable x momentum component
-/// * `u1` - Mutable y momentum component
-/// * `prev_x` - X coordinate before the update
-/// * `prev_y` - Y coordinate before the update
-/// * `max_step_norm` - Maximum allowed step length
 #[inline(always)]
 fn clip_step<T>(point: &mut [T], u0: &mut T, u1: &mut T, prev_x: T, prev_y: T, max_step_norm: T)
 where
@@ -267,35 +218,49 @@ where
     }
 }
 
+/// Compute the per-point step cap from the learning rate.
+#[inline]
+fn step_cap_from_lr<T: ManifoldsFloat>(lr: T) -> T {
+    let lr_f64 = lr.to_f64().unwrap();
+    T::from_f64((lr_f64 * TSNE_MAX_STEP_FRACTION).max(TSNE_MAX_STEP_FLOOR)).unwrap()
+}
+
+/// Recentre embedding on the origin. Sum is accumulated in f64 so that f32
+/// storage does not lose precision at large N.
+fn recentre_embedding<T: ManifoldsFloat>(embd: &mut [Vec<T>]) {
+    let n = embd.len();
+    if n == 0 {
+        return;
+    }
+
+    let mut sum_x = 0.0_f64;
+    let mut sum_y = 0.0_f64;
+    for p in embd.iter() {
+        sum_x += p[0].to_f64().unwrap();
+        sum_y += p[1].to_f64().unwrap();
+    }
+
+    let n_f64 = n as f64;
+    let mean_x = T::from_f64(sum_x / n_f64).unwrap();
+    let mean_y = T::from_f64(sum_y / n_f64).unwrap();
+
+    embd.par_iter_mut().for_each(|p| {
+        p[0] -= mean_x;
+        p[1] -= mean_y;
+    });
+}
+
+////////////////
+// Barnes Hut //
+////////////////
+
 /// Optimise 2D embedding using Barnes-Hut t-SNE.
 ///
 /// Minimises KL divergence between high-dimensional affinities (graph) and
 /// low-dimensional Student-t similarities using gradient descent with momentum
-/// and adaptive gains.
-///
-/// ### Notes
-///
-/// For each epoch:
-/// 1. Build Barnes-Hut tree from current embedding
-/// 2. Compute gradient: attractive - repulsive / Z
-///    - Attractive: exact via sparse graph
-///    - Repulsive: approximated via Barnes-Hut tree
-/// 3. Update positions with momentum and adaptive gains, clipping the step
-/// 4. Centre embedding to prevent drift
-///
-/// Force computation is split into two parallel passes: first the repulsive
-/// forces (which must be summed to get Z), then the attractive forces fused
-/// with the parameter update. The adjacency list and update/gains buffers
-/// are allocated once outside the epoch loop. Z is accumulated in f64 to
-/// avoid precision loss at large N.
-///
-/// ### Params
-///
-/// * `embd` - Mutable 2D embedding to optimise in-place
-/// * `params` - Optimisation parameters (learning rate, epochs, etc.)
-/// * `graph` - Symmetric sparse graph of high-dimensional affinities P_ij
-/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
-///   verbosity.
+/// and adaptive gains. The adjacency list, gradient buffers and
+/// position-snapshot buffers are allocated once outside the epoch loop. Z is
+/// accumulated in f64 to avoid precision loss at large N.
 pub fn optimise_bh_tsne<T>(
     embd: &mut [Vec<T>],
     params: &TsneOptimParams<T>,
@@ -313,13 +278,14 @@ pub fn optimise_bh_tsne<T>(
     let initial_momentum = T::from_f64(TSNE_INITIAL_MOMENTUM).unwrap();
     let final_momentum = T::from_f64(TSNE_FINAL_MOMENTUM).unwrap();
     let min_gain = T::from_f64(TSNE_MIN_GAIN).unwrap();
-    let max_step_norm = T::from_f64(TSNE_MAX_STEP_NORM).unwrap();
+    let max_step_norm = step_cap_from_lr(lr);
 
-    // pre-allocate update and gains buffers
     let mut update_flat = vec![T::zero(); n * n_dim];
     let mut gains_flat = vec![T::one(); n * n_dim];
+    let mut xs = vec![T::zero(); n];
+    let mut ys = vec![T::zero(); n];
+    let mut rep_forces: Vec<(T, T, T)> = vec![(T::zero(), T::zero(), T::zero()); n];
 
-    // build adjacency list ONCE
     let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
     for ((&i, &j), &w) in graph
         .row_indices
@@ -344,23 +310,25 @@ pub fn optimise_bh_tsne<T>(
             params.get_late_exag_factor()
         };
 
-        // step 1: compute repulsive forces and partial Z in parallel
-        // snapshot positions for gradient computation (cannot read embd
-        // while updating it in the same pass)
-        let xs: Vec<T> = embd.iter().map(|p| p[0]).collect();
-        let ys: Vec<T> = embd.iter().map(|p| p[1]).collect();
+        // snapshot positions in parallel into pre-allocated buffers.
+        embd.par_iter()
+            .zip(xs.par_iter_mut())
+            .zip(ys.par_iter_mut())
+            .for_each(|((p, x), y)| {
+                *x = p[0];
+                *y = p[1];
+            });
 
-        // compute all repulsive forces in one parallel pass, storing
-        // (rep_x, rep_y, partial_z) per point
-        let rep_forces: Vec<(T, T, T)> = (0..n)
-            .into_par_iter()
-            .map_init(
-                || Vec::with_capacity(256), // init one buffer per worker thread
-                |stack, i| bh_tree.compute_repulsive_force(i, xs[i], ys[i], params.theta, stack),
-            )
-            .collect();
+        // compute all repulsive forces in one parallel pass, writing into
+        // the preallocated rep_forces buffer instead of collecting a new Vec.
+        rep_forces.par_iter_mut().enumerate().for_each_init(
+            || Vec::with_capacity(256),
+            |stack, (i, slot)| {
+                *slot = bh_tree.compute_repulsive_force(i, xs[i], ys[i], params.theta, stack);
+            },
+        );
 
-        // global normalisation constant, accumulated in f64
+        // global normalisation constant, accumulated in f64 (to avoid weirdness)
         let z_total: f64 = rep_forces
             .iter()
             .map(|r| r.2.to_f64().unwrap())
@@ -371,7 +339,7 @@ pub fn optimise_bh_tsne<T>(
             T::zero()
         };
 
-        // step 2: compute attractive forces and update in parallel
+        // attractive forces (exact) + parameter update + step clip.
         embd.par_iter_mut()
             .zip(update_flat.par_chunks_mut(n_dim))
             .zip(gains_flat.par_chunks_mut(n_dim))
@@ -382,7 +350,6 @@ pub fn optimise_bh_tsne<T>(
 
                 let (rep_x, rep_y, _) = rep_forces[i];
 
-                // attractive forces (exact via graph)
                 let mut attr_x = T::zero();
                 let mut attr_y = T::zero();
                 for &(j, p_val) in &adj[i] {
@@ -421,18 +388,7 @@ pub fn optimise_bh_tsne<T>(
                 clip_step(point, &mut u0[0], &mut u1[0], px, py, max_step_norm);
             });
 
-        // step 3: recentring
-        let (sum_x, sum_y) = embd
-            .iter()
-            .fold((T::zero(), T::zero()), |(ax, ay), p| (ax + p[0], ay + p[1]));
-
-        let mean_x = sum_x / T::from_usize(n).unwrap();
-        let mean_y = sum_y / T::from_usize(n).unwrap();
-
-        embd.par_iter_mut().for_each(|p| {
-            p[0] -= mean_x;
-            p[1] -= mean_y;
-        });
+        recentre_embedding(embd);
 
         if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
             println!(
@@ -446,33 +402,46 @@ pub fn optimise_bh_tsne<T>(
 }
 
 /////////
-// FTT //
+// FFT //
 /////////
+
+/// Adaptive grid sizing for the FFT path.
+///
+/// Returns `(n_boxes, box_width, grid_half)`. Below the cap, `box_width` stays
+/// at the minimum and `n_boxes` follows the embedding span (rounded to the
+/// FFT-friendly sizes in `choose_grid_size`). Above the cap, `n_boxes` stays
+/// at `TSNE_FFT_MAX_BOXES` and `box_width` grows so the grid still covers the
+/// embedding with margin.
+#[cfg(feature = "fft_tsne")]
+fn fft_grid_geometry(half_span: f64, min_intervals: usize) -> (usize, f64, f64) {
+    let span = 2.0 * half_span * 1.05;
+    let unconstrained = choose_grid_size(0.0, span, TSNE_FFT_MIN_BOX_WIDTH, min_intervals);
+
+    if unconstrained <= TSNE_FFT_MAX_BOXES {
+        let half = unconstrained as f64 * TSNE_FFT_MIN_BOX_WIDTH / 2.0;
+        (unconstrained, TSNE_FFT_MIN_BOX_WIDTH, half)
+    } else {
+        let grown_half = half_span * (1.05 + TSNE_FFT_GRID_MARGIN);
+        let bw = (grown_half * 2.0 / TSNE_FFT_MAX_BOXES as f64).max(TSNE_FFT_MIN_BOX_WIDTH);
+        let half = TSNE_FFT_MAX_BOXES as f64 * bw / 2.0;
+        (TSNE_FFT_MAX_BOXES, bw, half)
+    }
+}
 
 /// Optimise 2D embedding using FFT-accelerated t-SNE.
 ///
 /// ### Notes
 ///
-/// Follows the C++ FIt-SNE implementation logic.
-///
-/// - Uses a fixed box width and recentres the embedding to the origin each
-///   epoch, so the grid is a pure function of the box count and is cached
-///   across epochs; it is only rebuilt when the box count changes.
-/// - Caches the FFT workspace (plans and aligned buffers) alongside the grid.
-/// - Computes attractive and repulsive forces in parallel, applying momentum,
-///   gains and the step clip in the same pass.
-/// - Reconstructs Z and the repulsive forces in f64 to avoid catastrophic
-///   cancellation at large N, regardless of the storage type `T`.
-/// - Pre-allocates charges, potentials and the adjacency list outside the
-///   epoch loop.
-///
-/// ### Params
-///
-/// * `embd` - Mutable 2D embedding to optimise in-place
-/// * `params` - Optimisation parameters (learning rate, epochs, etc.)
-/// * `graph` - Symmetric sparse graph of high-dimensional affinities P_ij
-/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
-///   verbosity.
+/// - Adjacency list, charges, potentials and the position snapshot (`xs`,
+///   `ys`) are allocated once outside the epoch loop.
+/// - `n_boxes` is capped at `TSNE_FFT_MAX_BOXES`; once the cap binds,
+///   `box_width` grows with the embedding and the grid carries
+///   `TSNE_FFT_GRID_MARGIN` headroom so rebuilds happen on growth, not every
+///   epoch.
+/// - The FFT workspace persists across rebuilds whenever `n_boxes` (and hence
+///   `n_fft`) is unchanged.
+/// - Z and the repulsive forces are reconstructed in f64 to avoid catastrophic
+///   cancellation at large N.
 #[cfg(feature = "fft_tsne")]
 pub fn optimise_fft_tsne<T>(
     embd: &mut [Vec<T>],
@@ -498,12 +467,12 @@ where
     let initial_momentum = T::from_f64(TSNE_INITIAL_MOMENTUM).unwrap();
     let final_momentum = T::from_f64(TSNE_FINAL_MOMENTUM).unwrap();
     let min_gain = T::from_f64(TSNE_MIN_GAIN).unwrap();
-    let max_step_norm = T::from_f64(TSNE_MAX_STEP_NORM).unwrap();
+    let max_step_norm = step_cap_from_lr(lr);
 
     let mut uy = vec![vec![T::zero(); n_dim]; n];
     let mut gains = vec![vec![T::one(); n_dim]; n];
 
-    // build adjacency list ONCE... makes it faster...
+    // adjacency list built once.
     let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
     for ((&i, &j), &w) in graph
         .row_indices
@@ -516,27 +485,32 @@ where
         }
     }
 
-    // pre-allocation
+    // pre-allocated FFT-side buffers and position snapshot.
     let mut charges = vec![T::zero(); n * n_terms];
     let mut potentials = vec![T::zero(); n * n_terms];
+    let mut xs = vec![T::zero(); n];
+    let mut ys = vec![T::zero(); n];
 
-    // fixed box width; the embedding is recentred to the origin every epoch,
-    // so the grid is a pure function of n_boxes and can be cached. rebuild
-    // only when n_boxes changes.
-    let box_width = 1.0_f64;
     let min_intervals = 50;
-
     let mut cached_n_boxes: usize = 0;
-    #[allow(unused_assignments)]
     let mut grid: Option<FftGrid<T>> = None;
     let mut workspace: Option<FftWorkspace<T>> = None;
 
     for epoch in 0..params.n_epochs {
-        let (xs, ys): (Vec<T>, Vec<T>) = embd.iter().map(|p| (p[0], p[1])).unzip();
+        // Snapshot positions in parallel.
+        embd.par_iter()
+            .zip(xs.par_iter_mut())
+            .zip(ys.par_iter_mut())
+            .for_each(|((p, x), y)| {
+                *x = p[0];
+                *y = p[1];
+            });
 
+        // Min/max scan; serial scan over 2N values is cheap relative to
+        // the per-epoch FFT work.
         let mut min_val = xs[0];
         let mut max_val = xs[0];
-        for v in xs.iter().chain(&ys) {
+        for v in xs.iter().chain(ys.iter()) {
             if *v < min_val {
                 min_val = *v;
             }
@@ -545,28 +519,55 @@ where
             }
         }
 
-        // symmetric span around the origin (embedding is recentred each epoch)
         let half_span = min_val
             .to_f64()
             .unwrap()
             .abs()
             .max(max_val.to_f64().unwrap().abs());
-        let span = 2.0 * half_span * 1.05; // small margin against the step clip
 
-        let n_boxes = choose_grid_size(0.0, span, box_width, min_intervals);
+        let (n_boxes, _box_width, grid_half) = fft_grid_geometry(half_span, min_intervals);
 
-        if n_boxes != cached_n_boxes {
-            let half = T::from_f64(n_boxes as f64 * box_width / 2.0).unwrap();
-            let g = FftGrid::new(-half, half, n_boxes, params.n_interp_points);
-            workspace = Some(FftWorkspace::new(g.n_fft));
-            grid = Some(g);
+        // Rebuild policy: n_boxes changed (regime crossing or growth in the
+        // sub-cap regime), or the cached grid no longer comfortably contains
+        // the embedding (cap regime, span exceeded the margin).
+        let needs_rebuild = match grid.as_ref() {
+            None => true,
+            Some(_) if cached_n_boxes != n_boxes => true,
+            Some(g) => {
+                let coord_max =
+                    g.coord_min + g.box_width * T::from_usize(g.n_boxes_per_dim).unwrap();
+                let safe_max = coord_max - g.box_width;
+                let safe_min = g.coord_min + g.box_width;
+                let max_abs = T::from_f64(half_span).unwrap();
+                max_abs >= safe_max || -max_abs <= safe_min
+            }
+        };
+
+        if needs_rebuild {
+            let half = T::from_f64(grid_half).unwrap();
+            let new_grid = FftGrid::new(-half, half, n_boxes, params.n_interp_points);
+            if cached_n_boxes != n_boxes {
+                workspace = Some(FftWorkspace::new(new_grid.n_fft));
+            }
+            grid = Some(new_grid);
             cached_n_boxes = n_boxes;
         }
 
         let grid_ref = grid.as_ref().unwrap();
         let ws = workspace.as_mut().unwrap();
 
-        // fill charges
+        let momentum = if epoch < TSNE_MOMENTUM_SWITCH_ITER {
+            initial_momentum
+        } else {
+            final_momentum
+        };
+        let exag_factor = if epoch < params.early_exag_iter {
+            params.early_exag_factor
+        } else {
+            params.get_late_exag_factor()
+        };
+
+        // Fill charges.
         charges
             .par_chunks_mut(n_terms)
             .enumerate()
@@ -579,13 +580,13 @@ where
                 chunk[3] = x * x + y * y;
             });
 
-        // zero and compute potentials (buffer reused across epochs)
+        // Zero potentials and run the FFT-accelerated convolution.
         for v in potentials.iter_mut() {
             *v = T::zero();
         }
         n_body_fft_2d(&xs, &ys, &charges, n_terms, grid_ref, ws, &mut potentials);
 
-        // compute Z in f64 to avoid catastrophic cancellation at large N
+        // Z in f64; subtract n to remove the diagonal q_ii = 1 contribution.
         let sum_q: f64 = (0..n)
             .map(|i| {
                 let idx = i * n_terms;
@@ -600,16 +601,7 @@ where
             .sum::<f64>()
             - n as f64;
 
-        let momentum = if epoch < TSNE_MOMENTUM_SWITCH_ITER {
-            initial_momentum
-        } else {
-            final_momentum
-        };
-        let exag_factor = if epoch < params.early_exag_iter {
-            params.early_exag_factor
-        } else {
-            params.get_late_exag_factor()
-        };
+        let sum_q_safe = if sum_q > TSNE_EPS { sum_q } else { 1.0 };
 
         embd.par_iter_mut()
             .zip(uy.par_iter_mut())
@@ -619,10 +611,9 @@ where
                 let x = xs[i];
                 let y = ys[i];
 
-                // attractive forces
+                // Attractive forces (exact via sparse graph).
                 let mut attr_x = T::zero();
                 let mut attr_y = T::zero();
-
                 for &(j, p_val) in &adj[i] {
                     let other_x = xs[j];
                     let other_y = ys[j];
@@ -635,7 +626,7 @@ where
                     attr_y += force * dy;
                 }
 
-                // repulsive forces (FFT-approximated), reconstructed in f64
+                // Repulsive forces reconstructed in f64.
                 let pot_idx = i * n_terms;
                 let phi1 = potentials[pot_idx].to_f64().unwrap();
                 let phi2 = potentials[pot_idx + 1].to_f64().unwrap();
@@ -644,10 +635,11 @@ where
                 let xf = x.to_f64().unwrap();
                 let yf = y.to_f64().unwrap();
 
-                let rep_x = T::from_f64((xf * phi1 - phi2) / sum_q).unwrap();
-                let rep_y = T::from_f64((yf * phi1 - phi3) / sum_q).unwrap();
+                let rep_x = T::from_f64((xf * phi1 - phi2) / sum_q_safe).unwrap();
+                let rep_y = T::from_f64((yf * phi1 - phi3) / sum_q_safe).unwrap();
 
-                // no factor of 4 — matches C++
+                // No factor of 4 here; lr is implicitly calibrated against
+                // this gradient definition.
                 let grad_x = attr_x - rep_x;
                 let grad_y = attr_y - rep_y;
 
@@ -674,25 +666,15 @@ where
                 clip_step(point, &mut u0[0], &mut u1[0], x, y, max_step_norm);
             });
 
-        // recentring
-        let (sum_x, sum_y) = embd
-            .iter()
-            .fold((T::zero(), T::zero()), |(ax, ay), p| (ax + p[0], ay + p[1]));
-
-        let mean_x = sum_x / T::from_usize(n).unwrap();
-        let mean_y = sum_y / T::from_usize(n).unwrap();
-
-        embd.par_iter_mut().for_each(|p| {
-            p[0] -= mean_x;
-            p[1] -= mean_y;
-        });
+        recentre_embedding(embd);
 
         if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
             println!(
-                " Epoch {}/{} | Z = {}",
+                " Epoch {}/{} | Z = {} | n_boxes = {}",
                 epoch,
                 params.n_epochs,
-                (sum_q.round() as i64).separate_with_underscores()
+                (sum_q.round() as i64).separate_with_underscores(),
+                n_boxes,
             );
         }
     }
@@ -709,18 +691,11 @@ mod test_tsne_optimiser {
     use super::*;
     use approx::assert_relative_eq;
 
-    //////////
-    // tSNE //
-    //////////
-
-    // Helper to create a symmetric COO graph for t-SNE tests
     fn create_coo_graph(n: usize, edges: &[(usize, usize, f64)]) -> CoordinateList<f64> {
         let mut row_indices = Vec::new();
         let mut col_indices = Vec::new();
         let mut values = Vec::new();
 
-        // t-SNE usually expects a symmetric P matrix (or graph)
-        // We ensure symmetry here manually for the test cases
         for &(u, v, w) in edges {
             row_indices.push(u);
             col_indices.push(v);
@@ -753,11 +728,8 @@ mod test_tsne_optimiser {
     #[test]
     fn test_get_lr_floor_and_scaling() {
         let params = TsneOptimParams::<f64>::default();
-        // small N: floored at 200
         assert_relative_eq!(params.get_lr(100), 200.0);
-        // large N: N / 12
         assert_relative_eq!(params.get_lr(120_000), 10_000.0);
-        // explicit lr overrides the heuristic
         let fixed = TsneOptimParams {
             lr: Some(50.0),
             ..TsneOptimParams::default()
@@ -766,36 +738,37 @@ mod test_tsne_optimiser {
     }
 
     #[test]
+    fn test_step_cap_scales_with_lr() {
+        // At the lr floor (200), the cap equals TSNE_MAX_STEP_FLOOR (= 5).
+        let cap_small: f64 = step_cap_from_lr(200.0);
+        assert_relative_eq!(cap_small, 5.0);
+        // At a large lr, the cap scales with it.
+        let cap_large: f64 = step_cap_from_lr(40_000.0);
+        assert_relative_eq!(cap_large, 40_000.0 * TSNE_MAX_STEP_FRACTION);
+    }
+
+    #[test]
     fn test_bh_tsne_basic_convergence() {
-        // Simple triangle graph
         let edges = vec![(0, 1, 1.0), (1, 2, 1.0), (2, 0, 1.0)];
         let graph = create_coo_graph(3, &edges);
 
-        // Initializing points in a line
-        let mut embd = vec![
-            vec![0.0, 0.0],
-            vec![1.0, 1.0], // middle
-            vec![2.0, 2.0],
-        ];
+        let mut embd = vec![vec![0.0, 0.0], vec![1.0, 1.0], vec![2.0, 2.0]];
         let initial_embd = embd.clone();
 
-        // Run for a short burst
         let params = TsneOptimParams {
-            n_epochs: 50,   // Short run
-            lr: Some(50.0), // Aggressive LR to ensure movement
+            n_epochs: 50,
+            lr: Some(50.0),
             ..TsneOptimParams::default()
         };
 
         optimise_bh_tsne(&mut embd, &params, &graph, 0);
 
-        // Check for NaNs
         for point in &embd {
             for val in point {
                 assert!(val.is_finite(), "Embedding contains non-finite values");
             }
         }
 
-        // Check for movement
         let total_movement: f64 = embd
             .iter()
             .zip(initial_embd.iter())
@@ -811,7 +784,6 @@ mod test_tsne_optimiser {
     #[test]
     #[cfg(feature = "fft_tsne")]
     fn test_fft_tsne_basic_convergence() {
-        // Same setup as BH, ensuring FFT path works
         let edges = vec![(0, 1, 1.0), (1, 2, 1.0), (2, 0, 1.0)];
         let graph = create_coo_graph(3, &edges);
 
@@ -821,7 +793,7 @@ mod test_tsne_optimiser {
         let params = TsneOptimParams {
             n_epochs: 50,
             lr: Some(50.0),
-            n_interp_points: 3, // specific to FFT
+            n_interp_points: 3,
             ..TsneOptimParams::default()
         };
 
