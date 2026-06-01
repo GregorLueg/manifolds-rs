@@ -385,10 +385,10 @@ pub fn optimise_bh_tsne<T>(
 
         if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
             println!(
-                " Epoch {}/{} | Z = {:.1}",
+                " Epoch {}/{} | Z = {}",
                 epoch,
                 params.n_epochs,
-                z_total.separate_with_underscores()
+                (z_total.round() as i64).separate_with_underscores()
             );
         }
     }
@@ -465,9 +465,13 @@ where
     let mut charges = vec![T::zero(); n * n_terms];
     let mut potentials = vec![T::zero(); n * n_terms];
 
-    // cached grid and workspace
+    // fixed box width; the embedding is recentred to the origin every epoch,
+    // so the grid is a pure function of n_boxes and can be cached. rebuild
+    // only when n_boxes changes, and grow-only to stop boundary flapping.
+    let box_width = 1.0_f64;
+    let min_intervals = 50;
+
     let mut cached_n_boxes: usize = 0;
-    // for pre-allocation - needs to be allowed
     #[allow(unused_assignments)]
     let mut grid: Option<FftGrid<T>> = None;
     let mut workspace: Option<FftWorkspace<T>> = None;
@@ -486,29 +490,23 @@ where
             }
         }
 
-        let n_boxes = choose_grid_size(
-            min_val.to_f64().unwrap(),
-            max_val.to_f64().unwrap(),
-            1.0,
-            50,
-        );
+        // symmetric span around the origin (embedding is recentred each epoch)
+        let half_span = min_val
+            .to_f64()
+            .unwrap()
+            .abs()
+            .max(max_val.to_f64().unwrap().abs());
+        let span = 2.0 * half_span * 1.05; // small margin against the step clip
 
-        // only rebuild grid and workspace when grid size changes
+        let mut n_boxes = choose_grid_size(0.0, span, box_width, min_intervals);
+        n_boxes = n_boxes.max(cached_n_boxes); // grow-only
+
         if n_boxes != cached_n_boxes {
-            let g = FftGrid::new(min_val, max_val, n_boxes, params.n_interp_points);
+            let half = T::from_f64(n_boxes as f64 * box_width / 2.0).unwrap();
+            let g = FftGrid::new(-half, half, n_boxes, params.n_interp_points);
             workspace = Some(FftWorkspace::new(g.n_fft));
             grid = Some(g);
             cached_n_boxes = n_boxes;
-        } else {
-            // grid size unchanged, but bounds shifted — rebuild grid, reuse workspace
-            // (kernel depends on relative spacings which are determined by box_width,
-            // and box_width = (max-min)/n_boxes, so if n_boxes is the same but
-            // min/max changed, we still need a new grid + kernel)
-            let g = FftGrid::new(min_val, max_val, n_boxes, params.n_interp_points);
-            if g.n_fft != workspace.as_ref().unwrap().n_fft {
-                workspace = Some(FftWorkspace::new(g.n_fft));
-            }
-            grid = Some(g);
         }
 
         let grid_ref = grid.as_ref().unwrap();
@@ -533,8 +531,7 @@ where
         }
         n_body_fft_2d(&xs, &ys, &charges, n_terms, grid_ref, ws, &mut potentials);
 
-        // compute Z
-        // implicit cast to f64 to avoid numerical instability!
+        // compute Z in f64 to avoid catastrophic cancellation at large N
         let sum_q: f64 = (0..n)
             .map(|i| {
                 let idx = i * n_terms;
@@ -586,8 +583,7 @@ where
                     attr_y += force * dy;
                 }
 
-                // repulsive forces (FFT-approximated)
-                // explicit cast to fp64
+                // repulsive forces (FFT-approximated), reconstructed in f64
                 let pot_idx = i * n_terms;
                 let phi1 = potentials[pot_idx].to_f64().unwrap();
                 let phi2 = potentials[pot_idx + 1].to_f64().unwrap();
@@ -649,10 +645,10 @@ where
 
         if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
             println!(
-                " Epoch {}/{} | Z = {:.1}",
+                " Epoch {}/{} | Z = {}",
                 epoch,
                 params.n_epochs,
-                sum_q.separate_with_underscores()
+                (sum_q.round() as i64).separate_with_underscores()
             );
         }
     }
