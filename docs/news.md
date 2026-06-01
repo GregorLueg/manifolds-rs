@@ -9,8 +9,9 @@
 
 **Fix:**
 
-- Numerical stability problems for very large data sets with tSNE. It now
-  casts to `fp64` independent of initial input.
+- Numerical stability problems for very large data sets with tSNE when the input
+  is `fp32`. It now casts to `fp64` independent at specific points to avoid
+  collapse.
 
 ## 0.3.1
 

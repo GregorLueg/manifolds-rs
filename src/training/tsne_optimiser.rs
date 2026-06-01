@@ -63,7 +63,7 @@ const TSNE_FFT_MIN_BOX_WIDTH: f64 = 1.0;
 /// Headroom added to the grid bounds once the box-cap regime is active, so
 /// the embedding can move between rebuilds.
 #[cfg(feature = "fft_tsne")]
-const TSNE_FFT_GRID_MARGIN: f64 = 0.15;
+const TSNE_FFT_GRID_MARGIN: f64 = 0.3;
 
 ////////////////
 // Structures //
@@ -497,7 +497,7 @@ where
     let mut workspace: Option<FftWorkspace<T>> = None;
 
     for epoch in 0..params.n_epochs {
-        // Snapshot positions in parallel.
+        // snapshot positions in parallel.
         embd.par_iter()
             .zip(xs.par_iter_mut())
             .zip(ys.par_iter_mut())
@@ -506,8 +506,6 @@ where
                 *y = p[1];
             });
 
-        // Min/max scan; serial scan over 2N values is cheap relative to
-        // the per-epoch FFT work.
         let mut min_val = xs[0];
         let mut max_val = xs[0];
         for v in xs.iter().chain(ys.iter()) {
@@ -567,7 +565,7 @@ where
             params.get_late_exag_factor()
         };
 
-        // Fill charges.
+        // fill charges.
         charges
             .par_chunks_mut(n_terms)
             .enumerate()
@@ -580,7 +578,7 @@ where
                 chunk[3] = x * x + y * y;
             });
 
-        // Zero potentials and run the FFT-accelerated convolution.
+        // zero potentials and run the FFT-accelerated convolution.
         for v in potentials.iter_mut() {
             *v = T::zero();
         }
@@ -611,7 +609,7 @@ where
                 let x = xs[i];
                 let y = ys[i];
 
-                // Attractive forces (exact via sparse graph).
+                // attractive forces (exact via sparse graph).
                 let mut attr_x = T::zero();
                 let mut attr_y = T::zero();
                 for &(j, p_val) in &adj[i] {
@@ -626,7 +624,7 @@ where
                     attr_y += force * dy;
                 }
 
-                // Repulsive forces reconstructed in f64.
+                // repulsive forces reconstructed in f64.
                 let pot_idx = i * n_terms;
                 let phi1 = potentials[pot_idx].to_f64().unwrap();
                 let phi2 = potentials[pot_idx + 1].to_f64().unwrap();
@@ -638,8 +636,6 @@ where
                 let rep_x = T::from_f64((xf * phi1 - phi2) / sum_q_safe).unwrap();
                 let rep_y = T::from_f64((yf * phi1 - phi3) / sum_q_safe).unwrap();
 
-                // No factor of 4 here; lr is implicitly calibrated against
-                // this gradient definition.
                 let grad_x = attr_x - rep_x;
                 let grad_y = attr_y - rep_y;
 
