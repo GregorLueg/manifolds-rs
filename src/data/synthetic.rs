@@ -5,16 +5,6 @@ use faer::Mat;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
-use rand_distr::StandardNormal;
-
-use crate::prelude::ManifoldsFloat;
-
-////////////
-// Consts //
-////////////
-
-/// Fraction of GaussianNoise samples placed on inter-cluster bridges.
-pub const DEFAULT_BRIDGE_FRACTION: f64 = 0.2;
 
 ///////////////
 // SwissRole //
@@ -115,114 +105,62 @@ pub fn generate_swiss_roll_biased(
 
 /// Generate synthetic single-cell-like data with cluster structure
 ///
-/// Creates data with multiple Gaussian clusters to simulate clusters, cell
-/// types in the data
+/// Creates data with multiple Gaussian clusters to simulate clusters (for
+/// example cell types) in the data.
 ///
 /// ### Params
 ///
-/// * `n_samples` - Number of samples (samples)
-/// * `dim` - Embedding dimensionality
-/// * `n_clusters` - Number of distinct clusters
-/// * `seed` - Random seed for reproducibility
+/// * n_samples - Number of samples
+/// * dim - Embedding dimensionality
+/// * n_clusters - Number of distinct clusters
+/// * seed - Random seed for reproducibility
 ///
 /// ### Returns
 ///
 /// Matrix of shape (n_samples, dim)
-pub fn generate_clustered_data<T>(
+pub fn generate_clustered_data(
     n_samples: usize,
     dim: usize,
     n_clusters: usize,
     seed: u64,
-) -> (Mat<T>, Vec<usize>)
-where
-    T: ManifoldsFloat,
-{
+) -> (Mat<f64>, Vec<usize>) {
     let mut rng = StdRng::seed_from_u64(seed);
-    let mut data = Mat::<T>::zeros(n_samples, dim);
+    let mut data = Mat::<f64>::zeros(n_samples, dim);
 
-    let mut centres: Vec<Vec<f64>> = Vec::with_capacity(n_clusters);
-    let mut cluster_stds = Vec::with_capacity(n_clusters);
+    // variable cluster sizes and std deviations
+    let mut centres = Vec::with_capacity(n_clusters);
+    let mut cluster_stds = Vec::new();
     for _ in 0..n_clusters {
-        centres.push((0..dim).map(|_| rng.random_range(-7.5..7.5)).collect());
+        let centre: Vec<f64> = (0..dim).map(|_| rng.random_range(-7.5..7.5)).collect();
+        centres.push(centre);
         cluster_stds.push(rng.random_range(0.5..2.5));
     }
-
-    // bridge edges: connect each cluster to its nearest neighbour, dedup
-    let mut edges: Vec<(usize, usize)> = Vec::new();
-    if n_clusters >= 2 {
-        for a in 0..n_clusters {
-            let mut best = usize::MAX;
-            let mut best_d = f64::INFINITY;
-            for b in 0..n_clusters {
-                if a == b {
-                    continue;
-                }
-                let d: f64 = centres[a]
-                    .iter()
-                    .zip(&centres[b])
-                    .map(|(x, y)| (x - y).powi(2))
-                    .sum();
-                if d < best_d {
-                    best_d = d;
-                    best = b;
-                }
-            }
-            let edge = (a.min(best), a.max(best));
-            if !edges.contains(&edge) {
-                edges.push(edge);
-            }
-        }
-    }
-
-    let n_bridge = if edges.is_empty() {
-        0
-    } else {
-        (n_samples as f64 * DEFAULT_BRIDGE_FRACTION) as usize
-    };
-    let n_blob = n_samples - n_bridge;
-
-    // variable cluster sizes over the blob budget
-    let mut assignments = Vec::with_capacity(n_blob);
+    // assign samples with variable cluster sizes
+    // with some clusters bigger than others
+    let mut cluster_assignments = Vec::new();
     for cluster_idx in 0..n_clusters {
         let weight = rng.random_range(0.5..2.5);
-        let n_in_cluster = ((n_blob as f64 * weight) / (n_clusters as f64 * 1.25)) as usize;
-        assignments.extend(vec![cluster_idx; n_in_cluster]);
+        let n_in_cluster = ((n_samples as f64 * weight) / (n_clusters as f64 * 1.25)) as usize;
+        cluster_assignments.extend(vec![cluster_idx; n_in_cluster]);
     }
-    while assignments.len() < n_blob {
-        assignments.push(rng.random_range(0..n_clusters));
+    // fill remaining
+    while cluster_assignments.len() < n_samples {
+        cluster_assignments.push(rng.random_range(0..n_clusters));
     }
-    assignments.shuffle(&mut rng);
-    assignments.truncate(n_blob);
-
-    let mut labels = Vec::with_capacity(n_samples);
-    let mut row = 0;
-
-    for &cluster_idx in &assignments {
+    cluster_assignments.shuffle(&mut rng);
+    cluster_assignments.truncate(n_samples);
+    // generate with variable noise
+    for (i, &cluster_idx) in cluster_assignments.iter().enumerate() {
         let centre = &centres[cluster_idx];
         let std = cluster_stds[cluster_idx];
         for j in 0..dim {
-            let noise: f64 = rng.sample(StandardNormal);
-            data[(row, j)] = T::from_f64(centre[j] + noise * std).unwrap();
+            let u1: f64 = rng.random();
+            let u2: f64 = rng.random();
+            let noise = (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos();
+            data[(i, j)] = centre[j] + noise * std;
         }
-        labels.push(cluster_idx);
-        row += 1;
     }
-
-    // bridge points: thin Gaussian tube interpolating between connected centres
-    for _ in 0..n_bridge {
-        let (a, b) = edges[rng.random_range(0..edges.len())];
-        let t: f64 = rng.random();
-        let tube = (cluster_stds[a] + cluster_stds[b]) * 0.5 * 0.3;
-        for j in 0..dim {
-            let mid = (1.0 - t) * centres[a][j] + t * centres[b][j];
-            let noise: f64 = rng.sample(StandardNormal);
-            data[(row, j)] = T::from_f64(mid + noise * tube).unwrap();
-        }
-        labels.push(if t < 0.5 { a } else { b });
-        row += 1;
-    }
-
-    (data, labels)
+    (data, cluster_assignments)
 }
 
 ////////////////

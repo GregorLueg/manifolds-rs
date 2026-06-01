@@ -700,6 +700,21 @@ where
             .sum::<f64>()
             - n as f64;
 
+        if epoch == 0 {
+            let max_pot = potentials
+                .iter()
+                .map(|p| p.to_f64().unwrap().abs())
+                .fold(0.0_f64, f64::max);
+            let max_charge = charges
+                .iter()
+                .map(|c| c.to_f64().unwrap().abs())
+                .fold(0.0_f64, f64::max);
+            println!(
+                "epoch 0: max|charge|={} max|potential|={} sum_q={}",
+                max_charge, max_pot, sum_q
+            );
+        }
+
         let sum_q_safe = if sum_q > TSNE_EPS { sum_q } else { 1.0 };
 
         embd.par_iter_mut()
@@ -772,6 +787,23 @@ where
                 params.n_epochs,
                 (sum_q.round() as i64).separate_with_underscores(),
                 n_boxes,
+            );
+            println!(
+                "Debug! Embd1: {:?} / {:?} / {:?} / {:?} / {:?}",
+                embd[0][0].to_f64().unwrap(),
+                embd[1][0].to_f64().unwrap(),
+                embd[2][0].to_f64().unwrap(),
+                embd[3][0].to_f64().unwrap(),
+                embd[4][0].to_f64().unwrap()
+            );
+
+            println!(
+                "Debug! Embd2: {:?} / {:?} / {:?} / {:?} / {:?}",
+                embd[0][1].to_f64().unwrap(),
+                embd[1][1].to_f64().unwrap(),
+                embd[2][1].to_f64().unwrap(),
+                embd[3][1].to_f64().unwrap(),
+                embd[4][1].to_f64().unwrap()
             );
         }
     }
