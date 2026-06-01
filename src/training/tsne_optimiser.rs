@@ -489,12 +489,11 @@ pub fn optimise_bh_tsne<T>(
 fn fft_grid_geometry(half_span: f64, min_intervals: usize) -> (usize, f64, f64) {
     let span = 2.0 * half_span * 1.05;
 
-    let raw_n_boxes = (span / TSNE_FFT_MIN_BOX_WIDTH).ceil() as usize;
+    let n_boxes_unconstrained = choose_grid_size(0.0, span, TSNE_FFT_MIN_BOX_WIDTH, min_intervals);
 
-    if raw_n_boxes <= TSNE_FFT_MAX_BOXES {
-        let n_boxes = choose_grid_size(0.0, span, TSNE_FFT_MIN_BOX_WIDTH, min_intervals);
-        let half = n_boxes as f64 * TSNE_FFT_MIN_BOX_WIDTH / 2.0;
-        (n_boxes, TSNE_FFT_MIN_BOX_WIDTH, half)
+    if n_boxes_unconstrained <= TSNE_FFT_MAX_BOXES {
+        let half = n_boxes_unconstrained as f64 * TSNE_FFT_MIN_BOX_WIDTH / 2.0;
+        (n_boxes_unconstrained, TSNE_FFT_MIN_BOX_WIDTH, half)
     } else {
         let grown_half = half_span * (1.05 + TSNE_FFT_GRID_MARGIN);
         let bw = (grown_half * 2.0 / TSNE_FFT_MAX_BOXES as f64).max(TSNE_FFT_MIN_BOX_WIDTH);
