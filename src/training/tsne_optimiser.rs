@@ -162,7 +162,16 @@ pub enum TsneOpt {
     BarnesHut,
 }
 
-/// Parse the tSNE Optimiser to use
+/// Parse the tSNE optimiser to use.
+///
+/// ### Params
+///
+/// * `s` - String defining the optimiser. Accepts `"barnes hut"`, `"bh"`, or
+///   `"fft"`.
+///
+/// ### Returns
+///
+/// `Some(TsneOpt)` if the string matches a known optimiser, `None` otherwise.
 pub fn parse_tsne_optimiser(s: &str) -> Option<TsneOpt> {
     match s.to_lowercase().as_str() {
         "barnes hut" | "bh" => Some(TsneOpt::BarnesHut),
@@ -175,9 +184,21 @@ pub fn parse_tsne_optimiser(s: &str) -> Option<TsneOpt> {
 // Helpers //
 /////////////
 
-/// Adaptive gain update for t-SNE gradient descent (van der Maaten convention:
-/// gain += 0.2 when grad and update disagree, gain *= 0.8 otherwise; floored
-/// at `min_gain`).
+/// Adaptive gain update for a single t-SNE parameter (van der Maaten
+/// convention).
+///
+/// Gain increases by 0.2 when the gradient and update disagree in sign,
+/// decays by a factor of 0.8 otherwise, and is floored at `min_gain`.
+///
+/// ### Params
+///
+/// * `val` - The parameter value to update (modified in place).
+/// * `update` - The momentum buffer for this parameter (modified in place).
+/// * `gain` - The adaptive gain for this parameter (modified in place).
+/// * `grad` - The gradient at the current step.
+/// * `lr` - Learning rate.
+/// * `momentum` - Momentum coefficient.
+/// * `min_gain` - Lower bound on the gain.
 #[inline(always)]
 fn update_parameter<T>(
     val: &mut T,
@@ -201,7 +222,21 @@ fn update_parameter<T>(
     *val += *update;
 }
 
-/// Clip a 2D momentum step in place to `max_step_norm` and rewrite the point.
+/// Clip a 2D momentum step to `max_step_norm` and rewrite the point in place.
+///
+/// If the Euclidean norm of `(u0, u1)` exceeds `max_step_norm`, both
+/// components are scaled down proportionally and the point coordinates are
+/// recomputed from the previous position.
+///
+/// ### Params
+///
+/// * `point` - Mutable slice of length 2 holding the current position
+///   (modified in place).
+/// * `u0` - x-component of the momentum update (modified in place).
+/// * `u1` - y-component of the momentum update (modified in place).
+/// * `prev_x` - x-coordinate before the update.
+/// * `prev_y` - y-coordinate before the update.
+/// * `max_step_norm` - Maximum permitted Euclidean step length.
 #[inline(always)]
 fn clip_step<T>(point: &mut [T], u0: &mut T, u1: &mut T, prev_x: T, prev_y: T, max_step_norm: T)
 where
@@ -219,14 +254,34 @@ where
 }
 
 /// Compute the per-point step cap from the learning rate.
+///
+/// Returns `lr * TSNE_MAX_STEP_FRACTION`, floored at `TSNE_MAX_STEP_FLOOR`.
+/// Scaling with `lr` rather than using a fixed cap preserves gradient
+/// direction at large N where the Belkina heuristic makes `lr` large.
+///
+/// ### Params
+///
+/// * `lr` - The learning rate in use.
+///
+/// ### Returns
+///
+/// Maximum permitted Euclidean step length per point per epoch.
 #[inline]
 fn step_cap_from_lr<T: ManifoldsFloat>(lr: T) -> T {
     let lr_f64 = lr.to_f64().unwrap();
     T::from_f64((lr_f64 * TSNE_MAX_STEP_FRACTION).max(TSNE_MAX_STEP_FLOOR)).unwrap()
 }
 
-/// Recentre embedding on the origin. Sum is accumulated in f64 so that f32
-/// storage does not lose precision at large N.
+/// Recentre the embedding on the origin.
+///
+/// Subtracts the per-coordinate mean from every point. The mean is
+/// accumulated in `f64` to avoid precision loss at large N when `T` is
+/// `f32`. No parallel sum to avoid issues with non-reproducibility given the
+/// same seed.
+///
+/// ### Params
+///
+/// * `embd` - Mutable slice of 2D points (modified in place).
 fn recentre_embedding<T: ManifoldsFloat>(embd: &mut [Vec<T>]) {
     let n = embd.len();
     if n == 0 {
@@ -254,13 +309,20 @@ fn recentre_embedding<T: ManifoldsFloat>(embd: &mut [Vec<T>]) {
 // Barnes Hut //
 ////////////////
 
-/// Optimise 2D embedding using Barnes-Hut t-SNE.
+/// Optimise a 2D embedding using Barnes-Hut t-SNE.
 ///
-/// Minimises KL divergence between high-dimensional affinities (graph) and
-/// low-dimensional Student-t similarities using gradient descent with momentum
-/// and adaptive gains. The adjacency list, gradient buffers and
-/// position-snapshot buffers are allocated once outside the epoch loop. Z is
-/// accumulated in f64 to avoid precision loss at large N.
+/// Minimises the KL divergence between high-dimensional affinities (`graph`)
+/// and low-dimensional Student-t similarities via gradient descent with
+/// momentum and adaptive per-parameter gains.
+///
+/// ### Params
+///
+/// * `embd` - Initial embedding coordinates, shape `[n_samples][2]`
+///   (modified in place).
+/// * `params` - Optimisation hyperparameters (epochs, learning rate, momentum
+///   schedule, exaggeration, Barnes-Hut theta).
+/// * `graph` - Sparse high-dimensional affinities in coordinate-list format.
+/// * `verbose` - Verbosity level: `0` silent, `1` normal, `2` detailed.
 pub fn optimise_bh_tsne<T>(
     embd: &mut [Vec<T>],
     params: &TsneOptimParams<T>,
@@ -405,21 +467,34 @@ pub fn optimise_bh_tsne<T>(
 // FFT //
 /////////
 
-/// Adaptive grid sizing for the FFT path.
+/// Compute FFT grid geometry for a given embedding half-span.
 ///
-/// Returns `(n_boxes, box_width, grid_half)`. Below the cap, `box_width` stays
-/// at the minimum and `n_boxes` follows the embedding span (rounded to the
-/// FFT-friendly sizes in `choose_grid_size`). Above the cap, `n_boxes` stays
-/// at `TSNE_FFT_MAX_BOXES` and `box_width` grows so the grid still covers the
-/// embedding with margin.
+/// Below the box cap, `box_width` is fixed at `TSNE_FFT_MIN_BOX_WIDTH` and
+/// `n_boxes` grows with the embedding span. Once `n_boxes` would exceed
+/// `TSNE_FFT_MAX_BOXES`, the box count is clamped and `box_width` grows
+/// instead, keeping the grid covering the embedding plus
+/// `TSNE_FFT_GRID_MARGIN` headroom.
+///
+/// ### Params
+///
+/// * `half_span` - Half the current embedding extent (max absolute coordinate
+///   across both axes).
+/// * `min_intervals` - Minimum number of boxes per dimension.
+///
+/// ### Returns
+///
+/// `(n_boxes, box_width, grid_half)` where `grid_half` is the half-width of
+/// the square grid in embedding coordinates.
 #[cfg(feature = "fft_tsne")]
 fn fft_grid_geometry(half_span: f64, min_intervals: usize) -> (usize, f64, f64) {
     let span = 2.0 * half_span * 1.05;
-    let unconstrained = choose_grid_size(0.0, span, TSNE_FFT_MIN_BOX_WIDTH, min_intervals);
 
-    if unconstrained <= TSNE_FFT_MAX_BOXES {
-        let half = unconstrained as f64 * TSNE_FFT_MIN_BOX_WIDTH / 2.0;
-        (unconstrained, TSNE_FFT_MIN_BOX_WIDTH, half)
+    let raw_n_boxes = (span / TSNE_FFT_MIN_BOX_WIDTH).ceil() as usize;
+
+    if raw_n_boxes <= TSNE_FFT_MAX_BOXES {
+        let n_boxes = choose_grid_size(0.0, span, TSNE_FFT_MIN_BOX_WIDTH, min_intervals);
+        let half = n_boxes as f64 * TSNE_FFT_MIN_BOX_WIDTH / 2.0;
+        (n_boxes, TSNE_FFT_MIN_BOX_WIDTH, half)
     } else {
         let grown_half = half_span * (1.05 + TSNE_FFT_GRID_MARGIN);
         let bw = (grown_half * 2.0 / TSNE_FFT_MAX_BOXES as f64).max(TSNE_FFT_MIN_BOX_WIDTH);
@@ -428,20 +503,26 @@ fn fft_grid_geometry(half_span: f64, min_intervals: usize) -> (usize, f64, f64) 
     }
 }
 
-/// Optimise 2D embedding using FFT-accelerated t-SNE.
+/// Optimise a 2D embedding using FFT-accelerated t-SNE.
 ///
-/// ### Notes
+/// Minimises the KL divergence between high-dimensional affinities (`graph`)
+/// and low-dimensional Student-t similarities. Repulsive forces are
+/// approximated via an interpolation-based N-body FFT scheme (Linderman et
+/// al.), giving O(N) cost per epoch.
 ///
-/// - Adjacency list, charges, potentials and the position snapshot (`xs`,
-///   `ys`) are allocated once outside the epoch loop.
-/// - `n_boxes` is capped at `TSNE_FFT_MAX_BOXES`; once the cap binds,
-///   `box_width` grows with the embedding and the grid carries
-///   `TSNE_FFT_GRID_MARGIN` headroom so rebuilds happen on growth, not every
-///   epoch.
-/// - The FFT workspace persists across rebuilds whenever `n_boxes` (and hence
-///   `n_fft`) is unchanged.
-/// - Z and the repulsive forces are reconstructed in f64 to avoid catastrophic
-///   cancellation at large N.
+/// ### Params
+///
+/// * `embd` - Initial embedding coordinates, shape `[n_samples][2]`
+///   (modified in place).
+/// * `params` - Optimisation hyperparameters (epochs, learning rate, momentum
+///   schedule, exaggeration, interpolation points per box).
+/// * `graph` - Sparse high-dimensional affinities in coordinate-list format.
+/// * `verbose` - Verbosity level: `0` silent, `1` normal, `2` detailed.
+///
+/// ### Returns
+///
+/// `Ok(())` on success, or `Err(ManifoldsError::IncorrectDim)` if the
+/// embedding is not 2D.
 #[cfg(feature = "fft_tsne")]
 pub fn optimise_fft_tsne<T>(
     embd: &mut [Vec<T>],
