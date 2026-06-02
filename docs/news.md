@@ -11,7 +11,8 @@
 
 - Numerical stability problems for very large data sets with tSNE when the input
   is `fp32`. It now casts to `fp64` independent at specific points to avoid
-  collapsing embeddings.
+  collapsing embeddings (at least to some extent. Larger data sets should use
+  `fp64` generally speaking.)
 
 ## 0.3.1
 
