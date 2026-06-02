@@ -254,7 +254,7 @@ where
 ///
 /// ### Params
 ///
-/// * `embd` - Embedding, shape [n_samples][n_dim]. Modified in place.
+/// * `embd` - Embedding, shape `[n_samples][n_dim]`. Modified in place.
 /// * `pairs` - The three pair sets from `construct_pacmap_pairs`.
 /// * `params` - Optimisation parameters.
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -399,7 +399,7 @@ where
 ///
 /// ### Params
 ///
-/// * `embd` - Embedding, shape [n_samples][n_dim]. Modified in place.
+/// * `embd` - Embedding, shape `[n_samples][n_dim]`. Modified in place.
 /// * `pairs` - The three pair sets from `construct_pacmap_pairs`.
 /// * `params` - Optimisation parameters.
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed

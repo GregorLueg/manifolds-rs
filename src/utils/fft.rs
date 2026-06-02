@@ -259,7 +259,7 @@ pub struct FftGrid<T: FftwFloat> {
     pub box_width: T,
     /// Minimum coordinate value (same for x and y; assumes square domain)
     pub coord_min: T,
-    /// Interpolation node positions within [0,1] normalised box coordinates
+    /// Interpolation node positions within `[0,1]` normalised box coordinates
     pub interp_spacings: Vec<T>,
     /// Pre-computed Lagrange polynomial denominators for each node
     pub lagrange_denominators: Vec<T>,
@@ -432,7 +432,7 @@ impl<T: FftwFloat> FftGrid<T> {
     ///
     /// ### Returns
     ///
-    /// Position in [0,1] normalised box coordinates
+    /// Position in `[0, 1]` normalised box coordinates
     #[inline]
     pub fn position_in_box(&self, coord: T, box_idx: usize) -> T {
         let box_min = self.coord_min + T::from_usize(box_idx).unwrap() * self.box_width;
@@ -524,15 +524,15 @@ impl<T: FftwFloat> FftGrid<T> {
 
 /// Compute Lagrange interpolation weights.
 ///
-/// For a point at position `y_in_box` (in [0,1]), computes the weights for all
+/// For a point at position `y_in_box` (in `[0, 1]`), computes the weights for all
 /// interpolation nodes using Lagrange polynomials.
 ///
 /// ### Params
 ///
-/// * `y_in_box` - Position within box, range [0,1]
-/// * `spacings` - Interpolation node positions in [0,1]
-/// * `denominators` - Pre-computed denominators: product of (spacings[i] -
-///   spacings[j]) for j != i
+/// * `y_in_box` - Position within box, range `[0, 1]`
+/// * `spacings` - Interpolation node positions in `[0, 1]`
+/// * `denominators` - Pre-computed denominators: product of
+///   (`spacings[i] - spacings[j]`) for j != i
 /// * `weights` - Output buffer for weights
 #[inline]
 pub fn lagrange_weights<T: FftwFloat>(

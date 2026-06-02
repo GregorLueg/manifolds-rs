@@ -1075,8 +1075,8 @@ where
 
 /// Build the symmetric diffusion operator P_sym = D^{-1/2} K D^{-1/2}.
 ///
-/// P_sym shares eigenvalues with the row-stochastic operator P = D^{-1} K;
-/// right eigenvectors of P are recovered via phi[i] = u[i] / sqrt(d_i),
+/// P_sym shares eigenvalues with the row-stochastic operator `P = D^{-1} K`;
+/// right eigenvectors of P are recovered via `phi[i] = u[i] / sqrt(d_i)`,
 /// where u are the symmetric eigenvectors.
 ///
 /// ### Params
