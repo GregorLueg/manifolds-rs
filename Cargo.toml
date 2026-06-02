@@ -1,6 +1,6 @@
 [package]
 name = "manifolds-rs"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2021"
 authors = ["Gregor Lueg <gregorlueg@me.com>"]
 license = "MIT"
@@ -16,14 +16,18 @@ opt-level = 2
 
 [profile.release]
 opt-level = 3
-lto = true
-codegen-units = 1
-strip = true
+lto = "thin"
+codegen-units = 4
 
 [features]
+## Enable parametric UMAP via the burn framework
 parametric = ["burn"]
+## Enable FFT-accelerated tSNE via `fftw`
 fft_tsne = ["fftw"]
+## Enable GPU-accelerated tSNE and UMAP where the approximate nearest neighbour searches are GPU-accelerated
 gpu = ["ann-search-rs/gpu", "cubecl"]
+## Tests for large scale diagonistics - for development only!
+large_scale_diagnostics = []
 
 [dependencies]
 burn = { version = "0.21.0", features = [

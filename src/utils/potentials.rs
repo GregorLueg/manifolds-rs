@@ -164,7 +164,7 @@ where
 ///
 /// ### Returns
 ///
-/// Dense N × N distance matrix (as Vec<Vec<T>>)
+/// Dense N × N distance matrix (as `Vec<Vec<T>>`)
 pub fn compute_potential_distances<T>(
     potential: &CompressedSparseData<T>,
     metric: &Dist,

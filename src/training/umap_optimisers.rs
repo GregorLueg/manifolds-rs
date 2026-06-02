@@ -412,8 +412,8 @@ fn fast_pow<T: ManifoldsFloat>(x: T, b: T, b_is_one: bool, b_is_half: bool) -> T
 /// ### Params
 ///
 /// * `embd` - Initial embedding coordinates (modified in place), shape
-///   [n_samples][n_dim]
-/// * `graph` - Adjacency list where graph[i] contains (neighbour_idx, weight)
+///   `[n_samples][n_dim]`
+/// * `graph` - Adjacency list where `graph[i]` contains (neighbour_idx, weight)
 ///   pairs
 /// * `params` - Optimisation parameters (n_epochs, lr, a, b, gamma,
 ///   neg_sample_rate)
@@ -623,8 +623,8 @@ where
 /// ### Params
 ///
 /// * `embd` - Initial embedding coordinates (modified in place), shape
-///   [n_samples][n_dim]
-/// * `graph` - Adjacency list where graph[i] contains (neighbour_idx, weight)
+///   `[n_samples][n_dim]`
+/// * `graph` - Adjacency list where `graph[i]` contains (neighbour_idx, weight)
 ///   pairs
 /// * `params` - Optimisation parameters including Adam hyperparameters (beta1,
 ///   beta2, eps)

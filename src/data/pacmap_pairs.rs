@@ -129,7 +129,7 @@ fn sample_further_pairs(
 ///
 /// ### Params
 ///
-/// * `knn_indices` - kNN indices excluding self, shape [n_samples][k].
+/// * `knn_indices` - kNN indices excluding self, shape `[n_samples][k]`.
 ///   Should be computed with k large enough to cover mid-near candidates
 ///   (recommend k >= 50).
 /// * `n_mid_near` - Number of mid-near pairs per point. Defaults to 2 in

@@ -1,5 +1,19 @@
 # News
 
+## 0.3.2
+
+**Features:**
+
+- Added the option for late exaggeration to tSNE to keep structure on data sets
+  with large N.
+
+**Fix:**
+
+- Numerical stability problems for very large data sets with tSNE when the input
+  is `fp32`. It now casts to `fp64` independent at specific points to avoid
+  collapsing embeddings (at least to some extent. Larger data sets should use
+  `fp64` generally speaking.)
+
 ## 0.3.1
 
 **Features:**
