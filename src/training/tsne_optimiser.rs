@@ -576,27 +576,6 @@ where
     let mut grid: Option<FftGrid<T>> = None;
     let mut workspace: Option<FftWorkspace<T>> = None;
 
-    // DEBUG
-    let init_min = embd
-        .iter()
-        .flat_map(|p| p.iter())
-        .fold(f64::INFINITY, |a, &x| a.min(x.to_f64().unwrap()));
-    let init_max = embd
-        .iter()
-        .flat_map(|p| p.iter())
-        .fold(f64::NEG_INFINITY, |a, &x| a.max(x.to_f64().unwrap()));
-    let init_nan = embd
-        .iter()
-        .flat_map(|p| p.iter())
-        .any(|x| !x.to_f64().unwrap().is_finite());
-    println!(
-        "init: min={} max={} half_span={} has_non_finite={}",
-        init_min,
-        init_max,
-        init_min.abs().max(init_max.abs()),
-        init_nan
-    );
-
     for epoch in 0..params.n_epochs {
         // snapshot positions in parallel.
         embd.par_iter()
@@ -626,9 +605,6 @@ where
 
         let (n_boxes, _box_width, grid_half) = fft_grid_geometry(half_span, min_intervals);
 
-        // Rebuild policy: n_boxes changed (regime crossing or growth in the
-        // sub-cap regime), or the cached grid no longer comfortably contains
-        // the embedding (cap regime, span exceeded the margin).
         let needs_rebuild = match grid.as_ref() {
             None => true,
             Some(_) if cached_n_boxes != n_boxes => true,
@@ -699,21 +675,6 @@ where
             })
             .sum::<f64>()
             - n as f64;
-
-        if epoch == 0 {
-            let max_pot = potentials
-                .iter()
-                .map(|p| p.to_f64().unwrap().abs())
-                .fold(0.0_f64, f64::max);
-            let max_charge = charges
-                .iter()
-                .map(|c| c.to_f64().unwrap().abs())
-                .fold(0.0_f64, f64::max);
-            println!(
-                "epoch 0: max|charge|={} max|potential|={} sum_q={}",
-                max_charge, max_pot, sum_q
-            );
-        }
 
         let sum_q_safe = if sum_q > TSNE_EPS { sum_q } else { 1.0 };
 
@@ -787,23 +748,6 @@ where
                 params.n_epochs,
                 (sum_q.round() as i64).separate_with_underscores(),
                 n_boxes,
-            );
-            println!(
-                "Debug! Embd1: {:?} / {:?} / {:?} / {:?} / {:?}",
-                embd[0][0].to_f64().unwrap(),
-                embd[1][0].to_f64().unwrap(),
-                embd[2][0].to_f64().unwrap(),
-                embd[3][0].to_f64().unwrap(),
-                embd[4][0].to_f64().unwrap()
-            );
-
-            println!(
-                "Debug! Embd2: {:?} / {:?} / {:?} / {:?} / {:?}",
-                embd[0][1].to_f64().unwrap(),
-                embd[1][1].to_f64().unwrap(),
-                embd[2][1].to_f64().unwrap(),
-                embd[3][1].to_f64().unwrap(),
-                embd[4][1].to_f64().unwrap()
             );
         }
     }
