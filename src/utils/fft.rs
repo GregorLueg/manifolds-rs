@@ -197,16 +197,6 @@ pub struct FftWorkspace<T: FftwFloat> {
     pub plan_r2c: T::R2CPlan,
     /// Pre-built complex-to-real FFT plan
     pub plan_c2r: T::C2RPlan,
-    /// Per-point box index and intra-box position, length n_points.
-    pub box_data: Vec<((usize, usize), T, T)>,
-    /// Per-point Lagrange x-weights, length n_points * n_interp_points.
-    pub x_weights: Vec<T>,
-    /// Per-point Lagrange y-weights, length n_points * n_interp_points.
-    pub y_weights: Vec<T>,
-    /// Grid charge coefficients, length total_grid_points * n_terms.
-    pub w_coefficients: Vec<T>,
-    /// Convolved grid values, length total_grid_points * n_terms.
-    pub y_tilde_values: Vec<T>,
 }
 
 impl<T: FftwFloat> FftWorkspace<T> {
@@ -231,11 +221,6 @@ impl<T: FftwFloat> FftWorkspace<T> {
             fft_scratch: T::aligned_real(n_fft * n_fft),
             plan_r2c: T::plan_r2c_2d(n_fft),
             plan_c2r: T::plan_c2r_2d(n_fft),
-            box_data: Vec::new(),
-            x_weights: Vec::new(),
-            y_weights: Vec::new(),
-            w_coefficients: Vec::new(),
-            y_tilde_values: Vec::new(),
         }
     }
 }
@@ -632,60 +617,53 @@ pub fn n_body_fft_2d<T: FftwFloat>(
         "Output buffer size mismatch"
     );
 
-    // Grow scratch buffers if their sizes don't match. In steady state these
-    // are all no-ops (sizes are constant once n_boxes stabilises).
-    let weights_len = n_points * n_interp;
-    let grid_buf_len = total_grid_points * n_terms;
-    if ws.box_data.len() != n_points {
-        ws.box_data.resize(n_points, ((0, 0), T::zero(), T::zero()));
-    }
-    if ws.x_weights.len() != weights_len {
-        ws.x_weights.resize(weights_len, T::zero());
-        ws.y_weights.resize(weights_len, T::zero());
-    }
-    if ws.w_coefficients.len() != grid_buf_len {
-        ws.w_coefficients.resize(grid_buf_len, T::zero());
-        ws.y_tilde_values.resize(grid_buf_len, T::zero());
-    }
-
-    // Zero accumulators.
+    // zero output
     for v in potentials_out.iter_mut() {
         *v = T::zero();
     }
-    for v in ws.w_coefficients.iter_mut() {
-        *v = T::zero();
-    }
 
-    // step 1: box assignment and relative coords, written in place
-    ws.box_data
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(i, slot)| {
+    // step 1: box assignment and relative coords
+    let box_data: Vec<((usize, usize), T, T)> = (0..n_points)
+        .into_par_iter()
+        .map(|i| {
             let (box_y, box_x) = grid.point_to_box(xs[i], ys[i]);
             let x_in_box = grid.position_in_box(xs[i], box_x);
             let y_in_box = grid.position_in_box(ys[i], box_y);
-            *slot = ((box_y, box_x), x_in_box, y_in_box);
-        });
+            ((box_y, box_x), x_in_box, y_in_box)
+        })
+        .collect();
 
-    // step 1b: Lagrange interpolation weights into flat per-axis buffers
-    {
-        let box_data = &ws.box_data;
-        let interp_spacings = &grid.interp_spacings;
-        let lagrange_denominators = &grid.lagrange_denominators;
-        ws.x_weights
-            .par_chunks_mut(n_interp)
-            .zip(ws.y_weights.par_chunks_mut(n_interp))
-            .enumerate()
-            .for_each(|(i, (x_w, y_w))| {
-                let (_, x_pos, y_pos) = box_data[i];
-                lagrange_weights(x_pos, interp_spacings, lagrange_denominators, x_w);
-                lagrange_weights(y_pos, interp_spacings, lagrange_denominators, y_w);
-            });
-    }
+    // interpolation weights
+    let (x_weights_all, y_weights_all): (Vec<Vec<T>>, Vec<Vec<T>>) = (0..n_points)
+        .into_par_iter()
+        .map(|i| {
+            let (_, x_pos, y_pos) = box_data[i];
+            let mut x_w = vec![T::zero(); n_interp];
+            let mut y_w = vec![T::zero(); n_interp];
+            lagrange_weights(
+                x_pos,
+                &grid.interp_spacings,
+                &grid.lagrange_denominators,
+                &mut x_w,
+            );
+            lagrange_weights(
+                y_pos,
+                &grid.interp_spacings,
+                &grid.lagrange_denominators,
+                &mut y_w,
+            );
+            (x_w, y_w)
+        })
+        .unzip();
 
-    // step 1c: grid assembly (serial, matching C++)
+    let x_weights_flat: Vec<T> = x_weights_all.into_iter().flatten().collect();
+    let y_weights_flat: Vec<T> = y_weights_all.into_iter().flatten().collect();
+
+    // grid assembly (serial, matching C++)
+    let mut w_coefficients = vec![T::zero(); total_grid_points * n_terms];
+
     for i in 0..n_points {
-        let ((box_y, box_x), _, _) = ws.box_data[i];
+        let ((box_y, box_x), _, _) = box_data[i];
         let w_start_idx = i * n_interp;
 
         for interp_y in 0..n_interp {
@@ -695,10 +673,10 @@ pub fn n_body_fft_2d<T: FftwFloat>(
                 let grid_idx = gy * n_interp_1d + gx;
 
                 let weight =
-                    ws.y_weights[w_start_idx + interp_y] * ws.x_weights[w_start_idx + interp_x];
+                    y_weights_flat[w_start_idx + interp_y] * x_weights_flat[w_start_idx + interp_x];
 
                 for term in 0..n_terms {
-                    ws.w_coefficients[grid_idx * n_terms + term] = ws.w_coefficients
+                    w_coefficients[grid_idx * n_terms + term] = w_coefficients
                         [grid_idx * n_terms + term]
                         + weight * charges[i * n_terms + term];
                 }
@@ -709,6 +687,8 @@ pub fn n_body_fft_2d<T: FftwFloat>(
     // step 2: FFT convolution (reusing workspace buffers and plans)
     let n_fft = ws.n_fft;
     let n_complex = n_fft * (n_fft / 2 + 1);
+
+    let mut y_tilde_values = vec![T::zero(); total_grid_points * n_terms];
 
     for term in 0..n_terms {
         // zero fft_input
@@ -721,7 +701,7 @@ pub fn n_body_fft_2d<T: FftwFloat>(
             for j in 0..n_interp_1d {
                 let w_idx = (i * n_interp_1d + j) * n_terms + term;
                 let fft_idx = i * n_fft + j;
-                ws.fft_input[fft_idx] = ws.w_coefficients[w_idx];
+                ws.fft_input[fft_idx] = w_coefficients[w_idx];
             }
         }
 
@@ -755,41 +735,34 @@ pub fn n_body_fft_2d<T: FftwFloat>(
                 let fft_idx = (n_interp_1d + i) * n_fft + (n_interp_1d + j);
                 let val = ws.fft_scratch[fft_idx] / norm_factor;
                 let pot_idx = (i * n_interp_1d + j) * n_terms + term;
-                ws.y_tilde_values[pot_idx] = val;
+                y_tilde_values[pot_idx] = val;
             }
         }
     }
 
     // step 3: gathering (parallel, pre-allocated output)
-    {
-        let box_data = &ws.box_data;
-        let x_weights = &ws.x_weights;
-        let y_weights = &ws.y_weights;
-        let y_tilde_values = &ws.y_tilde_values;
-        potentials_out
-            .par_chunks_mut(n_terms)
-            .enumerate()
-            .for_each(|(i, out)| {
-                let ((box_y, box_x), _, _) = box_data[i];
-                let w_start_idx = i * n_interp;
+    potentials_out
+        .par_chunks_mut(n_terms)
+        .enumerate()
+        .for_each(|(i, out)| {
+            let ((box_y, box_x), _, _) = box_data[i];
+            let w_start_idx = i * n_interp;
 
-                for interp_y in 0..n_interp {
-                    for interp_x in 0..n_interp {
-                        let gy = box_y * n_interp + interp_y;
-                        let gx = box_x * n_interp + interp_x;
-                        let grid_idx = gy * n_interp_1d + gx;
+            for interp_y in 0..n_interp {
+                for interp_x in 0..n_interp {
+                    let gy = box_y * n_interp + interp_y;
+                    let gx = box_x * n_interp + interp_x;
+                    let grid_idx = gy * n_interp_1d + gx;
 
-                        let weight =
-                            y_weights[w_start_idx + interp_y] * x_weights[w_start_idx + interp_x];
+                    let weight = y_weights_flat[w_start_idx + interp_y]
+                        * x_weights_flat[w_start_idx + interp_x];
 
-                        for term in 0..n_terms {
-                            out[term] =
-                                out[term] + weight * y_tilde_values[grid_idx * n_terms + term];
-                        }
+                    for term in 0..n_terms {
+                        out[term] = out[term] + weight * y_tilde_values[grid_idx * n_terms + term];
                     }
                 }
-            });
-    }
+            }
+        });
 }
 
 ///////////
