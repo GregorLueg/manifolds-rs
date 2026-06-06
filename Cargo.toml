@@ -1,6 +1,6 @@
 [package]
 name = "manifolds-rs"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 authors = ["Gregor Lueg <gregorlueg@me.com>"]
 license = "MIT"
@@ -35,7 +35,7 @@ burn = { version = "0.21.0", features = [
     "train",
     "flex",
 ], optional = true }
-ann-search-rs = { version = "0.4.1" }
+ann-search-rs = { version = "0.4.3" }
 approx = "0.5.1"
 faer = "0.23.2"
 faer-traits = "0.23.2"
