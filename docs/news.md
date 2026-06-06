@@ -1,5 +1,13 @@
 # News
 
+## 0.3.3
+
+**Fix:**
+
+- Version bump to the latest `ann-search-rs` (to version `"0.4.3"`) to avoid the
+  weird bug between wgpu <> metal affecting the CAGRA approximate nearest
+  neighbour search.
+
 ## 0.3.2
 
 **Features:**

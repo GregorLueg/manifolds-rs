@@ -101,9 +101,9 @@ checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
 name = "ann-search-rs"
-version = "0.4.1"
+version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8e56ec304e8e675921e8a8c2fcb4a4d4546970664644c2a74a42b423d9739a9c"
+checksum = "b2665db76c5afce94fdbacfc8094bbab38fbb21c5cc533ac4de611e85a42523b"
 dependencies = [
  "approx",
  "clap",
