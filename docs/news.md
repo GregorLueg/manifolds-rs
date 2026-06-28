@@ -1,5 +1,11 @@
 # News
 
+## 0.3.4
+
+**Features:**
+
+- Serialisation added to the trained parametric UMAP model.
+
 ## 0.3.3
 
 **Fix:**

@@ -353,7 +353,7 @@ where
     // Get final embeddings
     let embeddings = model.forward(tensor_data);
 
-    let trained_model = TrainedUmapModel::new(model, device.clone());
+    let trained_model = TrainedUmapModel::new(model, model_config.clone(), device.clone());
 
     // Convert to Vec<Vec<f32>> format [n_components][n_samples]
     let n_components = model_config.output_size;

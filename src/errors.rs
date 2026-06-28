@@ -65,4 +65,20 @@ pub enum ManifoldsError {
     /// Error if the data is empty
     #[error("UMAP: no edges to optimise - upstream error?")]
     NoGraphEdges,
+
+    // -- parametric umap serialisation --
+    /// Error when the model bytes cannot be serialised to disk format
+    #[error("Failed to serialise parametric UMAP model: {0}")]
+    ModelSerialisation(String),
+    /// Error when the model bytes cannot be deserialised back into a model
+    #[error("Failed to deserialise parametric UMAP model: {0}")]
+    ModelDeserialisation(String),
+    /// Error when the serialised model has an unsupported schema version
+    #[error("Unsupported parametric UMAP model version: {version} (expected {expected})")]
+    UnsupportedModelVersion {
+        /// Version found in the payload
+        version: u32,
+        /// Version this build of the crate supports
+        expected: u32,
+    },
 }
