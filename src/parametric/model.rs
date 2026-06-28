@@ -1,12 +1,17 @@
 //! Model parameters for the neural network that is being trained during
 //! parametric UMAP.
 
+use bincode::{config, serde::decode_from_slice, serde::encode_to_vec};
+use burn::record::{FullPrecisionSettings, NamedMpkBytesRecorder, Recorder};
 use burn::tensor::Element;
 use burn::{nn::LeakyReluConfig, prelude::*};
 use faer::MatRef;
 use nn::{LeakyRelu, Linear, LinearConfig};
 use num_traits::{Float, FromPrimitive};
+use serde::{Deserialize, Serialize};
 use std::marker::PhantomData;
+
+use crate::prelude::*;
 
 //////////////////
 // Model config //
@@ -150,6 +155,8 @@ pub struct TrainedUmapModel<B: Backend, T> {
     pub model: UmapMlp<B>,
     /// Device on which the tensor reside
     device: B::Device,
+    /// Original config
+    config: UmapMlpConfig,
     /// Phantomdata for types for compiling
     _phantom: PhantomData<T>,
 }
@@ -167,9 +174,10 @@ where
     /// ### Returns
     ///
     /// Initialised self
-    pub fn new(model: UmapMlp<B>, device: B::Device) -> Self {
+    pub fn new(model: UmapMlp<B>, config: UmapMlpConfig, device: B::Device) -> Self {
         Self {
             model,
+            config,
             device,
             _phantom: PhantomData,
         }
@@ -210,6 +218,109 @@ where
         }
 
         result
+    }
+}
+
+/// Serialised representation of a `TrainedUmapModel`.
+///
+/// Combines the architecture configuration with the recorded model weights so
+/// the full model can be reconstructed without external metadata. Designed to
+/// be round-tripped through `bincode`.
+///
+/// ### Fields
+///
+/// * `version` - Schema version of the serialised payload. Incremented on any
+///   breaking change to the on-disk layout.
+/// * `config` - Architecture configuration required to rebuild the `UmapMlp`
+///   skeleton before loading weights.
+/// * `record_bytes` - Burn record bytes produced by `NamedMpkBytesRecorder`
+///   containing the trained weights.
+#[derive(Serialize, Deserialize)]
+struct SerialisedTrainedUmap {
+    /// Schema version of the serialised payload
+    version: u32,
+    /// Architecture configuration of the trained model
+    config: UmapMlpConfig,
+    /// Burn record bytes containing the trained weights
+    record_bytes: Vec<u8>,
+}
+
+/// Current schema version for serialised parametric UMAP models
+const SERIALISED_MODEL_VERSION: u32 = 1;
+
+impl<B: Backend, T> TrainedUmapModel<B, T>
+where
+    T: Element + Float + FromPrimitive,
+{
+    /// Serialise the trained model to a self-contained byte buffer.
+    ///
+    /// The resulting bytes carry both the architecture configuration and the
+    /// model weights, so the buffer alone is sufficient to reconstruct the
+    /// model via [`TrainedUmapModel::from_bytes`].
+    ///
+    /// ### Returns
+    ///
+    /// A `Vec<u8>` containing the serialised model, or a
+    /// [`ManifoldsError::ModelSerialisation`] if either the Burn recorder or
+    /// `bincode` fails.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, ManifoldsError> {
+        let recorder = NamedMpkBytesRecorder::<FullPrecisionSettings>::new();
+        let record = self.model.clone().into_record();
+        let record_bytes = recorder
+            .record(record, ())
+            .map_err(|e| ManifoldsError::ModelSerialisation(e.to_string()))?;
+
+        let payload = SerialisedTrainedUmap {
+            version: SERIALISED_MODEL_VERSION,
+            config: self.config.clone(),
+            record_bytes,
+        };
+
+        encode_to_vec(&payload, config::standard())
+            .map_err(|e| ManifoldsError::ModelSerialisation(e.to_string()))
+    }
+
+    /// Reconstruct a trained model from bytes produced by
+    /// [`TrainedUmapModel::to_bytes`].
+    ///
+    /// Rebuilds the `UmapMlp` skeleton from the embedded configuration on the
+    /// supplied device, then loads the recorded weights into it.
+    ///
+    /// ### Params
+    ///
+    /// * `bytes` - Serialised payload as produced by `to_bytes`.
+    /// * `device` - Device on which to materialise the reconstructed model.
+    ///
+    /// ### Returns
+    ///
+    /// The reconstructed `TrainedUmapModel`, or a `ManifoldsError` if the
+    /// payload is malformed, has an unsupported version, or the Burn recorder
+    /// fails to load the weights.
+    pub fn from_bytes(bytes: &[u8], device: B::Device) -> Result<Self, ManifoldsError> {
+        let (payload, _): (SerialisedTrainedUmap, usize) =
+            decode_from_slice(bytes, config::standard())
+                .map_err(|e| ManifoldsError::ModelDeserialisation(e.to_string()))?;
+
+        if payload.version != SERIALISED_MODEL_VERSION {
+            return Err(ManifoldsError::UnsupportedModelVersion {
+                version: payload.version,
+                expected: SERIALISED_MODEL_VERSION,
+            });
+        }
+
+        let model = UmapMlp::<B>::new(&payload.config, &device);
+        let recorder = NamedMpkBytesRecorder::<FullPrecisionSettings>::new();
+        let record = recorder
+            .load(payload.record_bytes, &device)
+            .map_err(|e| ManifoldsError::ModelDeserialisation(e.to_string()))?;
+        let model = model.load_record(record);
+
+        Ok(Self {
+            model,
+            config: payload.config,
+            device,
+            _phantom: PhantomData,
+        })
     }
 }
 
