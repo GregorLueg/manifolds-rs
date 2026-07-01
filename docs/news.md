@@ -1,5 +1,11 @@
 # News
 
+## 0.3.5
+
+**Features:**
+
+- GPU-accelerated Adam optimiser for UMAP.
+
 ## 0.3.4
 
 **Features:**
