@@ -4,6 +4,8 @@
 //! moment update and step, edge-schedule advancement) and the embedding is
 //! read back once at the end.
 
+#![allow(missing_docs)] // cubecl weirdness
+
 use ann_search_rs::gpu::tensor::GpuTensor;
 use ann_search_rs::gpu::{grid_2d, WORKGROUP_SIZE_X};
 use cubecl::prelude::*;
@@ -771,14 +773,17 @@ where
     // seed fits in u32; upper bits of a u64 seed are unused.
     let seed_u32 = seed as u32;
 
+    if verbosity.normal_verbosity() {
+        println!(
+            "Running {} epochs on the GPU with GPU-accelerated Adam",
+            params.n_epochs
+        );
+    }
+
     for epoch in 0..params.n_epochs {
         launch_grad_accum(&client, &state, params, epoch, seed_u32);
         launch_adam_update(&client, &state, params, epoch);
         launch_edge_schedule_update(&client, &state, epoch);
-
-        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
-            println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
-        }
     }
 
     let final_flat = state.embd.read(&client)?;
@@ -974,6 +979,8 @@ mod tests {
 
     // -- CPU / GPU host fixtures --
 
+    type TriangleSetup = (Vec<Vec<f32>>, Vec<Vec<(usize, f32)>>, UmapOptimParams<f32>);
+
     // Symmetric triangle, weights (0,1)=1.0, (0,2)=0.5, (1,2)=1.0.
     fn triangle_graph() -> Vec<Vec<(usize, f64)>> {
         vec![
@@ -983,7 +990,7 @@ mod tests {
         ]
     }
 
-    fn triangle_setup() -> (Vec<Vec<f32>>, Vec<Vec<(usize, f32)>>, UmapOptimParams<f32>) {
+    fn triangle_setup() -> TriangleSetup {
         let embd = vec![vec![0.0_f32, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
         let graph = vec![
             vec![(1_usize, 1.0_f32), (2, 0.5)],
@@ -1570,7 +1577,7 @@ mod tests {
     #[test]
     fn test_schedule_mixed_active_inactive() {
         let Some(device) = try_device() else { return };
-        let (client, csr, _, state) = build_state(&device);
+        let (client, _, _, state) = build_state(&device);
 
         // At epoch=1, cursors [1.0, 2.0, 1.0]: edges 0 and 2 tick (1 >= 1),
         // edge 1 doesn't (1 < 2).
