@@ -5,6 +5,8 @@
 **Features:**
 
 - GPU-accelerated Adam optimiser for UMAP.
+- Modified the CPU multi-threaded Adam optimiser to leverage the same logic as
+  the GPU accelerated one.
 
 ## 0.3.4
 
