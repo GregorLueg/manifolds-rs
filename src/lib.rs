@@ -2912,14 +2912,38 @@ where
                 verbose,
             )?;
         }
-        UmapOptimiserGpu::AdamGpu => optimise_embedding_adam_gpu::<R, T>(
-            &mut embd,
-            &graph_adj,
-            &umap_params.optim_params,
-            device,
-            seed as u64,
-            verbose,
-        )?,
+        UmapOptimiserGpu::AdamGpu => {
+            // downcast to f32 for GPU here...
+            let mut embd_f32: Vec<Vec<f32>> = embd
+                .iter()
+                .map(|p| p.iter().map(|&x| x.to_f32().unwrap()).collect())
+                .collect();
+            let graph_adj_f32: Vec<Vec<(usize, f32)>> = graph_adj
+                .iter()
+                .map(|edges| {
+                    edges
+                        .iter()
+                        .map(|&(j, w)| (j, w.to_f32().unwrap()))
+                        .collect()
+                })
+                .collect();
+            let params_f32 = umap_params.optim_params.cast::<f32>();
+
+            optimise_embedding_adam_gpu::<R, f32>(
+                &mut embd_f32,
+                &graph_adj_f32,
+                &params_f32,
+                device,
+                seed as u64,
+                verbose,
+            )?;
+
+            for (i, point) in embd.iter_mut().enumerate() {
+                for (j, coord) in point.iter_mut().enumerate() {
+                    *coord = T::from(embd_f32[i][j]).unwrap();
+                }
+            }
+        }
     }
 
     if verbosity.normal_verbosity() {

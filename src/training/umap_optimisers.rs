@@ -206,6 +206,30 @@ where
 
         (a, b)
     }
+
+    /// Cast parameters to a different float type. `usize` fields pass through.
+    ///
+    /// ### Returns
+    ///
+    /// `UmapOptimParams<U>` with all float fields converted via `NumCast`.
+    pub fn cast<U>(&self) -> UmapOptimParams<U>
+    where
+        U: ManifoldsFloat,
+    {
+        let c = |v: T| U::from(v).unwrap();
+        UmapOptimParams {
+            a: c(self.a),
+            b: c(self.b),
+            lr: c(self.lr),
+            gamma: c(self.gamma),
+            n_epochs: self.n_epochs,
+            neg_sample_rate: self.neg_sample_rate,
+            min_dist: c(self.min_dist),
+            beta1: c(self.beta1),
+            beta2: c(self.beta2),
+            eps: c(self.eps),
+        }
+    }
 }
 
 impl<T> Default for UmapOptimParams<T>
