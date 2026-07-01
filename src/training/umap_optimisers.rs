@@ -409,6 +409,23 @@ fn fast_pow<T: ManifoldsFloat>(x: T, b: T, b_is_one: bool, b_is_half: bool) -> T
     }
 }
 
+/// Splitmix-style finaliser mapping (seed, node, epoch, edge_local, neg) -> [0, n).
+/// Shared with the GPU optimiser; constants must match `gpu_hash_neg` exactly.
+#[inline]
+fn hash_neg_sample(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: u32) -> u32 {
+    let mut h = seed
+        ^ node.wrapping_mul(0x9E3779B1)
+        ^ epoch.wrapping_mul(0x85EBCA77)
+        ^ edge_local.wrapping_mul(0xC2B2AE3D)
+        ^ neg.wrapping_mul(0x27D4EB2F);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7FEB352D);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846CA68B);
+    h ^= h >> 16;
+    h % n
+}
+
 ////////////////
 // Optimisers //
 ////////////////
@@ -864,20 +881,19 @@ where
 
 /// Optimise UMAP embedding using Adam optimiser (parallel batch version)
 ///
-/// Implements uwot's `BatchUpdate` with `NodeWorker` behaviour:
-///
-/// - Parallelises over nodes using Rayon
-/// - Accumulates gradients per node per epoch safely via chunking
-/// - Applies Adam updates and edge schedules in parallel
-/// - Utilises CSR (Compressed Sparse Row) graph structures for cache locality
-/// - Utilises LUTs to avoid expensive float powers
+/// Uniform-negative-sampling variant. Each active edge draws exactly
+/// `neg_sample_rate` negatives per endpoint per epoch via a counter-based
+/// hash keyed on `(seed, node, epoch, edge_local, neg)`. Matches the GPU
+/// optimiser bit-for-bit modulo FP order; simpler than the original
+/// `uwot`-faithful adaptive schedule and produces cleaner clusters in
+/// practice.
 ///
 /// ### Params
 ///
 /// * `embd` - Initial embedding, modified in place
 /// * `graph` - Adjacency list representation
 /// * `params` - Includes Adam hyperparameters
-/// * `seed` - Random seed
+/// * `seed` - Random seed passed through the hash; same seed -> same result.
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
 pub fn optimise_embedding_adam_parallel<T>(
@@ -903,15 +919,12 @@ where
     }
 
     let consts = OptimConstants::new(params.a, params.b, params.gamma);
-
-    // pre-compute a LUT for x^b (mapping squared distances up to 25.0)
     let b_is_one = (consts.b - T::one()).abs() < T::from(1e-10).unwrap();
     let lut = FastPowLut::new(consts.b, 25.0, 65_536);
 
     let mut edges: Vec<(usize, usize, T)> = Vec::new();
     let mut degree = vec![0; n];
 
-    // take only i < j to get the unique undirected edges.
     for (i, neighbours) in graph.iter().enumerate() {
         for &(j, w) in neighbours {
             if i < j {
@@ -946,12 +959,6 @@ where
 
     let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
 
-    let epochs_per_neg_sample: Vec<T> = epochs_per_sample
-        .iter()
-        .map(|eps| *eps / T::from(params.neg_sample_rate).unwrap())
-        .collect();
-    let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
-
     let n_epochs_f = T::from(params.n_epochs).unwrap();
     let lr_schedule: Vec<T> = (0..params.n_epochs)
         .map(|e| params.lr * (T::one() - T::from(e).unwrap() / n_epochs_f))
@@ -960,20 +967,20 @@ where
     let mut m: Vec<T> = vec![T::zero(); n * n_dim];
     let mut v: Vec<T> = vec![T::zero(); n * n_dim];
 
-    // flatten graph to CSR layout to kill pointer chasing
     let mut node_edge_offsets = vec![0; n + 1];
     for i in 0..n {
         node_edge_offsets[i + 1] = node_edge_offsets[i] + degree[i];
     }
 
-    // csr_edges stores (edge_idx, is_smaller, other_node_idx)
-    let mut csr_edges = vec![(0usize, false, 0usize); edges.len() * 2];
+    // csr_edges stores (edge_idx, other_node_idx). `is_smaller` is gone —
+    // both endpoints draw negatives symmetrically.
+    let mut csr_edges = vec![(0usize, 0usize); edges.len() * 2];
     let mut current_offset = node_edge_offsets.clone();
 
     for (edge_idx, &(i, j, _)) in edges.iter().enumerate() {
-        csr_edges[current_offset[i]] = (edge_idx, true, j);
+        csr_edges[current_offset[i]] = (edge_idx, j);
         current_offset[i] += 1;
-        csr_edges[current_offset[j]] = (edge_idx, false, i);
+        csr_edges[current_offset[j]] = (edge_idx, i);
         current_offset[j] += 1;
     }
 
@@ -995,27 +1002,23 @@ where
     let mut node_gradients_all: Vec<T> = vec![T::zero(); n * n_dim];
     let mut node_has_update: Vec<bool> = vec![false; n];
 
-    // stateful RNG instantiated once per thread/node - should be faster ... ?
-    let mut node_rngs: Vec<SmallRng> = (0..n)
-        .map(|i| SmallRng::seed_from_u64(seed + i as u64))
-        .collect();
+    let seed_u32 = seed as u32;
+    let neg_rate = params.neg_sample_rate as u32;
+    let n_u32 = n as u32;
 
     for epoch in 0..params.n_epochs {
         let lr = lr_schedule[epoch];
         let epoch_t = T::from(epoch).unwrap();
+        let epoch_u32 = epoch as u32;
         let (ad_scale, epsc) = bias_corrections[epoch];
 
-        // reset state
         node_has_update.fill(false);
 
-        // safely partition gradients per node
         node_gradients_all
             .par_chunks_exact_mut(n_dim)
             .zip(node_has_update.par_iter_mut())
-            .zip(node_rngs.par_iter_mut())
             .enumerate()
-            .for_each(|(node_i, ((node_grad, has_update), rng))| {
-                // Clear old gradients
+            .for_each(|(node_i, (node_grad, has_update))| {
                 for g in node_grad.iter_mut() {
                     *g = T::zero();
                 }
@@ -1027,7 +1030,7 @@ where
                 let end_idx = node_edge_offsets[node_i + 1];
                 let node_edges = &csr_edges[start_idx..end_idx];
 
-                for &(edge_idx, is_smaller, other_node) in node_edges {
+                for (edge_local, &(edge_idx, other_node)) in node_edges.iter().enumerate() {
                     if epoch_of_next_sample[edge_idx] > epoch_t {
                         continue;
                     }
@@ -1052,43 +1055,43 @@ where
                         }
                     }
 
-                    if is_smaller {
-                        let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
-                            / epochs_per_neg_sample[edge_idx])
-                            .floor()
-                            .to_usize()
-                            .unwrap_or(0);
+                    // Fixed-rate negatives, hashed. Every active edge, both endpoints.
+                    for neg in 0..neg_rate {
+                        let k = hash_neg_sample(
+                            seed_u32,
+                            node_i as u32,
+                            epoch_u32,
+                            edge_local as u32,
+                            neg,
+                            n_u32,
+                        ) as usize;
+                        if k == node_i {
+                            continue;
+                        }
 
-                        for _ in 0..n_neg_samples {
-                            let k = rng.random_range(0..n);
-                            if k == node_i {
-                                continue;
-                            }
+                        let base_k = k * n_dim;
 
-                            let base_k = k * n_dim;
+                        let mut dist_sq = T::zero();
+                        for d in 0..n_dim {
+                            let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
+                            dist_sq += diff * diff;
+                        }
 
-                            let mut dist_sq = T::zero();
-                            for d in 0..n_dim {
-                                let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
-                                dist_sq += diff * diff;
-                            }
+                        let dist_sq_safe = dist_sq + consts.eps;
+                        let dist_sq_b = if b_is_one {
+                            dist_sq_safe
+                        } else {
+                            lut.get(dist_sq_safe)
+                        };
 
-                            let dist_sq_safe = dist_sq + consts.eps;
-                            let dist_sq_b = if b_is_one {
-                                dist_sq_safe
-                            } else {
-                                lut.get(dist_sq_safe)
-                            };
+                        let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
+                        let grad_coeff = (consts.two_gamma_b / denom)
+                            .max(-consts.clip_val)
+                            .min(consts.clip_val);
 
-                            let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
-                            let grad_coeff = (consts.two_gamma_b / denom)
-                                .max(-consts.clip_val)
-                                .min(consts.clip_val);
-
-                            for d in 0..n_dim {
-                                let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
-                                node_grad[d] += grad_coeff * delta;
-                            }
+                        for d in 0..n_dim {
+                            let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
+                            node_grad[d] += grad_coeff * delta;
                         }
                     }
                 }
@@ -1098,7 +1101,6 @@ where
                 }
             });
 
-        // parallelise Adam moments and embedding updates
         node_gradients_all
             .par_chunks_exact_mut(n_dim)
             .zip(m.par_chunks_exact_mut(n_dim))
@@ -1123,22 +1125,13 @@ where
                 }
             });
 
-        // parallelise edge schedules
+        // Only the sample schedule remains — negatives don't need one.
         epoch_of_next_sample
             .par_iter_mut()
-            .zip(epoch_of_next_neg_sample.par_iter_mut())
             .zip(epochs_per_sample.par_iter())
-            .zip(epochs_per_neg_sample.par_iter())
-            .for_each(|(((next_sample, next_neg), &per_sample), &per_neg)| {
+            .for_each(|(next_sample, &per_sample)| {
                 if *next_sample <= epoch_t {
                     *next_sample += per_sample;
-
-                    let n_neg_samples = ((epoch_t - *next_neg) / per_neg)
-                        .floor()
-                        .to_usize()
-                        .unwrap_or(0);
-
-                    *next_neg += T::from(n_neg_samples).unwrap() * per_neg;
                 }
             });
 
@@ -1147,7 +1140,6 @@ where
         }
     }
 
-    // move flat embeddings back to target
     embd.par_iter_mut().enumerate().for_each(|(i, point)| {
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
