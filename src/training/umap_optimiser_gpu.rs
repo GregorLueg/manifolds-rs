@@ -9,6 +9,44 @@ use cubecl::prelude::*;
 use crate::prelude::*;
 use crate::training::umap_optimisers::UmapOptimParams;
 
+///////////
+// Enums //
+///////////
+
+/// Type of UMAP optimiser to use
+#[derive(Default)]
+pub enum UmapOptimiserGpu {
+    /// A GPU-accelerated version of the Adam optimiser
+    #[default]
+    AdamGpu,
+    /// Parallel version of Adam (CPU version)
+    AdamParallel,
+    /// Adam (CPU version)
+    Adam,
+    /// Stochastic gradient descent (CPU version, UMAP classical)
+    Sgd,
+}
+
+/// Parse the UMAP Optimiser to use
+///
+/// ### Params
+///
+/// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`
+///   `"sgd"` or `"adam_gpu"` (default).
+///
+/// ### Return
+///
+/// Option of Optimiser
+pub fn parse_umap_optimiser_gpu(s: &str) -> Option<UmapOptimiserGpu> {
+    match s.to_lowercase().as_str() {
+        "adam_gpu" => Some(UmapOptimiserGpu::AdamGpu),
+        "adam" => Some(UmapOptimiserGpu::Adam),
+        "sgd" => Some(UmapOptimiserGpu::Sgd),
+        "adam_parallel" => Some(UmapOptimiserGpu::AdamParallel),
+        _ => None,
+    }
+}
+
 ///////////////////
 // Host-side CSR //
 ///////////////////
@@ -18,7 +56,7 @@ use crate::training::umap_optimisers::UmapOptimParams;
 /// twice in the CSR arrays: once under node `i` (with `is_smaller = 1`) and
 /// once under node `j` (with `is_smaller = 0`). Only the smaller-indexed side
 /// of an edge schedules negative samples, matching the CPU code.
-pub(crate) struct UmapCsrGraph<T> {
+pub struct UmapCsrGraph<T> {
     /// Number of nodes
     pub n: usize,
     /// Number of unique undirected edges
@@ -243,23 +281,6 @@ where
 // Hash //
 //////////
 
-// Splitmix-style finaliser. Maps (seed, node, epoch, edge_local, neg) -> [0, n).
-// Same constants are reproduced in the kernel below; keep them in sync.
-#[inline]
-fn cpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: u32) -> u32 {
-    let mut h = seed
-        ^ node.wrapping_mul(0x9E3779B1)
-        ^ epoch.wrapping_mul(0x85EBCA77)
-        ^ edge_local.wrapping_mul(0xC2B2AE3D)
-        ^ neg.wrapping_mul(0x27D4EB2F);
-    h ^= h >> 16;
-    h = h.wrapping_mul(0x7FEB352D);
-    h ^= h >> 15;
-    h = h.wrapping_mul(0x846CA68B);
-    h ^= h >> 16;
-    h % n
-}
-
 #[cube]
 fn gpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: u32) -> u32 {
     let mut h = seed
@@ -446,6 +467,27 @@ pub fn umap_adam_update<F: Float + CubeElement>(
     embd[i as usize] += lr_alpha * m_new / (F::sqrt(v_new) + epsc);
 }
 
+/// Advance edge sampling cursors for edges that ticked this epoch.
+/// One thread per edge.
+///
+/// ### Grid mapping
+/// * `ABSOLUTE_POS_X` -> edge index
+#[cube(launch_unchecked)]
+pub fn umap_edge_schedule_update<F: Float + CubeElement>(
+    epochs_per_sample: &Tensor<F>,
+    epoch_of_next_sample: &mut Tensor<F>,
+    n_edges: u32,
+    epoch_f: F,
+) {
+    let e = ABSOLUTE_POS_X;
+    if e >= n_edges {
+        terminate!();
+    }
+    if epoch_of_next_sample[e as usize] <= epoch_f {
+        epoch_of_next_sample[e as usize] += epochs_per_sample[e as usize];
+    }
+}
+
 //////////////
 // Launcher //
 //////////////
@@ -496,11 +538,157 @@ pub(crate) fn launch_grad_accum<R, T>(
     }
 }
 
+pub(crate) fn launch_adam_update<R, T>(
+    client: &ComputeClient<R>,
+    state: &UmapGpuState<R, T>,
+    params: &UmapOptimParams<T>,
+    epoch: usize,
+) where
+    R: Runtime,
+    T: ManifoldsFloatGpu,
+{
+    let one = T::one();
+    let n_total = (state.n * state.n_dim) as u32;
+    let wg = WORKGROUP_SIZE_X;
+    let n_workgroups = n_total.div_ceil(wg);
+    let (gx, gy) = grid_2d(n_workgroups);
+
+    let lr_alpha = params.lr * (one - T::from(epoch).unwrap() / T::from(state.n_epochs).unwrap());
+
+    let t = T::from(epoch + 1).unwrap();
+    let beta1t = num_traits::Float::powf(params.beta1, t);
+    let beta2t = num_traits::Float::powf(params.beta2, t);
+    let sqrt_b2t1 = num_traits::Float::sqrt(one - beta2t);
+    let ad_scale = sqrt_b2t1 / (one - beta1t);
+    let epsc = sqrt_b2t1 * params.eps;
+
+    unsafe {
+        umap_adam_update::launch_unchecked::<T, R>(
+            client,
+            CubeCount::Static(gx, gy, 1),
+            CubeDim::new_1d(wg),
+            state.node_grad.clone().into_tensor_arg(),
+            state.has_update.clone().into_tensor_arg(),
+            state.m.clone().into_tensor_arg(),
+            state.v.clone().into_tensor_arg(),
+            state.embd.clone().into_tensor_arg(),
+            n_total,
+            state.n_dim as u32,
+            lr_alpha * ad_scale,
+            epsc,
+            one - params.beta1,
+            one - params.beta2,
+        );
+    }
+}
+
+pub(crate) fn launch_edge_schedule_update<R, T>(
+    client: &ComputeClient<R>,
+    state: &UmapGpuState<R, T>,
+    epoch: usize,
+) where
+    R: Runtime,
+    T: ManifoldsFloatGpu,
+{
+    let wg = WORKGROUP_SIZE_X;
+    let n_workgroups = (state.n_edges as u32).div_ceil(wg);
+    let (gx, gy) = grid_2d(n_workgroups);
+
+    unsafe {
+        umap_edge_schedule_update::launch_unchecked::<T, R>(
+            client,
+            CubeCount::Static(gx, gy, 1),
+            CubeDim::new_1d(wg),
+            state.epochs_per_sample.clone().into_tensor_arg(),
+            state.epoch_of_next_sample.clone().into_tensor_arg(),
+            state.n_edges as u32,
+            T::from(epoch).unwrap(),
+        );
+    }
+}
+
+/// Run the full UMAP Adam optimisation on GPU. Mirrors
+/// `optimise_embedding_adam_parallel` but device-resident throughout: state
+/// is uploaded once, three kernels run per epoch, embedding is read back
+/// once at the end.
+///
+/// ### Params
+///
+/// * `embd` - Initial embedding, modified in place
+/// * `graph` - Adjacency list representation of the symmetrised UMAP graph
+/// * `params` - Adam and UMAP hyperparameters
+/// * `device` - CubeCL runtime device
+/// * `seed` - Random seed for negative sampling
+/// * `verbose` - If `0` silent, `1` normal, `2` detailed
+pub fn optimise_embedding_adam_gpu<R, T>(
+    embd: &mut [Vec<T>],
+    graph: &[Vec<(usize, T)>],
+    params: &UmapOptimParams<T>,
+    device: R::Device,
+    seed: u64,
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
+    R: Runtime,
+    T: ManifoldsFloatGpu,
+{
+    let n = embd.len();
+    if n == 0 {
+        return Err(ManifoldsError::NoData);
+    }
+    let n_dim = embd[0].len();
+    let verbosity = parse_verbosity_level(verbose);
+
+    let csr = UmapCsrGraph::from_graph(graph)?;
+    let client = R::client(&device);
+    let state = UmapGpuState::<R, T>::upload(embd, &csr, params, &client)?;
+
+    // seed fits in u32; upper bits of a u64 seed are unused. That's fine.
+    let seed_u32 = seed as u32;
+
+    for epoch in 0..params.n_epochs {
+        launch_grad_accum(&client, &state, params, epoch, seed_u32);
+        launch_adam_update(&client, &state, params, epoch);
+        launch_edge_schedule_update(&client, &state, epoch);
+
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
+            println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
+        }
+    }
+
+    let final_flat = state.embd.read(&client)?;
+    for (i, point) in embd.iter_mut().enumerate() {
+        let base = i * n_dim;
+        point.copy_from_slice(&final_flat[base..base + n_dim]);
+    }
+
+    Ok(())
+}
+
 /////////////////////////////
 // CPU equivalence testers //
 /////////////////////////////
 
+// Splitmix-style finaliser. Maps (seed, node, epoch, edge_local, neg) -> [0, n).
+// Same constants are reproduced in the kernel below; keep them in sync.
 #[cfg(test)]
+#[inline]
+fn cpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: u32) -> u32 {
+    let mut h = seed
+        ^ node.wrapping_mul(0x9E3779B1)
+        ^ epoch.wrapping_mul(0x85EBCA77)
+        ^ edge_local.wrapping_mul(0xC2B2AE3D)
+        ^ neg.wrapping_mul(0x27D4EB2F);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7FEB352D);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x846CA68B);
+    h ^= h >> 16;
+    h % n
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn cpu_grad_accum<T>(
     embd_flat: &[T],
     csr: &UmapCsrGraph<T>,
@@ -598,6 +786,53 @@ where
     grad
 }
 
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+fn cpu_adam_update<T>(
+    node_grad: &[T],
+    has_update: &[u32],
+    m: &mut [T],
+    v: &mut [T],
+    embd: &mut [T],
+    n: usize,
+    n_dim: usize,
+    params: &UmapOptimParams<T>,
+    epoch: usize,
+    n_epochs: usize,
+) where
+    T: ManifoldsFloat,
+{
+    let one = T::one();
+    let lr_alpha = params.lr * (one - T::from(epoch).unwrap() / T::from(n_epochs).unwrap());
+    let t = T::from(epoch + 1).unwrap();
+    let beta1t = params.beta1.powf(t);
+    let beta2t = params.beta2.powf(t);
+    let sqrt_b2t1 = (one - beta2t).sqrt();
+    let ad_scale = sqrt_b2t1 / (one - beta1t);
+    let epsc = sqrt_b2t1 * params.eps;
+    let one_minus_beta1 = one - params.beta1;
+    let one_minus_beta2 = one - params.beta2;
+    let fused = lr_alpha * ad_scale;
+
+    for node in 0..n {
+        if has_update[node] == 0 {
+            continue;
+        }
+        for d in 0..n_dim {
+            let i = node * n_dim + d;
+            let g = node_grad[i];
+
+            let m_new = m[i] + one_minus_beta1 * (g - m[i]);
+            m[i] = m_new;
+
+            let v_new = v[i] + one_minus_beta2 * (g * g - v[i]);
+            v[i] = v_new;
+
+            embd[i] += fused * m_new / (v_new.sqrt() + epsc);
+        }
+    }
+}
+
 ///////////
 // Tests //
 ///////////
@@ -606,6 +841,8 @@ where
 mod tests {
     use super::*;
     use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+
+    // -- testing out CPU / GPU hosts ----
 
     // Symmetric triangle, weights (0,1)=1.0, (0,2)=0.5, (1,2)=1.0
     fn triangle_graph() -> Vec<Vec<(usize, f64)>> {
@@ -847,6 +1084,8 @@ mod tests {
         }
     }
 
+    // -- gradient kernel testing ----
+
     fn run_grad_kernel(
         device: &WgpuDevice,
         embd: &[Vec<f32>],
@@ -974,5 +1213,386 @@ mod tests {
         let (got1, _, _) = run_grad_kernel(&device, &embd, &graph, &params, 5, 42);
         let (got2, _, _) = run_grad_kernel(&device, &embd, &graph, &params, 5, 42);
         assert_eq!(got1, got2);
+    }
+
+    // -- Adam optimiser --
+
+    /// Build a state, manually set node_grad / m / v / embd / has_update,
+    /// run the Adam kernel, return updated (embd, m, v).
+    #[allow(clippy::too_many_arguments)]
+    fn run_adam(
+        device: &WgpuDevice,
+        embd: &[f32],
+        m: &[f32],
+        v: &[f32],
+        node_grad: &[f32],
+        has_update: &[u32],
+        n: usize,
+        n_dim: usize,
+        params: &UmapOptimParams<f32>,
+        epoch: usize,
+    ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
+        let client = WgpuRuntime::client(device);
+
+        // Adam kernel never touches CSR or schedule state, so those buffers are
+        // just placeholders sized so nothing indexes out of bounds.
+        let placeholder_u32 = GpuTensor::from_slice(&[0u32], vec![1], &client);
+        let placeholder_f = GpuTensor::from_slice(&[0.0f32], vec![1], &client);
+
+        let state = UmapGpuState::<WgpuRuntime, f32> {
+            embd: GpuTensor::from_slice(embd, vec![n, n_dim], &client),
+            m: GpuTensor::from_slice(m, vec![n, n_dim], &client),
+            v: GpuTensor::from_slice(v, vec![n, n_dim], &client),
+            node_grad: GpuTensor::from_slice(node_grad, vec![n, n_dim], &client),
+            has_update: GpuTensor::from_slice(has_update, vec![n], &client),
+
+            node_edge_offsets: placeholder_u32.clone(),
+            csr_edge_idx: placeholder_u32.clone(),
+            csr_other_node: placeholder_u32,
+            epochs_per_sample: placeholder_f.clone(),
+            epoch_of_next_sample: placeholder_f.clone(),
+            lr_schedule: placeholder_f.clone(),
+            ad_scale: placeholder_f.clone(),
+            epsc: placeholder_f,
+
+            n,
+            n_dim,
+            n_edges: 0,
+            n_epochs: params.n_epochs,
+        };
+
+        launch_adam_update(&client, &state, params, epoch);
+
+        (
+            state.embd.clone().read(&client).unwrap(),
+            state.m.clone().read(&client).unwrap(),
+            state.v.clone().read(&client).unwrap(),
+        )
+    }
+
+    fn make_params() -> UmapOptimParams<f32> {
+        UmapOptimParams {
+            a: 1.5,
+            b: 0.9,
+            lr: 1.0,
+            gamma: 1.0,
+            n_epochs: 10,
+            neg_sample_rate: 5,
+            min_dist: 0.1,
+            beta1: 0.9,
+            beta2: 0.999,
+            eps: 1e-7,
+        }
+    }
+
+    // 1. has_update = 0 -> embd, m, v all preserved bit-exact.
+    #[test]
+    fn test_adam_inactive_node_preserved() {
+        let Some(device) = try_device() else { return };
+        let params = make_params();
+
+        let embd = vec![1.5_f32, -2.5, 7.0, 8.0];
+        let m = vec![0.1_f32, 0.2, 0.3, 0.4];
+        let v = vec![0.01_f32, 0.02, 0.03, 0.04];
+        let grad = vec![5.0_f32, 5.0, 5.0, 5.0]; // non-zero, would update if active
+        let has_update = vec![0_u32, 0];
+
+        let (e, mm, vv) = run_adam(&device, &embd, &m, &v, &grad, &has_update, 2, 2, &params, 3);
+
+        assert_eq!(e, embd);
+        assert_eq!(mm, m);
+        assert_eq!(vv, v);
+    }
+
+    // 2. Hand-computed single Adam step at epoch 0.
+    #[test]
+    fn test_adam_single_step_hand_computed() {
+        let Some(device) = try_device() else { return };
+        let mut params = make_params();
+        params.lr = 1.0;
+        params.beta1 = 0.9;
+        params.beta2 = 0.999;
+        params.eps = 1e-7;
+        params.n_epochs = 10;
+
+        let embd = vec![0.0_f32];
+        let m = vec![0.0_f32];
+        let v = vec![0.0_f32];
+        let grad = vec![1.0_f32];
+        let has_update = vec![1_u32];
+
+        let (e, mm, vv) = run_adam(&device, &embd, &m, &v, &grad, &has_update, 1, 1, &params, 0);
+
+        // m_new = 0 + (1 - 0.9) * (1 - 0) = 0.1
+        // v_new = 0 + (1 - 0.999) * (1 - 0) = 0.001
+        // alpha = 1.0 * (1 - 0/10) = 1.0
+        // t = 1, beta1^1 = 0.9, beta2^1 = 0.999
+        // sqrt(1 - 0.999) = sqrt(0.001) ≈ 0.0316228
+        // ad_scale = 0.0316228 / (1 - 0.9) = 0.316228
+        // epsc = 0.0316228 * 1e-7 ≈ 3.16e-9
+        // embd += 1.0 * 0.316228 * 0.1 / (sqrt(0.001) + 3.16e-9)
+        //       = 0.0316228 / 0.0316228 ≈ 1.0
+        assert_close(&mm, &[0.1], 1e-6, "m");
+        assert_close(&vv, &[0.001], 1e-6, "v");
+        assert_close(&e, &[1.0], 1e-4, "embd");
+    }
+
+    // 3. Bit-exact match vs CPU reference. Mix of active and inactive nodes.
+    #[test]
+    fn test_adam_matches_cpu_reference() {
+        let Some(device) = try_device() else { return };
+        let params = make_params();
+
+        let n = 5;
+        let n_dim = 2;
+        let embd: Vec<f32> = (0..n * n_dim).map(|i| (i as f32) * 0.5 - 1.0).collect();
+        let m: Vec<f32> = (0..n * n_dim).map(|i| (i as f32) * 0.01).collect();
+        let v: Vec<f32> = (0..n * n_dim).map(|i| (i as f32) * 0.001 + 1e-6).collect();
+        let grad: Vec<f32> = (0..n * n_dim)
+            .map(|i| ((i * 7 + 3) % 5) as f32 * 0.1)
+            .collect();
+        let has_update = vec![1_u32, 0, 1, 1, 0];
+
+        let epoch = 4;
+
+        let (e_gpu, m_gpu, v_gpu) = run_adam(
+            &device,
+            &embd,
+            &m,
+            &v,
+            &grad,
+            &has_update,
+            n,
+            n_dim,
+            &params,
+            epoch,
+        );
+
+        let mut e_cpu = embd.clone();
+        let mut m_cpu = m.clone();
+        let mut v_cpu = v.clone();
+        cpu_adam_update(
+            &grad,
+            &has_update,
+            &mut m_cpu,
+            &mut v_cpu,
+            &mut e_cpu,
+            n,
+            n_dim,
+            &params,
+            epoch,
+            params.n_epochs,
+        );
+
+        // FP-tolerant — sqrt and FMAs may compile differently on GPU.
+        assert_close(&e_gpu, &e_cpu, 1e-5, "embd");
+        assert_close(&m_gpu, &m_cpu, 1e-6, "m");
+        assert_close(&v_gpu, &v_cpu, 1e-6, "v");
+    }
+
+    // 4. Determinism. Same inputs twice -> bit-exact.
+    #[test]
+    fn test_adam_deterministic() {
+        let Some(device) = try_device() else { return };
+        let params = make_params();
+
+        let n = 3;
+        let n_dim = 2;
+        let embd = vec![0.5_f32; n * n_dim];
+        let m = vec![0.1_f32; n * n_dim];
+        let v = vec![0.01_f32; n * n_dim];
+        let grad = vec![0.3_f32; n * n_dim];
+        let has_update = vec![1_u32; n];
+
+        let (e1, m1, v1) = run_adam(
+            &device,
+            &embd,
+            &m,
+            &v,
+            &grad,
+            &has_update,
+            n,
+            n_dim,
+            &params,
+            2,
+        );
+        let (e2, m2, v2) = run_adam(
+            &device,
+            &embd,
+            &m,
+            &v,
+            &grad,
+            &has_update,
+            n,
+            n_dim,
+            &params,
+            2,
+        );
+
+        assert_eq!(e1, e2);
+        assert_eq!(m1, m2);
+        assert_eq!(v1, v2);
+    }
+
+    // -- edge updates --
+
+    #[test]
+    fn test_schedule_active_edges_advance() {
+        let Some(device) = try_device() else { return };
+        let (client, csr, _, state) = build_state(&device);
+
+        // csr.epochs_per_sample = [1.0, 2.0, 1.0], initial cursors match.
+        // At epoch=5, all three edges are active (5 >= 1, 2, 1) -> all advance.
+        launch_edge_schedule_update(&client, &state, 5);
+
+        let got = state.epoch_of_next_sample.clone().read(&client).unwrap();
+        let want: Vec<f32> = csr.epochs_per_sample.iter().map(|p| p * 2.0).collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn test_schedule_inactive_edges_untouched() {
+        let Some(device) = try_device() else { return };
+        let (client, csr, _, state) = build_state(&device);
+
+        // At epoch=0, no edge has ticked yet (cursors are 1.0, 2.0, 1.0 all > 0).
+        launch_edge_schedule_update(&client, &state, 0);
+
+        let got = state.epoch_of_next_sample.clone().read(&client).unwrap();
+        assert_eq!(got, csr.epochs_per_sample);
+    }
+
+    #[test]
+    fn test_schedule_mixed_active_inactive() {
+        let Some(device) = try_device() else { return };
+        let (client, csr, _, state) = build_state(&device);
+
+        // At epoch=1, cursors [1.0, 2.0, 1.0]: edges 0 and 2 tick (1 >= 1),
+        // edge 1 doesn't (1 < 2).
+        launch_edge_schedule_update(&client, &state, 1);
+
+        let got = state.epoch_of_next_sample.clone().read(&client).unwrap();
+        assert_eq!(got, vec![2.0, 2.0, 2.0]);
+    }
+
+    // -- driver loop --
+
+    // Same clique-preservation contract as the CPU tests. Two triangles connected
+    // by a weak edge; final embedding should compress each triangle and leave the
+    // bridge distance larger. Mirrors test_optimisation_preserves_graph_structure_adam.
+    #[test]
+    fn test_gpu_driver_preserves_graph_structure() {
+        let Some(device) = try_device() else { return };
+
+        let graph = vec![
+            vec![(1, 1.0_f32), (2, 1.0)],
+            vec![(0, 1.0), (2, 1.0)],
+            vec![(0, 1.0), (1, 1.0), (3, 0.1)],
+            vec![(2, 0.1), (4, 1.0), (5, 1.0)],
+            vec![(3, 1.0), (5, 1.0)],
+            vec![(3, 1.0), (4, 1.0)],
+        ];
+
+        let mut embd = vec![
+            vec![0.0_f32, 0.0],
+            vec![10.0, 0.0],
+            vec![0.0, 10.0],
+            vec![10.0, 10.0],
+            vec![-5.0, -5.0],
+            vec![15.0, 15.0],
+        ];
+
+        let mut params = UmapOptimParams::<f32>::default_2d();
+        params.n_epochs = 200;
+
+        optimise_embedding_adam_gpu::<WgpuRuntime, f32>(
+            &mut embd,
+            &graph,
+            &params,
+            WgpuDevice::DefaultDevice,
+            42,
+            0,
+        )
+        .unwrap();
+
+        let dist = |a: &[f32], b: &[f32]| -> f32 {
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+        };
+
+        let intra1 =
+            (dist(&embd[0], &embd[1]) + dist(&embd[0], &embd[2]) + dist(&embd[1], &embd[2])) / 3.0;
+        let intra2 =
+            (dist(&embd[3], &embd[4]) + dist(&embd[3], &embd[5]) + dist(&embd[4], &embd[5])) / 3.0;
+        let avg_intra = (intra1 + intra2) / 2.0;
+
+        let inter = [
+            dist(&embd[0], &embd[3]),
+            dist(&embd[0], &embd[4]),
+            dist(&embd[0], &embd[5]),
+            dist(&embd[1], &embd[3]),
+            dist(&embd[1], &embd[4]),
+            dist(&embd[1], &embd[5]),
+        ];
+        let avg_inter: f32 = inter.iter().sum::<f32>() / inter.len() as f32;
+
+        assert!(
+            avg_inter > avg_intra * 1.5,
+            "Inter-clique dist ({:.2}) should be > 1.5x intra-clique dist ({:.2})",
+            avg_inter,
+            avg_intra
+        );
+    }
+
+    // All coords finite after a full run.
+    #[test]
+    fn test_gpu_driver_no_nan_or_inf() {
+        let Some(device) = try_device() else { return };
+
+        let (mut embd, graph, params) = triangle_setup();
+        optimise_embedding_adam_gpu::<WgpuRuntime, f32>(
+            &mut embd,
+            &graph,
+            &params,
+            WgpuDevice::DefaultDevice,
+            42,
+            0,
+        )
+        .unwrap();
+
+        for point in &embd {
+            for &c in point {
+                assert!(c.is_finite(), "non-finite coordinate: {}", c);
+            }
+        }
+    }
+
+    // Same seed -> same result. Confirms nothing sneaks in host-side non-determinism.
+    #[test]
+    fn test_gpu_driver_deterministic() {
+        let Some(device) = try_device() else { return };
+
+        let (mut embd1, graph, params) = triangle_setup();
+        let mut embd2 = embd1.clone();
+
+        optimise_embedding_adam_gpu::<WgpuRuntime, f32>(
+            &mut embd1,
+            &graph,
+            &params,
+            WgpuDevice::DefaultDevice,
+            42,
+            0,
+        )
+        .unwrap();
+        optimise_embedding_adam_gpu::<WgpuRuntime, f32>(
+            &mut embd2,
+            &graph,
+            &params,
+            WgpuDevice::DefaultDevice,
+            42,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(embd1, embd2);
     }
 }
