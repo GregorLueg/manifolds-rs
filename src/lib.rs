@@ -61,6 +61,8 @@ use crate::utils::sparse_ops::matrix_power;
 use crate::parametric::model::*;
 #[cfg(feature = "parametric")]
 use crate::parametric::parametric_train::*;
+#[cfg(feature = "gpu")]
+use crate::training::umap_optimiser_gpu::*;
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::FftwFloat;
 
@@ -2555,7 +2557,7 @@ pub struct UmapParamsGpu<T> {
     pub n_dim: usize,
     /// Number of neighbours
     pub k: usize,
-    /// Which optimiser to use. Defaults to `"adam_parallel"`.
+    /// Which optimiser to use. Defaults to `"adam_gpu"`.
     pub optimiser: String,
     /// Which GPU nearest neighbour search to use. One of `"exhaustive_gpu"`,
     /// `"ivf_gpu"` or `"nndescent_gpu"`. Defaults to `"ivf_gpu"`.
@@ -2829,7 +2831,13 @@ where
             randomised: true,
         }
     });
-    let optimiser = parse_umap_optimiser(&umap_params.optimiser).unwrap_or_default();
+    let optimiser = parse_umap_optimiser_gpu(&umap_params.optimiser).unwrap_or_else(|| {
+        println!(
+            "Unknown optimiser string provided ({:?}). Defaulting to GPU-accelerated Adam",
+            umap_params.optimiser
+        );
+        UmapOptimiserGpu::default()
+    });
 
     if verbosity.normal_verbosity() {
         println!(
@@ -2846,7 +2854,7 @@ where
         &umap_params.umap_graph_params,
         &umap_params.nn_params,
         umap_params.optim_params.n_epochs,
-        device,
+        device.clone(),
         seed,
         verbose,
     )?;
@@ -2868,9 +2876,10 @@ where
         println!(
             "Optimising embedding via {} ({} epochs) on {} edges...",
             match optimiser {
-                UmapOptimiser::Adam => "Adam",
-                UmapOptimiser::Sgd => "SGD",
-                UmapOptimiser::AdamParallel => "Adam (multi-threaded)",
+                UmapOptimiserGpu::Adam => "Adam",
+                UmapOptimiserGpu::Sgd => "SGD",
+                UmapOptimiserGpu::AdamParallel => "Adam (multi-threaded)",
+                UmapOptimiserGpu::AdamGpu => "Adam (GPU-accelerated)",
             },
             umap_params.optim_params.n_epochs,
             graph.col_indices.len().separate_with_underscores()
@@ -2878,14 +2887,14 @@ where
     }
 
     match optimiser {
-        UmapOptimiser::Adam => optimise_embedding_adam(
+        UmapOptimiserGpu::Adam => optimise_embedding_adam(
             &mut embd,
             &graph_adj,
             &umap_params.optim_params,
             seed as u64,
             verbose,
         )?,
-        UmapOptimiser::Sgd => {
+        UmapOptimiserGpu::Sgd => {
             optimise_embedding_sgd(
                 &mut embd,
                 &graph_adj,
@@ -2894,7 +2903,7 @@ where
                 verbose,
             )?;
         }
-        UmapOptimiser::AdamParallel => {
+        UmapOptimiserGpu::AdamParallel => {
             optimise_embedding_adam_parallel(
                 &mut embd,
                 &graph_adj,
@@ -2903,6 +2912,14 @@ where
                 verbose,
             )?;
         }
+        UmapOptimiserGpu::AdamGpu => optimise_embedding_adam_gpu::<R, T>(
+            &mut embd,
+            &graph_adj,
+            &umap_params.optim_params,
+            device,
+            seed as u64,
+            verbose,
+        )?,
     }
 
     if verbosity.normal_verbosity() {

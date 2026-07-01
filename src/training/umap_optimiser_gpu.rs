@@ -1,6 +1,8 @@
-//! GPU-accelerated UMAP optimiser. Mirrors `optimise_embedding_adam_parallel`
-//! but offloads gradient accumulation, Adam updates and edge-schedule
-//! advancement to the GPU.
+//! GPU-accelerated UMAP Adam optimiser. Mirrors
+//! `optimise_embedding_adam_parallel` but device-resident throughout: state is
+//! uploaded once, three kernels run per epoch (gradient accumulation, Adam
+//! moment update and step, edge-schedule advancement) and the embedding is
+//! read back once at the end.
 
 use ann_search_rs::gpu::tensor::GpuTensor;
 use ann_search_rs::gpu::{grid_2d, WORKGROUP_SIZE_X};
@@ -19,11 +21,11 @@ pub enum UmapOptimiserGpu {
     /// A GPU-accelerated version of the Adam optimiser
     #[default]
     AdamGpu,
-    /// Parallel version of Adam (CPU version)
+    /// Parallel version of Adam
     AdamParallel,
-    /// Adam (CPU version)
+    /// Adam
     Adam,
-    /// Stochastic gradient descent (CPU version, UMAP classical)
+    /// Stochastic gradient descent
     Sgd,
 }
 
@@ -47,27 +49,47 @@ pub fn parse_umap_optimiser_gpu(s: &str) -> Option<UmapOptimiserGpu> {
     }
 }
 
+////////////
+// Consts //
+////////////
+
+/// Symmetric clamp on the per-negative-sample repulsive gradient coefficient.
+/// Prevents blow-up when a negative sample lands arbitrarily close to the
+/// source point.
+const GRAD_CLIP_VAL: f64 = 4.0;
+
+/// Additive epsilon on the repulsive `dist_sq` to keep the denominator finite
+/// when a negative sample coincides with the source point.
+const GRAD_REP_EPS: f64 = 0.001;
+
+/// Attractive gradients are skipped when the pairwise `dist_sq` falls below
+/// this threshold, avoiding a division by zero when two endpoints have
+/// collapsed onto each other.
+const GRAD_DIST_SQ_THRESHOLD: f64 = 1e-8;
+
 ///////////////////
 // Host-side CSR //
 ///////////////////
 
 /// Host-side CSR representation of the symmetrised UMAP graph, ready to be
 /// uploaded to the GPU. Each undirected edge `(i, j, w)` with `i < j` appears
-/// twice in the CSR arrays: once under node `i` (with `is_smaller = 1`) and
-/// once under node `j` (with `is_smaller = 0`). Only the smaller-indexed side
-/// of an edge schedules negative samples, matching the CPU code.
+/// twice in the CSR arrays: once under node `i` and once under node `j`. Only
+/// the smaller-indexed side of an edge schedules negative samples, matching
+/// the CPU code.
 pub struct UmapCsrGraph<T> {
-    /// Number of nodes
+    /// Number of nodes.
     pub n: usize,
-    /// Number of unique undirected edges
+    /// Number of unique undirected edges.
     pub n_edges: usize,
-    /// CSR row pointers `[n + 1]`
+    /// CSR row pointers `[n + 1]`.
     pub node_edge_offsets: Vec<u32>,
-    /// Edge index per `(node, edge)` entry `[2 * n_edges]`
+    /// Edge index per `(node, edge)` entry `[2 * n_edges]`.
     pub csr_edge_idx: Vec<u32>,
-    /// Other endpoint per `(node, edge)` entry `[2 * n_edges]`
+    /// Other endpoint per `(node, edge)` entry `[2 * n_edges]`.
     pub csr_other_node: Vec<u32>,
-    /// Sampling period per edge `[n_edges]`
+    /// Sampling period per edge `[n_edges]`. `max_weight / w` for
+    /// non-zero-weight edges; a large sentinel value for zero-weight edges so
+    /// that they effectively never tick.
     pub epochs_per_sample: Vec<T>,
 }
 
@@ -75,10 +97,21 @@ impl<T> UmapCsrGraph<T>
 where
     T: ManifoldsFloat,
 {
-    /// Build CSR layout from an adjacency-list graph.
+    /// Build a CSR layout from an adjacency-list graph.
     ///
     /// The `i < j` filter deduplicates entries when the input graph is
     /// symmetric, and silently drops self-loops.
+    ///
+    /// ### Params
+    ///
+    /// * `graph` - Adjacency list `graph[i] = [(j, w), ...]`. Weights `w` are
+    ///   assumed non-negative.
+    ///
+    /// ### Returns
+    ///
+    /// A CSR representation on success. `ManifoldsError::NoData` if the graph
+    /// has no nodes; `ManifoldsError::NoGraphEdges` if no edges survive the
+    /// `i < j` filter.
     pub fn from_graph(graph: &[Vec<(usize, T)>]) -> Result<Self, ManifoldsError> {
         let n = graph.len();
         if n == 0 {
@@ -117,13 +150,11 @@ where
             let pos_i = cursor[i] as usize;
             csr_edge_idx[pos_i] = edge_idx as u32;
             csr_other_node[pos_i] = j as u32;
-
             cursor[i] += 1;
 
             let pos_j = cursor[j] as usize;
             csr_edge_idx[pos_j] = edge_idx as u32;
             csr_other_node[pos_j] = i as u32;
-
             cursor[j] += 1;
         }
 
@@ -162,38 +193,47 @@ where
 // Device state //
 //////////////////
 
-/// All GPU-resident state for the UMAP optimiser. Built once via `upload`,
-/// mutated in place by the per-epoch kernels.
+/// All GPU-resident state for the UMAP optimiser. Built once via
+/// [`UmapGpuState::upload`], mutated in place by the per-epoch kernels.
 pub(crate) struct UmapGpuState<R, T>
 where
     R: Runtime,
     T: ManifoldsFloatGpu,
 {
-    // Mutable, updated every epoch
-    pub embd: GpuTensor<R, T>,      // [n, n_dim]
-    pub m: GpuTensor<R, T>,         // [n, n_dim]
-    pub v: GpuTensor<R, T>,         // [n, n_dim]
-    pub node_grad: GpuTensor<R, T>, // [n, n_dim] scratch
+    /// Current embedding `[n, n_dim]`, updated every epoch by the Adam step.
+    pub embd: GpuTensor<R, T>,
+    /// First Adam moment `[n, n_dim]`, updated every epoch.
+    pub m: GpuTensor<R, T>,
+    /// Second Adam moment `[n, n_dim]`, updated every epoch.
+    pub v: GpuTensor<R, T>,
+    /// Per-node gradient scratch `[n, n_dim]`, overwritten every epoch.
+    pub node_grad: GpuTensor<R, T>,
 
-    // Immutable CSR, uploaded once
-    pub node_edge_offsets: GpuTensor<R, u32>, // [n + 1]
-    pub csr_edge_idx: GpuTensor<R, u32>,      // [2 * n_edges]
-    pub csr_other_node: GpuTensor<R, u32>,    // [2 * n_edges]
+    /// CSR row pointers `[n + 1]`, uploaded once.
+    pub node_edge_offsets: GpuTensor<R, u32>,
+    /// CSR edge indices `[2 * n_edges]`, uploaded once.
+    pub csr_edge_idx: GpuTensor<R, u32>,
+    /// CSR other endpoints `[2 * n_edges]`, uploaded once.
+    pub csr_other_node: GpuTensor<R, u32>,
 
-    // Edge schedule
+    /// Sampling period per edge `[n_edges]`, uploaded once.
     pub epochs_per_sample: GpuTensor<R, T>,
+    /// Edge sampling cursor `[n_edges]`, advanced every epoch for edges that
+    /// tick.
     pub epoch_of_next_sample: GpuTensor<R, T>,
 
-    // Pre-baked per-epoch schedules
-    pub lr_schedule: GpuTensor<R, T>,
-    pub ad_scale: GpuTensor<R, T>,
-    pub epsc: GpuTensor<R, T>,
+    /// Per-node flag `[n]`, `1` if any edge fired this epoch, else `0`.
+    /// Overwritten by `umap_grad_accum`; read by `umap_adam_update` to skip
+    /// nodes with no active edges.
+    pub has_update: GpuTensor<R, u32>,
 
-    pub has_update: GpuTensor<R, u32>, // [n], 0 or 1
-
+    /// Number of nodes.
     pub n: usize,
+    /// Embedding dimensionality.
     pub n_dim: usize,
+    /// Number of unique undirected edges.
     pub n_edges: usize,
+    /// Total number of optimisation epochs.
     pub n_epochs: usize,
 }
 
@@ -204,6 +244,18 @@ where
 {
     /// Build device state from CPU inputs. All buffers are uploaded; no
     /// kernels run.
+    ///
+    /// ### Params
+    ///
+    /// * `embd` - Initial embedding `[n][n_dim]`, uploaded as a flat
+    ///   row-major buffer
+    /// * `csr` - Host-side CSR representation of the symmetrised UMAP graph
+    /// * `params` - Adam and UMAP hyperparameters
+    /// * `client` - CubeCL compute client for the target device
+    ///
+    /// ### Returns
+    ///
+    /// Device state on success. `ManifoldsError::NoData` if `embd` is empty.
     pub fn upload(
         embd: &[Vec<T>],
         csr: &UmapCsrGraph<T>,
@@ -223,25 +275,6 @@ where
             embd_flat.extend_from_slice(point);
         }
 
-        // Per-epoch schedules. Formulas mirror optimise_embedding_adam_parallel
-        // exactly so a downstream Adam update kernel can read these element-
-        // by-element.
-        let one = T::one();
-        let n_epochs_f = T::from(n_epochs).unwrap();
-        let lr_schedule: Vec<T> = (0..n_epochs)
-            .map(|e| params.lr * (one - T::from(e).unwrap() / n_epochs_f))
-            .collect();
-
-        let (ad_scale, epsc): (Vec<T>, Vec<T>) = (0..n_epochs)
-            .map(|epoch| {
-                let t = T::from(epoch + 1).unwrap();
-                let beta1t = num_traits::Float::powf(params.beta1, t);
-                let beta2t = num_traits::Float::powf(params.beta2, t);
-                let sqrt_b2t1 = num_traits::Float::sqrt(one - beta2t);
-                (sqrt_b2t1 / (one - beta1t), sqrt_b2t1 * params.eps)
-            })
-            .unzip();
-
         let zeros = vec![T::zero(); n * n_dim];
 
         Ok(Self {
@@ -255,17 +288,12 @@ where
             csr_other_node: GpuTensor::from_slice(&csr.csr_other_node, vec![2 * n_edges], client),
 
             epochs_per_sample: GpuTensor::from_slice(&csr.epochs_per_sample, vec![n_edges], client),
-
-            // Cursors initialise to the period itself (first sample event)
+            // Cursors initialise to one period from time 0 (first sample event).
             epoch_of_next_sample: GpuTensor::from_slice(
                 &csr.epochs_per_sample,
                 vec![n_edges],
                 client,
             ),
-
-            lr_schedule: GpuTensor::from_slice(&lr_schedule, vec![n_epochs], client),
-            ad_scale: GpuTensor::from_slice(&ad_scale, vec![n_epochs], client),
-            epsc: GpuTensor::from_slice(&epsc, vec![n_epochs], client),
 
             has_update: GpuTensor::from_slice(&vec![0u32; n], vec![n], client),
 
@@ -281,6 +309,11 @@ where
 // Hash //
 //////////
 
+/// Splitmix-style device-side hash. Maps
+/// `(seed, node, epoch, edge_local, neg)` to a node index in `[0, n)`. Called
+/// in the inner negative-sampling loop of `umap_grad_accum`; kept in sync
+/// with `cpu_hash_neg` so the CPU reference reproduces the same negatives
+/// bit-for-bit.
 #[cube]
 fn gpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: u32) -> u32 {
     let mut h = seed
@@ -300,15 +333,40 @@ fn gpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: 
 // Kernels //
 /////////////
 
-/// Per-node gradient accumulation. One thread per node. Each thread walks its
-/// CSR slice of edges, accumulates the attractive force into its own gradient
-/// buffer, then for each active edge draws `neg_sample_rate` negatives via
-/// the shared `(seed, node, epoch, edge_local, neg)` hash and accumulates
-/// repulsive contributions.
+/// Per-node gradient accumulation. One thread per node.
 ///
-/// Writes `node_grad[node]` in full (overwrite, not accumulate). No atomics,
-/// no shared memory. Reads `epoch_of_next_sample` but never writes it; the
-/// schedule update is a separate kernel.
+/// Each thread walks its CSR slice of edges, accumulates the attractive force
+/// into a thread-local gradient buffer, then for each active edge draws
+/// `neg_sample_rate` negatives via `gpu_hash_neg` and accumulates repulsive
+/// contributions. Writes `node_grad[node]` in full (overwrite, not
+/// accumulate) and sets `has_update[node]` to `1` iff at least one edge fired
+/// this epoch. No atomics, no shared memory. Reads `epoch_of_next_sample` but
+/// never writes it; the schedule update is a separate kernel.
+///
+/// ### Params
+///
+/// * `embd` - Current embedding `[n, n_dim]`
+/// * `node_edge_offsets` - CSR row pointers `[n + 1]`
+/// * `csr_edge_idx` - CSR edge indices `[2 * n_edges]`
+/// * `csr_other_node` - CSR other-endpoint indices `[2 * n_edges]`
+/// * `epoch_of_next_sample` - Edge sampling cursors `[n_edges]`
+/// * `node_grad` - Per-node gradient output `[n, n_dim]`
+/// * `has_update` - Per-node active flag output `[n]`
+/// * `n` - Number of nodes
+/// * `n_dim` - Embedding dimensionality
+/// * `epoch` - Current epoch as `u32`
+/// * `epoch_f` - Current epoch as `F`, used to compare against
+///   `epoch_of_next_sample`
+/// * `seed` - Random seed for negative sampling
+/// * `neg_sample_rate` - Number of negatives drawn per active edge
+/// * `a`, `b` - UMAP curve parameters
+/// * `two_a_b` - Precomputed `2 * a * b`
+/// * `two_gamma_b` - Precomputed `2 * gamma * b`
+/// * `clip_val` - Symmetric clamp on the repulsive gradient coefficient
+/// * `rep_eps` - Additive epsilon on repulsive `dist_sq`
+/// * `dist_sq_threshold` - Below this, attractive gradient is skipped
+/// * `wg_size` - Workgroup size; comptime
+/// * `n_dim_ct` - Embedding dimensionality; comptime, matches `n_dim`
 ///
 /// ### Grid mapping
 ///
@@ -423,13 +481,30 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
     has_update[node as usize] = active;
 }
 
-/// Adam moment update + embedding step. One thread per (node, dim) pair.
-/// Skips nodes with `has_update == 0` (no active edge this epoch), preserving
-/// their m, v, and embedding state — matching the CPU `optimise_embedding_adam_parallel`.
+/// Adam moment update and embedding step. One thread per `(node, dim)` pair.
+///
+/// Skips nodes with `has_update == 0` (no active edge this epoch),
+/// preserving their `m`, `v` and embedding state — matching the CPU
+/// `optimise_embedding_adam_parallel`.
+///
+/// ### Params
+///
+/// * `node_grad` - Gradients `[n, n_dim]` from `umap_grad_accum`
+/// * `has_update` - Per-node active flag `[n]`
+/// * `m` - First Adam moment `[n, n_dim]`, updated in place
+/// * `v` - Second Adam moment `[n, n_dim]`, updated in place
+/// * `embd` - Embedding `[n, n_dim]`, updated in place
+/// * `n_total` - `n * n_dim`
+/// * `n_dim` - Embedding dimensionality
+/// * `lr_alpha` - Fused `lr * (1 - epoch / n_epochs) * ad_scale`
+/// * `epsc` - Bias-corrected `sqrt(1 - beta2^t) * eps`
+/// * `one_minus_beta1` - `1 - beta1`
+/// * `one_minus_beta2` - `1 - beta2`
 ///
 /// ### Grid mapping
 ///
-/// * `ABSOLUTE_POS_X` -> flat (node, dim) index into the [n * n_dim] buffers
+/// * `ABSOLUTE_POS_X` -> flat `(node, dim)` index into the `[n * n_dim]`
+///   buffers
 #[cube(launch_unchecked)]
 pub fn umap_adam_update<F: Float + CubeElement>(
     node_grad: &Tensor<F>,
@@ -467,10 +542,19 @@ pub fn umap_adam_update<F: Float + CubeElement>(
     embd[i as usize] += lr_alpha * m_new / (F::sqrt(v_new) + epsc);
 }
 
-/// Advance edge sampling cursors for edges that ticked this epoch.
-/// One thread per edge.
+/// Advance edge sampling cursors for edges that ticked this epoch. One
+/// thread per edge.
+///
+/// ### Params
+///
+/// * `epochs_per_sample` - Sampling period per edge `[n_edges]`
+/// * `epoch_of_next_sample` - Edge sampling cursors `[n_edges]`, advanced in
+///   place for edges with `cursor <= epoch_f`
+/// * `n_edges` - Number of unique undirected edges
+/// * `epoch_f` - Current epoch as `F`
 ///
 /// ### Grid mapping
+///
 /// * `ABSOLUTE_POS_X` -> edge index
 #[cube(launch_unchecked)]
 pub fn umap_edge_schedule_update<F: Float + CubeElement>(
@@ -492,6 +576,15 @@ pub fn umap_edge_schedule_update<F: Float + CubeElement>(
 // Launcher //
 //////////////
 
+/// Dispatch `umap_grad_accum` for one epoch.
+///
+/// ### Params
+///
+/// * `client` - CubeCL compute client
+/// * `state` - Device-resident optimiser state
+/// * `params` - Adam and UMAP hyperparameters
+/// * `epoch` - Current epoch index (0-based)
+/// * `seed` - Random seed for negative sampling
 pub(crate) fn launch_grad_accum<R, T>(
     client: &ComputeClient<R>,
     state: &UmapGpuState<R, T>,
@@ -529,15 +622,25 @@ pub(crate) fn launch_grad_accum<R, T>(
             params.b,
             two * params.a * params.b,
             two * params.gamma * params.b,
-            T::from(4.0).unwrap(),   // clip_val
-            T::from(0.001).unwrap(), // rep_eps
-            T::from(1e-8).unwrap(),  // dist_sq_threshold
+            T::from(GRAD_CLIP_VAL).unwrap(),
+            T::from(GRAD_REP_EPS).unwrap(),
+            T::from(GRAD_DIST_SQ_THRESHOLD).unwrap(),
             wg,
             state.n_dim as u32,
         );
     }
 }
 
+/// Dispatch `umap_adam_update` for one epoch. Computes the per-epoch Adam
+/// bias-correction and learning-rate schedule on the host and passes them as
+/// scalars.
+///
+/// ### Params
+///
+/// * `client` - CubeCL compute client
+/// * `state` - Device-resident optimiser state
+/// * `params` - Adam and UMAP hyperparameters
+/// * `epoch` - Current epoch index (0-based)
 pub(crate) fn launch_adam_update<R, T>(
     client: &ComputeClient<R>,
     state: &UmapGpuState<R, T>,
@@ -582,6 +685,13 @@ pub(crate) fn launch_adam_update<R, T>(
     }
 }
 
+/// Dispatch `umap_edge_schedule_update` for one epoch.
+///
+/// ### Params
+///
+/// * `client` - CubeCL compute client
+/// * `state` - Device-resident optimiser state
+/// * `epoch` - Current epoch index (0-based)
 pub(crate) fn launch_edge_schedule_update<R, T>(
     client: &ComputeClient<R>,
     state: &UmapGpuState<R, T>,
@@ -607,19 +717,34 @@ pub(crate) fn launch_edge_schedule_update<R, T>(
     }
 }
 
-/// Run the full UMAP Adam optimisation on GPU. Mirrors
+//////////
+// Main //
+//////////
+
+/// Run the full UMAP Adam optimisation on the GPU. Mirrors
 /// `optimise_embedding_adam_parallel` but device-resident throughout: state
-/// is uploaded once, three kernels run per epoch, embedding is read back
-/// once at the end.
+/// is uploaded once, three kernels run per epoch (gradient accumulation,
+/// Adam step, edge-schedule advancement) and the embedding is read back once
+/// at the end.
 ///
 /// ### Params
 ///
-/// * `embd` - Initial embedding, modified in place
-/// * `graph` - Adjacency list representation of the symmetrised UMAP graph
+/// * `embd` - Initial embedding `[n][n_dim]`, modified in place with the
+///   optimised coordinates on return
+/// * `graph` - Adjacency-list representation of the symmetrised UMAP graph.
+///   Self-loops are silently dropped; only `i < j` entries are used to build
+///   the CSR
 /// * `params` - Adam and UMAP hyperparameters
 /// * `device` - CubeCL runtime device
-/// * `seed` - Random seed for negative sampling
-/// * `verbose` - If `0` silent, `1` normal, `2` detailed
+/// * `seed` - Random seed for negative sampling. Truncated to `u32` on the
+///   device
+/// * `verbose` - `0` silent, `1` normal, `2` detailed
+///
+/// ### Returns
+///
+/// `Ok(())` on success; the optimised embedding is written back into `embd`
+/// in place. `ManifoldsError::NoData` if `embd` is empty;
+/// `ManifoldsError::NoGraphEdges` if the CSR graph has no surviving edges.
 pub fn optimise_embedding_adam_gpu<R, T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
@@ -643,7 +768,7 @@ where
     let client = R::client(&device);
     let state = UmapGpuState::<R, T>::upload(embd, &csr, params, &client)?;
 
-    // seed fits in u32; upper bits of a u64 seed are unused. That's fine.
+    // seed fits in u32; upper bits of a u64 seed are unused.
     let seed_u32 = seed as u32;
 
     for epoch in 0..params.n_epochs {
@@ -669,8 +794,8 @@ where
 // CPU equivalence testers //
 /////////////////////////////
 
-// Splitmix-style finaliser. Maps (seed, node, epoch, edge_local, neg) -> [0, n).
-// Same constants are reproduced in the kernel below; keep them in sync.
+/// Splitmix-style host-side hash matching `gpu_hash_neg` bit-for-bit. Kept in
+/// sync manually so the CPU reference reproduces the same negative samples.
 #[cfg(test)]
 #[inline]
 fn cpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: u32) -> u32 {
@@ -687,6 +812,10 @@ fn cpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: 
     h % n
 }
 
+/// Host-side reference implementation of `umap_grad_accum`. Same iteration
+/// order as the kernel so attractive-only runs match bit-for-bit; runs with
+/// negatives are FP-tolerant because `powf` and FMAs may compile differently
+/// on the GPU.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn cpu_grad_accum<T>(
@@ -708,9 +837,9 @@ where
     let two = T::from(2.0).unwrap();
     let one = T::one();
     let zero = T::zero();
-    let dist_sq_threshold = T::from(1e-8).unwrap();
-    let rep_eps = T::from(0.001).unwrap();
-    let clip_val = T::from(4.0).unwrap();
+    let dist_sq_threshold = T::from(GRAD_DIST_SQ_THRESHOLD).unwrap();
+    let rep_eps = T::from(GRAD_REP_EPS).unwrap();
+    let clip_val = T::from(GRAD_CLIP_VAL).unwrap();
     let two_a_b = two * params.a * params.b;
     let two_gamma_b = two * params.gamma * params.b;
     let epoch_t = T::from(epoch).unwrap();
@@ -786,6 +915,7 @@ where
     grad
 }
 
+/// Host-side reference implementation of `umap_adam_update` for one epoch.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 fn cpu_adam_update<T>(
@@ -842,9 +972,9 @@ mod tests {
     use super::*;
     use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
 
-    // -- testing out CPU / GPU hosts ----
+    // -- CPU / GPU host fixtures --
 
-    // Symmetric triangle, weights (0,1)=1.0, (0,2)=0.5, (1,2)=1.0
+    // Symmetric triangle, weights (0,1)=1.0, (0,2)=0.5, (1,2)=1.0.
     fn triangle_graph() -> Vec<Vec<(usize, f64)>> {
         vec![
             vec![(1, 1.0), (2, 0.5)],
@@ -891,6 +1021,33 @@ mod tests {
         (client, csr, params, state)
     }
 
+    fn try_device() -> Option<WgpuDevice> {
+        let device = WgpuDevice::DefaultDevice;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            WgpuRuntime::client(&device);
+        }))
+        .ok()
+        .map(|_| device)
+    }
+
+    fn assert_close(got: &[f32], want: &[f32], tol: f32, ctx: &str) {
+        assert_eq!(got.len(), want.len(), "{}: length mismatch", ctx);
+        for i in 0..got.len() {
+            let d = (got[i] - want[i]).abs();
+            assert!(
+                d <= tol,
+                "{}: elem {}: got {} want {} (diff {})",
+                ctx,
+                i,
+                got[i],
+                want[i],
+                d,
+            );
+        }
+    }
+
+    // -- CSR --
+
     #[test]
     fn test_csr_triangle_layout() {
         let g = triangle_graph();
@@ -900,7 +1057,7 @@ mod tests {
         assert_eq!(csr.n_edges, 3);
         assert_eq!(csr.node_edge_offsets, vec![0, 2, 4, 6]);
 
-        // Edge ordering: (0,1)=edge0, (0,2)=edge1, (1,2)=edge2
+        // Edge ordering: (0,1)=edge0, (0,2)=edge1, (1,2)=edge2.
         assert_eq!(csr.csr_edge_idx, vec![0, 1, 0, 2, 1, 2]);
         assert_eq!(csr.csr_other_node, vec![1, 2, 0, 2, 0, 1]);
     }
@@ -910,7 +1067,7 @@ mod tests {
         let g = triangle_graph();
         let csr = UmapCsrGraph::<f64>::from_graph(&g).unwrap();
 
-        // max_weight = 1.0; epochs_per_sample = max_weight / w
+        // max_weight = 1.0; epochs_per_sample = max_weight / w.
         assert_eq!(csr.epochs_per_sample, vec![1.0, 2.0, 1.0]);
     }
 
@@ -962,14 +1119,7 @@ mod tests {
         assert_eq!(csr.node_edge_offsets, vec![0, 2, 3, 4]);
     }
 
-    fn try_device() -> Option<WgpuDevice> {
-        let device = WgpuDevice::DefaultDevice;
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            WgpuRuntime::client(&device);
-        }))
-        .ok()
-        .map(|_| device)
-    }
+    // -- Upload / device state --
 
     #[test]
     fn test_embedding_roundtrip() {
@@ -1016,35 +1166,11 @@ mod tests {
             state.epochs_per_sample.clone().read(&client).unwrap(),
             csr.epochs_per_sample
         );
-        // Cursors initialised to one period from time 0
+        // Cursors initialised to one period from time 0.
         assert_eq!(
             state.epoch_of_next_sample.clone().read(&client).unwrap(),
             csr.epochs_per_sample
         );
-    }
-
-    #[test]
-    fn test_per_epoch_schedules() {
-        let Some(device) = try_device() else { return };
-        let (client, _, params, state) = build_state(&device);
-
-        let lr_got = state.lr_schedule.clone().read(&client).unwrap();
-        let ad_got = state.ad_scale.clone().read(&client).unwrap();
-        let epsc_got = state.epsc.clone().read(&client).unwrap();
-
-        let n_epochs_f = params.n_epochs as f32;
-        for e in 0..params.n_epochs {
-            let lr_want = params.lr * (1.0 - e as f32 / n_epochs_f);
-            assert!((lr_got[e] - lr_want).abs() < 1e-6, "lr[{}]", e);
-
-            let t = (e + 1) as f32;
-            let sqrt_b2t1 = (1.0 - params.beta2.powf(t)).sqrt();
-            let ad_want = sqrt_b2t1 / (1.0 - params.beta1.powf(t));
-            let epsc_want = sqrt_b2t1 * params.eps;
-
-            assert!((ad_got[e] - ad_want).abs() < 1e-6, "ad_scale[{}]", e);
-            assert!((epsc_got[e] - epsc_want).abs() < 1e-9, "epsc[{}]", e);
-        }
     }
 
     // n_dim != 2 must still work; tests the dim handling end-to-end.
@@ -1068,23 +1194,7 @@ mod tests {
         assert_eq!(got, vec![0.0_f32, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
     }
 
-    fn assert_close(got: &[f32], want: &[f32], tol: f32, ctx: &str) {
-        assert_eq!(got.len(), want.len(), "{}: length mismatch", ctx);
-        for i in 0..got.len() {
-            let d = (got[i] - want[i]).abs();
-            assert!(
-                d <= tol,
-                "{}: elem {}: got {} want {} (diff {})",
-                ctx,
-                i,
-                got[i],
-                want[i],
-                d,
-            );
-        }
-    }
-
-    // -- gradient kernel testing ----
+    // -- Gradient kernel --
 
     fn run_grad_kernel(
         device: &WgpuDevice,
@@ -1105,7 +1215,7 @@ mod tests {
         (grad, csr, next_sample)
     }
 
-    // 1. No edges have ticked yet (epoch 0, periods >= 1.0) -> gradient is zero.
+    // No edges have ticked yet (epoch 0, periods >= 1.0) -> gradient is zero.
     #[test]
     fn test_grad_empty_epoch() {
         let Some(device) = try_device() else { return };
@@ -1115,9 +1225,9 @@ mod tests {
         assert_eq!(got, vec![0.0_f32; embd.len() * embd[0].len()]);
     }
 
-    // 2. Attractive only. neg_sample_rate = 0 + an epoch that activates every
-    //    edge. Bit-exact equality with the CPU reference: each node accumulates
-    //    serially in the same order on both sides, with no FP reordering.
+    // Attractive only. neg_sample_rate = 0 + an epoch that activates every
+    // edge. Bit-exact equality with the CPU reference: each node accumulates
+    // serially in the same order on both sides, with no FP reordering.
     #[test]
     fn test_grad_attractive_only_bit_exact() {
         let Some(device) = try_device() else { return };
@@ -1143,8 +1253,8 @@ mod tests {
         assert_close(&got, &want, 0.0, "attractive-only");
     }
 
-    // 3. With negatives, matched hash. FP-tolerant: powf and FMAs may compile
-    //    differently on GPU.
+    // With negatives, matched hash. FP-tolerant: powf and FMAs may compile
+    // differently on GPU.
     #[test]
     fn test_grad_with_negatives_matches_cpu() {
         let Some(device) = try_device() else { return };
@@ -1168,15 +1278,15 @@ mod tests {
         assert_close(&got, &want, 1e-4, "with-negatives");
     }
 
-    // 4. Single hand-computed active edge. Pair of points at (0,0) and (3,0),
-    //    one edge, no negatives. Verifies sign and magnitude of the attractive
-    //    force without depending on the CPU reference.
+    // Single hand-computed active edge. Pair of points at (0,0) and (3,0),
+    // one edge, no negatives. Verifies sign and magnitude of the attractive
+    // force without depending on the CPU reference.
     #[test]
     fn test_grad_single_edge_hand_computed() {
         let Some(device) = try_device() else { return };
         let embd = vec![vec![0.0_f32, 0.0], vec![3.0, 0.0]];
         let graph = vec![vec![(1_usize, 1.0_f32)], vec![(0, 1.0)]];
-        let mut params = UmapOptimParams::<f32> {
+        let params = UmapOptimParams::<f32> {
             a: 1.0,
             b: 1.0,
             lr: 1.0,
@@ -1188,7 +1298,6 @@ mod tests {
             beta2: 0.999,
             eps: 1e-7,
         };
-        params.neg_sample_rate = 0;
 
         let (got, _, _) = run_grad_kernel(&device, &embd, &graph, &params, 5, 42);
 
@@ -1203,8 +1312,8 @@ mod tests {
         assert_close(&got, &[1.2, 0.0, -1.2, 0.0], 1e-5, "hand-computed");
     }
 
-    // 5. Determinism. Same inputs, same seed, same epoch -> bit-exact result on
-    //    a second launch.
+    // Determinism. Same inputs, same seed, same epoch -> bit-exact result on
+    // a second launch.
     #[test]
     fn test_grad_deterministic() {
         let Some(device) = try_device() else { return };
@@ -1215,10 +1324,10 @@ mod tests {
         assert_eq!(got1, got2);
     }
 
-    // -- Adam optimiser --
+    // -- Adam kernel --
 
-    /// Build a state, manually set node_grad / m / v / embd / has_update,
-    /// run the Adam kernel, return updated (embd, m, v).
+    // Build a state, manually set node_grad / m / v / embd / has_update, run
+    // the Adam kernel, return updated (embd, m, v).
     #[allow(clippy::too_many_arguments)]
     fn run_adam(
         device: &WgpuDevice,
@@ -1234,8 +1343,8 @@ mod tests {
     ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
         let client = WgpuRuntime::client(device);
 
-        // Adam kernel never touches CSR or schedule state, so those buffers are
-        // just placeholders sized so nothing indexes out of bounds.
+        // Adam kernel never touches CSR or schedule state, so those buffers
+        // are just placeholders sized so nothing indexes out of bounds.
         let placeholder_u32 = GpuTensor::from_slice(&[0u32], vec![1], &client);
         let placeholder_f = GpuTensor::from_slice(&[0.0f32], vec![1], &client);
 
@@ -1250,10 +1359,7 @@ mod tests {
             csr_edge_idx: placeholder_u32.clone(),
             csr_other_node: placeholder_u32,
             epochs_per_sample: placeholder_f.clone(),
-            epoch_of_next_sample: placeholder_f.clone(),
-            lr_schedule: placeholder_f.clone(),
-            ad_scale: placeholder_f.clone(),
-            epsc: placeholder_f,
+            epoch_of_next_sample: placeholder_f,
 
             n,
             n_dim,
@@ -1285,7 +1391,7 @@ mod tests {
         }
     }
 
-    // 1. has_update = 0 -> embd, m, v all preserved bit-exact.
+    // has_update = 0 -> embd, m, v all preserved bit-exact.
     #[test]
     fn test_adam_inactive_node_preserved() {
         let Some(device) = try_device() else { return };
@@ -1304,7 +1410,7 @@ mod tests {
         assert_eq!(vv, v);
     }
 
-    // 2. Hand-computed single Adam step at epoch 0.
+    // Hand-computed single Adam step at epoch 0.
     #[test]
     fn test_adam_single_step_hand_computed() {
         let Some(device) = try_device() else { return };
@@ -1327,17 +1433,17 @@ mod tests {
         // v_new = 0 + (1 - 0.999) * (1 - 0) = 0.001
         // alpha = 1.0 * (1 - 0/10) = 1.0
         // t = 1, beta1^1 = 0.9, beta2^1 = 0.999
-        // sqrt(1 - 0.999) = sqrt(0.001) ≈ 0.0316228
+        // sqrt(1 - 0.999) = sqrt(0.001) ~= 0.0316228
         // ad_scale = 0.0316228 / (1 - 0.9) = 0.316228
-        // epsc = 0.0316228 * 1e-7 ≈ 3.16e-9
+        // epsc = 0.0316228 * 1e-7 ~= 3.16e-9
         // embd += 1.0 * 0.316228 * 0.1 / (sqrt(0.001) + 3.16e-9)
-        //       = 0.0316228 / 0.0316228 ≈ 1.0
+        //       = 0.0316228 / 0.0316228 ~= 1.0
         assert_close(&mm, &[0.1], 1e-6, "m");
         assert_close(&vv, &[0.001], 1e-6, "v");
         assert_close(&e, &[1.0], 1e-4, "embd");
     }
 
-    // 3. Bit-exact match vs CPU reference. Mix of active and inactive nodes.
+    // Bit-exact match vs CPU reference. Mix of active and inactive nodes.
     #[test]
     fn test_adam_matches_cpu_reference() {
         let Some(device) = try_device() else { return };
@@ -1384,13 +1490,12 @@ mod tests {
             params.n_epochs,
         );
 
-        // FP-tolerant — sqrt and FMAs may compile differently on GPU.
+        // FP-tolerant: sqrt and FMAs may compile differently on GPU.
         assert_close(&e_gpu, &e_cpu, 1e-5, "embd");
         assert_close(&m_gpu, &m_cpu, 1e-6, "m");
         assert_close(&v_gpu, &v_cpu, 1e-6, "v");
     }
 
-    // 4. Determinism. Same inputs twice -> bit-exact.
     #[test]
     fn test_adam_deterministic() {
         let Some(device) = try_device() else { return };
@@ -1434,7 +1539,7 @@ mod tests {
         assert_eq!(v1, v2);
     }
 
-    // -- edge updates --
+    // -- Edge schedule --
 
     #[test]
     fn test_schedule_active_edges_advance() {
@@ -1475,14 +1580,14 @@ mod tests {
         assert_eq!(got, vec![2.0, 2.0, 2.0]);
     }
 
-    // -- driver loop --
+    // -- Driver loop --
 
-    // Same clique-preservation contract as the CPU tests. Two triangles connected
-    // by a weak edge; final embedding should compress each triangle and leave the
-    // bridge distance larger. Mirrors test_optimisation_preserves_graph_structure_adam.
+    // Two triangles connected by a weak edge; final embedding should compress
+    // each triangle and leave the bridge distance larger. Mirrors
+    // test_optimisation_preserves_graph_structure_adam on the CPU side.
     #[test]
     fn test_gpu_driver_preserves_graph_structure() {
-        let Some(device) = try_device() else { return };
+        let Some(_device) = try_device() else { return };
 
         let graph = vec![
             vec![(1, 1.0_f32), (2, 1.0)],
@@ -1546,7 +1651,7 @@ mod tests {
     // All coords finite after a full run.
     #[test]
     fn test_gpu_driver_no_nan_or_inf() {
-        let Some(device) = try_device() else { return };
+        let Some(_device) = try_device() else { return };
 
         let (mut embd, graph, params) = triangle_setup();
         optimise_embedding_adam_gpu::<WgpuRuntime, f32>(
@@ -1566,10 +1671,11 @@ mod tests {
         }
     }
 
-    // Same seed -> same result. Confirms nothing sneaks in host-side non-determinism.
+    // Same seed -> same result. Confirms nothing sneaks in host-side
+    // non-determinism.
     #[test]
     fn test_gpu_driver_deterministic() {
-        let Some(device) = try_device() else { return };
+        let Some(_device) = try_device() else { return };
 
         let (mut embd1, graph, params) = triangle_setup();
         let mut embd2 = embd1.clone();
