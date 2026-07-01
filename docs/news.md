@@ -7,6 +7,8 @@
 - GPU-accelerated Adam optimiser for UMAP.
 - Modified the CPU multi-threaded Adam optimiser to leverage the same logic as
   the GPU accelerated one.
+- GPU-accelerated kNN searches pass through `fp32` forced to avoid issues with
+  wgpu not supporting `fp64`.
 
 ## 0.3.4
 

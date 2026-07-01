@@ -197,7 +197,7 @@ where
 
 /// All GPU-resident state for the UMAP optimiser. Built once via
 /// [`UmapGpuState::upload`], mutated in place by the per-epoch kernels.
-pub(crate) struct UmapGpuState<R, T>
+pub struct UmapGpuState<R, T>
 where
     R: Runtime,
     T: ManifoldsFloatGpu,
@@ -237,6 +237,9 @@ where
     pub n_edges: usize,
     /// Total number of optimisation epochs.
     pub n_epochs: usize,
+    /// Per-node partial `sum_d grad[node, d]^2` `[n]`, written by
+    /// `umap_grad_norm_sq` and reduced on the host for progress logging.
+    pub grad_norm_partial: GpuTensor<R, T>,
 }
 
 impl<R, T> UmapGpuState<R, T>
@@ -298,6 +301,8 @@ where
             ),
 
             has_update: GpuTensor::from_slice(&vec![0u32; n], vec![n], client),
+
+            grad_norm_partial: GpuTensor::from_slice(&vec![T::zero(); n], vec![n], client),
 
             n,
             n_dim,
@@ -574,6 +579,31 @@ pub fn umap_edge_schedule_update<F: Float + CubeElement>(
     }
 }
 
+/// Per-node sum of squares of `node_grad`. One thread per node. Writes
+/// `partial[node] = sum_d node_grad[node, d]^2`; host sums the resulting
+/// `[n]` buffer to get the squared global grad norm.
+#[cube(launch_unchecked)]
+pub fn umap_grad_norm_sq<F: Float + CubeElement>(
+    node_grad: &Tensor<F>,
+    partial: &mut Tensor<F>,
+    n: u32,
+    n_dim: u32,
+    #[comptime] wg_size: u32,
+    #[comptime] n_dim_ct: u32,
+) {
+    let node = (CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X;
+    if node >= n {
+        terminate!();
+    }
+    let base = node * n_dim;
+    let mut acc = F::new(0.0);
+    for d in 0..n_dim_ct {
+        let g = node_grad[(base + d) as usize];
+        acc += g * g;
+    }
+    partial[node as usize] = acc;
+}
+
 //////////////
 // Launcher //
 //////////////
@@ -587,7 +617,7 @@ pub fn umap_edge_schedule_update<F: Float + CubeElement>(
 /// * `params` - Adam and UMAP hyperparameters
 /// * `epoch` - Current epoch index (0-based)
 /// * `seed` - Random seed for negative sampling
-pub(crate) fn launch_grad_accum<R, T>(
+pub fn launch_grad_accum<R, T>(
     client: &ComputeClient<R>,
     state: &UmapGpuState<R, T>,
     params: &UmapOptimParams<T>,
@@ -643,7 +673,7 @@ pub(crate) fn launch_grad_accum<R, T>(
 /// * `state` - Device-resident optimiser state
 /// * `params` - Adam and UMAP hyperparameters
 /// * `epoch` - Current epoch index (0-based)
-pub(crate) fn launch_adam_update<R, T>(
+pub fn launch_adam_update<R, T>(
     client: &ComputeClient<R>,
     state: &UmapGpuState<R, T>,
     params: &UmapOptimParams<T>,
@@ -694,7 +724,7 @@ pub(crate) fn launch_adam_update<R, T>(
 /// * `client` - CubeCL compute client
 /// * `state` - Device-resident optimiser state
 /// * `epoch` - Current epoch index (0-based)
-pub(crate) fn launch_edge_schedule_update<R, T>(
+pub fn launch_edge_schedule_update<R, T>(
     client: &ComputeClient<R>,
     state: &UmapGpuState<R, T>,
     epoch: usize,
@@ -717,6 +747,40 @@ pub(crate) fn launch_edge_schedule_update<R, T>(
             T::from(epoch).unwrap(),
         );
     }
+}
+
+/// Dispatch `umap_grad_norm_sq`, read the `[n]` partial buffer back and
+/// finish the reduction on the host. Synchronous: the readback flushes the
+/// command queue, so only call this on logging epochs.
+pub fn launch_grad_norm<R, T>(
+    client: &ComputeClient<R>,
+    state: &UmapGpuState<R, T>,
+) -> Result<T, ManifoldsError>
+where
+    R: Runtime,
+    T: ManifoldsFloatGpu,
+{
+    let wg = WORKGROUP_SIZE_X;
+    let n_workgroups = (state.n as u32).div_ceil(wg);
+    let (gx, gy) = grid_2d(n_workgroups);
+
+    unsafe {
+        umap_grad_norm_sq::launch_unchecked::<T, R>(
+            client,
+            CubeCount::Static(gx, gy, 1),
+            CubeDim::new_1d(wg),
+            state.node_grad.clone().into_tensor_arg(),
+            state.grad_norm_partial.clone().into_tensor_arg(),
+            state.n as u32,
+            state.n_dim as u32,
+            wg,
+            state.n_dim as u32,
+        );
+    }
+
+    let partial = state.grad_norm_partial.clone().read(client)?;
+    let sum_sq = partial.iter().copied().fold(T::zero(), |a, b| a + b);
+    Ok(num_traits::Float::sqrt(sum_sq))
 }
 
 //////////
@@ -784,6 +848,17 @@ where
         launch_grad_accum(&client, &state, params, epoch, seed_u32);
         launch_adam_update(&client, &state, params, epoch);
         launch_edge_schedule_update(&client, &state, epoch);
+
+        if verbosity.normal_verbosity() && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs)
+        {
+            let gn = launch_grad_norm(&client, &state)?;
+            println!(
+                " Epoch {}/{}: grad norm {:.2?}",
+                epoch + 1,
+                params.n_epochs,
+                gn
+            );
+        }
     }
 
     let final_flat = state.embd.read(&client)?;
@@ -1366,7 +1441,9 @@ mod tests {
             csr_edge_idx: placeholder_u32.clone(),
             csr_other_node: placeholder_u32,
             epochs_per_sample: placeholder_f.clone(),
-            epoch_of_next_sample: placeholder_f,
+            epoch_of_next_sample: placeholder_f.clone(),
+
+            grad_norm_partial: placeholder_f.clone(),
 
             n,
             n_dim,
