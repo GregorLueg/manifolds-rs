@@ -316,11 +316,25 @@ where
 // Hash //
 //////////
 
-/// Splitmix-style device-side hash. Maps
-/// `(seed, node, epoch, edge_local, neg)` to a node index in `[0, n)`. Called
-/// in the inner negative-sampling loop of `umap_grad_accum`; kept in sync
-/// with `cpu_hash_neg` so the CPU reference reproduces the same negatives
-/// bit-for-bit.
+/// Splitmix-style device-side hash.
+///
+/// Maps `(seed, node, epoch, edge_local, neg)` to a node index in `[0, n)`.
+/// Called in the inner negative-sampling loop of `umap_grad_accum`.
+///
+/// ### Params
+///
+/// * `seed` - Random seed for negative sampling, constant across the run
+/// * `node` - Source node index
+/// * `epoch` - Current epoch index
+/// * `edge_local` - Per-node edge counter, incremented for every edge in the
+///   node's CSR slice regardless of whether it ticks this epoch
+/// * `neg` - Negative-sample index within the current edge, `0..neg_sample_rate`
+/// * `n` - Number of nodes; the returned index is reduced modulo `n`
+///
+/// ### Returns
+///
+/// A node index in `[0, n)`. The caller is responsible for rejecting the
+/// self-hit case `k == node`.
 #[cube]
 fn gpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: u32) -> u32 {
     let mut h = seed
@@ -580,8 +594,22 @@ pub fn umap_edge_schedule_update<F: Float + CubeElement>(
 }
 
 /// Per-node sum of squares of `node_grad`. One thread per node. Writes
-/// `partial[node] = sum_d node_grad[node, d]^2`; host sums the resulting
-/// `[n]` buffer to get the squared global grad norm.
+/// `partial[node] = sum_d node_grad[node, d]^2`; the host sums the resulting
+/// `[n]` buffer to get the squared global gradient norm. Used only for
+/// progress logging; not part of the optimisation state.
+///
+/// ### Params
+///
+/// * `node_grad` - Per-node gradients `[n, n_dim]` from `umap_grad_accum`
+/// * `partial` - Per-node sum-of-squares output `[n]`, overwritten
+/// * `n` - Number of nodes
+/// * `n_dim` - Embedding dimensionality
+/// * `wg_size` - Workgroup size; comptime
+/// * `n_dim_ct` - Embedding dimensionality; comptime, matches `n_dim`
+///
+/// ### Grid mapping
+///
+/// * `(CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X` -> node
 #[cube(launch_unchecked)]
 pub fn umap_grad_norm_sq<F: Float + CubeElement>(
     node_grad: &Tensor<F>,
@@ -751,7 +779,20 @@ pub fn launch_edge_schedule_update<R, T>(
 
 /// Dispatch `umap_grad_norm_sq`, read the `[n]` partial buffer back and
 /// finish the reduction on the host. Synchronous: the readback flushes the
-/// command queue, so only call this on logging epochs.
+/// command queue, so this should only be called on logging epochs. Reads
+/// `state.node_grad` as populated by the most recent `umap_grad_accum`
+/// launch; the subsequent `umap_adam_update` does not touch `node_grad`, so
+/// calling this after the full per-epoch triple is fine.
+///
+/// ### Params
+///
+/// * `client` - CubeCL compute client
+/// * `state` - Device-resident optimiser state
+///
+/// ### Returns
+///
+/// Global gradient norm `sqrt(sum_{node, d} node_grad[node, d]^2)` on
+/// success. Propagates any readback error from `GpuTensor::read`.
 pub fn launch_grad_norm<R, T>(
     client: &ComputeClient<R>,
     state: &UmapGpuState<R, T>,
