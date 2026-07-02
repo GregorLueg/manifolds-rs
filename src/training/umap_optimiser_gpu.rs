@@ -880,7 +880,7 @@ where
 
     if verbosity.normal_verbosity() {
         println!(
-            "Running {} epochs on the GPU with GPU-accelerated Adam",
+            "Running {} epochs with GPU-accelerated Adam optimisation.",
             params.n_epochs
         );
     }
@@ -894,7 +894,7 @@ where
         {
             let gn = launch_grad_norm(&client, &state)?;
             println!(
-                " Epoch {}/{}: grad norm {:.2?}",
+                " Epoch {} / {}: grad norm {:.2?}",
                 epoch + 1,
                 params.n_epochs,
                 gn
