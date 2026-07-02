@@ -521,6 +521,7 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
 /// * `epsc` - Bias-corrected `sqrt(1 - beta2^t) * eps`
 /// * `one_minus_beta1` - `1 - beta1`
 /// * `one_minus_beta2` - `1 - beta2`
+/// * `wg_size` - Workgroup size; comptime
 ///
 /// ### Grid mapping
 ///
@@ -574,6 +575,7 @@ pub fn umap_adam_update<F: Float + CubeElement>(
 ///   place for edges with `cursor <= epoch_f`
 /// * `n_edges` - Number of unique undirected edges
 /// * `epoch_f` - Current epoch as `F`
+/// * `wg_size` - Workgroup size; comptime
 ///
 /// ### Grid mapping
 ///
