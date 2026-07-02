@@ -539,8 +539,9 @@ pub fn umap_adam_update<F: Float + CubeElement>(
     epsc: F,
     one_minus_beta1: F,
     one_minus_beta2: F,
+    #[comptime] wg_size: u32,
 ) {
-    let i = ABSOLUTE_POS_X;
+    let i = (CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X;
     if i >= n_total {
         terminate!();
     }
@@ -583,8 +584,9 @@ pub fn umap_edge_schedule_update<F: Float + CubeElement>(
     epoch_of_next_sample: &mut Tensor<F>,
     n_edges: u32,
     epoch_f: F,
+    #[comptime] wg_size: u32,
 ) {
-    let e = ABSOLUTE_POS_X;
+    let e = (CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X;
     if e >= n_edges {
         terminate!();
     }
@@ -741,6 +743,7 @@ pub fn launch_adam_update<R, T>(
             epsc,
             one - params.beta1,
             one - params.beta2,
+            wg,
         );
     }
 }
@@ -773,6 +776,7 @@ pub fn launch_edge_schedule_update<R, T>(
             state.epoch_of_next_sample.clone().into_tensor_arg(),
             state.n_edges as u32,
             T::from(epoch).unwrap(),
+            wg,
         );
     }
 }
