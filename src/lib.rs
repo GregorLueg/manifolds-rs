@@ -2585,8 +2585,8 @@ where
         Self {
             n_dim: 2,
             k: 15,
-            optimiser: "adam_parallel".to_string(),
-            ann_type: "ivf_gpu".to_string(),
+            optimiser: "adam_gpu".to_string(),
+            ann_type: "nndescent".to_string(),
             initialisation: "spectral".to_string(),
             init_range: None,
             nn_params: NearestNeighbourParamsGpu::default(),

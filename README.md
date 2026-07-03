@@ -41,7 +41,7 @@ used via the prospective feature flag. Since release `0.1.8`, we also have
 [PaCMAP](https://arxiv.org/abs/2012.04456) has been also implemented. More
 recently, classical [diffusion maps](https://www.sciencedirect.com/science/article/pii/S1063520306000546)
 have been added as well.
-Changelog can be found [here](https://github.com/GregorLueg/manifolds-rs/blob/main/docs/news.md))
+Changelog can be found [here](https://github.com/GregorLueg/manifolds-rs/blob/main/CHANGELOG.md))
 
 ## Features
 
@@ -254,8 +254,8 @@ let embedding = umap(
 ### GPU-Accelerated UMAP and tSNE (requires `gpu` feature)
 
 With the `gpu` feature, the nearest neighbour search runs on the GPU while
-graph construction and optimisation stay on CPU. This is typically the
-bottleneck for larger datasets (say, 50k+ samples).
+graph construction and optimisation stay on CPU for tSNE while UMAP now also
+provides a GPU-accelerated Adam optimiser.
 
 ```rust
 use manifolds_rs::prelude::*;
@@ -270,6 +270,7 @@ let (data, _) = generate_clustered_data(
 );
 
 // Configure GPU UMAP parameters
+// Defaults now to the "adam_gpu" optimiser
 let params = UmapParamsGpu::new_default_2d(
     Some(0.5),   // min_dist
     Some(1.0),   // spread
@@ -288,7 +289,7 @@ let embedding = umap_gpu::<f32, WgpuRuntime>(
 );
 ```
 
-GPU t-SNE works analogously:
+GPU t-SNE works analogously (in this case, the kNN seach is GPU-accelerated):
 
 ```rust
 use manifolds_rs::prelude::*;
