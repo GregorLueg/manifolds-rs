@@ -9,7 +9,7 @@ use ann_search_rs::{
     query_exhaustive_index_gpu_self, query_ivf_index_gpu_self, query_nndescent_index_gpu_self,
 };
 use cubecl::prelude::*;
-use faer::MatRef;
+use faer::{Mat, MatRef};
 use rayon::prelude::*;
 
 use crate::prelude::*;
@@ -66,7 +66,10 @@ pub struct NearestNeighbourParamsGpu<T> {
     pub n_entry_points: Option<usize>,
 }
 
-impl<T> NearestNeighbourParamsGpu<T> {
+impl<T> NearestNeighbourParamsGpu<T>
+where
+    T: AnnSearchFloat,
+{
     /// Generate a new instance
     ///
     /// ### Params
@@ -123,6 +126,33 @@ impl<T> NearestNeighbourParamsGpu<T> {
             n_entry_points,
         }
     }
+
+    /// Cast parameters to a different float type. `usize` fields and
+    /// `dist_metric` pass through unchanged.
+    ///
+    /// ### Returns
+    ///
+    /// `NearestNeighbourParamsGpu<U>` with all float fields converted via
+    /// `NumCast`.
+    pub fn cast<U>(&self) -> NearestNeighbourParamsGpu<U>
+    where
+        U: AnnSearchFloat,
+    {
+        let c = |v: T| U::from(v).unwrap();
+        NearestNeighbourParamsGpu {
+            dist_metric: self.dist_metric.clone(),
+            n_list: self.n_list,
+            n_probes: self.n_probes,
+            k: self.k,
+            k_build: self.k_build,
+            n_tree: self.n_tree,
+            delta: c(self.delta),
+            rho: self.rho.map(c),
+            beam_width: self.beam_width,
+            max_beam_iters: self.max_beam_iters,
+            n_entry_points: self.n_entry_points,
+        }
+    }
 }
 
 impl<T> Default for NearestNeighbourParamsGpu<T>
@@ -173,6 +203,24 @@ pub fn parse_ann_search_gpu(s: &str) -> Option<AnnSearchGpu> {
     }
 }
 
+/// Cast matrix to `fp32`
+///
+/// ### Params
+///
+/// * `data` - The MatRef to cast to `fp32`.
+///
+/// ### Returns
+///
+/// `Mat` in f32
+fn cast_matrix_to_fp32<T>(data: MatRef<T>) -> Mat<f32>
+where
+    T: AnnSearchFloat,
+{
+    Mat::<f32>::from_fn(data.nrows(), data.ncols(), |i, j| {
+        data[(i, j)].to_f32().unwrap()
+    })
+}
+
 //////////
 // Main //
 //////////
@@ -181,6 +229,8 @@ pub fn parse_ann_search_gpu(s: &str) -> Option<AnnSearchGpu> {
 ///
 /// Mirrors `run_ann_search` but dispatches to GPU-backed indices. The returned
 /// indices and distances exclude self, matching the CPU variant's contract.
+/// The function explicitly casts down to `fp32` internally to run on modern
+/// GPUs which rarely support `fp64`.
 ///
 /// ### Params
 ///
@@ -210,7 +260,7 @@ pub fn run_ann_search_gpu<T, R>(
 where
     T: AnnSearchFloat + AnnSearchGpuFloat,
     R: Runtime,
-    NNDescentGpu<T, R>: NNDescentQuery<T>,
+    NNDescentGpu<f32, R>: NNDescentQuery<f32>,
 {
     let verbosity = parse_verbosity_level(verbose);
 
@@ -219,15 +269,23 @@ where
         AnnSearchGpu::default()
     });
 
+    // wgpu does not support f64, hence, the kNN is always run in fp32
+    let data_fp32 = cast_matrix_to_fp32(data);
+    let params_fp32: NearestNeighbourParamsGpu<f32> = params_nn.cast();
+
     let (knn_indices_raw, knn_dist) = match ann_search {
         AnnSearchGpu::ExhaustiveGpu => {
-            let index = build_exhaustive_index_gpu::<T, R>(data, &params_nn.dist_metric, device)?;
+            let index = build_exhaustive_index_gpu::<f32, R>(
+                data_fp32.as_ref(),
+                &params_nn.dist_metric,
+                device,
+            )?;
 
             query_exhaustive_index_gpu_self(&index, k + 1, true, verbosity.detailed_verbosity())?
         }
         AnnSearchGpu::IvfGpu => {
-            let index = build_ivf_index_gpu::<T, R>(
-                data,
+            let index = build_ivf_index_gpu::<f32, R>(
+                data_fp32.as_ref(),
                 params_nn.n_list,
                 None,
                 &params_nn.dist_metric,
@@ -246,15 +304,15 @@ where
             )?
         }
         AnnSearchGpu::NNDescentGpu => {
-            let mut index = build_nndescent_index_gpu::<T, R>(
-                data,
+            let mut index = build_nndescent_index_gpu::<f32, R>(
+                data_fp32.as_ref(),
                 &params_nn.dist_metric,
                 params_nn.k,
                 params_nn.k_build,
                 None,
                 params_nn.n_tree,
-                params_nn.delta.to_f32().map(Some).unwrap_or(None),
-                params_nn.rho.map(|r| r.to_f32().unwrap()),
+                Some(params_fp32.delta),
+                params_fp32.rho,
                 None,
                 seed,
                 verbosity.detailed_verbosity(),
@@ -275,7 +333,8 @@ where
 
     let knn_dist = knn_dist.unwrap();
 
-    // remove self from both indices and distances in a single pass
+    // remove self from indices/distances in a single pass and cast the f32
+    // distances back up to T on the way out
     let (knn_indices, knn_dist): (Vec<Vec<usize>>, Vec<Vec<T>>) = knn_indices_raw
         .into_par_iter()
         .zip(knn_dist.into_par_iter())
@@ -285,6 +344,7 @@ where
                 .zip(dist)
                 .filter(|(j, _)| *j != i)
                 .take(k)
+                .map(|(j, d)| (j, T::from(d).unwrap()))
                 .unzip()
         })
         .unzip();

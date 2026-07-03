@@ -1,5 +1,13 @@
 # News
 
+## 0.3.5
+
+**Features:**
+
+- GPU-accelerated Adam optimiser for UMAP.
+- GPU-accelerated kNN searches pass through `fp32` forced to avoid issues with
+  wgpu not supporting `fp64`.
+
 ## 0.3.4
 
 **Features:**

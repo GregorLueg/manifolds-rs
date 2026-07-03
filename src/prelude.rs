@@ -29,6 +29,8 @@ pub use crate::data::nearest_neighbours_gpu::*;
 pub use crate::parametric::model::TrainedUmapModel;
 #[cfg(feature = "parametric")]
 pub use crate::parametric::parametric_train::TrainParametricParams;
+#[cfg(feature = "gpu")]
+pub use crate::utils::traits::ManifoldsFloatGpu;
 
 ///////////
 // Types //

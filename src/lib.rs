@@ -61,6 +61,8 @@ use crate::utils::sparse_ops::matrix_power;
 use crate::parametric::model::*;
 #[cfg(feature = "parametric")]
 use crate::parametric::parametric_train::*;
+#[cfg(feature = "gpu")]
+use crate::training::umap_optimiser_gpu::*;
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::FftwFloat;
 
@@ -2555,7 +2557,7 @@ pub struct UmapParamsGpu<T> {
     pub n_dim: usize,
     /// Number of neighbours
     pub k: usize,
-    /// Which optimiser to use. Defaults to `"adam_parallel"`.
+    /// Which optimiser to use. Defaults to `"adam_gpu"`.
     pub optimiser: String,
     /// Which GPU nearest neighbour search to use. One of `"exhaustive_gpu"`,
     /// `"ivf_gpu"` or `"nndescent_gpu"`. Defaults to `"ivf_gpu"`.
@@ -2583,8 +2585,8 @@ where
         Self {
             n_dim: 2,
             k: 15,
-            optimiser: "adam_parallel".to_string(),
-            ann_type: "ivf_gpu".to_string(),
+            optimiser: "adam_gpu".to_string(),
+            ann_type: "nndescent".to_string(),
             initialisation: "spectral".to_string(),
             init_range: None,
             nn_params: NearestNeighbourParamsGpu::default(),
@@ -2829,7 +2831,13 @@ where
             randomised: true,
         }
     });
-    let optimiser = parse_umap_optimiser(&umap_params.optimiser).unwrap_or_default();
+    let optimiser = parse_umap_optimiser_gpu(&umap_params.optimiser).unwrap_or_else(|| {
+        println!(
+            "Unknown optimiser string provided ({:?}). Defaulting to GPU-accelerated Adam",
+            umap_params.optimiser
+        );
+        UmapOptimiserGpu::default()
+    });
 
     if verbosity.normal_verbosity() {
         println!(
@@ -2846,7 +2854,7 @@ where
         &umap_params.umap_graph_params,
         &umap_params.nn_params,
         umap_params.optim_params.n_epochs,
-        device,
+        device.clone(),
         seed,
         verbose,
     )?;
@@ -2868,9 +2876,10 @@ where
         println!(
             "Optimising embedding via {} ({} epochs) on {} edges...",
             match optimiser {
-                UmapOptimiser::Adam => "Adam",
-                UmapOptimiser::Sgd => "SGD",
-                UmapOptimiser::AdamParallel => "Adam (multi-threaded)",
+                UmapOptimiserGpu::Adam => "Adam",
+                UmapOptimiserGpu::Sgd => "SGD",
+                UmapOptimiserGpu::AdamParallel => "Adam (multi-threaded)",
+                UmapOptimiserGpu::AdamGpu => "Adam (GPU-accelerated)",
             },
             umap_params.optim_params.n_epochs,
             graph.col_indices.len().separate_with_underscores()
@@ -2878,14 +2887,14 @@ where
     }
 
     match optimiser {
-        UmapOptimiser::Adam => optimise_embedding_adam(
+        UmapOptimiserGpu::Adam => optimise_embedding_adam(
             &mut embd,
             &graph_adj,
             &umap_params.optim_params,
             seed as u64,
             verbose,
         )?,
-        UmapOptimiser::Sgd => {
+        UmapOptimiserGpu::Sgd => {
             optimise_embedding_sgd(
                 &mut embd,
                 &graph_adj,
@@ -2894,7 +2903,7 @@ where
                 verbose,
             )?;
         }
-        UmapOptimiser::AdamParallel => {
+        UmapOptimiserGpu::AdamParallel => {
             optimise_embedding_adam_parallel(
                 &mut embd,
                 &graph_adj,
@@ -2902,6 +2911,38 @@ where
                 seed as u64,
                 verbose,
             )?;
+        }
+        UmapOptimiserGpu::AdamGpu => {
+            // downcast to f32 for GPU here...
+            let mut embd_f32: Vec<Vec<f32>> = embd
+                .iter()
+                .map(|p| p.iter().map(|&x| x.to_f32().unwrap()).collect())
+                .collect();
+            let graph_adj_f32: Vec<Vec<(usize, f32)>> = graph_adj
+                .iter()
+                .map(|edges| {
+                    edges
+                        .iter()
+                        .map(|&(j, w)| (j, w.to_f32().unwrap()))
+                        .collect()
+                })
+                .collect();
+            let params_f32 = umap_params.optim_params.cast::<f32>();
+
+            optimise_embedding_adam_gpu::<R, f32>(
+                &mut embd_f32,
+                &graph_adj_f32,
+                &params_f32,
+                device,
+                seed as u64,
+                verbose,
+            )?;
+
+            for (i, point) in embd.iter_mut().enumerate() {
+                for (j, coord) in point.iter_mut().enumerate() {
+                    *coord = T::from(embd_f32[i][j]).unwrap();
+                }
+            }
         }
     }
 

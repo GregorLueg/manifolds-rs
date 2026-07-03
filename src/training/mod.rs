@@ -5,6 +5,9 @@ pub mod pacmap_optimiser;
 pub mod tsne_optimiser;
 pub mod umap_optimisers;
 
+#[cfg(feature = "gpu")]
+pub mod umap_optimiser_gpu;
+
 /////////////
 // Globals //
 /////////////
