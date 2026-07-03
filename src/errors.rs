@@ -66,6 +66,17 @@ pub enum ManifoldsError {
     #[error("UMAP: no edges to optimise - upstream error?")]
     NoGraphEdges,
 
+    // -- pacmap
+    /// If the pre-computed kNN does not have enough neighbours for the
+    /// parameter settings
+    #[error("PacMAP: Not enough neighbours provided")]
+    NotEnoughNeighbours {
+        /// Provided number of neighbours
+        n_provided: usize,
+        /// The end for the mid_near neighbours
+        mid_near_candidate_end: usize,
+    },
+
     // -- parametric umap serialisation --
     /// Error when the model bytes cannot be serialised to disk format
     #[error("Failed to serialise parametric UMAP model: {0}")]

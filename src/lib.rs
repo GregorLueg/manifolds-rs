@@ -1491,23 +1491,22 @@ where
 pub struct PacmapParams<T> {
     /// Output dimensionality. Default 2.
     pub n_dim: usize,
-    /// Number of near neighbours. Default 10 (paper default; lower than UMAP's
-    /// 15 since PaCMAP is less sensitive to k).
-    pub k: usize,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
     pub ann_type: String,
     /// Which optimiser to use. Options are `"adam"` and `"adam_parallel"`
     pub optimiser_type: String,
-    /// Mid-near pairs per point. Default 2.
+    /// Near pairs per point (attractive). Default 10.
+    pub n_near: usize,
+    /// Mid-near pairs per point (attractive, global structure). Default 5.
     pub n_mid_near: usize,
-    /// Further (random) pairs per point. Default 2.
+    /// Further (random) pairs per point (repulsive). Default 20.
     pub n_further: usize,
     /// Start index into kNN list for mid-near candidate window. Default 4
     /// (skip the 4 nearest).
     pub mn_candidate_start: usize,
     /// End index into kNN list for mid-near candidate window. Default 50.
-    /// Requires k >= this value.
+    /// Also determines the kNN search size.
     pub mn_candidate_end: usize,
     /// Embedding initialisation. Default `"pca"`. PCA is strongly recommended
     /// for PaCMAP as random init degrades global structure.
@@ -1527,11 +1526,11 @@ where
     fn default() -> Self {
         Self {
             n_dim: 2,
-            k: 50,
             ann_type: "kmknn".to_string(),
             optimiser_type: "adam_parallel".to_string(),
-            n_mid_near: 2,
-            n_further: 2,
+            n_near: 10,
+            n_mid_near: 5,
+            n_further: 20,
             mn_candidate_start: 4,
             mn_candidate_end: 50,
             initialisation: "pca".to_string(),
@@ -1552,26 +1551,25 @@ where
     /// For sensible defaults, use [`PacmapParams::default`] or
     /// [`PacmapParams::new_default_2d`] instead.
     ///
-    /// Note: `k` is clamped to at least `mn_candidate_end`, since the mid-near
-    /// candidate window indexes into the kNN list and must not run past its
-    /// end.
+    /// The kNN search size is set to `mn_candidate_end` internally, since the
+    /// mid-near candidate window indexes into the kNN list and must not run
+    /// past its end.
     ///
     /// ### Params
     ///
     /// * `n_dim` - Number of dimensions for the embedding.
-    /// * `k` - Number of near neighbours. Clamped to at least
-    ///   `mn_candidate_end`.
     /// * `ann_type` - (Approximate) nearest neighbour method. One of
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
     /// * `optimiser_type` - Which optimiser to use. Options are `"adam"` and
     ///   `"adam_parallel"`.
-    /// * `n_mid_near` - Mid-near pairs per point.
-    /// * `n_further` - Further (random) pairs per point.
+    /// * `n_near` - Near pairs per point (attractive).
+    /// * `n_mid_near` - Mid-near pairs per point (attractive, global structure).
+    /// * `n_further` - Further (random) pairs per point (repulsive).
     /// * `mn_candidate_start` - Start index into the kNN list for the mid-near
     ///   candidate window.
     /// * `mn_candidate_end` - End index into the kNN list for the mid-near
-    ///   candidate window. Requires `k >= this value`.
+    ///   candidate window. Also determines the kNN search size.
     /// * `initialisation` - Embedding initialisation. PCA is strongly
     ///   recommended for PaCMAP as random init degrades global structure.
     /// * `range` - The range for the initial embedding.
@@ -1584,9 +1582,9 @@ where
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         n_dim: usize,
-        k: usize,
         ann_type: String,
         optimiser_type: String,
+        n_near: usize,
         n_mid_near: usize,
         n_further: usize,
         mn_candidate_start: usize,
@@ -1596,13 +1594,11 @@ where
         nn_params: NearestNeighbourParams<T>,
         optim_params: PacmapOptimParams<T>,
     ) -> Self {
-        let k = k.max(mn_candidate_end);
-
         Self {
             n_dim,
-            k,
             ann_type,
             optimiser_type,
+            n_near,
             n_mid_near,
             n_further,
             mn_candidate_start,
@@ -1616,22 +1612,20 @@ where
 
     /// Default parameters for standard 2D visualisation.
     ///
-    /// Returns the default parameters but lets you tune `k`, the number of
-    /// near neighbours. Note that `k` is clamped to at least
-    /// `mn_candidate_end` (default `50`).
+    /// Returns the default parameters but lets you tune `n_near`, the number
+    /// of near pairs per point.
     ///
     /// ### Params
     ///
-    /// * `k` - Number of near neighbours. Defaults to `50`.
+    /// * `n_near` - Number of near pairs. Defaults to `10`.
     ///
     /// ### Returns
     ///
     /// Hopefully sensible standard parameters for 2D visualisation.
-    pub fn new_default_2d(k: Option<usize>) -> Self {
+    pub fn new_default_2d(n_near: Option<usize>) -> Self {
         let default = Self::default();
-        let k = k.unwrap_or(default.k).max(default.mn_candidate_end);
-
-        Self { k, ..default }
+        let n_near = n_near.unwrap_or(default.n_near);
+        Self { n_near, ..default }
     }
 }
 
@@ -1682,6 +1676,15 @@ where
 
     let (knn_indices, _) = match precomputed_knn {
         Some((indices, distances)) => {
+            if indices.is_empty() {
+                return Err(ManifoldsError::NoData);
+            }
+            if indices[0].len() < params_pacmap.mn_candidate_end {
+                return Err(ManifoldsError::NotEnoughNeighbours {
+                    n_provided: indices[0].len(),
+                    mid_near_candidate_end: params_pacmap.mn_candidate_end,
+                });
+            }
             if verbosity.normal_verbosity() {
                 println!("Using precomputed kNN graph...");
             }
@@ -1691,13 +1694,13 @@ where
             if verbosity.normal_verbosity() {
                 println!(
                     "Running (approximate) nearest neighbour search using {} (k={})...",
-                    params_pacmap.ann_type, params_pacmap.k
+                    params_pacmap.ann_type, params_pacmap.mn_candidate_end
                 );
             }
             let start_knn = Instant::now();
             let result = run_ann_search(
                 data,
-                params_pacmap.k,
+                params_pacmap.mn_candidate_end,
                 params_pacmap.ann_type.clone(),
                 &params_pacmap.nn_params,
                 seed,
@@ -1718,6 +1721,7 @@ where
 
     let pairs: PacmapPairs = construct_pacmap_pairs(
         &knn_indices,
+        params_pacmap.n_near,
         params_pacmap.n_mid_near,
         params_pacmap.n_further,
         params_pacmap.mn_candidate_start,
