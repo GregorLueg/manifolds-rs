@@ -1,5 +1,12 @@
 # News
 
+## 0.3.6
+
+**Fix:**
+
+- Incorrect PacMAP implementation: gradients were wrongly calculated and one of
+  of the parameters was wrongly propagated. This has been fixed now.
+
 ## 0.3.5
 
 **Features:**

@@ -18,9 +18,11 @@ const PHASE2_END: usize = 200;
 /// End of third (and last) phase of fitting
 const PHASE3_END: usize = 450;
 /// Weight for the nearest points in first phase (dominating by mid-near)
-const W_NB_PHASE1: f64 = 1.0;
+const W_NB_PHASE1: f64 = 2.0;
 /// Weight for nearest points during the second phase (focussing on near pairs)
 const W_NB_PHASE2: f64 = 3.0;
+/// Weight for the end of the second phase
+const W_MN_PHASE2_END: f64 = 3.0;
 /// Weight for nearest points during the third phase (local structure refinement)
 const W_NB_PHASE3: f64 = 1.0;
 /// Starting point of the medium-near points that decreases then during second phase
@@ -172,26 +174,20 @@ fn phase_weights<T>(epoch: usize, phase1_end: usize, phase2_end: usize) -> (T, T
 where
     T: Float + FromPrimitive,
 {
+    let w_fp = T::from_f64(W_FP).unwrap();
     if epoch < phase1_end {
-        (
-            T::from_f64(W_NB_PHASE1).unwrap(),
-            T::from_f64(W_MN_PHASE1).unwrap(),
-            T::from_f64(W_FP).unwrap(),
-        )
+        let progress = epoch as f64 / phase1_end as f64;
+        let w_mn =
+            T::from_f64(W_MN_PHASE1 * (1.0 - progress) + W_MN_PHASE2_END * progress).unwrap();
+        (T::from_f64(W_NB_PHASE1).unwrap(), w_mn, w_fp)
     } else if epoch < phase2_end {
-        let progress = (epoch - phase1_end) as f64 / (phase2_end - phase1_end) as f64;
-        let w_mn = T::from_f64(W_MN_PHASE1 * (1.0 - progress)).unwrap();
         (
             T::from_f64(W_NB_PHASE2).unwrap(),
-            w_mn,
-            T::from_f64(W_FP).unwrap(),
+            T::from_f64(W_MN_PHASE2_END).unwrap(),
+            w_fp,
         )
     } else {
-        (
-            T::from_f64(W_NB_PHASE3).unwrap(),
-            T::zero(),
-            T::from_f64(W_FP).unwrap(),
-        )
+        (T::from_f64(W_NB_PHASE3).unwrap(), T::zero(), w_fp)
     }
 }
 
@@ -217,9 +213,9 @@ where
     T: Float + FromPrimitive,
 {
     let two = T::from_f64(2.0).unwrap();
-    let d = (dist_sq + T::from_f64(1e-10).unwrap()).sqrt();
-    let denom = (d + c) * (d + c) * d;
-    c / denom * two
+    let d_tilde = T::one() + dist_sq;
+    let denom = c + d_tilde;
+    two * c / (denom * denom)
 }
 
 /// Repulsive loss gradient coefficient for further pairs.
@@ -241,9 +237,9 @@ where
     T: Float + FromPrimitive,
 {
     let two = T::from_f64(2.0).unwrap();
-    let d = (dist_sq + T::from_f64(1e-10).unwrap()).sqrt();
-    let denom = (T::one() + d) * (T::one() + d) * d;
-    T::one() / denom * two
+    let d_tilde = T::one() + dist_sq;
+    let denom = T::one() + d_tilde; // = 2 + dist_sq
+    two / (denom * denom)
 }
 
 //////////

@@ -71,7 +71,6 @@ fn pacmap_integration_01_knn_correctness() {
     println!("\n=== PaCMAP DIAGNOSTIC 1: kNN Search ===");
     println!("Points per cluster: 100, k = {} neighbours", k);
 
-    // Self must not appear in neighbours
     let self_count = knn_indices
         .iter()
         .enumerate()
@@ -80,8 +79,6 @@ fn pacmap_integration_01_knn_correctness() {
     assert_eq!(self_count, 0, "self-loops found in kNN");
     println!("No self-loops in kNN");
 
-    // With tightly clustered data and k=50, almost all neighbours should be
-    // intra-cluster (99 same-cluster points available)
     let intra_ratio: f64 = knn_indices
         .iter()
         .enumerate()
@@ -114,14 +111,15 @@ fn pacmap_integration_02_pair_counts() {
     let (data, _) = create_diagnostic_data(100, 10, 42);
     let n = data.nrows();
     let k = 50;
-    let n_mid_near = 2;
-    let n_further = 2;
+    let n_near = 10;
+    let n_mid_near = 5;
+    let n_further = 20;
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, _) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
-    let pairs = construct_pacmap_pairs(&knn_indices, n_mid_near, n_further, 4, 50, 42);
+    let pairs = construct_pacmap_pairs(&knn_indices, n_near, n_mid_near, n_further, 4, 50, 42);
 
     println!("\n=== PaCMAP DIAGNOSTIC 2: Pair Counts ===");
     println!(
@@ -131,7 +129,7 @@ fn pacmap_integration_02_pair_counts() {
         pairs.further.len()
     );
 
-    assert_eq!(pairs.near.len(), n * k, "near pair count");
+    assert_eq!(pairs.near.len(), n * n_near, "near pair count");
     assert_eq!(pairs.mid_near.len(), n * n_mid_near, "mid-near pair count");
     assert_eq!(pairs.further.len(), n * n_further, "further pair count");
 }
@@ -145,7 +143,7 @@ fn pacmap_integration_03_no_self_pairs() {
     let (knn_indices, _) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
-    let pairs = construct_pacmap_pairs(&knn_indices, 2, 2, 4, 50, 42);
+    let pairs = construct_pacmap_pairs(&knn_indices, 10, 5, 20, 4, 50, 42);
 
     println!("\n=== PaCMAP DIAGNOSTIC 3: No Self-Pairs ===");
 
@@ -172,7 +170,7 @@ fn pacmap_integration_04_mid_near_candidate_window() {
     let (knn_indices, _) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
-    let pairs = construct_pacmap_pairs(&knn_indices, 2, 2, candidate_start, candidate_end, 42);
+    let pairs = construct_pacmap_pairs(&knn_indices, 10, 5, 20, candidate_start, candidate_end, 42);
 
     println!("\n=== PaCMAP DIAGNOSTIC 4: Mid-Near Candidate Window ===");
 
@@ -274,9 +272,6 @@ fn pacmap_integration_08_different_seeds_differ() {
 
 #[test]
 fn pacmap_integration_09_cluster_separation() {
-    // 50 per cluster = 250 total. Using 100+ points with k=50 means near pairs
-    // dominate heavily (10% of dataset as neighbours), which makes it hard for
-    // further pairs to push 5 clusters apart in 2D within 450 epochs.
     let (data, labels) = create_diagnostic_data(50, 10, 42);
 
     println!("\n=== PaCMAP DIAGNOSTIC 9: Cluster Separation ===");
@@ -311,8 +306,6 @@ fn pacmap_integration_10_precomputed_knn() {
     let (knn_indices, knn_dist) =
         run_ann_search(data.as_ref(), k, "nndescent".to_string(), &nn_params, 42, 0).unwrap();
 
-    // Use sequential Adam — parallel has non-deterministic FP accumulation order
-    // so precomputed vs internal may diverge even with identical kNN graphs.
     let params = PacmapParams {
         ann_type: "nndescent".to_string(),
         optimiser_type: "adam".to_string(),
@@ -382,13 +375,12 @@ fn pacmap_integration_12_further_pairs_influence() {
     use manifolds_rs::data::pacmap_pairs::PacmapPairs;
     use manifolds_rs::training::pacmap_optimiser::*;
 
-    // Build a small embedding and pairs; compare run with/without further pairs
     let n = 20;
     let knn: Vec<Vec<usize>> = (0..n)
         .map(|i| (1..=10).map(|o| (i + o) % n).collect())
         .collect();
 
-    let pairs_full = construct_pacmap_pairs(&knn, 2, 2, 4, 10, 42);
+    let pairs_full = construct_pacmap_pairs(&knn, 10, 5, 20, 4, 10, 42);
     let pairs_no_fp = PacmapPairs {
         near: pairs_full.near.clone(),
         mid_near: pairs_full.mid_near.clone(),
