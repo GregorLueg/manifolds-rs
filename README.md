@@ -434,7 +434,9 @@ let embedding = phate(
 ### PaCMAP Example
 
 PaCMAP preserves both local and global structure via three pair types (near,
-mid-near, and further pairs) and a phased optimisation schedule.
+mid-near, and further pairs) and a phased optimisation schedule. **Warning:**
+Prior to version `"0.3.6"` there is a nasty bug in the pacmap implementation.
+Please use `"0.3.6"` and later for correct PacMAP.
 
 ```rust
 use manifolds_rs::prelude::*;
