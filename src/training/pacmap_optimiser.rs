@@ -217,9 +217,9 @@ where
     T: Float + FromPrimitive,
 {
     let two = T::from_f64(2.0).unwrap();
-    let d = (dist_sq + T::from_f64(1e-10).unwrap()).sqrt();
-    let denom = (d + c) * (d + c) * d;
-    c / denom * two
+    let d_tilde = T::one() + dist_sq;
+    let denom = c + d_tilde;
+    two * c / (denom * denom)
 }
 
 /// Repulsive loss gradient coefficient for further pairs.
@@ -241,9 +241,9 @@ where
     T: Float + FromPrimitive,
 {
     let two = T::from_f64(2.0).unwrap();
-    let d = (dist_sq + T::from_f64(1e-10).unwrap()).sqrt();
-    let denom = (T::one() + d) * (T::one() + d) * d;
-    T::one() / denom * two
+    let d_tilde = T::one() + dist_sq;
+    let denom = T::one() + d_tilde; // = 2 + dist_sq
+    two / (denom * denom)
 }
 
 //////////

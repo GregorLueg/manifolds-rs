@@ -1512,6 +1512,8 @@ pub struct PacmapParams<T> {
     /// Embedding initialisation. Default `"pca"`. PCA is strongly recommended
     /// for PaCMAP as random init degrades global structure.
     pub initialisation: String,
+    /// The range of the initial embedding
+    pub range: Option<T>,
     /// Nearest neighbour search parameters.
     pub nn_params: NearestNeighbourParams<T>,
     /// Optimiser parameters.
@@ -1533,6 +1535,7 @@ where
             mn_candidate_start: 4,
             mn_candidate_end: 50,
             initialisation: "pca".to_string(),
+            range: Some(T::from_f64(0.01).unwrap()),
             nn_params: NearestNeighbourParams::default(),
             optim_params: PacmapOptimParams::default(),
         }
@@ -1571,6 +1574,7 @@ where
     ///   candidate window. Requires `k >= this value`.
     /// * `initialisation` - Embedding initialisation. PCA is strongly
     ///   recommended for PaCMAP as random init degrades global structure.
+    /// * `range` - The range for the initial embedding.
     /// * `nn_params` - Nearest neighbour search parameters.
     /// * `optim_params` - Optimiser parameters.
     ///
@@ -1588,6 +1592,7 @@ where
         mn_candidate_start: usize,
         mn_candidate_end: usize,
         initialisation: String,
+        range: Option<T>,
         nn_params: NearestNeighbourParams<T>,
         optim_params: PacmapOptimParams<T>,
     ) -> Self {
@@ -1603,6 +1608,7 @@ where
             mn_candidate_start,
             mn_candidate_end,
             initialisation,
+            range,
             nn_params,
             optim_params,
         }
@@ -1731,14 +1737,14 @@ where
         );
     }
 
-    let init_type =
-        parse_initilisation(&params_pacmap.initialisation, true, None).unwrap_or_else(|| {
+    let init_type = parse_initilisation(&params_pacmap.initialisation, true, params_pacmap.range)
+        .unwrap_or_else(|| {
             println!(
                 "Unknown initialisation provided: {:?}. Defaulting to PCA.",
                 params_pacmap.initialisation,
             );
             EmbdInit::PcaInit {
-                range: None,
+                range: Some(T::from_f64(0.01).unwrap()),
                 randomised: true,
             }
         });

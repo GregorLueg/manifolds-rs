@@ -1,5 +1,11 @@
 # News
 
+## 0.3.6
+
+**Fix:**
+
+- Incorrect PacMAP gradients. This has been fixed now.
+
 ## 0.3.5
 
 **Features:**
