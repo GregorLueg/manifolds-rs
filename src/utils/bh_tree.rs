@@ -415,3 +415,221 @@ where
         (force_x, force_y, sum_q)
     }
 }
+
+///////////
+// Tests //
+///////////
+
+///////////
+// Tests //
+///////////
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use approx::assert_relative_eq;
+
+    /// Helper: flat interleaved embedding from a slice of tuples.
+    fn pos_from_tuples(pts: &[(f64, f64)]) -> Vec<f64> {
+        pts.iter().flat_map(|&(x, y)| [x, y]).collect()
+    }
+
+    /// Brute-force reference with the same coincident-point exclusion
+    /// (`dist_sq <= 1e-12` contributes nothing) as the tree.
+    fn brute_force(pos: &[f64], i: usize) -> (f64, f64, f64) {
+        let n = pos.len() / 2;
+        let (mut fx, mut fy, mut sq) = (0.0, 0.0, 0.0);
+        for j in 0..n {
+            let dx = pos[2 * i] - pos[2 * j];
+            let dy = pos[2 * i + 1] - pos[2 * j + 1];
+            let d = dx * dx + dy * dy;
+            if d <= 1e-12 {
+                continue;
+            }
+            let q = 1.0 / (1.0 + d);
+            sq += q;
+            fx += q * q * dx;
+            fy += q * q * dy;
+        }
+        (fx, fy, sq)
+    }
+
+    /// Deterministic LCG cloud, no RNG dependency.
+    fn lcg_cloud(n: usize, mut state: u64) -> Vec<f64> {
+        (0..2 * n)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (state >> 40) as f64 / (1u64 << 24) as f64
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_single_point_tree() {
+        let tree = BarnesHutTree::new(&[1.0f64, 2.0]);
+        assert_eq!(tree.nodes.len(), 1);
+        let root = &tree.nodes[0];
+        assert_relative_eq!(root.com_x, 1.0);
+        assert_relative_eq!(root.com_y, 2.0);
+        assert_eq!(root.count, 1);
+        assert_eq!(root.first_child, SENTINEL);
+    }
+
+    #[test]
+    fn test_two_points_different_quadrants() {
+        let tree = BarnesHutTree::new(&pos_from_tuples(&[(0.0, 0.0), (10.0, 10.0)]));
+        let root = &tree.nodes[0];
+        assert_eq!(root.count, 2);
+        assert_relative_eq!(root.com_x, 5.0);
+        assert_relative_eq!(root.com_y, 5.0);
+        assert_ne!(root.first_child, SENTINEL);
+        assert_eq!(root.child_count, 2);
+    }
+
+    #[test]
+    fn test_coincident_points_collapse_to_one_leaf() {
+        let pos = vec![5.0f64; 1000];
+        let tree = BarnesHutTree::new(&pos);
+        assert_eq!(tree.nodes.len(), 1);
+        assert_eq!(tree.nodes[0].count, 500);
+        assert_eq!(tree.nodes[0].first_child, SENTINEL);
+    }
+
+    #[test]
+    fn test_mass_conservation() {
+        let pos = lcg_cloud(2_000, 17);
+        let tree = BarnesHutTree::new(&pos);
+        assert_eq!(tree.nodes[0].count, 2_000);
+        let leaf_sum: u64 = tree
+            .nodes
+            .iter()
+            .filter(|n| n.first_child == SENTINEL)
+            .map(|n| n.count as u64)
+            .sum();
+        assert_eq!(leaf_sum, 2_000);
+    }
+
+    #[test]
+    fn test_root_centre_of_mass_is_the_mean() {
+        let pos = lcg_cloud(1_000, 5);
+        let tree = BarnesHutTree::new(&pos);
+        let (mut mx, mut my) = (0.0, 0.0);
+        for p in pos.chunks_exact(2) {
+            mx += p[0];
+            my += p[1];
+        }
+        assert_relative_eq!(tree.nodes[0].com_x, mx / 1_000.0, epsilon = 1e-9);
+        assert_relative_eq!(tree.nodes[0].com_y, my / 1_000.0, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn test_no_self_interaction() {
+        // A single point and a coincident cluster both yield zero force and
+        // zero sum_q for a query at their position.
+        let mut stack = Vec::new();
+        for pos in [vec![0.0f64, 0.0], vec![5.0f64; 8]] {
+            let tree = BarnesHutTree::new(&pos);
+            let (fx, fy, sq) = tree.compute_repulsive_force(pos[0], pos[1], 0.5, &mut stack);
+            assert_relative_eq!(fx, 0.0);
+            assert_relative_eq!(fy, 0.0);
+            assert_relative_eq!(sq, 0.0);
+        }
+    }
+
+    #[test]
+    fn test_force_symmetry_two_points() {
+        let tree = BarnesHutTree::new(&pos_from_tuples(&[(0.0, 0.0), (2.0, 0.0)]));
+        let mut stack = Vec::new();
+        let (fx0, fy0, _) = tree.compute_repulsive_force(0.0, 0.0, 0.5, &mut stack);
+        let (fx1, fy1, _) = tree.compute_repulsive_force(2.0, 0.0, 0.5, &mut stack);
+        assert_relative_eq!(fx0, -fx1, epsilon = 1e-10);
+        assert_relative_eq!(fy0, -fy1, epsilon = 1e-10);
+        assert!(fx0 < 0.0, "Point 0 should be pushed left");
+        assert!(fx1 > 0.0, "Point 1 should be pushed right");
+    }
+
+    #[test]
+    fn test_force_magnitude_decreases_with_distance() {
+        let close = BarnesHutTree::new(&pos_from_tuples(&[(0.0, 0.0), (1.0, 0.0)]));
+        let far = BarnesHutTree::new(&pos_from_tuples(&[(0.0, 0.0), (10.0, 0.0)]));
+        let mut stack = Vec::new();
+        let (fx_close, _, _) = close.compute_repulsive_force(0.0, 0.0, 0.5, &mut stack);
+        let (fx_far, _, _) = far.compute_repulsive_force(0.0, 0.0, 0.5, &mut stack);
+        assert!(fx_close.abs() > fx_far.abs());
+    }
+
+    #[test]
+    fn test_theta_zero_matches_brute_force() {
+        let pos = lcg_cloud(400, 23);
+        let tree = BarnesHutTree::new(&pos);
+        let mut stack = Vec::new();
+        for i in 0..400 {
+            let (fx, fy, sq) =
+                tree.compute_repulsive_force(pos[2 * i], pos[2 * i + 1], 0.0, &mut stack);
+            let (bx, by, bq) = brute_force(&pos, i);
+            assert_relative_eq!(fx, bx, epsilon = 1e-9);
+            assert_relative_eq!(fy, by, epsilon = 1e-9);
+            assert_relative_eq!(sq, bq, epsilon = 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_barnes_hut_approximation_reasonable() {
+        let pos = lcg_cloud(1_000, 42);
+        let tree = BarnesHutTree::new(&pos);
+        let mut stack = Vec::new();
+        for i in (0..1_000).step_by(97) {
+            let (_, _, sq_exact) =
+                tree.compute_repulsive_force(pos[2 * i], pos[2 * i + 1], 0.0, &mut stack);
+            let (_, _, sq_approx) =
+                tree.compute_repulsive_force(pos[2 * i], pos[2 * i + 1], 0.5, &mut stack);
+            assert!((sq_approx / sq_exact - 1.0).abs() < 0.05);
+        }
+    }
+
+    #[test]
+    fn test_no_nan_or_inf_forces() {
+        let configs: Vec<Vec<(f64, f64)>> = vec![
+            vec![(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)],
+            vec![(0.0, 0.0), (1e-10, 0.0)],
+            vec![(0.0, 0.0), (1e-8, 1e-8), (100.0, 100.0)],
+            vec![(1e6, 1e6), (1e6 + 1.0, 1e6)],
+        ];
+        let mut stack = Vec::new();
+        for pts in &configs {
+            let pos = pos_from_tuples(pts);
+            let tree = BarnesHutTree::new(&pos);
+            for i in 0..pts.len() {
+                let (fx, fy, sq) =
+                    tree.compute_repulsive_force(pos[2 * i], pos[2 * i + 1], 0.5, &mut stack);
+                assert!(fx.is_finite() && fy.is_finite() && sq.is_finite());
+                assert!(sq >= 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn test_empty_input() {
+        let tree = BarnesHutTree::<f64>::new(&[]);
+        let mut stack = Vec::new();
+        let (fx, fy, sq) = tree.compute_repulsive_force(0.0, 0.0, 0.5, &mut stack);
+        assert_eq!((fx, fy, sq), (0.0, 0.0, 0.0));
+    }
+
+    #[test]
+    fn test_rebuild_matches_fresh_tree() {
+        let a = lcg_cloud(500, 1);
+        let b = lcg_cloud(800, 2);
+        let mut reused = BarnesHutTree::new(&a);
+        reused.rebuild(&b);
+        let fresh = BarnesHutTree::new(&b);
+        let mut stack = Vec::new();
+        for i in (0..800).step_by(53) {
+            let r = reused.compute_repulsive_force(b[2 * i], b[2 * i + 1], 0.5, &mut stack);
+            let f = fresh.compute_repulsive_force(b[2 * i], b[2 * i + 1], 0.5, &mut stack);
+            assert_eq!(r, f);
+        }
+    }
+}
