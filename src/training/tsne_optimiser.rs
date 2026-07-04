@@ -344,9 +344,11 @@ pub fn optimise_bh_tsne<T>(
 
     let mut update_flat = vec![T::zero(); n * n_dim];
     let mut gains_flat = vec![T::one(); n * n_dim];
-    let mut xs = vec![T::zero(); n];
-    let mut ys = vec![T::zero(); n];
+    let mut pos = vec![T::zero(); n * n_dim];
     let mut rep_forces: Vec<(T, T, T)> = vec![(T::zero(), T::zero(), T::zero()); n];
+
+    // one tree across all epochs: rebuild reuses its buffers.
+    let mut bh_tree = BarnesHutTree::empty();
 
     let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
     for ((&i, &j), &w) in graph
@@ -359,8 +361,6 @@ pub fn optimise_bh_tsne<T>(
     }
 
     for epoch in 0..params.n_epochs {
-        let bh_tree = BarnesHutTree::new(embd);
-
         let momentum = if epoch < TSNE_MOMENTUM_SWITCH_ITER {
             initial_momentum
         } else {
@@ -372,21 +372,28 @@ pub fn optimise_bh_tsne<T>(
             params.get_late_exag_factor()
         };
 
-        // snapshot positions in parallel into pre-allocated buffers.
+        // snapshot positions in parallel into the interleaved flat buffer,
+        // shared by the tree build and both force passes.
         embd.par_iter()
-            .zip(xs.par_iter_mut())
-            .zip(ys.par_iter_mut())
-            .for_each(|((p, x), y)| {
-                *x = p[0];
-                *y = p[1];
+            .zip(pos.par_chunks_mut(n_dim))
+            .for_each(|(p, dst)| {
+                dst[0] = p[0];
+                dst[1] = p[1];
             });
 
+        bh_tree.rebuild(&pos);
+
         // compute all repulsive forces in one parallel pass, writing into
-        // the preallocated rep_forces buffer instead of collecting a new Vec.
+        // the preallocated rep_forces buffer
         rep_forces.par_iter_mut().enumerate().for_each_init(
-            || Vec::with_capacity(256),
+            || Vec::with_capacity(128),
             |stack, (i, slot)| {
-                *slot = bh_tree.compute_repulsive_force(i, xs[i], ys[i], params.theta, stack);
+                *slot = bh_tree.compute_repulsive_force(
+                    pos[2 * i],
+                    pos[2 * i + 1],
+                    params.theta,
+                    stack,
+                );
             },
         );
 
@@ -407,16 +414,16 @@ pub fn optimise_bh_tsne<T>(
             .zip(gains_flat.par_chunks_mut(n_dim))
             .enumerate()
             .for_each(|(i, ((point, u_i), g_i))| {
-                let px = xs[i];
-                let py = ys[i];
+                let px = pos[2 * i];
+                let py = pos[2 * i + 1];
 
                 let (rep_x, rep_y, _) = rep_forces[i];
 
                 let mut attr_x = T::zero();
                 let mut attr_y = T::zero();
                 for &(j, p_val) in &adj[i] {
-                    let dx = px - xs[j];
-                    let dy = py - ys[j];
+                    let dx = px - pos[2 * j];
+                    let dy = py - pos[2 * j + 1];
                     let dist_sq = dx * dx + dy * dy;
                     let q = T::one() / (T::one() + dist_sq);
                     let force = p_val * exag_factor * q;

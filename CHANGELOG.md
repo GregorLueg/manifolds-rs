@@ -1,5 +1,11 @@
 # News
 
+## 0.3.7
+
+**Features:**
+
+- Performance improvements for BH and FFT-accelerate tSNE.
+
 ## 0.3.6
 
 **Fix:**

@@ -273,9 +273,9 @@ fn tsne_integration_04_barnes_hut_tree() {
 
     println!("\n=== t-SNE DIAGNOSTIC 4: Barnes-Hut Tree ===");
 
-    // Create a simple 2D embedding for testing
+    // Create a simple 2D embedding for testing (flat, interleaved x/y)
     let n = data.nrows();
-    let mut embd: Vec<Vec<f64>> = Vec::with_capacity(n);
+    let mut embd: Vec<f64> = Vec::with_capacity(2 * n);
 
     // Place points in 2D based on their cluster
     let mut rng = StdRng::seed_from_u64(42);
@@ -289,28 +289,22 @@ fn tsne_integration_04_barnes_hut_tree() {
 
     for &label in &labels {
         let (cx, cy) = cluster_centres_2d[label];
-        let x = cx + rng.random::<f64>() * 2.0 - 1.0;
-        let y = cy + rng.random::<f64>() * 2.0 - 1.0;
-        embd.push(vec![x, y]);
+        embd.push(cx + rng.random::<f64>() * 2.0 - 1.0);
+        embd.push(cy + rng.random::<f64>() * 2.0 - 1.0);
     }
 
     let tree = BarnesHutTree::new(&embd);
 
     println!("Tree has {} nodes for {} points", tree.nodes.len(), n);
 
-    // Check root mass equals n (Note: fixed to use `tree.root` instead of `0`)
-    let root = &tree.nodes[tree.root];
-    assert!(
-        (root.mass - n as f64).abs() < 1e-10,
-        "Root mass {} should equal n={}",
-        root.mass,
-        n
-    );
-    println!("✓ Root mass equals n");
+    // Root is always index 0; mass field is now `count`
+    let root = &tree.nodes[0];
+    assert_eq!(root.count, n as u32, "Root count should equal n={}", n);
+    println!("✓ Root count equals n");
 
     // Check centre of mass is reasonable
-    let true_com_x: f64 = embd.iter().map(|p| p[0]).sum::<f64>() / n as f64;
-    let true_com_y: f64 = embd.iter().map(|p| p[1]).sum::<f64>() / n as f64;
+    let true_com_x: f64 = embd.iter().step_by(2).sum::<f64>() / n as f64;
+    let true_com_y: f64 = embd.iter().skip(1).step_by(2).sum::<f64>() / n as f64;
 
     assert!(
         (root.com_x - true_com_x).abs() < 1e-10,
@@ -327,12 +321,11 @@ fn tsne_integration_04_barnes_hut_tree() {
     let mut nan_count = 0;
     let mut inf_count = 0;
 
-    // Allocate our reusable stack
-    let mut stack = Vec::with_capacity(128);
+    let mut stack: Vec<u32> = Vec::with_capacity(128);
 
     for i in 0..n {
         let (fx, fy, sum_q) =
-            tree.compute_repulsive_force(i, embd[i][0], embd[i][1], 0.5, &mut stack);
+            tree.compute_repulsive_force(embd[2 * i], embd[2 * i + 1], 0.5, &mut stack);
 
         if fx.is_nan() || fy.is_nan() || sum_q.is_nan() {
             nan_count += 1;
@@ -351,11 +344,11 @@ fn tsne_integration_04_barnes_hut_tree() {
     println!("Total sum_q across all points: {:.4}", total_sum_q);
     assert!(total_sum_q > 0.0, "Total sum_q should be positive");
 
-    // Compare exact vs approximate
+    // Compare exact vs approximate for point 0
     let (fx_exact, fy_exact, sq_exact) =
-        tree.compute_repulsive_force(0, embd[0][0], embd[0][1], 0.0, &mut stack);
+        tree.compute_repulsive_force(embd[0], embd[1], 0.0, &mut stack);
     let (fx_approx, fy_approx, sq_approx) =
-        tree.compute_repulsive_force(0, embd[0][0], embd[0][1], 0.5, &mut stack);
+        tree.compute_repulsive_force(embd[0], embd[1], 0.5, &mut stack);
 
     println!("\nPoint 0 forces:");
     println!(
@@ -367,7 +360,6 @@ fn tsne_integration_04_barnes_hut_tree() {
         fx_approx, fy_approx, sq_approx
     );
 
-    // Approximation should be reasonable
     let fx_err = if fx_exact.abs() > 1e-6 {
         ((fx_approx - fx_exact) / fx_exact).abs()
     } else {
