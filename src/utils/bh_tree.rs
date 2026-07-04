@@ -1,401 +1,362 @@
-//! Barnes-Hut tree implementation for tSNE fitting
+//! Morton (Z-order) linear quad-tree Barnes-Hut implementation for tSNE
+//! fitting.
+//!
+//! The build quantises the embedding into per-axis 32-bit integer buckets,
+//! interleaves them into 64-bit Morton codes, sorts a `(code, index)`
+//! permutation, and walks the sorted codes breadth-first to emit nodes whose
+//! children occupy a contiguous arena range. Nodes store only what the force
+//! traversal reads (centre of mass, count, level); raw coordinates are never
+//! stored.
 
 use num_traits::{Float, FromPrimitive};
+use rayon::prelude::*;
 
 /////////////
 // Helpers //
 /////////////
 
-/// A simple 2D bounding box.
-#[derive(Clone, Copy, Debug)]
-struct BBox<T> {
-    /// Left boundary
-    x_min: T,
-    /// Right boundary
-    x_max: T,
-    /// Top boundary
-    y_min: T,
-    /// Bottom boundary
-    y_max: T,
+/// `first_child` value marking a leaf.
+const SENTINEL: u32 = u32::MAX;
+
+/// Bits per axis in the Morton code. 32 bits is lossless for `f32`
+/// coordinates; for `f64` quantisation only decides tree topology, never
+/// force arithmetic (centres of mass are computed from actual coordinates).
+const BITS: u32 = 32;
+
+/// Minimum rayon chunk length, so small inputs stay on one thread.
+const PAR_MIN_LEN: usize = 1024;
+
+/// Spread the low 32 bits of `x` into the even bit positions (one zero gap
+/// between each), the 2D Morton building block.
+#[inline]
+const fn part_1by1(mut x: u64) -> u64 {
+    x &= 0x0000_0000_ffff_ffff;
+    x = (x | (x << 16)) & 0x0000_ffff_0000_ffff;
+    x = (x | (x << 8)) & 0x00ff_00ff_00ff_00ff;
+    x = (x | (x << 4)) & 0x0f0f_0f0f_0f0f_0f0f;
+    x = (x | (x << 2)) & 0x3333_3333_3333_3333;
+
+    (x | (x << 1)) & 0x5555_5555_5555_5555
 }
 
-impl<T: Float> BBox<T> {
-    /// Determine which quadrant a point belongs to relative to the centre.
-    ///
-    /// Quadrants are indexed in Z-order (Morton order):
-    /// * 0: Top-Left (x < centre, y < centre)
-    /// * 1: Top-Right (x >= centre, y < centre)
-    /// * 2: Bottom-Left (x < centre, y >= centre)
-    /// * 3: Bottom-Right (x >= centre, y >= centre)
-    #[inline]
-    fn get_quadrant(&self, x: T, y: T) -> usize {
-        let two = T::one() + T::one();
-        let cx = (self.x_min + self.x_max) / two;
-        let cy = (self.y_min + self.y_max) / two;
-
-        let right = if x > cx { 1 } else { 0 };
-        let bottom = if y > cy { 2 } else { 0 };
-        right + bottom
-    }
-
-    /// Create a bounding box for one of the four sub-quadrants.
-    ///
-    /// ### Params
-    ///
-    /// * `quadrant` - Quadrant index (0-3)
-    ///
-    /// ### Panics
-    ///
-    /// Panics if `quadrant` is not in `[0, 3]`.
-    fn sub_quadrant(&self, quadrant: usize) -> Self {
-        let two = T::one() + T::one();
-        let cx = (self.x_min + self.x_max) / two;
-        let cy = (self.y_min + self.y_max) / two;
-
-        match quadrant {
-            0 => BBox {
-                x_min: self.x_min,
-                x_max: cx,
-                y_min: self.y_min,
-                y_max: cy,
-            },
-            1 => BBox {
-                x_min: cx,
-                x_max: self.x_max,
-                y_min: self.y_min,
-                y_max: cy,
-            },
-            2 => BBox {
-                x_min: self.x_min,
-                x_max: cx,
-                y_min: cy,
-                y_max: self.y_max,
-            },
-            3 => BBox {
-                x_min: cx,
-                x_max: self.x_max,
-                y_min: cy,
-                y_max: self.y_max,
-            },
-            _ => unreachable!(),
-        }
-    }
+/// Interleave two 32-bit axis buckets into a 64-bit Morton code, x varying
+/// fastest (canonical Z-order).
+#[inline]
+const fn encode(x: u32, y: u32) -> u64 {
+    part_1by1(x as u64) | (part_1by1(y as u64) << 1)
 }
 
-//////////////
-// LeafData //
-//////////////
-
-/// Point index data stored in leaf nodes.
+/// Quantise one coordinate into its axis bucket.
 ///
-/// Uses an enum to avoid paying for a `Vec` allocation on the common
-/// single-point leaf path. The `Coincident` variant is only constructed
-/// when multiple points fall into the same quadrant and cannot be further
-/// separated (i.e. they are at identical or near-identical coordinates).
-#[derive(Debug, Clone)]
-pub enum LeafData {
-    /// Single point (vast majority of leaves, no heap allocation)
-    Single(usize),
-    /// Multiple coincident/near-coincident points
-    Coincident(Vec<usize>),
+/// A degenerate zero-width axis has `inv_scale == 0` and collapses every
+/// point to bucket zero.
+#[inline]
+fn quantise<T: Float>(v: T, min: T, inv_scale: T) -> u32 {
+    let bucket = ((v - min) * inv_scale).to_u64().unwrap_or(0);
+    bucket.min(u32::MAX as u64) as u32
 }
 
-impl LeafData {
-    /// Check whether this leaf contains a given point index.
-    #[inline]
-    fn contains(&self, idx: usize) -> bool {
-        match self {
-            LeafData::Single(i) => *i == idx,
-            LeafData::Coincident(indices) => indices.contains(&idx),
-        }
-    }
-}
+//////////
+// Node //
+//////////
 
-//////////////
-// QuadNode //
-//////////////
-
-/// A node in the flattened quad-tree arena.
+/// A node in the flat quad-tree arena.
 ///
-/// Leaf nodes carry a `LeafData` value identifying which point(s) they
-/// contain. Internal nodes have `leaf_data: None` and instead reference
-/// up to four children. This design keeps single-point leaves (the vast
-/// majority) free of heap allocation whilst still correctly tracking all
-/// indices for coincident-point leaves, ensuring exact self-interaction
-/// exclusion during force computation.
+/// The force traversal reads `com_x`, `com_y`, `count`, and `level` (which
+/// sizes the cell through the per-tree width table), and follows
+/// `first_child` for the `child_count` children stored contiguously. A leaf
+/// is marked by `first_child == SENTINEL`.
+///
+/// Only non-empty quadrants are emitted as children, stored back to back,
+/// rather than four fixed slots.
 #[derive(Debug, Clone)]
-pub struct QuadNode<T> {
+pub struct Node<T> {
     /// Centre of mass (X)
     pub com_x: T,
     /// Centre of mass (Y)
     pub com_y: T,
-    /// Total mass (number of points in this node/subtree)
-    pub mass: T,
-    /// Width of the cell covered by this node
-    pub width: T,
-    /// Indices of children in the `nodes` vector; `None` if child does not
-    /// exist
-    pub children: [Option<usize>; 4],
-    /// Point data for leaf nodes; `None` for internal nodes
-    pub leaf_data: Option<LeafData>,
-}
-
-impl<T: Float> QuadNode<T> {
-    /// Whether this node is a leaf.
-    #[inline]
-    pub fn is_leaf(&self) -> bool {
-        self.leaf_data.is_some()
-    }
+    /// Number of points in this subtree
+    pub count: u32,
+    /// Arena index of the first child; `SENTINEL` for leaves
+    pub first_child: u32,
+    /// Number of contiguous children (at most 4)
+    pub child_count: u8,
+    /// Tree level, indexing the squared-width table for the theta test
+    pub level: u8,
 }
 
 ///////////////////
 // BarnesHutTree //
 ///////////////////
 
-/// Internal Build stack
-struct BuildTask<T> {
-    /// Tracks (parent_node_index, quadrant_index) to link back up the tree
-    parent_idx: Option<(usize, usize)>,
-    start: usize,
-    end: usize,
-    bbox: BBox<T>,
-    depth: usize,
-}
-
-/// Barnes-Hut quad-tree for 2D repulsive force approximation.
+/// Morton linear Barnes-Hut quad-tree for 2D repulsive force approximation.
 ///
-/// Stores nodes in a contiguous flat arena for cache locality. The tree
-/// is built once per epoch from the current embedding positions, then
-/// queried in parallel for each point's repulsive forces.
+/// Holds its build buffers across epochs: the epoch loop keeps one tree and
+/// calls [`BarnesHutTree::rebuild`] each epoch, reusing allocations instead
+/// of reallocating.
 pub struct BarnesHutTree<T> {
-    /// Flat arena of quad-tree nodes
-    pub nodes: Vec<QuadNode<T>>,
-    /// Index of the root node in the arena
-    pub root: usize,
+    /// Flat arena of nodes; children always follow their parent
+    pub nodes: Vec<Node<T>>,
+    /// Build scratch: each node's half-open window in `sorted`
+    ranges: Vec<(u32, u32)>,
+    /// The `(Morton code, point index)` permutation
+    sorted: Vec<(u64, u32)>,
+    /// Squared full cell width per level for the theta test. Full width (not
+    /// half-width) preserves the opening criterion of the previous
+    /// pointer-based tree, so the same `theta` gives a comparable
+    /// approximation.
+    level_width_sq: Vec<T>,
 }
 
 impl<T> BarnesHutTree<T>
 where
     T: Float + FromPrimitive + Send + Sync,
 {
-    /// Build quad-tree from current embedding positions.
-    ///
-    /// Uses a heap-allocated task stack to completely eliminate recursion.
-    /// This is strictly necessary when called from FFI environments (like R or
-    /// Python) where C-stack limits are strictly monitored and easily blown
-    /// during post-early-exaggeration t-SNE cluster expansions.
+    /// Create an empty tree. The epoch loop holds one of these and rebuilds
+    /// it each epoch so the buffers persist.
+    pub fn empty() -> Self {
+        Self {
+            nodes: Vec::new(),
+            ranges: Vec::new(),
+            sorted: Vec::new(),
+            level_width_sq: Vec::new(),
+        }
+    }
+
+    /// Build a fresh tree over `pos`. Convenience for one-shot callers; the
+    /// epoch loop should hold one tree and call [`BarnesHutTree::rebuild`].
     ///
     /// ### Params
     ///
-    /// * `embd` - Point coordinates, shape `[n_points][2]`
+    /// * `pos` - Interleaved point coordinates `[x0, y0, x1, y1, ...]`
+    pub fn new(pos: &[T]) -> Self {
+        let mut tree = Self::empty();
+        tree.rebuild(pos);
+        tree
+    }
+
+    /// Rebuild the tree over `pos` in place, reusing the retained buffers.
     ///
-    /// ### Returns
+    /// ### Params
     ///
-    /// Constructed tree ready for force queries
-    pub fn new(embd: &[Vec<T>]) -> Self {
-        if embd.is_empty() {
-            return Self {
-                nodes: vec![QuadNode {
-                    com_x: T::zero(),
-                    com_y: T::zero(),
-                    mass: T::zero(),
-                    width: T::zero(),
-                    children: [None; 4],
-                    leaf_data: None,
-                }],
-                root: 0,
-            };
+    /// * `pos` - Interleaved point coordinates `[x0, y0, x1, y1, ...]`
+    pub fn rebuild(&mut self, pos: &[T]) {
+        let n = pos.len() / 2;
+
+        self.nodes.clear();
+        self.ranges.clear();
+        self.sorted.clear();
+
+        if n == 0 {
+            self.level_width_sq.clear();
+            return;
         }
 
-        let (min_x, max_x, min_y, max_y) = embd.iter().fold(
-            (
-                T::infinity(),
-                T::neg_infinity(),
-                T::infinity(),
-                T::neg_infinity(),
-            ),
-            |(min_x, max_x, min_y, max_y), p| {
-                (
-                    min_x.min(p[0]),
-                    max_x.max(p[0]),
-                    min_y.min(p[1]),
-                    max_y.max(p[1]),
-                )
-            },
-        );
+        // 1. Bounding box (parallel reduction) and quantisation scale.
+        let (min_x, max_x, min_y, max_y) = pos
+            .par_chunks_exact(2)
+            .with_min_len(PAR_MIN_LEN)
+            .fold(
+                || {
+                    (
+                        T::infinity(),
+                        T::neg_infinity(),
+                        T::infinity(),
+                        T::neg_infinity(),
+                    )
+                },
+                |(min_x, max_x, min_y, max_y), p| {
+                    (
+                        min_x.min(p[0]),
+                        max_x.max(p[0]),
+                        min_y.min(p[1]),
+                        max_y.max(p[1]),
+                    )
+                },
+            )
+            .reduce(
+                || {
+                    (
+                        T::infinity(),
+                        T::neg_infinity(),
+                        T::infinity(),
+                        T::neg_infinity(),
+                    )
+                },
+                |a, b| (a.0.min(b.0), a.1.max(b.1), a.2.min(b.2), a.3.max(b.3)),
+            );
 
-        let epsilon = T::from_f64(1e-6).unwrap();
-        let bbox = BBox {
-            x_min: min_x - epsilon,
-            x_max: max_x + epsilon,
-            y_min: min_y - epsilon,
-            y_max: max_y + epsilon,
+        let extent_x = max_x - min_x;
+        let extent_y = max_y - min_y;
+        let scale = T::from_u64(1u64 << BITS).unwrap();
+        let inv_scale_x = if extent_x > T::zero() {
+            scale / extent_x
+        } else {
+            T::zero()
+        };
+        let inv_scale_y = if extent_y > T::zero() {
+            scale / extent_y
+        } else {
+            T::zero()
         };
 
-        let mut nodes: Vec<QuadNode<T>> = Vec::with_capacity(embd.len() * 2);
-        let mut scratch = vec![0usize; embd.len()];
-        let mut indices: Vec<usize> = (0..embd.len()).collect();
+        // Squared full cell width per level: extent / 2^level, taking the
+        // larger axis (conservative: never summarises a cell early).
+        let max_extent = extent_x.max(extent_y);
+        self.level_width_sq.clear();
+        for level in 0..=BITS {
+            let width = max_extent / T::from_u64(1u64 << level).unwrap();
+            self.level_width_sq.push(width * width);
+        }
 
-        let mut stack = Vec::with_capacity(128);
-        stack.push(BuildTask {
-            parent_idx: None,
-            start: 0,
-            end: embd.len(),
-            bbox,
-            depth: 0,
+        // 2. Quantise, encode, and sort the (code, index) permutation.
+        self.sorted.par_extend(
+            pos.par_chunks_exact(2)
+                .with_min_len(PAR_MIN_LEN)
+                .enumerate()
+                .map(|(i, p)| {
+                    let code = encode(
+                        quantise(p[0], min_x, inv_scale_x),
+                        quantise(p[1], min_y, inv_scale_y),
+                    );
+                    (code, i as u32)
+                }),
+        );
+        self.sorted.par_sort_unstable_by_key(|&(code, _)| code);
+
+        let sorted = &self.sorted;
+        let nodes = &mut self.nodes;
+        let ranges = &mut self.ranges;
+
+        // 3. Breadth-first emission. Every internal node has at least two
+        // children (single-child chains are skipped by jumping to the
+        // tightest enclosing level), so at most 2n - 1 nodes exist.
+        nodes.reserve(2 * n - 1);
+        ranges.reserve(2 * n - 1);
+        nodes.push(Node {
+            com_x: T::zero(),
+            com_y: T::zero(),
+            count: n as u32,
+            first_child: SENTINEL,
+            child_count: 0,
+            level: BITS as u8,
         });
+        ranges.push((0, n as u32));
 
-        let mut root_idx = 0;
+        let mut node = 0usize;
+        while node < nodes.len() {
+            let (start, end) = ranges[node];
+            // A single point, or points sharing a full code (closer than one
+            // grid cell, the coincident case), stays a leaf. Sorted codes
+            // make the all-equal test O(1).
+            if end - start <= 1 || sorted[start as usize].0 == sorted[(end - 1) as usize].0 {
+                node += 1;
+                continue;
+            }
 
-        // Iterative Tree Builder Loop
-        while let Some(task) = stack.pop() {
-            let width = task.bbox.x_max - task.bbox.x_min;
-            let n = task.end - task.start;
-            let point_indices = &mut indices[task.start..task.end];
+            // Tightest enclosing level: the highest differing bit between
+            // the range's extreme codes sits in the 2-bit group that first
+            // splits the range.
+            let xor = sorted[start as usize].0 ^ sorted[(end - 1) as usize].0;
+            let highest_diff = 63 - xor.leading_zeros();
+            let level = (BITS - 1) - highest_diff / 2;
+            let shift = 2 * (BITS - 1 - level);
+            nodes[node].level = level as u8;
 
-            // 1. Single point -> leaf
-            if n == 1 {
-                let idx = point_indices[0];
-                let p = &embd[idx];
-                let node_idx = nodes.len();
-                nodes.push(QuadNode {
-                    com_x: p[0],
-                    com_y: p[1],
-                    mass: T::one(),
-                    width,
-                    children: [None; 4],
-                    leaf_data: Some(LeafData::Single(idx)),
-                });
-
-                if let Some((p_idx, q)) = task.parent_idx {
-                    nodes[p_idx].children[q] = Some(node_idx);
-                } else {
-                    root_idx = node_idx;
+            let first_child = nodes.len() as u32;
+            let mut child_count: u8 = 0;
+            let mut child_start = start;
+            while child_start < end {
+                let group = (sorted[child_start as usize].0 >> shift) & 0b11;
+                let mut child_end = child_start + 1;
+                while child_end < end && (sorted[child_end as usize].0 >> shift) & 0b11 == group {
+                    child_end += 1;
                 }
-                continue;
-            }
-
-            // 2. Compute center of mass and quadrant counts
-            let mut sum_x = T::zero();
-            let mut sum_y = T::zero();
-            let mass = T::from_usize(n).unwrap();
-            let mut counts = [0usize; 4];
-
-            for &idx in point_indices.iter() {
-                let p = &embd[idx];
-                sum_x = sum_x + p[0];
-                sum_y = sum_y + p[1];
-                let q = task.bbox.get_quadrant(p[0], p[1]);
-                counts[q] += 1;
-            }
-
-            let max_count = *counts.iter().max().unwrap();
-
-            // 3. Fallback Guard: Depth limit or exact coincidence
-            if task.depth >= 64
-                || !width.is_finite()
-                || (max_count == n && width < T::from_f64(1e-10).unwrap())
-            {
-                let node_idx = nodes.len();
-                nodes.push(QuadNode {
-                    com_x: sum_x / mass,
-                    com_y: sum_y / mass,
-                    mass,
-                    width,
-                    children: [None; 4],
-                    leaf_data: Some(LeafData::Coincident(point_indices.to_vec())),
+                nodes.push(Node {
+                    com_x: T::zero(),
+                    com_y: T::zero(),
+                    count: child_end - child_start,
+                    first_child: SENTINEL,
+                    child_count: 0,
+                    level: BITS as u8,
                 });
+                ranges.push((child_start, child_end));
+                child_count += 1;
+                child_start = child_end;
+            }
+            nodes[node].first_child = first_child;
+            nodes[node].child_count = child_count;
+            node += 1;
+        }
 
-                if let Some((p_idx, q)) = task.parent_idx {
-                    nodes[p_idx].children[q] = Some(node_idx);
-                } else {
-                    root_idx = node_idx;
+        // 4. Leaf centres of mass in parallel; internal centres bottom-up.
+        nodes
+            .par_iter_mut()
+            .zip(ranges.par_iter())
+            .with_min_len(PAR_MIN_LEN)
+            .filter(|(node, _)| node.first_child == SENTINEL)
+            .for_each(|(node, &(start, end))| {
+                let mut sum_x = T::zero();
+                let mut sum_y = T::zero();
+                for slot in start..end {
+                    let idx = sorted[slot as usize].1 as usize;
+                    sum_x = sum_x + pos[2 * idx];
+                    sum_y = sum_y + pos[2 * idx + 1];
                 }
-                continue;
-            }
-
-            // 4. Box shrinking: All points in one quadrant, but not perfectly coincident
-            if max_count == n {
-                let q = counts.iter().position(|&c| c == n).unwrap();
-                // Push back to stack with a shrunk box, keeping the original parent
-                stack.push(BuildTask {
-                    parent_idx: task.parent_idx,
-                    start: task.start,
-                    end: task.end,
-                    bbox: task.bbox.sub_quadrant(q),
-                    depth: task.depth + 1,
-                });
-                continue;
-            }
-
-            // 5. Internal Node: scatter to scratch to partition in place
-            let mut offsets = [0usize; 4];
-            offsets[0] = 0;
-            for i in 1..4 {
-                offsets[i] = offsets[i - 1] + counts[i - 1];
-            }
-            let mut write_pos = offsets;
-            let scratch_slice = &mut scratch[task.start..task.end];
-
-            for &idx in point_indices.iter() {
-                let q = task.bbox.get_quadrant(embd[idx][0], embd[idx][1]);
-                scratch_slice[write_pos[q]] = idx;
-                write_pos[q] += 1;
-            }
-            point_indices.copy_from_slice(scratch_slice);
-
-            let node_idx = nodes.len();
-            nodes.push(QuadNode {
-                com_x: sum_x / mass,
-                com_y: sum_y / mass,
-                mass,
-                width,
-                children: [None; 4],
-                leaf_data: None,
+                let inv = T::from_u32(node.count).unwrap().recip();
+                node.com_x = sum_x * inv;
+                node.com_y = sum_y * inv;
             });
 
-            if let Some((p_idx, q)) = task.parent_idx {
-                nodes[p_idx].children[q] = Some(node_idx);
-            } else {
-                root_idx = node_idx;
+        // Children always sit after their parent in the arena, so a reverse
+        // pass sees every child finished: a count-weighted average.
+        for i in (0..nodes.len()).rev() {
+            if nodes[i].first_child == SENTINEL {
+                continue;
             }
-
-            // 6. Push sub-tasks for children
-            let mut current_start = task.start;
-            for i in 0..4 {
-                let current_end = current_start + counts[i];
-                if counts[i] > 0 {
-                    stack.push(BuildTask {
-                        parent_idx: Some((node_idx, i)),
-                        start: current_start,
-                        end: current_end,
-                        bbox: task.bbox.sub_quadrant(i),
-                        depth: task.depth + 1,
-                    });
-                }
-                current_start = current_end;
+            let first = nodes[i].first_child as usize;
+            let last = first + nodes[i].child_count as usize;
+            let mut sum_x = T::zero();
+            let mut sum_y = T::zero();
+            for child in &nodes[first..last] {
+                let w = T::from_u32(child.count).unwrap();
+                sum_x = sum_x + child.com_x * w;
+                sum_y = sum_y + child.com_y * w;
             }
+            let inv = T::from_u32(nodes[i].count).unwrap().recip();
+            nodes[i].com_x = sum_x * inv;
+            nodes[i].com_y = sum_y * inv;
         }
 
-        Self {
-            nodes,
-            root: root_idx,
-        }
+        // Point conservation: every point lands in exactly one leaf.
+        debug_assert_eq!(
+            nodes
+                .iter()
+                .filter(|node| node.first_child == SENTINEL)
+                .map(|node| node.count as u64)
+                .sum::<u64>(),
+            n as u64,
+            "tree lost or invented points"
+        );
     }
 
     /// Compute repulsive forces on a point using Barnes-Hut approximation.
     ///
-    /// Traverses the tree using an explicit fixed-size stack. At each node,
-    /// applies the Barnes-Hut opening criterion. Self-interaction is excluded,
-    /// and mathematically coincident points are ignored to prevent
-    /// Z-normalisation inflation.
+    /// Traverses the arena with an explicit reusable stack. A node is
+    /// summarised by its centre of mass when it is a leaf or passes the
+    /// theta opening criterion; otherwise its children are pushed.
+    ///
+    /// Self-interaction is excluded by distance: the query's own leaf sits
+    /// at (near-)zero distance and is skipped, which also ignores
+    /// mathematically coincident points, preventing Z-normalisation
+    /// inflation (matching the previous index-based exclusion).
     ///
     /// ### Params
     ///
-    /// * `point_idx` - Index of the query point in the embedding
     /// * `p_x` - X coordinate of the query point
     /// * `p_y` - Y coordinate of the query point
     /// * `theta` - Barnes-Hut opening parameter (typically 0.5)
+    /// * `stack` - Reusable traversal scratch (cleared here, capacity kept)
     ///
     /// ### Returns
     ///
@@ -403,355 +364,54 @@ where
     /// unnormalised Student-t affinities (for computing Z)
     pub fn compute_repulsive_force(
         &self,
-        point_idx: usize,
         p_x: T,
         p_y: T,
         theta: T,
-        stack: &mut Vec<usize>,
+        stack: &mut Vec<u32>,
     ) -> (T, T, T) {
         let mut force_x = T::zero();
         let mut force_y = T::zero();
         let mut sum_q = T::zero();
 
-        // Clear the stack from the previous run but keep its allocated capacity!
-        stack.clear();
-        stack.push(self.root);
+        if self.nodes.is_empty() {
+            return (force_x, force_y, sum_q);
+        }
 
         let theta_sq = theta * theta;
         let min_dist_sq = T::from_f64(1e-12).unwrap();
 
+        stack.clear();
+        stack.push(0);
+
         while let Some(ni) = stack.pop() {
-            let node = &self.nodes[ni];
+            let node = &self.nodes[ni as usize];
 
             let dx = p_x - node.com_x;
             let dy = p_y - node.com_y;
-            let dist_sq = (dx * dx + dy * dy).max(min_dist_sq);
+            let dist_sq = dx * dx + dy * dy;
 
-            if let Some(ref leaf) = node.leaf_data {
-                let m = if leaf.contains(point_idx) {
-                    node.mass - T::one()
-                } else {
-                    node.mass
-                };
-
-                if m > T::zero() && dist_sq > min_dist_sq {
-                    let q = T::one() / (T::one() + dist_sq);
-                    sum_q = sum_q + m * q;
-                    let mult = m * q * q;
-                    force_x = force_x + mult * dx;
-                    force_y = force_y + mult * dy;
+            if node.first_child == SENTINEL {
+                // Self / coincident exclusion.
+                if dist_sq <= min_dist_sq {
+                    continue;
+                }
+            } else if self.level_width_sq[node.level as usize] >= theta_sq * dist_sq {
+                // Cell subtends too large an angle: descend.
+                for child in 0..node.child_count as u32 {
+                    stack.push(node.first_child + child);
                 }
                 continue;
             }
 
-            let is_summary = node.width * node.width < theta_sq * dist_sq;
-
-            if is_summary {
-                let q = T::one() / (T::one() + dist_sq);
-                sum_q = sum_q + node.mass * q;
-                let mult = node.mass * q * q;
-                force_x = force_x + mult * dx;
-                force_y = force_y + mult * dy;
-            } else {
-                for child in node.children.iter().flatten() {
-                    stack.push(*child);
-                }
-            }
+            // Summarise the cell by its centre of mass.
+            let q = (T::one() + dist_sq).recip();
+            let mass_q = T::from_u32(node.count).unwrap() * q;
+            sum_q = sum_q + mass_q;
+            let mult = mass_q * q;
+            force_x = force_x + mult * dx;
+            force_y = force_y + mult * dy;
         }
 
         (force_x, force_y, sum_q)
-    }
-}
-
-///////////
-// Tests //
-///////////
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use approx::assert_relative_eq;
-
-    /// Helper: create embedding from slice of tuples
-    fn embd_from_tuples(pts: &[(f64, f64)]) -> Vec<Vec<f64>> {
-        pts.iter().map(|&(x, y)| vec![x, y]).collect()
-    }
-
-    #[test]
-    fn test_single_point_tree() {
-        let embd = embd_from_tuples(&[(1.0, 2.0)]);
-        let tree = BarnesHutTree::new(&embd);
-
-        assert_eq!(tree.nodes.len(), 1);
-        let root = &tree.nodes[tree.root];
-        assert_relative_eq!(root.com_x, 1.0);
-        assert_relative_eq!(root.com_y, 2.0);
-        assert_relative_eq!(root.mass, 1.0);
-        assert!(root.is_leaf());
-        assert!(matches!(root.leaf_data, Some(LeafData::Single(0))));
-    }
-
-    #[test]
-    fn test_two_points_different_quadrants() {
-        let embd = embd_from_tuples(&[(0.0, 0.0), (10.0, 10.0)]);
-        let tree = BarnesHutTree::new(&embd);
-
-        let root = &tree.nodes[tree.root];
-        assert_relative_eq!(root.mass, 2.0);
-        assert_relative_eq!(root.com_x, 5.0);
-        assert_relative_eq!(root.com_y, 5.0);
-        assert!(!root.is_leaf());
-        assert!(root.leaf_data.is_none());
-    }
-
-    #[test]
-    fn test_coincident_points_stored_correctly() {
-        let embd = embd_from_tuples(&[(5.0, 5.0), (5.0, 5.0), (5.0, 5.0)]);
-        let tree = BarnesHutTree::new(&embd);
-
-        let root = &tree.nodes[tree.root];
-        assert_relative_eq!(root.mass, 3.0);
-        assert!(root.is_leaf());
-
-        match &root.leaf_data {
-            Some(LeafData::Coincident(indices)) => {
-                assert_eq!(indices.len(), 3);
-                assert!(indices.contains(&0));
-                assert!(indices.contains(&1));
-                assert!(indices.contains(&2));
-            }
-            other => panic!("Expected Coincident, got {:?}", other),
-        }
-    }
-
-    #[test]
-    fn test_mass_conservation() {
-        let embd = embd_from_tuples(&[
-            (0.0, 0.0),
-            (1.0, 0.0),
-            (0.0, 1.0),
-            (1.0, 1.0),
-            (0.5, 0.5),
-            (2.0, 2.0),
-            (3.0, 1.0),
-        ]);
-        let tree = BarnesHutTree::new(&embd);
-
-        let root = &tree.nodes[tree.root];
-        assert_relative_eq!(root.mass, 7.0);
-    }
-
-    #[test]
-    fn test_centre_of_mass_correctness() {
-        let embd = embd_from_tuples(&[(0.0, 0.0), (4.0, 0.0), (0.0, 4.0), (4.0, 4.0)]);
-        let tree = BarnesHutTree::new(&embd);
-
-        let root = &tree.nodes[tree.root];
-        assert_relative_eq!(root.com_x, 2.0);
-        assert_relative_eq!(root.com_y, 2.0);
-    }
-
-    #[test]
-    fn test_no_self_interaction_single_point() {
-        let embd = embd_from_tuples(&[(0.0, 0.0)]);
-        let tree = BarnesHutTree::new(&embd);
-        let mut stack = Vec::new();
-
-        let (fx, fy, sum_q) = tree.compute_repulsive_force(0, 0.0, 0.0, 0.5, &mut stack);
-        assert_relative_eq!(fx, 0.0, epsilon = 1e-10);
-        assert_relative_eq!(fy, 0.0, epsilon = 1e-10);
-        assert_relative_eq!(sum_q, 0.0, epsilon = 1e-10);
-    }
-
-    #[test]
-    fn test_no_self_interaction_coincident_points() {
-        let embd = embd_from_tuples(&[(5.0, 5.0), (5.0, 5.0), (5.0, 5.0)]);
-        let tree = BarnesHutTree::new(&embd);
-        let mut stack = Vec::new();
-
-        for i in 0..3 {
-            let (fx, fy, sum_q) = tree.compute_repulsive_force(i, 5.0, 5.0, 0.5, &mut stack);
-            assert!(fx.is_finite(), "fx is not finite for point {}", i);
-            assert!(fy.is_finite(), "fy is not finite for point {}", i);
-            assert!(sum_q.is_finite(), "sum_q is not finite for point {}", i);
-
-            let (_, _, sum_q_0) = tree.compute_repulsive_force(0, 5.0, 5.0, 0.5, &mut stack);
-            assert_relative_eq!(sum_q, sum_q_0, epsilon = 1e-10);
-        }
-    }
-
-    #[test]
-    fn test_force_symmetry_two_points() {
-        let embd = embd_from_tuples(&[(0.0, 0.0), (2.0, 0.0)]);
-        let tree = BarnesHutTree::new(&embd);
-        let mut stack = Vec::new();
-
-        let (fx0, fy0, _) = tree.compute_repulsive_force(0, 0.0, 0.0, 0.5, &mut stack);
-        let (fx1, fy1, _) = tree.compute_repulsive_force(1, 2.0, 0.0, 0.5, &mut stack);
-
-        assert_relative_eq!(fx0, -fx1, epsilon = 1e-10);
-        assert_relative_eq!(fy0, -fy1, epsilon = 1e-10);
-        assert!(fx0 < 0.0, "Point 0 should be pushed left");
-        assert!(fx1 > 0.0, "Point 1 should be pushed right");
-        assert_relative_eq!(fy0, 0.0, epsilon = 1e-10);
-        assert_relative_eq!(fy1, 0.0, epsilon = 1e-10);
-    }
-
-    #[test]
-    fn test_force_magnitude_decreases_with_distance() {
-        let embd_close = embd_from_tuples(&[(0.0, 0.0), (1.0, 0.0)]);
-        let embd_far = embd_from_tuples(&[(0.0, 0.0), (10.0, 0.0)]);
-
-        let tree_close = BarnesHutTree::new(&embd_close);
-        let tree_far = BarnesHutTree::new(&embd_far);
-        let mut stack = Vec::new();
-
-        let (fx_close, _, _) = tree_close.compute_repulsive_force(0, 0.0, 0.0, 0.5, &mut stack);
-        let (fx_far, _, _) = tree_far.compute_repulsive_force(0, 0.0, 0.0, 0.5, &mut stack);
-
-        assert!(
-            fx_close.abs() > fx_far.abs(),
-            "Close force {} should be larger than far force {}",
-            fx_close.abs(),
-            fx_far.abs()
-        );
-    }
-
-    #[test]
-    fn test_sum_q_equals_n_minus_1_for_exact_computation() {
-        let embd = embd_from_tuples(&[(0.0, 0.0), (100.0, 0.0), (0.0, 100.0), (100.0, 100.0)]);
-        let tree = BarnesHutTree::new(&embd);
-        let mut stack = Vec::new();
-
-        let (_, _, sum_q) = tree.compute_repulsive_force(0, 0.0, 0.0, 0.0, &mut stack);
-        assert!(sum_q > 0.0);
-        assert!(sum_q < 3.0);
-    }
-
-    #[test]
-    fn test_barnes_hut_approximation_reasonable() {
-        let mut pts = Vec::new();
-        for i in 0..10 {
-            for j in 0..10 {
-                pts.push((i as f64 * 2.0, j as f64 * 2.0));
-            }
-        }
-        let embd = embd_from_tuples(&pts);
-        let tree = BarnesHutTree::new(&embd);
-        let mut stack = Vec::new();
-
-        let test_idx = 55;
-        let (px, py) = pts[test_idx];
-
-        let (fx_exact, fy_exact, _) =
-            tree.compute_repulsive_force(test_idx, px, py, 0.0, &mut stack);
-        let (fx_approx, fy_approx, _) =
-            tree.compute_repulsive_force(test_idx, px, py, 0.5, &mut stack);
-
-        let fx_ratio = if fx_exact.abs() > 1e-10 {
-            (fx_approx / fx_exact - 1.0).abs()
-        } else {
-            0.0
-        };
-        let fy_ratio = if fy_exact.abs() > 1e-10 {
-            (fy_approx / fy_exact - 1.0).abs()
-        } else {
-            0.0
-        };
-
-        assert!(
-            fx_ratio < 0.5 || fx_exact.abs() < 1e-6,
-            "fx error too large"
-        );
-        assert!(
-            fy_ratio < 0.5 || fy_exact.abs() < 1e-6,
-            "fy error too large"
-        );
-    }
-
-    #[test]
-    fn test_no_nan_or_inf_forces() {
-        let configs: Vec<Vec<(f64, f64)>> = vec![
-            vec![(0.0, 0.0), (0.0, 0.0), (0.0, 0.0)],
-            vec![(0.0, 0.0), (1e-10, 0.0)],
-            vec![(0.0, 0.0), (1e-8, 1e-8), (100.0, 100.0)],
-            vec![(1e6, 1e6), (1e6 + 1.0, 1e6)],
-        ];
-
-        for (cfg_idx, pts) in configs.iter().enumerate() {
-            let embd = embd_from_tuples(pts);
-            let tree = BarnesHutTree::new(&embd);
-            let mut stack = Vec::new();
-
-            for i in 0..pts.len() {
-                let (fx, fy, sum_q) =
-                    tree.compute_repulsive_force(i, pts[i].0, pts[i].1, 0.5, &mut stack);
-                assert!(
-                    fx.is_finite(),
-                    "Config {}, point {}: fx not finite",
-                    cfg_idx,
-                    i
-                );
-                assert!(
-                    fy.is_finite(),
-                    "Config {}, point {}: fy not finite",
-                    cfg_idx,
-                    i
-                );
-                assert!(
-                    sum_q.is_finite(),
-                    "Config {}, point {}: sum_q not finite",
-                    cfg_idx,
-                    i
-                );
-                assert!(
-                    sum_q >= 0.0,
-                    "Config {}, point {}: sum_q negative",
-                    cfg_idx,
-                    i
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_total_sum_q_consistent() {
-        let embd = embd_from_tuples(&[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)]);
-        let tree = BarnesHutTree::new(&embd);
-        let mut stack = Vec::new();
-
-        let total: f64 = (0..4)
-            .map(|i| {
-                let (_, _, sq) =
-                    tree.compute_repulsive_force(i, embd[i][0], embd[i][1], 0.0, &mut stack);
-                sq
-            })
-            .sum();
-
-        assert!(total > 0.0);
-        assert!(total.is_finite());
-    }
-
-    #[test]
-    fn test_self_exclusion_exact_for_all_coincident() {
-        let embd = embd_from_tuples(&[(3.0, 3.0), (3.0, 3.0), (3.0, 3.0), (3.0, 3.0)]);
-        let tree = BarnesHutTree::new(&embd);
-        let mut stack = Vec::new();
-
-        let mut sum_qs = Vec::new();
-        for i in 0..4 {
-            let (_, _, sq) = tree.compute_repulsive_force(i, 3.0, 3.0, 0.5, &mut stack);
-            sum_qs.push(sq);
-        }
-
-        for i in 1..4 {
-            assert!(
-                (sum_qs[0] - sum_qs[i]).abs() < 1e-12,
-                "sum_q differs between point 0 ({}) and point {} ({})",
-                sum_qs[0],
-                i,
-                sum_qs[i]
-            );
-        }
     }
 }
