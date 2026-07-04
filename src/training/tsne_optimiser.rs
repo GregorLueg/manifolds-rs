@@ -346,7 +346,8 @@ pub fn optimise_bh_tsne<T>(
     let mut gains_flat = vec![T::one(); n * n_dim];
     let mut pos = vec![T::zero(); n * n_dim];
     let mut rep_forces: Vec<(T, T, T)> = vec![(T::zero(), T::zero(), T::zero()); n];
-    // One tree across all epochs: rebuild reuses its buffers.
+
+    // one tree across all epochs: rebuild reuses its buffers.
     let mut bh_tree = BarnesHutTree::empty();
 
     let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
@@ -383,7 +384,7 @@ pub fn optimise_bh_tsne<T>(
         bh_tree.rebuild(&pos);
 
         // compute all repulsive forces in one parallel pass, writing into
-        // the preallocated rep_forces buffer instead of collecting a new Vec.
+        // the preallocated rep_forces buffer.
         rep_forces.par_iter_mut().enumerate().for_each_init(
             || Vec::with_capacity(128),
             |stack, (i, slot)| {

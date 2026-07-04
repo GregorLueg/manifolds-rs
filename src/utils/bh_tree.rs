@@ -18,9 +18,9 @@ use rayon::prelude::*;
 /// `first_child` value marking a leaf.
 const SENTINEL: u32 = u32::MAX;
 
-/// Bits per axis in the Morton code. 32 bits is lossless for `f32`
-/// coordinates; for `f64` quantisation only decides tree topology, never
-/// force arithmetic (centres of mass are computed from actual coordinates).
+/// Bits per axis in the Morton code. 32 bits is lossless for `f32` coords; for
+/// `f64` quantisation only decides tree topology, never force arithmetic
+/// (centres of mass are computed from actual coordinates).
 const BITS: u32 = 32;
 
 /// Minimum rayon chunk length, so small inputs stay on one thread.
@@ -28,6 +28,14 @@ const PAR_MIN_LEN: usize = 1024;
 
 /// Spread the low 32 bits of `x` into the even bit positions (one zero gap
 /// between each), the 2D Morton building block.
+///
+/// ### Params
+///
+/// * `x` - Value whose low 32 bits are spread; higher bits are ignored
+///
+/// ### Returns
+///
+/// `x` with its low 32 bits placed at even bit positions 0, 2, 4, ...
 #[inline]
 const fn part_1by1(mut x: u64) -> u64 {
     x &= 0x0000_0000_ffff_ffff;
@@ -41,6 +49,15 @@ const fn part_1by1(mut x: u64) -> u64 {
 
 /// Interleave two 32-bit axis buckets into a 64-bit Morton code, x varying
 /// fastest (canonical Z-order).
+///
+/// ### Params
+///
+/// * `x` - Quantised X-axis bucket
+/// * `y` - Quantised Y-axis bucket
+///
+/// ### Returns
+///
+/// 64-bit Morton (Z-order) code interleaving `x` and `y`
 #[inline]
 const fn encode(x: u32, y: u32) -> u64 {
     part_1by1(x as u64) | (part_1by1(y as u64) << 1)
@@ -50,6 +67,16 @@ const fn encode(x: u32, y: u32) -> u64 {
 ///
 /// A degenerate zero-width axis has `inv_scale == 0` and collapses every
 /// point to bucket zero.
+///
+/// ### Params
+///
+/// * `v` - Coordinate to quantise
+/// * `min` - Minimum coordinate value along this axis
+/// * `inv_scale` - Reciprocal of the per-bucket width along this axis
+///
+/// ### Returns
+///
+/// Axis bucket index in `[0, u32::MAX]`
 #[inline]
 fn quantise<T: Float>(v: T, min: T, inv_scale: T) -> u32 {
     let bucket = ((v - min) * inv_scale).to_u64().unwrap_or(0);
@@ -101,10 +128,7 @@ pub struct BarnesHutTree<T> {
     ranges: Vec<(u32, u32)>,
     /// The `(Morton code, point index)` permutation
     sorted: Vec<(u64, u32)>,
-    /// Squared full cell width per level for the theta test. Full width (not
-    /// half-width) preserves the opening criterion of the previous
-    /// pointer-based tree, so the same `theta` gives a comparable
-    /// approximation.
+    /// Squared full cell width per level for the theta test.
     level_width_sq: Vec<T>,
 }
 
@@ -152,7 +176,6 @@ where
             return;
         }
 
-        // 1. Bounding box (parallel reduction) and quantisation scale.
         let (min_x, max_x, min_y, max_y) = pos
             .par_chunks_exact(2)
             .with_min_len(PAR_MIN_LEN)
@@ -200,8 +223,6 @@ where
             T::zero()
         };
 
-        // Squared full cell width per level: extent / 2^level, taking the
-        // larger axis (conservative: never summarises a cell early).
         let max_extent = extent_x.max(extent_y);
         self.level_width_sq.clear();
         for level in 0..=BITS {
@@ -209,7 +230,6 @@ where
             self.level_width_sq.push(width * width);
         }
 
-        // 2. Quantise, encode, and sort the (code, index) permutation.
         self.sorted.par_extend(
             pos.par_chunks_exact(2)
                 .with_min_len(PAR_MIN_LEN)
@@ -228,9 +248,6 @@ where
         let nodes = &mut self.nodes;
         let ranges = &mut self.ranges;
 
-        // 3. Breadth-first emission. Every internal node has at least two
-        // children (single-child chains are skipped by jumping to the
-        // tightest enclosing level), so at most 2n - 1 nodes exist.
         nodes.reserve(2 * n - 1);
         ranges.reserve(2 * n - 1);
         nodes.push(Node {
@@ -246,17 +263,11 @@ where
         let mut node = 0usize;
         while node < nodes.len() {
             let (start, end) = ranges[node];
-            // A single point, or points sharing a full code (closer than one
-            // grid cell, the coincident case), stays a leaf. Sorted codes
-            // make the all-equal test O(1).
             if end - start <= 1 || sorted[start as usize].0 == sorted[(end - 1) as usize].0 {
                 node += 1;
                 continue;
             }
 
-            // Tightest enclosing level: the highest differing bit between
-            // the range's extreme codes sits in the 2-bit group that first
-            // splits the range.
             let xor = sorted[start as usize].0 ^ sorted[(end - 1) as usize].0;
             let highest_diff = 63 - xor.leading_zeros();
             let level = (BITS - 1) - highest_diff / 2;
@@ -289,7 +300,6 @@ where
             node += 1;
         }
 
-        // 4. Leaf centres of mass in parallel; internal centres bottom-up.
         nodes
             .par_iter_mut()
             .zip(ranges.par_iter())
@@ -308,8 +318,6 @@ where
                 node.com_y = sum_y * inv;
             });
 
-        // Children always sit after their parent in the arena, so a reverse
-        // pass sees every child finished: a count-weighted average.
         for i in (0..nodes.len()).rev() {
             if nodes[i].first_child == SENTINEL {
                 continue;
@@ -328,7 +336,6 @@ where
             nodes[i].com_y = sum_y * inv;
         }
 
-        // Point conservation: every point lands in exactly one leaf.
         debug_assert_eq!(
             nodes
                 .iter()
@@ -343,13 +350,8 @@ where
     /// Compute repulsive forces on a point using Barnes-Hut approximation.
     ///
     /// Traverses the arena with an explicit reusable stack. A node is
-    /// summarised by its centre of mass when it is a leaf or passes the
-    /// theta opening criterion; otherwise its children are pushed.
-    ///
-    /// Self-interaction is excluded by distance: the query's own leaf sits
-    /// at (near-)zero distance and is skipped, which also ignores
-    /// mathematically coincident points, preventing Z-normalisation
-    /// inflation (matching the previous index-based exclusion).
+    /// summarised by its centre of mass when it is a leaf or passes the theta
+    /// opening criterion; otherwise its children are pushed.
     ///
     /// ### Params
     ///
@@ -415,10 +417,6 @@ where
         (force_x, force_y, sum_q)
     }
 }
-
-///////////
-// Tests //
-///////////
 
 ///////////
 // Tests //

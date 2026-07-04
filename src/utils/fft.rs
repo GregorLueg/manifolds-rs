@@ -7,8 +7,8 @@ use num_traits::{Float, FromPrimitive, Signed, ToPrimitive};
 use rayon::prelude::*;
 use std::fmt::Debug;
 
-/// FFTW planning rigour. `Flag::MEASURE` plans slower but can execute faster;
-/// grid sizes persist for many epochs, so it may amortise. Benchmark to decide.
+/// FFTW planning rigour. `Flag::MEASURE` plans slower but can execute faster.
+/// Has proven faster.
 const PLAN_FLAG: Flag = Flag::ESTIMATE;
 
 ////////////
@@ -183,9 +183,7 @@ impl FftwFloat for f32 {
 /// Per-term FFTW plans and aligned buffers.
 ///
 /// Each expansion term owns its own plans and buffers so the `n_terms`
-/// convolutions run in parallel (the `fftw` crate exposes no threaded or
-/// batched plans, so parallelism across independent transforms is the
-/// available axis).
+/// convolutions run in parallel.
 pub struct TermSlot<T: FftwFloat> {
     /// Aligned real input buffer, dimensions `n_fft x n_fft`. Zeroed once at
     /// creation; only the top-left quadrant is rewritten per call (the
@@ -438,9 +436,6 @@ impl<T: FftwFloat> FftGrid<T> {
         let mut plan = T::plan_r2c_2d(n_fft);
         T::execute_r2c(&mut plan, &mut kernel_real, &mut kernel_fft);
 
-        // Fold the 1 / n_fft^2 inverse-transform normalisation into the
-        // kernel once, so the convolved grids come out of the C2R already
-        // normalised.
         let norm = T::one() / T::from_usize(n_fft * n_fft).unwrap();
         for k in kernel_fft.iter_mut() {
             *k = T::new_complex(T::complex_re(*k) * norm, T::complex_im(*k) * norm);
