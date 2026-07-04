@@ -384,7 +384,7 @@ pub fn optimise_bh_tsne<T>(
         bh_tree.rebuild(&pos);
 
         // compute all repulsive forces in one parallel pass, writing into
-        // the preallocated rep_forces buffer.
+        // the preallocated rep_forces buffer
         rep_forces.par_iter_mut().enumerate().for_each_init(
             || Vec::with_capacity(128),
             |stack, (i, slot)| {
