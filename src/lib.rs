@@ -3159,6 +3159,24 @@ where
             let k_float = perplexity * T::from_f64(3.0).unwrap();
             let k = k_float.to_usize().unwrap().max(5).min(data.nrows() - 1);
 
+            // For the nndescent_gpu path, the CAGRA graph degree (`params.k`)
+            // and NNDescent build degree (`params.k_build`) are independent
+            // of the query k. Left at their crate defaults (30 and ~45) they
+            // sit below `3 * perplexity` for any perplexity > ~10, so the
+            // beam search walks a graph too small to serve the query well.
+            // Backfill from `k` here when the user hasn't set them.
+            let scaled_params: NearestNeighbourParamsGpu<T>;
+            let nn_params = if nn_params.k.is_none() || nn_params.k_build.is_none() {
+                scaled_params = NearestNeighbourParamsGpu {
+                    k: nn_params.k.or(Some(k)),
+                    k_build: nn_params.k_build.or(Some(2 * k)),
+                    ..nn_params.clone()
+                };
+                &scaled_params
+            } else {
+                nn_params
+            };
+
             if verbosity.normal_verbosity() {
                 println!("Running GPU kNN search (k={}) using {}...", k, ann_type);
             }

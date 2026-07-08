@@ -1,5 +1,12 @@
 # News
 
+## 0.3.8
+
+**Fix:**
+
+- The forwarding of parameters was not behaving for the NNDescent wrapper. This
+  is fixed now.
+
 ## 0.3.7
 
 **Features:**

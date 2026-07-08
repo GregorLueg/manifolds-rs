@@ -427,34 +427,6 @@ where
 ///
 /// A `CoordinateList` containing the asymmetric conditional probabilities p_{j|i}
 ///
-/// ### Notes
-///
-/// Used for tSNE
-/// Compute Gaussian affinities from k-nearest neighbours using perplexity-based
-/// calibration
-///
-/// For each point i, computes conditional probabilities p_{j|i} using a
-/// Gaussian kernel with bandwidth calibrated via binary search to achieve a
-/// target perplexity. The result is a sparse graph where edge (i,j) has weight
-/// p_{j|i}.
-///
-/// ### Params
-///
-/// * `knn_indices` - For each point, indices of its k nearest neighbours
-/// * `knn_dists` - For each point, distances to its k nearest neighbours
-///   (same order as indices!)
-/// * `perplexity` - Target perplexity (effective number of neighbours). Typical
-///   values: 5-50
-/// * `tol` - Convergence tolerance for entropy (typical: 1e-5)
-/// * `max_iter` - Maximum iterations for binary search (typical: 50-200)
-/// * `distances_squared` - If true, distances are already squared (e.g.,
-///   squared Euclidean). If false, distances will be squared before computing
-///   the kernel.
-///
-/// ### Returns
-///
-/// A `CoordinateList` containing the asymmetric conditional probabilities p_{j|i}
-///
 /// ### Errors
 ///
 /// Returns an error if `perplexity >= k` for any point, since the maximum
@@ -463,9 +435,10 @@ where
 ///
 /// ### Notes
 ///
-/// Used for tSNE. Emits a warning when perplexity exceeds (k - 1) / 3, as the
+/// Used for tSNE. Quality degrades when perplexity approaches k, since the
 /// binary search still converges but the bandwidth becomes wide enough that
-/// tail neighbours dominate the affinities, degrading locality.
+/// tail neighbours dominate the affinities. Callers should size k at roughly
+/// `3 * perplexity` or larger.
 pub fn gaussian_knn_affinities<T>(
     knn_indices: &[Vec<usize>],
     knn_dists: &[Vec<T>],
