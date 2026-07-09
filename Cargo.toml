@@ -30,7 +30,7 @@ gpu = ["ann-search-rs/gpu", "cubecl"]
 large_scale_diagnostics = []
 
 [dependencies]
-ann-search-rs = { version = "0.4.4" }
+ann-search-rs = { git = "https://github.com/GregorLueg/ann-search-rs.git", branch = "fix-ivf-gpu-v2" }
 approx = "0.5.1"
 bincode = { version = "2.0.1", features = ["serde"], optional = true }
 burn = { version = "0.21.0", features = [
