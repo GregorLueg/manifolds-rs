@@ -102,7 +102,7 @@ checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 [[package]]
 name = "ann-search-rs"
 version = "0.4.5"
-source = "git+https://github.com/GregorLueg/ann-search-rs.git?branch=fix-ivf-gpu-v2#51653b70e1c898cdda3159adc196fb56c8510679"
+source = "git+https://github.com/GregorLueg/ann-search-rs.git?branch=fix-ivf-gpu-v2#6abed092ff5f49237b46904d961c4cee5557e732"
 dependencies = [
  "approx",
  "clap",
