@@ -101,9 +101,9 @@ checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
 name = "ann-search-rs"
-version = "0.4.3"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2665db76c5afce94fdbacfc8094bbab38fbb21c5cc533ac4de611e85a42523b"
+checksum = "035612e3c2c8770f8089cd7972684b2f1a10ef07c008651352f69de85371dd18"
 dependencies = [
  "approx",
  "clap",
@@ -4401,7 +4401,7 @@ checksum = "670fdfda89751bc4a84ac13eaa63e205cf0fd22b4c9a5fbfa085b63c1f1d3a30"
 
 [[package]]
 name = "manifolds-rs"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "ann-search-rs",
  "approx",
