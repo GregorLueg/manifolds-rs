@@ -101,8 +101,9 @@ checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
 name = "ann-search-rs"
-version = "0.4.5"
-source = "git+https://github.com/GregorLueg/ann-search-rs.git?branch=fix-ivf-gpu-v2#6abed092ff5f49237b46904d961c4cee5557e732"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "035612e3c2c8770f8089cd7972684b2f1a10ef07c008651352f69de85371dd18"
 dependencies = [
  "approx",
  "clap",
