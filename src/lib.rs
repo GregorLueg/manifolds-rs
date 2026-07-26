@@ -21,8 +21,9 @@ pub mod utils;
 pub mod parametric;
 
 use ann_search_rs::cpu::hnsw::{HnswIndex, HnswState};
-use ann_search_rs::cpu::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
+use ann_search_rs::cpu::nndescent::{NNDescent, NNDescentQuery};
 use ann_search_rs::utils::dist::parse_ann_dist;
+use ann_search_rs::utils::nndescent_utils::ApplySortedUpdates;
 use faer::MatRef;
 use rand_distr::{Distribution, StandardNormal};
 use std::{default::Default, time::Instant};
@@ -33,8 +34,6 @@ use burn::tensor::{backend::AutodiffBackend, Element};
 #[cfg(feature = "parametric")]
 use num_traits::ToPrimitive;
 
-#[cfg(feature = "gpu")]
-use ann_search_rs::gpu::nndescent_gpu::NNDescentGpu;
 #[cfg(feature = "gpu")]
 use ann_search_rs::gpu::traits_gpu::AnnSearchGpuFloat;
 #[cfg(feature = "gpu")]
@@ -2735,7 +2734,6 @@ pub fn construct_umap_graph_gpu<T, R>(
 where
     T: ManifoldsFloat + AnnSearchGpuFloat,
     R: Runtime,
-    NNDescentGpu<T, R>: NNDescentQuery<T>,
 {
     let verbosity = parse_verbosity_level(verbose);
 
@@ -2822,7 +2820,6 @@ where
     T: ManifoldsFloat + AnnSearchGpuFloat,
     R: Runtime,
     StandardNormal: Distribution<T>,
-    NNDescentGpu<T, R>: NNDescentQuery<T>,
 {
     let verbosity = parse_verbosity_level(verbose);
 
@@ -3144,7 +3141,6 @@ pub fn construct_tsne_graph_gpu<T, R>(
 where
     T: ManifoldsFloat + AnnSearchGpuFloat,
     R: Runtime,
-    NNDescentGpu<T, R>: NNDescentQuery<T>,
 {
     let verbosity = parse_verbosity_level(verbose);
 
@@ -3255,7 +3251,6 @@ where
     T: ManifoldsFloat + AnnSearchGpuFloat + FftwFloat,
     R: Runtime,
     StandardNormal: Distribution<T>,
-    NNDescentGpu<T, R>: NNDescentQuery<T>,
 {
     if params.n_dim != 2 {
         return Err(ManifoldsError::IncorrectDim {

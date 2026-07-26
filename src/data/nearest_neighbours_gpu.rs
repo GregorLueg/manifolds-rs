@@ -1,8 +1,6 @@
 //! Module containing GPU-accelerated (approximate) nearest neighbour generation
 //! functions used in the different embedding methods.
 
-use ann_search_rs::cpu::nndescent::NNDescentQuery;
-use ann_search_rs::gpu::nndescent_gpu::NNDescentGpu;
 use ann_search_rs::prelude::*;
 use ann_search_rs::{
     build_exhaustive_index_gpu, build_ivf_index_gpu, build_nndescent_index_gpu,
@@ -268,7 +266,6 @@ pub fn run_ann_search_gpu<T, R>(
 where
     T: AnnSearchFloat + AnnSearchGpuFloat,
     R: Runtime,
-    NNDescentGpu<f32, R>: NNDescentQuery<f32>,
 {
     let verbosity = parse_verbosity_level(verbose);
 
