@@ -1,10 +1,11 @@
 //! Diffusion methods for PHATE and diffusion maps
 
 use ann_search_rs::cpu::hnsw::{HnswIndex, HnswState};
-use ann_search_rs::cpu::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
+use ann_search_rs::cpu::nndescent::{NNDescent, NNDescentQuery};
 use ann_search_rs::prelude::KMeansTrainingParams;
 use ann_search_rs::utils::dist::{parse_ann_dist, Dist};
 use ann_search_rs::utils::k_means_utils::{assign_all_parallel, train_centroids};
+use ann_search_rs::utils::nndescent_utils::ApplySortedUpdates;
 use faer::MatRef;
 use faer_traits::ComplexField;
 use num_traits::Float;

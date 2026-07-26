@@ -1,8 +1,9 @@
 //! Module containing (approximate) nearest neighbour generation functions.
 
 use ann_search_rs::cpu::hnsw::{HnswIndex, HnswState};
-use ann_search_rs::cpu::nndescent::{ApplySortedUpdates, NNDescent, NNDescentQuery};
+use ann_search_rs::cpu::nndescent::{NNDescent, NNDescentQuery};
 use ann_search_rs::prelude::*;
+use ann_search_rs::utils::nndescent_utils::ApplySortedUpdates;
 
 use ann_search_rs::*;
 use faer::MatRef;
