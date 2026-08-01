@@ -9,6 +9,7 @@ use thousands::*;
 use crate::data::structures::*;
 use crate::prelude::*;
 use crate::utils::bh_tree::*;
+use crate::utils::density::*;
 
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::*;
@@ -305,6 +306,246 @@ fn recentre_embedding<T: ManifoldsFloat>(embd: &mut [Vec<T>]) {
     });
 }
 
+/////////////////////////
+// Density (den-SNE)   //
+/////////////////////////
+
+/// Per-epoch scratch buffers for the den-SNE density term.
+///
+/// Allocated once per run, and only when the density term is in use, since
+/// these are three extra `[n]` buffers on top of the embedding.
+struct DensScratch<T> {
+    /// `sum_j phi_ij * ||y_i - y_j||^2` per node.
+    re_acc: Vec<T>,
+    /// `sum_j phi_ij` per node, the embedding-radius denominator.
+    phi_sum: Vec<T>,
+    /// `log(eps + re_acc / phi_sum)` per node.
+    re: Vec<T>,
+}
+
+impl<T> DensScratch<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Allocate zeroed buffers for `n` points.
+    ///
+    /// ### Params
+    ///
+    /// * `n` - Number of points
+    ///
+    /// ### Returns
+    ///
+    /// Zeroed scratch buffers.
+    fn new(n: usize) -> Self {
+        Self {
+            re_acc: vec![T::zero(); n],
+            phi_sum: vec![T::zero(); n],
+            re: vec![T::zero(); n],
+        }
+    }
+}
+
+/// Epoch-constant scalars of the density gradient.
+struct DensGradConsts<T> {
+    /// `1 / re_std`.
+    w1: T,
+    /// `cov / re_std^3`.
+    w2: T,
+    /// Mean of the embedding log-radii.
+    re_mean: T,
+    /// `lambda / (n - 1)`, folded in once rather than per edge.
+    scale: T,
+}
+
+impl<T> DensGradConsts<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Derive the epoch constants from the current embedding radii.
+    ///
+    /// ### Params
+    ///
+    /// * `re` - Embedding log-radii, `[n]`
+    /// * `state` - Constant density state, holding the original radii
+    ///
+    /// ### Returns
+    ///
+    /// The scalars used by [`density_gradient`].
+    fn new(re: &[T], state: &DensState<T>) -> Self {
+        let (re_mean, re_std, cov) = correlation_stats(re, &state.r, state.params.var_shift);
+        let n = re.len();
+        let denom = T::from_usize(n.saturating_sub(1).max(1)).unwrap();
+
+        Self {
+            w1: T::one() / re_std,
+            w2: cov / (re_std * re_std * re_std),
+            re_mean,
+            scale: state.params.lambda / denom,
+        }
+    }
+}
+
+/// Attractive forces for every point, without the density radii.
+///
+/// ### Params
+///
+/// * `adj` - Row-major adjacency of the symmetric affinity graph
+/// * `pos` - Interleaved positions `[x0, y0, x1, y1, ...]`
+/// * `exag_factor` - Current exaggeration factor
+/// * `attr` - Output, interleaved attractive force per point, overwritten
+fn accumulate_attractive<T>(adj: &[Vec<(usize, T)>], pos: &[T], exag_factor: T, attr: &mut [T])
+where
+    T: ManifoldsFloat,
+{
+    attr.par_chunks_exact_mut(2)
+        .enumerate()
+        .for_each(|(i, out)| {
+            let px = pos[2 * i];
+            let py = pos[2 * i + 1];
+
+            let mut attr_x = T::zero();
+            let mut attr_y = T::zero();
+            for &(j, p_val) in &adj[i] {
+                let dx = px - pos[2 * j];
+                let dy = py - pos[2 * j + 1];
+                let dist_sq = dx * dx + dy * dy;
+                let q = T::one() / (T::one() + dist_sq);
+                let force = p_val * exag_factor * q;
+                attr_x += force * dx;
+                attr_y += force * dy;
+            }
+
+            out[0] = attr_x;
+            out[1] = attr_y;
+        });
+}
+
+/// Attractive forces and embedding local radii in one sweep.
+///
+/// The Student-t kernel `phi = 1/(1 + dsq)` is already the attractive term's
+/// `q_ij`, so the radii ride along on the same loads. Deliberately a separate
+/// function from [`accumulate_attractive`] rather than a flag, so the plain
+/// tSNE path pays neither the extra arithmetic nor the extra `[n]` buffers.
+///
+/// Note the radii use `phi` alone: exaggeration scales the attractive force but
+/// must not enter the density term, matching the reference.
+///
+/// ### Params
+///
+/// * `adj` - Row-major adjacency of the symmetric affinity graph
+/// * `pos` - Interleaved positions `[x0, y0, x1, y1, ...]`
+/// * `exag_factor` - Current exaggeration factor
+/// * `attr` - Output, interleaved attractive force per point, overwritten
+/// * `scratch` - Output, radii accumulators and log-radii, overwritten
+fn accumulate_attractive_and_radii<T>(
+    adj: &[Vec<(usize, T)>],
+    pos: &[T],
+    exag_factor: T,
+    attr: &mut [T],
+    scratch: &mut DensScratch<T>,
+) where
+    T: ManifoldsFloat,
+{
+    attr.par_chunks_exact_mut(2)
+        .zip(scratch.re_acc.par_iter_mut())
+        .zip(scratch.phi_sum.par_iter_mut())
+        .enumerate()
+        .for_each(|(i, ((out, re_acc), phi_sum))| {
+            let px = pos[2 * i];
+            let py = pos[2 * i + 1];
+
+            let mut attr_x = T::zero();
+            let mut attr_y = T::zero();
+            let mut sum_sq = T::zero();
+            let mut sum_phi = T::zero();
+
+            for &(j, p_val) in &adj[i] {
+                let dx = px - pos[2 * j];
+                let dy = py - pos[2 * j + 1];
+                let dist_sq = dx * dx + dy * dy;
+                let q = T::one() / (T::one() + dist_sq);
+                let force = p_val * exag_factor * q;
+                attr_x += force * dx;
+                attr_y += force * dy;
+
+                sum_sq += q * dist_sq;
+                sum_phi += q;
+            }
+
+            out[0] = attr_x;
+            out[1] = attr_y;
+            *re_acc = sum_sq;
+            *phi_sum = sum_phi;
+        });
+
+    embedding_log_radii(&scratch.re_acc, &scratch.phi_sum, &mut scratch.re);
+}
+
+/// Density gradient contribution for one point.
+///
+/// Both endpoints of every edge contribute: moving `y_i` changes `i`'s own
+/// radius and each neighbour's, so a single sweep over `i`'s row picks up the
+/// whole term. With `phi = 1/(1 + dsq)` the radius derivative collapses to
+/// `phi^2 * (1 + exp(-re)) / phi_sum`, the `a = b = 1` case of the densMAP
+/// expression.
+///
+/// ### Params
+///
+/// * `i` - Point index
+/// * `adj_i` - `i`'s row of the adjacency; only the neighbour indices are used
+/// * `pos` - Interleaved positions `[x0, y0, x1, y1, ...]`
+/// * `r` - Z-scored original log-radii, `[n]`
+/// * `scratch` - Embedding radii for the current epoch
+/// * `consts` - Epoch-constant scalars
+///
+/// ### Returns
+///
+/// The `(x, y)` density gradient for point `i`, already scaled by
+/// `lambda / (n - 1)`. Subtract it from the usual tSNE gradient.
+#[inline]
+fn density_gradient<T>(
+    i: usize,
+    adj_i: &[(usize, T)],
+    pos: &[T],
+    r: &[T],
+    scratch: &DensScratch<T>,
+    consts: &DensGradConsts<T>,
+) -> (T, T)
+where
+    T: ManifoldsFloat,
+{
+    let one = T::one();
+    let floor = T::epsilon();
+
+    let px = pos[2 * i];
+    let py = pos[2 * i + 1];
+
+    let weight_i = consts.w1 * r[i] - consts.w2 * (scratch.re[i] - consts.re_mean);
+    let inv_phi_sum_i = one / scratch.phi_sum[i].max(floor);
+    let tail_i = one + (-scratch.re[i]).exp();
+
+    let mut grad_x = T::zero();
+    let mut grad_y = T::zero();
+
+    for &(j, _) in adj_i {
+        let dx = px - pos[2 * j];
+        let dy = py - pos[2 * j + 1];
+        let phi = one / (one + dx * dx + dy * dy);
+        let phi_sq = phi * phi;
+
+        let dr_me = phi_sq * inv_phi_sum_i * tail_i;
+        let dr_you = phi_sq / scratch.phi_sum[j].max(floor) * (one + (-scratch.re[j]).exp());
+
+        let weight_j = consts.w1 * r[j] - consts.w2 * (scratch.re[j] - consts.re_mean);
+        let g = weight_i * dr_me + weight_j * dr_you;
+
+        grad_x += g * dx;
+        grad_y += g * dy;
+    }
+
+    (grad_x * consts.scale, grad_y * consts.scale)
+}
+
 ////////////////
 // Barnes Hut //
 ////////////////
@@ -322,11 +563,20 @@ fn recentre_embedding<T: ManifoldsFloat>(embd: &mut [Vec<T>]) {
 /// * `params` - Optimisation hyperparameters (epochs, learning rate, momentum
 ///   schedule, exaggeration, Barnes-Hut theta).
 /// * `graph` - Sparse high-dimensional affinities in coordinate-list format.
+/// * `dens` - Density-preserving state for den-SNE, or `None` for plain tSNE.
+///   When set, the density gradient is applied over the final
+///   `dens.params.frac` of the epochs.
 /// * `verbose` - Verbosity level: `0` silent, `1` normal, `2` detailed.
+///
+/// ### References
+///
+/// van der Maaten, Journal of Machine Learning Research, 2014 (Barnes-Hut).
+/// Narayan, Berger & Cho, Nature Biotechnology, 2021 (den-SNE).
 pub fn optimise_bh_tsne<T>(
     embd: &mut [Vec<T>],
     params: &TsneOptimParams<T>,
     graph: &CoordinateList<T>,
+    dens: Option<&DensState<T>>,
     verbose: usize,
 ) where
     T: ManifoldsFloat,
@@ -346,6 +596,11 @@ pub fn optimise_bh_tsne<T>(
     let mut gains_flat = vec![T::one(); n * n_dim];
     let mut pos = vec![T::zero(); n * n_dim];
     let mut rep_forces: Vec<(T, T, T)> = vec![(T::zero(), T::zero(), T::zero()); n];
+
+    // attractive forces are staged rather than fused into the update, so the
+    // density term can see every point's radius before any point moves.
+    let mut attr = vec![T::zero(); n * n_dim];
+    let mut dens_scratch = dens.map(|_| DensScratch::<T>::new(n));
 
     // one tree across all epochs: rebuild reuses its buffers.
     let mut bh_tree = BarnesHutTree::empty();
@@ -408,7 +663,20 @@ pub fn optimise_bh_tsne<T>(
             T::zero()
         };
 
-        // attractive forces (exact) + parameter update + step clip.
+        // attractive forces (exact), plus the embedding radii when the density
+        // term is live this epoch.
+        let dens_ctx = match (dens, dens_scratch.as_mut()) {
+            (Some(state), Some(scratch)) if state.is_active(epoch, params.n_epochs) => {
+                accumulate_attractive_and_radii(&adj, &pos, exag_factor, &mut attr, scratch);
+                Some((state, &*scratch, DensGradConsts::new(&scratch.re, state)))
+            }
+            _ => {
+                accumulate_attractive(&adj, &pos, exag_factor, &mut attr);
+                None
+            }
+        };
+
+        // parameter update + step clip.
         embd.par_iter_mut()
             .zip(update_flat.par_chunks_mut(n_dim))
             .zip(gains_flat.par_chunks_mut(n_dim))
@@ -419,20 +687,15 @@ pub fn optimise_bh_tsne<T>(
 
                 let (rep_x, rep_y, _) = rep_forces[i];
 
-                let mut attr_x = T::zero();
-                let mut attr_y = T::zero();
-                for &(j, p_val) in &adj[i] {
-                    let dx = px - pos[2 * j];
-                    let dy = py - pos[2 * j + 1];
-                    let dist_sq = dx * dx + dy * dy;
-                    let q = T::one() / (T::one() + dist_sq);
-                    let force = p_val * exag_factor * q;
-                    attr_x += force * dx;
-                    attr_y += force * dy;
-                }
+                let (dens_x, dens_y) = match &dens_ctx {
+                    Some((state, scratch, consts)) => {
+                        density_gradient(i, &adj[i], &pos, &state.r, scratch, consts)
+                    }
+                    None => (T::zero(), T::zero()),
+                };
 
-                let grad_x = attr_x - rep_x * z_inv;
-                let grad_y = attr_y - rep_y * z_inv;
+                let grad_x = attr[2 * i] - rep_x * z_inv - dens_x;
+                let grad_y = attr[2 * i + 1] - rep_y * z_inv - dens_y;
 
                 update_parameter(
                     &mut point[0],
@@ -523,17 +786,26 @@ fn fft_grid_geometry(half_span: f64, min_intervals: usize) -> (usize, f64, f64) 
 /// * `params` - Optimisation hyperparameters (epochs, learning rate, momentum
 ///   schedule, exaggeration, interpolation points per box).
 /// * `graph` - Sparse high-dimensional affinities in coordinate-list format.
+/// * `dens` - Density-preserving state for den-SNE, or `None` for plain tSNE.
+///   When set, the density gradient is applied over the final
+///   `dens.params.frac` of the epochs.
 /// * `verbose` - Verbosity level: `0` silent, `1` normal, `2` detailed.
 ///
 /// ### Returns
 ///
 /// `Ok(())` on success, or `Err(ManifoldsError::IncorrectDim)` if the
 /// embedding is not 2D.
+///
+/// ### References
+///
+/// Linderman et al., Nature Methods, 2019 (FIt-SNE).
+/// Narayan, Berger & Cho, Nature Biotechnology, 2021 (den-SNE).
 #[cfg(feature = "fft_tsne")]
 pub fn optimise_fft_tsne<T>(
     embd: &mut [Vec<T>],
     params: &TsneOptimParams<T>,
     graph: &CoordinateList<T>,
+    dens: Option<&DensState<T>>,
     verbose: usize,
 ) -> Result<(), ManifoldsError>
 where
@@ -577,6 +849,17 @@ where
     let mut potentials = vec![T::zero(); n * n_terms];
     let mut xs = vec![T::zero(); n];
     let mut ys = vec![T::zero(); n];
+
+    // the density helpers are shared with the Barnes-Hut path, which works from
+    // an interleaved position buffer; the FFT needs xs/ys split, so build the
+    // interleaved view only when the density term is in play.
+    let mut attr = vec![T::zero(); n * n_dim];
+    let mut dens_scratch = dens.map(|_| DensScratch::<T>::new(n));
+    let mut dens_pos = if dens.is_some() {
+        vec![T::zero(); n * n_dim]
+    } else {
+        Vec::new()
+    };
 
     let min_intervals = 50;
     let mut cached_n_boxes: usize = 0;
@@ -685,6 +968,49 @@ where
 
         let sum_q_safe = if sum_q > TSNE_EPS { sum_q } else { 1.0 };
 
+        // attractive forces (exact via sparse graph), plus the embedding radii
+        // when the density term is live this epoch.
+        let dens_ctx = match (dens, dens_scratch.as_mut()) {
+            (Some(state), Some(scratch)) if state.is_active(epoch, params.n_epochs) => {
+                dens_pos
+                    .par_chunks_exact_mut(2)
+                    .zip(xs.par_iter())
+                    .zip(ys.par_iter())
+                    .for_each(|((slot, &x), &y)| {
+                        slot[0] = x;
+                        slot[1] = y;
+                    });
+
+                accumulate_attractive_and_radii(&adj, &dens_pos, exag_factor, &mut attr, scratch);
+                Some((state, &*scratch, DensGradConsts::new(&scratch.re, state)))
+            }
+            _ => {
+                // xs/ys are read directly here; no interleaved buffer needed
+                attr.par_chunks_exact_mut(2)
+                    .enumerate()
+                    .for_each(|(i, out)| {
+                        let x = xs[i];
+                        let y = ys[i];
+
+                        let mut attr_x = T::zero();
+                        let mut attr_y = T::zero();
+                        for &(j, p_val) in &adj[i] {
+                            let dx = x - xs[j];
+                            let dy = y - ys[j];
+                            let dist_sq = dx * dx + dy * dy;
+                            let q_ij = T::one() / (T::one() + dist_sq);
+                            let force = p_val * exag_factor * q_ij;
+                            attr_x += force * dx;
+                            attr_y += force * dy;
+                        }
+
+                        out[0] = attr_x;
+                        out[1] = attr_y;
+                    });
+                None
+            }
+        };
+
         embd.par_iter_mut()
             .zip(uy.par_iter_mut())
             .zip(gains.par_iter_mut())
@@ -692,21 +1018,6 @@ where
             .for_each(|(i, ((point, u_i), gains_i))| {
                 let x = xs[i];
                 let y = ys[i];
-
-                // attractive forces (exact via sparse graph).
-                let mut attr_x = T::zero();
-                let mut attr_y = T::zero();
-                for &(j, p_val) in &adj[i] {
-                    let other_x = xs[j];
-                    let other_y = ys[j];
-                    let dx = x - other_x;
-                    let dy = y - other_y;
-                    let dist_sq = dx * dx + dy * dy;
-                    let q_ij = T::one() / (T::one() + dist_sq);
-                    let force = p_val * exag_factor * q_ij;
-                    attr_x += force * dx;
-                    attr_y += force * dy;
-                }
 
                 // repulsive forces reconstructed in f64.
                 let pot_idx = i * n_terms;
@@ -720,8 +1031,15 @@ where
                 let rep_x = T::from_f64((xf * phi1 - phi2) / sum_q_safe).unwrap();
                 let rep_y = T::from_f64((yf * phi1 - phi3) / sum_q_safe).unwrap();
 
-                let grad_x = attr_x - rep_x;
-                let grad_y = attr_y - rep_y;
+                let (dens_x, dens_y) = match &dens_ctx {
+                    Some((state, scratch, consts)) => {
+                        density_gradient(i, &adj[i], &dens_pos, &state.r, scratch, consts)
+                    }
+                    None => (T::zero(), T::zero()),
+                };
+
+                let grad_x = attr[2 * i] - rep_x - dens_x;
+                let grad_y = attr[2 * i + 1] - rep_y - dens_y;
 
                 update_parameter(
                     &mut point[0],
@@ -841,7 +1159,7 @@ mod test_tsne_optimiser {
             ..TsneOptimParams::default()
         };
 
-        optimise_bh_tsne(&mut embd, &params, &graph, 0);
+        optimise_bh_tsne(&mut embd, &params, &graph, None, 0);
 
         for point in &embd {
             for val in point {
@@ -877,7 +1195,7 @@ mod test_tsne_optimiser {
             ..TsneOptimParams::default()
         };
 
-        let _ = optimise_fft_tsne(&mut embd, &params, &graph, 0);
+        let _ = optimise_fft_tsne(&mut embd, &params, &graph, None, 0);
 
         for point in &embd {
             for val in point {
@@ -910,8 +1228,8 @@ mod test_tsne_optimiser {
             ..TsneOptimParams::default()
         };
 
-        optimise_bh_tsne(&mut embd1, &params, &graph, 0);
-        optimise_bh_tsne(&mut embd2, &params, &graph, 0);
+        optimise_bh_tsne(&mut embd1, &params, &graph, None, 0);
+        optimise_bh_tsne(&mut embd2, &params, &graph, None, 0);
 
         for (p1, p2) in embd1.iter().zip(embd2.iter()) {
             assert_relative_eq!(p1[0], p2[0]);

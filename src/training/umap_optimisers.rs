@@ -9,6 +9,7 @@ use rayon::prelude::*;
 
 use crate::prelude::*;
 use crate::training::*;
+use crate::utils::density::*;
 
 //////////
 // UMAP //
@@ -395,6 +396,205 @@ where
     }
 }
 
+///////////////////////
+// Density (densMAP) //
+///////////////////////
+
+/// Per-epoch scratch buffers for the densMAP density term.
+///
+/// Allocated once per run, and only when the density term is in use. The
+/// embedding radii are weighted by the UMAP kernel `phi`, which moves every
+/// epoch, so unlike `mu_sum` none of this can be precomputed.
+struct UmapDensScratch<T> {
+    /// `sum_j phi_ij * ||y_i - y_j||^2` per node.
+    re_acc: Vec<T>,
+    /// `sum_j phi_ij` per node, the embedding-radius denominator.
+    phi_sum: Vec<T>,
+    /// `log(eps + re_acc / phi_sum)` per node.
+    re: Vec<T>,
+    /// `R[i] - cov * (re[i] - re_mean) / re_std^2` per node, the per-point
+    /// sensitivity of the correlation.
+    weight: Vec<T>,
+    /// `lambda * mu_tot / (re_std * (n - 1))`, the edge-independent factor of
+    /// the per-edge coefficient.
+    coeff: T,
+}
+
+impl<T> UmapDensScratch<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Allocate zeroed buffers for `n` points.
+    ///
+    /// ### Params
+    ///
+    /// * `n` - Number of points
+    ///
+    /// ### Returns
+    ///
+    /// Zeroed scratch buffers.
+    fn new(n: usize) -> Self {
+        Self {
+            re_acc: vec![T::zero(); n],
+            phi_sum: vec![T::zero(); n],
+            re: vec![T::zero(); n],
+            weight: vec![T::zero(); n],
+            coeff: T::zero(),
+        }
+    }
+}
+
+/// Accumulate the embedding local radii over every graph edge.
+///
+/// Walks each node's adjacency row, so the accumulation is node-partitioned and
+/// needs no atomics. Deliberately ignores the edge sampling schedule: the radii
+/// are a property of the whole graph, and the reference recomputes them over the
+/// full edge list every epoch regardless of which edges fire.
+///
+/// Takes the adjacency list rather than the CSR view so all three CPU
+/// optimisers can share it. This runs once per epoch and only over the final
+/// `frac` of the run, so the pointer chasing is not worth specialising away.
+///
+/// ### Params
+///
+/// * `graph` - Adjacency list, `graph[i]` holding `(neighbour, weight)`
+/// * `embd_flat` - Flat row-major embedding `[n * n_dim]`
+/// * `n_dim` - Embedding dimensionality
+/// * `consts` - Precomputed `a`, `b` and friends
+/// * `pow_b` - Computes `x^b`. Supplied by the caller so `phi_sum` here is
+///   built from exactly the same approximation the gradient loop uses; mixing
+///   the LUT with `powf` would bias every radius
+/// * `scratch` - Output, radii accumulators and log-radii, overwritten
+fn accumulate_umap_radii<T, F>(
+    graph: &[Vec<(usize, T)>],
+    embd_flat: &[T],
+    n_dim: usize,
+    consts: &OptimConstants<T>,
+    pow_b: F,
+    scratch: &mut UmapDensScratch<T>,
+) where
+    T: ManifoldsFloat,
+    F: Fn(T) -> T + Sync,
+{
+    scratch
+        .re_acc
+        .par_iter_mut()
+        .zip(scratch.phi_sum.par_iter_mut())
+        .enumerate()
+        .for_each(|(node_i, (re_acc, phi_sum))| {
+            let base_i = node_i * n_dim;
+
+            let mut sum_sq = T::zero();
+            let mut sum_phi = T::zero();
+
+            for &(other_node, _) in &graph[node_i] {
+                let base_other = other_node * n_dim;
+
+                let mut dist_sq = T::zero();
+                for d in 0..n_dim {
+                    let diff = embd_flat[base_i + d] - embd_flat[base_other + d];
+                    dist_sq += diff * diff;
+                }
+
+                let dist_sq_b = pow_b(dist_sq);
+                let phi = T::one() / (T::one() + consts.a * dist_sq_b);
+
+                sum_sq += phi * dist_sq;
+                sum_phi += phi;
+            }
+
+            *re_acc = sum_sq;
+            *phi_sum = sum_phi;
+        });
+
+    embedding_log_radii(&scratch.re_acc, &scratch.phi_sum, &mut scratch.re);
+}
+
+/// Refresh the per-node correlation sensitivities and the shared coefficient.
+///
+/// ### Params
+///
+/// * `scratch` - Holds the current `re`; `weight` and `coeff` are overwritten
+/// * `state` - Constant density state, holding the original radii and `mu_tot`
+fn update_density_weights<T>(scratch: &mut UmapDensScratch<T>, state: &DensState<T>)
+where
+    T: ManifoldsFloat,
+{
+    let (re_mean, re_std, cov) = correlation_stats(&scratch.re, &state.r, state.params.var_shift);
+    let inv_var = T::one() / (re_std * re_std);
+
+    scratch
+        .weight
+        .par_iter_mut()
+        .zip(state.r.par_iter())
+        .zip(scratch.re.par_iter())
+        .for_each(|((weight, &r), &re)| {
+            *weight = r - cov * (re - re_mean) * inv_var;
+        });
+
+    let denom = T::from_usize(scratch.re.len().saturating_sub(1).max(1)).unwrap();
+    scratch.coeff = state.params.lambda * state.mu_tot / (re_std * denom);
+}
+
+/// Per-edge density coefficient for the densMAP gradient.
+///
+/// Reuses `dist_sq`, `dist_sq_b` and `denom` from the attractive term, so the
+/// only extra transcendentals are the two `exp` calls. Must be called under the
+/// existing `dist_sq >= GRAD_DIST_SQ_THRESHOLD` guard: `dist_sq^(b-1)` is
+/// `+inf` at zero for the usual `b < 1`, a case the reference does not protect
+/// against.
+///
+/// ### Params
+///
+/// * `node_i` - The node whose gradient is being accumulated
+/// * `other_node` - The neighbour across this edge
+/// * `mu_edge` - Graph weight of this edge
+/// * `dist_sq` - Squared embedding distance
+/// * `dist_sq_b` - `dist_sq^b`, already computed for the attractive term
+/// * `denom` - `1 + a * dist_sq^b`, already computed for the attractive term
+/// * `consts` - Precomputed `a`, `b` and friends
+/// * `scratch` - Current radii, weights and shared coefficient
+///
+/// ### Returns
+///
+/// The scalar `grad_cor_coeff`. Multiply by `2 * (y_i - y_other)`, clip, and
+/// add to the node gradient.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn density_edge_coeff<T>(
+    node_i: usize,
+    other_node: usize,
+    mu_edge: T,
+    dist_sq: T,
+    dist_sq_b: T,
+    denom: T,
+    consts: &OptimConstants<T>,
+    scratch: &UmapDensScratch<T>,
+) -> T
+where
+    T: ManifoldsFloat,
+{
+    let one = T::one();
+    let floor = T::epsilon();
+
+    let phi = one / denom;
+    // dsq^(b-1) is dsq^b / dsq, so no second powf
+    let dphi_term = consts.a * consts.b * dist_sq_b / dist_sq * phi;
+    let common = one - consts.b * (one - phi);
+
+    let dr_self = (phi / scratch.phi_sum[node_i].max(floor))
+        * (common / scratch.re[node_i].exp() + dphi_term);
+    let dr_other = (phi / scratch.phi_sum[other_node].max(floor))
+        * (common / scratch.re[other_node].exp() + dphi_term);
+
+    scratch.coeff * (scratch.weight[node_i] * dr_self + scratch.weight[other_node] * dr_other)
+        / mu_edge.max(floor)
+}
+
+/////////////
+// Helpers //
+/////////////
+
 /// Fast power version
 ///
 /// For specific versions of b, return quickly the value
@@ -454,6 +654,7 @@ pub fn optimise_embedding_sgd<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
     params: &UmapOptimParams<T>,
+    dens: Option<&DensState<T>>,
     seed: u64,
     verbose: usize,
 ) -> Result<(), ManifoldsError>
@@ -466,6 +667,7 @@ where
     }
     let n_dim = embd[0].len();
     let verbosity = parse_verbosity_level(verbose);
+    let mut dens_scratch = dens.map(|_| UmapDensScratch::<T>::new(n));
 
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
     for point in embd.iter() {
@@ -535,6 +737,24 @@ where
         let lr = lr_schedule[epoch];
         let epoch_t = T::from(epoch).unwrap();
 
+        // pass 0: embedding local radii from the positions at the start of the
+        // epoch, as the reference does. The edge loop below mutates in place.
+        let dens_ctx = match (dens, dens_scratch.as_mut()) {
+            (Some(state), Some(scratch)) if state.is_active(epoch, params.n_epochs) => {
+                accumulate_umap_radii(
+                    graph,
+                    &embd_flat,
+                    n_dim,
+                    &consts,
+                    |x| fast_pow(x, consts.b, b_is_one, b_is_half),
+                    scratch,
+                );
+                update_density_weights(scratch, state);
+                Some(&*scratch)
+            }
+            _ => None,
+        };
+
         for (edge_idx, &(i, j, _weight)) in edges.iter().enumerate() {
             if epoch_of_next_sample[edge_idx] > epoch_t {
                 continue;
@@ -558,11 +778,31 @@ where
                 let denom = one + consts.a * dist_sq_b;
                 let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
 
+                // densMAP. This edge list is directed, so each undirected edge
+                // is visited from both sides and both endpoints move on each
+                // visit - exactly the reference's layout, hence no extra
+                // factor here (unlike the CSR-based parallel variant).
+                let two_cor = match dens_ctx {
+                    Some(scratch) => {
+                        let cor = density_edge_coeff(
+                            i, j, _weight, dist_sq, dist_sq_b, denom, &consts, scratch,
+                        );
+                        T::from(2.0).unwrap() * cor
+                    }
+                    None => zero,
+                };
+
                 for d in 0..n_dim {
                     let delta = embd_flat[base_j + d] - embd_flat[base_i + d];
-                    let grad_d = (grad_coeff * delta)
+                    let mut grad_d = (grad_coeff * delta)
                         .max(-consts.clip_val)
                         .min(consts.clip_val);
+
+                    if dens_ctx.is_some() {
+                        grad_d += (two_cor * -delta)
+                            .max(-consts.clip_val)
+                            .min(consts.clip_val);
+                    }
 
                     embd_flat[base_i + d] += grad_d * lr;
                     embd_flat[base_j + d] -= grad_d * lr;
@@ -668,6 +908,7 @@ pub fn optimise_embedding_adam<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
     params: &UmapOptimParams<T>,
+    dens: Option<&DensState<T>>,
     seed: u64,
     verbose: usize,
 ) -> Result<(), ManifoldsError>
@@ -680,6 +921,7 @@ where
     }
     let n_dim = embd[0].len();
     let verbosity = parse_verbosity_level(verbose);
+    let mut dens_scratch = dens.map(|_| UmapDensScratch::<T>::new(n));
 
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
     for point in embd.iter() {
@@ -758,6 +1000,24 @@ where
 
         let epoch_t = T::from(epoch).unwrap();
 
+        // pass 0: embedding local radii from the positions at the start of the
+        // epoch, as the reference does. The edge loop below mutates in place.
+        let dens_ctx = match (dens, dens_scratch.as_mut()) {
+            (Some(state), Some(scratch)) if state.is_active(epoch, params.n_epochs) => {
+                accumulate_umap_radii(
+                    graph,
+                    &embd_flat,
+                    n_dim,
+                    &consts,
+                    |x| fast_pow(x, consts.b, b_is_one, b_is_half),
+                    scratch,
+                );
+                update_density_weights(scratch, state);
+                Some(&*scratch)
+            }
+            _ => None,
+        };
+
         for (edge_idx, &(i, j, _weight)) in edges.iter().enumerate() {
             if epoch_of_next_sample[edge_idx] > epoch_t {
                 continue;
@@ -777,9 +1037,28 @@ where
                 let denom = one + consts.a * dist_sq_b;
                 let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
 
+                // densMAP. Directed edge list, so both endpoints move on every
+                // visit and each undirected edge is seen twice - the reference
+                // layout, so no extra factor here.
+                let two_cor = match dens_ctx {
+                    Some(scratch) => {
+                        let cor = density_edge_coeff(
+                            i, j, _weight, dist_sq, dist_sq_b, denom, &consts, scratch,
+                        );
+                        T::from(2.0).unwrap() * cor
+                    }
+                    None => zero,
+                };
+
                 for d in 0..n_dim {
                     let delta = embd_flat[base_j + d] - embd_flat[base_i + d];
-                    let grad = grad_coeff * delta;
+                    let mut grad = grad_coeff * delta;
+
+                    if dens_ctx.is_some() {
+                        grad += (two_cor * -delta)
+                            .max(-consts.clip_val)
+                            .min(consts.clip_val);
+                    }
 
                     // Update i (matching C++ compact form)
                     let idx_i = base_i + d;
@@ -877,13 +1156,22 @@ where
 /// * `embd` - Initial embedding, modified in place
 /// * `graph` - Adjacency list representation
 /// * `params` - Includes Adam hyperparameters
+/// * `dens` - Density-preserving state for densMAP, or `None` for plain UMAP.
+///   When set, the density gradient is applied over the final
+///   `dens.params.frac` of the epochs. Negative sampling is untouched either
+///   way.
 /// * `seed` - Random seed
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
+///
+/// ### References
+///
+/// Narayan, Berger & Cho, Nature Biotechnology, 2021 (densMAP).
 pub fn optimise_embedding_adam_parallel<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
     params: &UmapOptimParams<T>,
+    dens: Option<&DensState<T>>,
     seed: u64,
     verbose: usize,
 ) -> Result<(), ManifoldsError>
@@ -896,6 +1184,7 @@ where
     }
     let n_dim = embd[0].len();
     let verbosity = parse_verbosity_level(verbose);
+    let mut dens_scratch = dens.map(|_| UmapDensScratch::<T>::new(n));
 
     let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
     for point in embd.iter() {
@@ -1008,6 +1297,25 @@ where
         // reset state
         node_has_update.fill(false);
 
+        // pass 0: embedding local radii over every edge, then the correlation
+        // statistics. Reads the same frozen embd_flat as the gradient pass, so
+        // both see identical positions.
+        let dens_ctx = match (dens, dens_scratch.as_mut()) {
+            (Some(state), Some(scratch)) if state.is_active(epoch, params.n_epochs) => {
+                accumulate_umap_radii(
+                    graph,
+                    &embd_flat,
+                    n_dim,
+                    &consts,
+                    |x| if b_is_one { x } else { lut.get(x) },
+                    scratch,
+                );
+                update_density_weights(scratch, state);
+                Some(&*scratch)
+            }
+            _ => None,
+        };
+
         // safely partition gradients per node
         node_gradients_all
             .par_chunks_exact_mut(n_dim)
@@ -1045,10 +1353,37 @@ where
                         let dist_sq_b = if b_is_one { dist_sq } else { lut.get(dist_sq) };
                         let denom = T::one() + consts.a * dist_sq_b;
                         let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
+                        let two = T::from(2.0).unwrap();
 
                         for d in 0..n_dim {
                             let delta = embd_flat[base_other + d] - embd_flat[base_i + d];
-                            node_grad[d] += T::from(2.0).unwrap() * grad_coeff * delta;
+                            node_grad[d] += two * grad_coeff * delta;
+                        }
+
+                        // densMAP. The outer factor 2 mirrors the attractive
+                        // term above: the reference visits each undirected edge
+                        // from both COO directions, this CSR walk visits it
+                        // once per endpoint. Signed along (y_i - y_other), i.e.
+                        // opposite to the attractive delta, since this is
+                        // ascent on the correlation.
+                        if let Some(scratch) = dens_ctx {
+                            let cor = density_edge_coeff(
+                                node_i,
+                                other_node,
+                                edges[edge_idx].2,
+                                dist_sq,
+                                dist_sq_b,
+                                denom,
+                                &consts,
+                                scratch,
+                            );
+                            let two_cor = two * cor;
+
+                            for d in 0..n_dim {
+                                let delta = embd_flat[base_i + d] - embd_flat[base_other + d];
+                                node_grad[d] += two
+                                    * (two_cor * delta).max(-consts.clip_val).min(consts.clip_val);
+                            }
                         }
                     }
 
@@ -1283,7 +1618,7 @@ mod test_umap_optimiser {
         let initial_embd = embd.clone();
 
         let params = UmapOptimParams::default_2d();
-        let _ = optimise_embedding_adam(&mut embd, &graph, &params, 42, 0);
+        let _ = optimise_embedding_adam(&mut embd, &graph, &params, None, 42, 0);
 
         let total_movement: f64 = embd
             .iter()
@@ -1317,7 +1652,7 @@ mod test_umap_optimiser {
         let initial_embd = embd.clone();
 
         let params = UmapOptimParams::default_2d();
-        let _ = optimise_embedding_adam_parallel(&mut embd, &graph, &params, 42, 0);
+        let _ = optimise_embedding_adam_parallel(&mut embd, &graph, &params, None, 42, 0);
 
         let total_movement: f64 = embd
             .iter()
@@ -1345,7 +1680,7 @@ mod test_umap_optimiser {
         let mut embd = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
 
         let params = UmapOptimParams::default_2d();
-        let _ = optimise_embedding_adam(&mut embd, &graph, &params, 42, 0);
+        let _ = optimise_embedding_adam(&mut embd, &graph, &params, None, 42, 0);
 
         for point in &embd {
             for &coord in point {
@@ -1373,8 +1708,8 @@ mod test_umap_optimiser {
             eps: 1e-7,
         };
 
-        let _ = optimise_embedding_adam(&mut embd1, &graph, &params, 42, 0);
-        let _ = optimise_embedding_adam(&mut embd2, &graph, &params, 42, 0);
+        let _ = optimise_embedding_adam(&mut embd1, &graph, &params, None, 42, 0);
+        let _ = optimise_embedding_adam(&mut embd2, &graph, &params, None, 42, 0);
 
         assert_eq!(embd1, embd2);
     }
@@ -1398,8 +1733,8 @@ mod test_umap_optimiser {
             eps: 1e-7,
         };
 
-        let _ = optimise_embedding_adam_parallel(&mut embd1, &graph, &params, 42, 0);
-        let _ = optimise_embedding_adam_parallel(&mut embd2, &graph, &params, 42, 0);
+        let _ = optimise_embedding_adam_parallel(&mut embd1, &graph, &params, None, 42, 0);
+        let _ = optimise_embedding_adam_parallel(&mut embd2, &graph, &params, None, 42, 0);
 
         assert_eq!(embd1, embd2);
     }
@@ -1425,7 +1760,7 @@ mod test_umap_optimiser {
             eps: 1e-7,
         };
 
-        let _ = optimise_embedding_adam(&mut embd, &graph, &params, 42, 0);
+        let _ = optimise_embedding_adam(&mut embd, &graph, &params, None, 42, 0);
 
         let embd_flat: Vec<f64> = embd.iter().flatten().copied().collect();
         let final_dist = squared_dist_flat(&embd_flat, 0, 1, 2).sqrt();
@@ -1457,10 +1792,10 @@ mod test_umap_optimiser {
         };
 
         let mut embd_sgd = initial_embd.clone();
-        let _ = optimise_embedding_sgd(&mut embd_sgd, &graph, &params, 42, 0);
+        let _ = optimise_embedding_sgd(&mut embd_sgd, &graph, &params, None, 42, 0);
 
         let mut embd_adam = initial_embd.clone();
-        let _ = optimise_embedding_adam(&mut embd_adam, &graph, &params, 42, 0);
+        let _ = optimise_embedding_adam(&mut embd_adam, &graph, &params, None, 42, 0);
 
         let movement_sgd: f64 = embd_sgd
             .iter()
@@ -1518,13 +1853,13 @@ mod test_umap_optimiser {
         };
 
         let mut embd_sgd = initial_embd.clone();
-        let _ = optimise_embedding_sgd(&mut embd_sgd, &graph, &params, 42, 0);
+        let _ = optimise_embedding_sgd(&mut embd_sgd, &graph, &params, None, 42, 0);
 
         let mut embd_adam = initial_embd.clone();
-        let _ = optimise_embedding_adam(&mut embd_adam, &graph, &params, 42, 0);
+        let _ = optimise_embedding_adam(&mut embd_adam, &graph, &params, None, 42, 0);
 
         let mut embd_adam_par = initial_embd.clone();
-        let _ = optimise_embedding_adam_parallel(&mut embd_adam_par, &graph, &params, 42, 0);
+        let _ = optimise_embedding_adam_parallel(&mut embd_adam_par, &graph, &params, None, 42, 0);
 
         let movement_sgd: f64 = embd_sgd
             .iter()
@@ -1578,8 +1913,8 @@ mod test_umap_optimiser {
             eps: 1e-7,
         };
 
-        let _ = optimise_embedding_sgd(&mut embd1, &graph, &params, 42, 0);
-        let _ = optimise_embedding_sgd(&mut embd2, &graph, &params, 42, 0);
+        let _ = optimise_embedding_sgd(&mut embd1, &graph, &params, None, 42, 0);
+        let _ = optimise_embedding_sgd(&mut embd2, &graph, &params, None, 42, 0);
 
         assert_eq!(embd1, embd2);
     }
@@ -1609,7 +1944,7 @@ mod test_umap_optimiser {
             ..UmapOptimParams::default_2d()
         };
 
-        let _ = optimise_embedding_adam(&mut embd, &graph, &params, 42, 0);
+        let _ = optimise_embedding_adam(&mut embd, &graph, &params, None, 42, 0);
 
         let dist = |a: &[f64], b: &[f64]| -> f64 {
             ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
@@ -1664,7 +1999,7 @@ mod test_umap_optimiser {
             ..UmapOptimParams::default_2d()
         };
 
-        let _ = optimise_embedding_adam_parallel(&mut embd, &graph, &params, 42, 0);
+        let _ = optimise_embedding_adam_parallel(&mut embd, &graph, &params, None, 42, 0);
 
         let dist = |a: &[f64], b: &[f64]| -> f64 {
             ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
@@ -1719,7 +2054,7 @@ mod test_umap_optimiser {
             ..UmapOptimParams::default_2d()
         };
 
-        let _ = optimise_embedding_sgd(&mut embd, &graph, &params, 42, 0);
+        let _ = optimise_embedding_sgd(&mut embd, &graph, &params, None, 42, 0);
 
         let dist = |a: &[f64], b: &[f64]| -> f64 {
             ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()

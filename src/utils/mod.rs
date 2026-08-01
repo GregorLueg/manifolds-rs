@@ -3,6 +3,7 @@
 //! macros
 
 pub mod bh_tree;
+pub mod density;
 pub mod diffusions;
 pub mod macros;
 pub mod math;

@@ -77,6 +77,14 @@ pub enum ManifoldsError {
         mid_near_candidate_end: usize,
     },
 
+    // -- density preservation --
+    /// Error if the original local radii have no spread, which leaves the
+    /// density correlation undefined
+    #[error(
+        "densMAP/den-SNE: the local radii have no spread - the density correlation is undefined"
+    )]
+    DegenerateLocalRadii,
+
     // -- parametric umap serialisation --
     /// Error when the model bytes cannot be serialised to disk format
     #[error("Failed to serialise parametric UMAP model: {0}")]

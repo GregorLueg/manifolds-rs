@@ -51,6 +51,7 @@ use crate::training::pacmap_optimiser::{
 };
 use crate::training::tsne_optimiser::*;
 use crate::training::umap_optimisers::*;
+use crate::utils::density::{DENSMAP_LAMBDA, DENSNE_LAMBDA};
 use crate::utils::diffusions::*;
 use crate::utils::math::compute_largest_eigenpairs_lanczos;
 use crate::utils::potentials::compute_potential_distances;
@@ -355,6 +356,42 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    umap_inner(data, precomputed_knn, umap_params, None, seed, verbose)
+}
+
+/// Shared body of [`umap`] and [`densmap`].
+///
+/// Split out so the density-preserving variant is a parameter rather than a
+/// second copy of the pipeline. `dens_params` is the only difference between
+/// the two entry points.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances
+/// * `umap_params` - UMAP parameters
+/// * `dens_params` - Density knobs for densMAP, or `None` for plain UMAP
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>`, `[n_dim][n_samples]`.
+fn umap_inner<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    umap_params: &UmapParams<T>,
+    dens_params: Option<DensParams<T>>,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
     let verbosity = parse_verbosity_level(verbose);
 
     // parse various parameters
@@ -382,7 +419,7 @@ where
         );
     }
 
-    let (graph, _, _) = construct_umap_graph(
+    let (graph, knn_indices, knn_dist) = construct_umap_graph(
         data,
         precomputed_knn,
         umap_params.k,
@@ -393,6 +430,32 @@ where
         seed,
         verbose,
     )?;
+
+    // density state, while the kNN results are still around. The ANN backends
+    // return squared euclidean distances, which is exactly what the local radii
+    // want - do not square again.
+    let dens_state = match dens_params {
+        Some(dens_params) => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Computing original local radii (lambda = {:.3})...",
+                    dens_params.lambda.to_f64().unwrap_or(f64::NAN)
+                );
+            }
+            Some(DensState::new(
+                dens_params,
+                &graph,
+                &knn_indices,
+                &knn_dist,
+                umap_params.nn_params.dist_metric == "euclidean",
+            )?)
+        }
+        None => None,
+    };
+
+    // the kNN lists can be gigabytes at scale; nothing below needs them
+    drop(knn_indices);
+    drop(knn_dist);
 
     if verbosity.normal_verbosity() {
         println!(
@@ -425,6 +488,7 @@ where
             &mut embd,
             &graph_adj,
             &umap_params.optim_params,
+            dens_state.as_ref(),
             seed as u64,
             verbose,
         )?,
@@ -433,6 +497,7 @@ where
                 &mut embd,
                 &graph_adj,
                 &umap_params.optim_params,
+                dens_state.as_ref(),
                 seed as u64,
                 verbose,
             )?;
@@ -442,6 +507,7 @@ where
                 &mut embd,
                 &graph_adj,
                 &umap_params.optim_params,
+                dens_state.as_ref(),
                 seed as u64,
                 verbose,
             )?;
@@ -767,6 +833,53 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    tsne_inner(
+        data,
+        precomputed_knn,
+        params,
+        approx_type,
+        None,
+        seed,
+        verbose,
+    )
+}
+
+/// Shared body of [`tsne`] and [`densne`].
+///
+/// Split out so the density-preserving variant is a parameter rather than a
+/// second copy of the pipeline. `dens_params` is the only difference between
+/// the two entry points.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances
+/// * `params` - t-SNE parameters
+/// * `approx_type` - `"barnes_hut" | "bh"` or `"fft"`
+/// * `dens_params` - Density knobs for den-SNE, or `None` for plain t-SNE
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>`, `[n_dim][n_samples]`.
+#[cfg(feature = "fft_tsne")]
+fn tsne_inner<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &TsneParams<T>,
+    approx_type: &str,
+    dens_params: Option<DensParams<T>>,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat + FftwFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
     if params.n_dim != 2 {
         return Err(ManifoldsError::IncorrectDim {
             n_dim: params.n_dim,
@@ -776,7 +889,7 @@ where
     let verbosity = parse_verbosity_level(verbose);
 
     // 1. graph construction
-    let (graph, _, _) = construct_tsne_graph(
+    let (graph, knn_indices, knn_dist) = construct_tsne_graph(
         data,
         precomputed_knn,
         params.perplexity,
@@ -785,6 +898,32 @@ where
         seed,
         verbose,
     )?;
+
+    // 1b. density state, while the kNN results are still around. The ANN
+    // backends return squared euclidean distances, which is exactly what the
+    // local radii want - do not square again.
+    let dens_state = match dens_params {
+        Some(dens_params) => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Computing original local radii (lambda = {:.3})...",
+                    dens_params.lambda.to_f64().unwrap_or(f64::NAN)
+                );
+            }
+            Some(DensState::new(
+                dens_params,
+                &graph,
+                &knn_indices,
+                &knn_dist,
+                params.nn_params.dist_metric == "euclidean",
+            )?)
+        }
+        None => None,
+    };
+
+    // the kNN lists can be gigabytes at scale; nothing below needs them
+    drop(knn_indices);
+    drop(knn_dist);
 
     if verbosity.normal_verbosity() {
         println!("Initialising embedding via {}...", &params.initialisation);
@@ -822,7 +961,13 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, verbose);
+            optimise_bh_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dens_state.as_ref(),
+                verbose,
+            );
         }
         #[cfg(feature = "fft_tsne")]
         TsneOpt::Fft => {
@@ -832,7 +977,13 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            let _ = optimise_fft_tsne(&mut embd, &params.optim_params, &graph, verbose);
+            optimise_fft_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dens_state.as_ref(),
+                verbose,
+            )?;
         }
     }
 
@@ -914,6 +1065,54 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    tsne_inner(
+        data,
+        precomputed_knn,
+        params,
+        approx_type,
+        None,
+        seed,
+        verbose,
+    )
+}
+
+/// Shared body of [`tsne`] and [`densne`].
+///
+/// Split out so the density-preserving variant is a parameter rather than a
+/// second copy of the pipeline. `dens_params` is the only difference between
+/// the two entry points.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances
+/// * `params` - t-SNE parameters
+/// * `approx_type` - `"barnes_hut" | "bh"`; `"fft"` panics without the
+///   `fft_tsne` feature
+/// * `dens_params` - Density knobs for den-SNE, or `None` for plain t-SNE
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>`, `[n_dim][n_samples]`.
+#[cfg(not(feature = "fft_tsne"))]
+fn tsne_inner<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &TsneParams<T>,
+    approx_type: &str,
+    dens_params: Option<DensParams<T>>,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
     if params.n_dim != 2 {
         return Err(ManifoldsError::IncorrectDim {
             n_dim: params.n_dim,
@@ -922,7 +1121,7 @@ where
     let verbosity = parse_verbosity_level(verbose);
 
     // 1. graph construction
-    let (graph, _, _) = construct_tsne_graph(
+    let (graph, knn_indices, knn_dist) = construct_tsne_graph(
         data,
         precomputed_knn,
         params.perplexity,
@@ -931,6 +1130,32 @@ where
         seed,
         verbose,
     )?;
+
+    // 1b. density state, while the kNN results are still around. The ANN
+    // backends return squared euclidean distances, which is exactly what the
+    // local radii want - do not square again.
+    let dens_state = match dens_params {
+        Some(dens_params) => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Computing original local radii (lambda = {:.3})...",
+                    dens_params.lambda.to_f64().unwrap_or(f64::NAN)
+                );
+            }
+            Some(DensState::new(
+                dens_params,
+                &graph,
+                &knn_indices,
+                &knn_dist,
+                params.nn_params.dist_metric == "euclidean",
+            )?)
+        }
+        None => None,
+    };
+
+    // the kNN lists can be gigabytes at scale; nothing below needs them
+    drop(knn_indices);
+    drop(knn_dist);
 
     // 2. initialise embedding
     if verbosity.normal_verbosity() {
@@ -968,7 +1193,13 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, verbose);
+            optimise_bh_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dens_state.as_ref(),
+                verbose,
+            );
         }
         #[cfg(not(feature = "fft_tsne"))]
         TsneOpt::Fft => {
@@ -991,6 +1222,384 @@ where
     }
 
     Ok(transposed)
+}
+
+/////////////
+// densMAP //
+/////////////
+
+////////////
+// Params //
+////////////
+
+/// Parameters for densMAP, the density-preserving variant of UMAP.
+#[derive(Debug, Clone)]
+pub struct DensmapParams<T> {
+    /// The underlying UMAP parameters. Unchanged from plain UMAP.
+    pub umap_params: UmapParams<T>,
+    /// Density-preservation knobs. Defaults to [`DENSMAP_LAMBDA`].
+    pub dens_params: DensParams<T>,
+}
+
+impl<T> Default for DensmapParams<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            umap_params: UmapParams::default(),
+            dens_params: DensParams::densmap_default(),
+        }
+    }
+}
+
+impl<T> DensmapParams<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Full-control constructor.
+    ///
+    /// ### Params
+    ///
+    /// * `umap_params` - The underlying UMAP parameters
+    /// * `dens_params` - Density-preservation knobs
+    ///
+    /// ### Returns
+    ///
+    /// The parameter set.
+    pub fn new(umap_params: UmapParams<T>, dens_params: DensParams<T>) -> Self {
+        Self {
+            umap_params,
+            dens_params,
+        }
+    }
+
+    /// 2D defaults with the knobs most worth tuning exposed.
+    ///
+    /// ### Params
+    ///
+    /// * `min_dist` - Minimum distance between embedded points. Defaults to the
+    ///   UMAP default
+    /// * `spread` - Effective scale of embedded points. Defaults to the UMAP
+    ///   default
+    /// * `lambda` - Density weight. Defaults to [`DENSMAP_LAMBDA`]. Larger
+    ///   values preserve density more aggressively at the cost of cluster
+    ///   separation
+    ///
+    /// ### Returns
+    ///
+    /// The parameter set.
+    pub fn new_default_2d(min_dist: Option<T>, spread: Option<T>, lambda: Option<T>) -> Self {
+        Self {
+            umap_params: UmapParams::new_default_2d(min_dist, spread),
+            dens_params: DensParams::new(
+                Some(lambda.unwrap_or_else(|| T::from_f64(DENSMAP_LAMBDA).unwrap())),
+                None,
+                None,
+            ),
+        }
+    }
+}
+
+//////////
+// Main //
+//////////
+
+/// Run densMAP, the density-preserving variant of UMAP
+///
+/// Identical to [`umap`] except for an extra term in the gradient that
+/// maximises the Pearson correlation between the log local radius of each point
+/// in the original space and in the embedding. Plain UMAP is free to render a
+/// tight cluster and a diffuse one at the same size; densMAP is not.
+///
+/// ### Algorithm
+///
+/// 1. Build the fuzzy simplicial set exactly as UMAP does
+/// 2. Compute the constant original log local radii
+///    `log(sum_j mu_ij d_ij^2 / sum_j mu_ij)` and z-score them
+/// 3. Optimise as UMAP, but over the final `dens_params.frac` of the epochs
+///    also recompute the embedding log radii each epoch (weighted by the UMAP
+///    kernel `1 / (1 + a d^2b)`) and add `-lambda * dCorr/dy` to the gradient
+///
+/// The density term touches only the attractive part of the gradient; negative
+/// sampling is untouched. Works with all three CPU optimisers (`"sgd"`,
+/// `"adam"`, `"adam_parallel"`).
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
+/// * `params` - densMAP parameters
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has length
+/// `n_dim` and the inner vectors length `n_samples`.
+///
+/// ### Errors
+///
+/// [`ManifoldsError::DegenerateLocalRadii`] if every point has the same local
+/// radius, which leaves the correlation undefined. Otherwise the same errors as
+/// [`umap`].
+///
+/// ### References
+///
+/// Narayan, Berger & Cho (2021): "Assessing single-cell transcriptomic
+/// variability through density-preserving data visualization", Nature
+/// Biotechnology
+pub fn densmap<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &DensmapParams<T>,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    umap_inner(
+        data,
+        precomputed_knn,
+        &params.umap_params,
+        Some(params.dens_params),
+        seed,
+        verbose,
+    )
+}
+
+/////////////
+// den-SNE //
+/////////////
+
+////////////
+// Params //
+////////////
+
+/// Parameters for den-SNE, the density-preserving variant of t-SNE.
+#[derive(Debug, Clone)]
+pub struct DensneParams<T> {
+    /// The underlying t-SNE parameters. Unchanged from plain t-SNE.
+    pub tsne_params: TsneParams<T>,
+    /// Density-preservation knobs. Defaults to [`DENSNE_LAMBDA`].
+    pub dens_params: DensParams<T>,
+}
+
+impl<T> Default for DensneParams<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            tsne_params: TsneParams::default(),
+            dens_params: DensParams::densne_default(),
+        }
+    }
+}
+
+impl<T> DensneParams<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Full-control constructor.
+    ///
+    /// ### Params
+    ///
+    /// * `tsne_params` - The underlying t-SNE parameters
+    /// * `dens_params` - Density-preservation knobs
+    ///
+    /// ### Returns
+    ///
+    /// The parameter set.
+    pub fn new(tsne_params: TsneParams<T>, dens_params: DensParams<T>) -> Self {
+        Self {
+            tsne_params,
+            dens_params,
+        }
+    }
+
+    /// 2D defaults with the two knobs most worth tuning exposed.
+    ///
+    /// ### Params
+    ///
+    /// * `perplexity` - Target perplexity. Defaults to the t-SNE default of 30
+    /// * `lambda` - Density weight. Defaults to [`DENSNE_LAMBDA`]. Larger values
+    ///   preserve density more aggressively at the cost of cluster separation
+    ///
+    /// ### Returns
+    ///
+    /// The parameter set.
+    pub fn new_default_2d(perplexity: Option<T>, lambda: Option<T>) -> Self {
+        Self {
+            tsne_params: TsneParams::new_default_2d(perplexity),
+            dens_params: DensParams::new(
+                Some(lambda.unwrap_or_else(|| T::from_f64(DENSNE_LAMBDA).unwrap())),
+                None,
+                None,
+            ),
+        }
+    }
+}
+
+//////////
+// Main //
+//////////
+
+/// Run den-SNE, the density-preserving variant of t-SNE
+///
+/// Identical to [`tsne`] except for an extra term in the gradient that
+/// maximises the Pearson correlation between the log local radius of each point
+/// in the original space and in the embedding. Plain t-SNE is free to render a
+/// tight cluster and a diffuse one at the same size; den-SNE is not.
+///
+/// ### Algorithm
+///
+/// 1. Construct the high-dimensional affinity graph exactly as t-SNE does
+/// 2. Compute the constant original log local radii
+///    `log(sum_j P_ij d_ij^2 / sum_j P_ij)` and z-score them
+/// 3. Optimise as t-SNE, but over the final `dens_params.frac` of the epochs
+///    also recompute the embedding log radii each epoch (weighted by the
+///    Student-t kernel, not by `P`) and add `-lambda * dCorr/dy` to the
+///    gradient
+///
+/// The density term touches only the attractive part of the gradient; the
+/// Barnes-Hut and FFT repulsion are untouched.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
+/// * `params` - den-SNE parameters
+/// * `approx_type` - Type of approximation to use for repulsive forces.
+///   Options: `"barnes_hut" | "bh"`, `"fft"`
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has length
+/// `n_dim` and the inner vectors length `n_samples`.
+///
+/// ### Errors
+///
+/// [`ManifoldsError::DegenerateLocalRadii`] if every point has the same local
+/// radius, which leaves the correlation undefined. Otherwise the same errors as
+/// [`tsne`].
+///
+/// ### References
+///
+/// Narayan, Berger & Cho (2021): "Assessing single-cell transcriptomic
+/// variability through density-preserving data visualization", Nature
+/// Biotechnology
+#[cfg(feature = "fft_tsne")]
+pub fn densne<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &DensneParams<T>,
+    approx_type: &str,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat + FftwFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    tsne_inner(
+        data,
+        precomputed_knn,
+        &params.tsne_params,
+        approx_type,
+        Some(params.dens_params),
+        seed,
+        verbose,
+    )
+}
+
+/// Run den-SNE, the density-preserving variant of t-SNE
+///
+/// Identical to [`tsne`] except for an extra term in the gradient that
+/// maximises the Pearson correlation between the log local radius of each point
+/// in the original space and in the embedding. Plain t-SNE is free to render a
+/// tight cluster and a diffuse one at the same size; den-SNE is not.
+///
+/// ### Algorithm
+///
+/// 1. Construct the high-dimensional affinity graph exactly as t-SNE does
+/// 2. Compute the constant original log local radii
+///    `log(sum_j P_ij d_ij^2 / sum_j P_ij)` and z-score them
+/// 3. Optimise as t-SNE, but over the final `dens_params.frac` of the epochs
+///    also recompute the embedding log radii each epoch (weighted by the
+///    Student-t kernel, not by `P`) and add `-lambda * dCorr/dy` to the
+///    gradient
+///
+/// The density term touches only the attractive part of the gradient; the
+/// Barnes-Hut repulsion is untouched.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
+/// * `params` - den-SNE parameters
+/// * `approx_type` - Type of approximation to use for repulsive forces.
+///   Options: `"barnes_hut" | "bh"`. `"fft"` requires the `fft_tsne` feature
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has length
+/// `n_dim` and the inner vectors length `n_samples`.
+///
+/// ### Errors
+///
+/// [`ManifoldsError::DegenerateLocalRadii`] if every point has the same local
+/// radius, which leaves the correlation undefined. Otherwise the same errors as
+/// [`tsne`].
+///
+/// ### References
+///
+/// Narayan, Berger & Cho (2021): "Assessing single-cell transcriptomic
+/// variability through density-preserving data visualization", Nature
+/// Biotechnology
+#[cfg(not(feature = "fft_tsne"))]
+pub fn densne<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &DensneParams<T>,
+    approx_type: &str,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    tsne_inner(
+        data,
+        precomputed_knn,
+        &params.tsne_params,
+        approx_type,
+        Some(params.dens_params),
+        seed,
+        verbose,
+    )
 }
 
 ///////////
@@ -2821,6 +3430,52 @@ where
     R: Runtime,
     StandardNormal: Distribution<T>,
 {
+    umap_gpu_inner::<T, R>(
+        data,
+        precomputed_knn,
+        umap_params,
+        None,
+        device,
+        seed,
+        verbose,
+    )
+}
+
+/// Shared body of [`umap_gpu`] and [`densmap_gpu`].
+///
+/// Split out so the density-preserving variant is a parameter rather than a
+/// second copy of the pipeline. `dens_params` is the only difference between
+/// the two entry points.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples x features)
+/// * `precomputed_knn` - Optional precomputed kNN (indices, distances)
+/// * `umap_params` - GPU UMAP parameters
+/// * `dens_params` - Density knobs for densMAP, or `None` for plain UMAP
+/// * `device` - The GPU device to use
+/// * `seed` - Random seed
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>`, `[n_dim][n_samples]`.
+#[cfg(feature = "gpu")]
+fn umap_gpu_inner<T, R>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    umap_params: &UmapParamsGpu<T>,
+    dens_params: Option<DensParams<T>>,
+    device: R::Device,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat + AnnSearchGpuFloat,
+    R: Runtime,
+    StandardNormal: Distribution<T>,
+{
     let verbosity = parse_verbosity_level(verbose);
 
     let init_type = parse_initilisation(
@@ -2853,7 +3508,7 @@ where
         );
     }
 
-    let (graph, _, _) = construct_umap_graph_gpu::<T, R>(
+    let (graph, knn_indices, knn_dist) = construct_umap_graph_gpu::<T, R>(
         data,
         precomputed_knn,
         umap_params.k,
@@ -2865,6 +3520,32 @@ where
         seed,
         verbose,
     )?;
+
+    // density state, while the kNN results are still around. The ANN backends
+    // return squared euclidean distances, which is exactly what the local radii
+    // want - do not square again.
+    let dens_state = match dens_params {
+        Some(dens_params) => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Computing original local radii (lambda = {:.3})...",
+                    dens_params.lambda.to_f64().unwrap_or(f64::NAN)
+                );
+            }
+            Some(DensState::new(
+                dens_params,
+                &graph,
+                &knn_indices,
+                &knn_dist,
+                umap_params.nn_params.dist_metric == "euclidean",
+            )?)
+        }
+        None => None,
+    };
+
+    // the kNN lists can be gigabytes at scale; nothing below needs them
+    drop(knn_indices);
+    drop(knn_dist);
 
     if verbosity.normal_verbosity() {
         println!(
@@ -2898,6 +3579,7 @@ where
             &mut embd,
             &graph_adj,
             &umap_params.optim_params,
+            dens_state.as_ref(),
             seed as u64,
             verbose,
         )?,
@@ -2906,6 +3588,7 @@ where
                 &mut embd,
                 &graph_adj,
                 &umap_params.optim_params,
+                dens_state.as_ref(),
                 seed as u64,
                 verbose,
             )?;
@@ -2915,6 +3598,7 @@ where
                 &mut embd,
                 &graph_adj,
                 &umap_params.optim_params,
+                dens_state.as_ref(),
                 seed as u64,
                 verbose,
             )?;
@@ -2935,11 +3619,13 @@ where
                 })
                 .collect();
             let params_f32 = umap_params.optim_params.cast::<f32>();
+            let dens_f32 = dens_state.as_ref().map(|state| state.cast::<f32>());
 
             optimise_embedding_adam_gpu::<R, f32>(
                 &mut embd_f32,
                 &graph_adj_f32,
                 &params_f32,
+                dens_f32.as_ref(),
                 device,
                 seed as u64,
                 verbose,
@@ -2971,6 +3657,149 @@ where
     }
 
     Ok(transposed)
+}
+
+/////////////////
+// densMAP GPU //
+/////////////////
+
+/// Parameters for GPU-accelerated densMAP.
+#[cfg(feature = "gpu")]
+#[derive(Debug, Clone)]
+pub struct DensmapParamsGpu<T> {
+    /// The underlying GPU UMAP parameters. Unchanged from plain UMAP.
+    pub umap_params: UmapParamsGpu<T>,
+    /// Density-preservation knobs. Defaults to [`DENSMAP_LAMBDA`].
+    pub dens_params: DensParams<T>,
+}
+
+#[cfg(feature = "gpu")]
+impl<T> Default for DensmapParamsGpu<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            umap_params: UmapParamsGpu::default(),
+            dens_params: DensParams::densmap_default(),
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl<T> DensmapParamsGpu<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Full-control constructor.
+    ///
+    /// ### Params
+    ///
+    /// * `umap_params` - The underlying GPU UMAP parameters
+    /// * `dens_params` - Density-preservation knobs
+    ///
+    /// ### Returns
+    ///
+    /// The parameter set.
+    pub fn new(umap_params: UmapParamsGpu<T>, dens_params: DensParams<T>) -> Self {
+        Self {
+            umap_params,
+            dens_params,
+        }
+    }
+
+    /// 2D defaults with the knobs most worth tuning exposed.
+    ///
+    /// ### Params
+    ///
+    /// * `min_dist` - Minimum distance between embedded points. Defaults to the
+    ///   UMAP default
+    /// * `spread` - Effective scale of embedded points. Defaults to the UMAP
+    ///   default
+    /// * `lambda` - Density weight. Defaults to [`DENSMAP_LAMBDA`]
+    ///
+    /// ### Returns
+    ///
+    /// The parameter set.
+    pub fn new_default_2d(min_dist: Option<T>, spread: Option<T>, lambda: Option<T>) -> Self {
+        Self {
+            umap_params: UmapParamsGpu::new_default_2d(min_dist, spread),
+            dens_params: DensParams::new(
+                Some(lambda.unwrap_or_else(|| T::from_f64(DENSMAP_LAMBDA).unwrap())),
+                None,
+                None,
+            ),
+        }
+    }
+}
+
+/// Run GPU-accelerated densMAP, the density-preserving variant of UMAP
+///
+/// Identical to [`umap_gpu`] except for an extra term in the gradient that
+/// maximises the Pearson correlation between the log local radius of each point
+/// in the original space and in the embedding.
+///
+/// With the default `"adam_gpu"` optimiser the density term runs on the device
+/// too: one extra kernel computes the embedding radii, and a second writes the
+/// per-node correlation sensitivities. Between them the radii are read back so
+/// the correlation statistics can be accumulated in `f64` on the host, since
+/// summing `n` log-radii in `f32` is exactly the subtract-the-mean pattern that
+/// loses its significant digits. That readback is a sync point, but it only
+/// happens over the final `dens_params.frac` of the epochs.
+///
+/// The other optimiser choices (`"sgd"`, `"adam"`, `"adam_parallel"`) run the
+/// CPU density path; only the kNN search is GPU-accelerated for those.
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples x features)
+/// * `precomputed_knn` - Optional precomputed kNN (indices, distances)
+///   excluding self.
+/// * `params` - GPU densMAP parameters.
+/// * `device` - The GPU device to use.
+/// * `seed` - Random seed.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has length
+/// `n_dim` and the inner vectors length `n_samples`.
+///
+/// ### Errors
+///
+/// [`ManifoldsError::DegenerateLocalRadii`] if every point has the same local
+/// radius, which leaves the correlation undefined. Otherwise the same errors as
+/// [`umap_gpu`].
+///
+/// ### References
+///
+/// Narayan, Berger & Cho (2021): "Assessing single-cell transcriptomic
+/// variability through density-preserving data visualization", Nature
+/// Biotechnology
+#[cfg(feature = "gpu")]
+pub fn densmap_gpu<T, R>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &DensmapParamsGpu<T>,
+    device: R::Device,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat + AnnSearchGpuFloat,
+    R: Runtime,
+    StandardNormal: Distribution<T>,
+{
+    umap_gpu_inner::<T, R>(
+        data,
+        precomputed_knn,
+        &params.umap_params,
+        Some(params.dens_params),
+        device,
+        seed,
+        verbose,
+    )
 }
 
 //////////////
@@ -3304,7 +4133,7 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, verbose);
+            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
         }
         TsneOpt::Fft => {
             if verbosity.normal_verbosity() {
@@ -3313,7 +4142,7 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_fft_tsne(&mut embd, &params.optim_params, &graph, verbose)?;
+            optimise_fft_tsne(&mut embd, &params.optim_params, &graph, None, verbose)?;
         }
     }
 
@@ -3368,7 +4197,6 @@ where
     T: ManifoldsFloat + AnnSearchGpuFloat,
     R: Runtime,
     StandardNormal: Distribution<T>,
-    NNDescentGpu<T, R>: NNDescentQuery<T>,
 {
     if params.n_dim != 2 {
         return Err(ManifoldsError::IncorrectDim {
@@ -3422,7 +4250,7 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, verbose);
+            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
         }
         TsneOpt::Fft => {
             panic!("FFT-accelerated t-SNE not available. Recompile with 'fft_tsne' feature or use 'barnes_hut' approximation.");

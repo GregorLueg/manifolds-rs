@@ -12,6 +12,7 @@ use cubecl::prelude::*;
 
 use crate::prelude::*;
 use crate::training::umap_optimisers::UmapOptimParams;
+use crate::utils::density::{correlation_stats, DENS_EPS};
 
 ///////////
 // Enums //
@@ -93,6 +94,9 @@ pub struct UmapCsrGraph<T> {
     /// non-zero-weight edges; a large sentinel value for zero-weight edges so
     /// that they effectively never tick.
     pub epochs_per_sample: Vec<T>,
+    /// Graph weight per edge `[n_edges]`. Only densMAP needs it, to undo the
+    /// bias from visiting edges at a rate proportional to their weight.
+    pub mu: Vec<T>,
 }
 
 impl<T> UmapCsrGraph<T>
@@ -180,6 +184,8 @@ where
             })
             .collect();
 
+        let mu: Vec<T> = edges.iter().map(|(_, _, w)| *w).collect();
+
         Ok(Self {
             n,
             n_edges,
@@ -187,6 +193,7 @@ where
             csr_edge_idx,
             csr_other_node,
             epochs_per_sample,
+            mu,
         })
     }
 }
@@ -240,6 +247,23 @@ where
     /// Per-node partial `sum_d grad[node, d]^2` `[n]`, written by
     /// `umap_grad_norm_sq` and reduced on the host for progress logging.
     pub grad_norm_partial: GpuTensor<R, T>,
+
+    /// Whether the densMAP buffers below are real (`[n]`) or `[1]` dummies.
+    /// The gradient kernel takes this as a comptime flag, so plain UMAP is
+    /// compiled without any density code at all.
+    pub dens_enabled: bool,
+    /// Z-scored original log local radii `[n]`, uploaded once.
+    pub dens_r: GpuTensor<R, T>,
+    /// Embedding log local radii `[n]`, rewritten by `umap_dens_radii` every
+    /// density epoch.
+    pub dens_re: GpuTensor<R, T>,
+    /// `sum_j phi_ij` per node `[n]`, rewritten alongside `dens_re`.
+    pub dens_phi_sum: GpuTensor<R, T>,
+    /// Per-node correlation sensitivity `[n]`, rewritten by
+    /// `umap_dens_weights` once the host has the epoch statistics.
+    pub dens_weight: GpuTensor<R, T>,
+    /// Graph weight per edge `[n_edges]`, uploaded once.
+    pub mu: GpuTensor<R, T>,
 }
 
 impl<R, T> UmapGpuState<R, T>
@@ -256,6 +280,9 @@ where
     ///   row-major buffer
     /// * `csr` - Host-side CSR representation of the symmetrised UMAP graph
     /// * `params` - Adam and UMAP hyperparameters
+    /// * `dens` - densMAP state, or `None`. When `None` the four density
+    ///   buffers are allocated at length `1` rather than `n`, since the
+    ///   gradient kernel is compiled without the code that reads them
     /// * `client` - CubeCL compute client for the target device
     ///
     /// ### Returns
@@ -265,6 +292,7 @@ where
         embd: &[Vec<T>],
         csr: &UmapCsrGraph<T>,
         params: &UmapOptimParams<T>,
+        dens: Option<&DensState<T>>,
         client: &ComputeClient<R>,
     ) -> Result<Self, ManifoldsError> {
         let n = embd.len();
@@ -281,6 +309,16 @@ where
         }
 
         let zeros = vec![T::zero(); n * n_dim];
+
+        // dummy length-1 allocations keep the bindings valid without paying
+        // four extra [n] buffers on the plain UMAP path
+        let dens_enabled = dens.is_some();
+        let dens_len = if dens_enabled { n } else { 1 };
+        let dens_zeros = vec![T::zero(); dens_len];
+        let dens_r: Vec<T> = match dens {
+            Some(state) => state.r.clone(),
+            None => vec![T::zero(); 1],
+        };
 
         Ok(Self {
             embd: GpuTensor::from_slice(&embd_flat, vec![n, n_dim], client),
@@ -304,12 +342,149 @@ where
 
             grad_norm_partial: GpuTensor::from_slice(&vec![T::zero(); n], vec![n], client),
 
+            dens_enabled,
+            dens_r: GpuTensor::from_slice(&dens_r, vec![dens_len], client),
+            dens_re: GpuTensor::from_slice(&dens_zeros, vec![dens_len], client),
+            dens_phi_sum: GpuTensor::from_slice(&dens_zeros, vec![dens_len], client),
+            dens_weight: GpuTensor::from_slice(&dens_zeros, vec![dens_len], client),
+            mu: GpuTensor::from_slice(&csr.mu, vec![n_edges], client),
+
             n,
             n_dim,
             n_edges,
             n_epochs,
         })
     }
+}
+
+/////////////////////////
+// Density (densMAP)   //
+/////////////////////////
+
+/// Embedding local radii for densMAP. One thread per node.
+///
+/// Walks the node's full CSR slice, ignoring the edge sampling schedule: the
+/// radii are a property of the whole graph, and the reference recomputes them
+/// over every edge each epoch. Writes `dens_re[node] = log(eps + sum phi*dsq /
+/// sum phi)` and `dens_phi_sum[node]`. No atomics, no shared memory, so the
+/// same grid mapping as `umap_grad_accum` works unchanged.
+///
+/// ### Params
+///
+/// * `embd` - Current embedding `[n, n_dim]`
+/// * `node_edge_offsets` - CSR row pointers `[n + 1]`
+/// * `csr_other_node` - CSR other-endpoint indices `[2 * n_edges]`
+/// * `dens_re` - Per-node log radius output `[n]`, overwritten
+/// * `dens_phi_sum` - Per-node kernel sum output `[n]`, overwritten
+/// * `n` - Number of nodes
+/// * `n_dim` - Embedding dimensionality
+/// * `a`, `b` - UMAP curve parameters
+/// * `dens_eps` - Additive shift inside the log
+/// * `tiny` - Floor on the kernel sum, for nodes left isolated by edge pruning
+/// * `wg_size` - Workgroup size; comptime
+/// * `n_dim_ct` - Embedding dimensionality; comptime, matches `n_dim`
+///
+/// ### Grid mapping
+///
+/// * `(CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X` -> node
+#[cube(launch_unchecked)]
+#[allow(clippy::too_many_arguments)]
+pub fn umap_dens_radii<F: Float + CubeElement>(
+    embd: &Tensor<F>,
+    node_edge_offsets: &Tensor<u32>,
+    csr_other_node: &Tensor<u32>,
+    dens_re: &mut Tensor<F>,
+    dens_phi_sum: &mut Tensor<F>,
+    n: u32,
+    n_dim: u32,
+    a: F,
+    b: F,
+    dens_eps: F,
+    tiny: F,
+    #[comptime] wg_size: u32,
+    #[comptime] n_dim_ct: u32,
+) {
+    let node = (CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X;
+    if node >= n {
+        terminate!();
+    }
+
+    let base_self = node * n_dim;
+    let start = node_edge_offsets[node as usize];
+    let end = node_edge_offsets[(node + 1u32) as usize];
+
+    let mut sum_sq = F::new(0.0);
+    let mut sum_phi = F::new(0.0);
+
+    let mut pos = start;
+    while pos < end {
+        let other = csr_other_node[pos as usize];
+        let base_other = other * n_dim;
+
+        let mut dist_sq = F::new(0.0);
+        for d in 0..n_dim_ct {
+            let diff = embd[(base_self + d) as usize] - embd[(base_other + d) as usize];
+            dist_sq += diff * diff;
+        }
+
+        let dist_sq_b = F::powf(dist_sq, b);
+        let phi = F::new(1.0) / (F::new(1.0) + a * dist_sq_b);
+
+        sum_sq += phi * dist_sq;
+        sum_phi += phi;
+
+        pos += 1u32;
+    }
+
+    let mut denom = sum_phi;
+    if denom < tiny {
+        denom = tiny;
+    }
+
+    dens_re[node as usize] = F::ln(dens_eps + sum_sq / denom);
+    dens_phi_sum[node as usize] = sum_phi;
+}
+
+/// Per-node correlation sensitivity for densMAP. One thread per node.
+///
+/// `weight[i] = r[i] - cov * (re[i] - re_mean) / re_std^2`. The three scalars
+/// come from the host, which computes them in `f64` after reading `dens_re`
+/// back; doing the reduction on device would mean summing `n` log-radii in
+/// `f32`, and this is exactly the subtract-the-mean pattern that loses all its
+/// significant digits there.
+///
+/// ### Params
+///
+/// * `dens_r` - Z-scored original log radii `[n]`
+/// * `dens_re` - Embedding log radii `[n]`
+/// * `dens_weight` - Output `[n]`, overwritten
+/// * `n` - Number of nodes
+/// * `re_mean` - Mean of `dens_re`
+/// * `inv_var` - `1 / re_std^2`
+/// * `cov` - Sample covariance of `dens_re` with `dens_r`
+/// * `wg_size` - Workgroup size; comptime
+///
+/// ### Grid mapping
+///
+/// * `(CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X` -> node
+#[cube(launch_unchecked)]
+pub fn umap_dens_weights<F: Float + CubeElement>(
+    dens_r: &Tensor<F>,
+    dens_re: &Tensor<F>,
+    dens_weight: &mut Tensor<F>,
+    n: u32,
+    re_mean: F,
+    inv_var: F,
+    cov: F,
+    #[comptime] wg_size: u32,
+) {
+    let node = (CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X;
+    if node >= n {
+        terminate!();
+    }
+
+    dens_weight[node as usize] =
+        dens_r[node as usize] - cov * (dens_re[node as usize] - re_mean) * inv_var;
 }
 
 //////////
@@ -386,13 +561,22 @@ fn gpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: 
 /// * `clip_val` - Symmetric clamp on the repulsive gradient coefficient
 /// * `rep_eps` - Additive epsilon on repulsive `dist_sq`
 /// * `dist_sq_threshold` - Below this, attractive gradient is skipped
+/// * `mu` - Graph weight per edge `[n_edges]`; densMAP only
+/// * `dens_re` - Embedding log radii `[n]`; densMAP only
+/// * `dens_phi_sum` - Per-node kernel sums `[n]`; densMAP only
+/// * `dens_weight` - Per-node correlation sensitivities `[n]`; densMAP only
+/// * `dens_coeff` - `lambda * mu_tot / (re_std * (n - 1))`; densMAP only
 /// * `wg_size` - Workgroup size; comptime
 /// * `n_dim_ct` - Embedding dimensionality; comptime, matches `n_dim`
+/// * `dens_enabled` - Whether to add the densMAP term; comptime, so plain UMAP
+///   compiles to a kernel with none of the density code and never touches the
+///   four dummy density bindings
 ///
 /// ### Grid mapping
 ///
 /// * `(CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X` -> node
 #[cube(launch_unchecked)]
+#[allow(clippy::too_many_arguments)]
 pub fn umap_grad_accum<F: Float + CubeElement>(
     embd: &Tensor<F>,
     node_edge_offsets: &Tensor<u32>,
@@ -414,8 +598,14 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
     clip_val: F,
     rep_eps: F,
     dist_sq_threshold: F,
+    mu: &Tensor<F>,
+    dens_re: &Tensor<F>,
+    dens_phi_sum: &Tensor<F>,
+    dens_weight: &Tensor<F>,
+    dens_coeff: F,
     #[comptime] wg_size: u32,
     #[comptime] n_dim_ct: u32,
+    #[comptime] dens_enabled: bool,
 ) {
     let node = (CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X;
     if node >= n {
@@ -458,6 +648,41 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
                 for d in 0..n_dim_ct {
                     let delta = embd[(base_other + d) as usize] - embd[(base_self + d) as usize];
                     grad[d as usize] += two * grad_coeff * delta;
+                }
+
+                // densMAP. The outer factor 2 mirrors the attractive term:
+                // this CSR walk visits each undirected edge once per endpoint,
+                // where the reference visits it from both COO directions.
+                // Signed along (y_self - y_other), opposite to the attractive
+                // delta, since this is ascent on the correlation.
+                if dens_enabled {
+                    let phi = F::new(1.0) / denom;
+                    let dphi_term = a * b * dist_sq_b / dist_sq * phi;
+                    let common = F::new(1.0) - b * (F::new(1.0) - phi);
+
+                    let dr_self = (phi / dens_phi_sum[node as usize])
+                        * (common / F::exp(dens_re[node as usize]) + dphi_term);
+                    let dr_other = (phi / dens_phi_sum[other as usize])
+                        * (common / F::exp(dens_re[other as usize]) + dphi_term);
+
+                    let cor = dens_coeff
+                        * (dens_weight[node as usize] * dr_self
+                            + dens_weight[other as usize] * dr_other)
+                        / mu[edge_idx as usize];
+                    let two_cor = two * cor;
+
+                    for d in 0..n_dim_ct {
+                        let delta =
+                            embd[(base_self + d) as usize] - embd[(base_other + d) as usize];
+                        let mut g = two_cor * delta;
+                        if g > clip_val {
+                            g = clip_val;
+                        }
+                        if g < -clip_val {
+                            g = -clip_val;
+                        }
+                        grad[d as usize] += two * g;
+                    }
                 }
             }
 
@@ -649,12 +874,17 @@ pub fn umap_grad_norm_sq<F: Float + CubeElement>(
 /// * `params` - Adam and UMAP hyperparameters
 /// * `epoch` - Current epoch index (0-based)
 /// * `seed` - Random seed for negative sampling
+/// * `dens_coeff` - `lambda * mu_tot / (re_std * (n - 1))` when the density
+///   term is live this epoch, `None` otherwise. Passing `None` selects the
+///   comptime arm with no density code, which is also the only valid choice
+///   when the density buffers are `[1]` dummies
 pub fn launch_grad_accum<R, T>(
     client: &ComputeClient<R>,
     state: &UmapGpuState<R, T>,
     params: &UmapOptimParams<T>,
     epoch: usize,
     seed: u32,
+    dens_coeff: Option<T>,
 ) where
     R: Runtime,
     T: ManifoldsFloatGpu,
@@ -663,6 +893,9 @@ pub fn launch_grad_accum<R, T>(
     let wg = WORKGROUP_SIZE_X;
     let n_workgroups = (state.n as u32).div_ceil(wg);
     let (gx, gy) = grid_2d(n_workgroups);
+
+    let dens_enabled = dens_coeff.is_some();
+    let dens_coeff = dens_coeff.unwrap_or_else(T::zero);
 
     unsafe {
         umap_grad_accum::launch_unchecked::<T, R>(
@@ -689,10 +922,93 @@ pub fn launch_grad_accum<R, T>(
             T::from(GRAD_CLIP_VAL).unwrap(),
             T::from(GRAD_REP_EPS).unwrap(),
             T::from(GRAD_DIST_SQ_THRESHOLD).unwrap(),
+            state.mu.clone().into_tensor_arg(),
+            state.dens_re.clone().into_tensor_arg(),
+            state.dens_phi_sum.clone().into_tensor_arg(),
+            state.dens_weight.clone().into_tensor_arg(),
+            dens_coeff,
+            wg,
+            state.n_dim as u32,
+            dens_enabled,
+        );
+    }
+}
+
+/// Refresh the densMAP radii and weights for one epoch.
+///
+/// Runs `umap_dens_radii`, reads `dens_re` back to compute the correlation
+/// statistics in `f64` on the host, then runs `umap_dens_weights` to write the
+/// per-node sensitivities back onto the device. The readback is a hard sync,
+/// but it only happens over the final `frac` of the run, and doing the
+/// reduction on device would mean summing `n` log-radii in `f32`.
+///
+/// ### Params
+///
+/// * `client` - CubeCL compute client
+/// * `state` - Device-resident optimiser state
+/// * `params` - Adam and UMAP hyperparameters, for `a` and `b`
+/// * `dens` - Constant density state
+///
+/// ### Returns
+///
+/// `dens_coeff`, ready to hand to [`launch_grad_accum`]. Propagates any
+/// readback error from `GpuTensor::read`.
+pub fn launch_dens_update<R, T>(
+    client: &ComputeClient<R>,
+    state: &UmapGpuState<R, T>,
+    params: &UmapOptimParams<T>,
+    dens: &DensState<T>,
+) -> Result<T, ManifoldsError>
+where
+    R: Runtime,
+    T: ManifoldsFloatGpu,
+{
+    let wg = WORKGROUP_SIZE_X;
+    let n_workgroups = (state.n as u32).div_ceil(wg);
+    let (gx, gy) = grid_2d(n_workgroups);
+
+    unsafe {
+        umap_dens_radii::launch_unchecked::<T, R>(
+            client,
+            CubeCount::Static(gx, gy, 1),
+            CubeDim::new_1d(wg),
+            state.embd.clone().into_tensor_arg(),
+            state.node_edge_offsets.clone().into_tensor_arg(),
+            state.csr_other_node.clone().into_tensor_arg(),
+            state.dens_re.clone().into_tensor_arg(),
+            state.dens_phi_sum.clone().into_tensor_arg(),
+            state.n as u32,
+            state.n_dim as u32,
+            params.a,
+            params.b,
+            T::from(DENS_EPS).unwrap(),
+            T::epsilon(),
             wg,
             state.n_dim as u32,
         );
     }
+
+    let re = state.dens_re.clone().read(client)?;
+    let (re_mean, re_std, cov) = correlation_stats(&re, &dens.r, dens.params.var_shift);
+
+    unsafe {
+        umap_dens_weights::launch_unchecked::<T, R>(
+            client,
+            CubeCount::Static(gx, gy, 1),
+            CubeDim::new_1d(wg),
+            state.dens_r.clone().into_tensor_arg(),
+            state.dens_re.clone().into_tensor_arg(),
+            state.dens_weight.clone().into_tensor_arg(),
+            state.n as u32,
+            re_mean,
+            T::one() / (re_std * re_std),
+            cov,
+            wg,
+        );
+    }
+
+    let denom = T::from_usize(state.n.saturating_sub(1).max(1)).unwrap();
+    Ok(dens.params.lambda * dens.mu_tot / (re_std * denom))
 }
 
 /// Dispatch `umap_adam_update` for one epoch. Computes the per-epoch Adam
@@ -862,6 +1178,7 @@ pub fn optimise_embedding_adam_gpu<R, T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
     params: &UmapOptimParams<T>,
+    dens: Option<&DensState<T>>,
     device: R::Device,
     seed: u64,
     verbose: usize,
@@ -879,7 +1196,7 @@ where
 
     let csr = UmapCsrGraph::from_graph(graph)?;
     let client = R::client(&device);
-    let state = UmapGpuState::<R, T>::upload(embd, &csr, params, &client)?;
+    let state = UmapGpuState::<R, T>::upload(embd, &csr, params, dens, &client)?;
 
     // seed fits in u32; upper bits of a u64 seed are unused.
     let seed_u32 = seed as u32;
@@ -892,7 +1209,16 @@ where
     }
 
     for epoch in 0..params.n_epochs {
-        launch_grad_accum(&client, &state, params, epoch, seed_u32);
+        // densMAP: refresh the radii and weights before the gradient pass, so
+        // both read the same embedding
+        let dens_coeff = match dens {
+            Some(state_dens) if state_dens.is_active(epoch, params.n_epochs) => {
+                Some(launch_dens_update(&client, &state, params, state_dens)?)
+            }
+            _ => None,
+        };
+
+        launch_grad_accum(&client, &state, params, epoch, seed_u32, dens_coeff);
         launch_adam_update(&client, &state, params, epoch);
         launch_edge_schedule_update(&client, &state, epoch);
 
@@ -939,6 +1265,68 @@ fn cpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: 
     h % n
 }
 
+/// Host-side mirror of the densMAP state the gradient kernel reads.
+#[cfg(test)]
+struct CpuDensRef<T> {
+    /// Embedding log radii `[n]`, from `cpu_dens_radii`.
+    re: Vec<T>,
+    /// Per-node kernel sums `[n]`, from `cpu_dens_radii`.
+    phi_sum: Vec<T>,
+    /// Per-node correlation sensitivities `[n]`.
+    weight: Vec<T>,
+    /// `lambda * mu_tot / (re_std * (n - 1))`.
+    coeff: T,
+}
+
+/// Host-side reference implementation of `umap_dens_radii`. Same iteration
+/// order as the kernel.
+#[cfg(test)]
+fn cpu_dens_radii<T>(
+    embd_flat: &[T],
+    csr: &UmapCsrGraph<T>,
+    n_dim: usize,
+    params: &UmapOptimParams<T>,
+) -> (Vec<T>, Vec<T>)
+where
+    T: ManifoldsFloat,
+{
+    let n = csr.n;
+    let mut re = vec![T::zero(); n];
+    let mut phi_sum = vec![T::zero(); n];
+    let dens_eps = T::from(DENS_EPS).unwrap();
+
+    for node in 0..n {
+        let base_self = node * n_dim;
+        let start = csr.node_edge_offsets[node] as usize;
+        let end = csr.node_edge_offsets[node + 1] as usize;
+
+        let mut sum_sq = T::zero();
+        let mut sum_phi = T::zero();
+
+        for pos in start..end {
+            let other = csr.csr_other_node[pos] as usize;
+            let base_other = other * n_dim;
+
+            let mut dist_sq = T::zero();
+            for d in 0..n_dim {
+                let diff = embd_flat[base_self + d] - embd_flat[base_other + d];
+                dist_sq += diff * diff;
+            }
+
+            let dist_sq_b = dist_sq.powf(params.b);
+            let phi = T::one() / (T::one() + params.a * dist_sq_b);
+
+            sum_sq += phi * dist_sq;
+            sum_phi += phi;
+        }
+
+        re[node] = (dens_eps + sum_sq / sum_phi.max(T::epsilon())).ln();
+        phi_sum[node] = sum_phi;
+    }
+
+    (re, phi_sum)
+}
+
 /// Host-side reference implementation of `umap_grad_accum`. Same iteration
 /// order as the kernel so attractive-only runs match bit-for-bit; runs with
 /// negatives are FP-tolerant because `powf` and FMAs may compile differently
@@ -954,6 +1342,7 @@ fn cpu_grad_accum<T>(
     seed: u32,
     neg_sample_rate: usize,
     params: &UmapOptimParams<T>,
+    dens: Option<&CpuDensRef<T>>,
 ) -> Vec<T>
 where
     T: ManifoldsFloat,
@@ -1001,6 +1390,28 @@ where
                 for d in 0..n_dim {
                     let delta = embd_flat[base_other + d] - embd_flat[base_self + d];
                     grad[base_self + d] += two * grad_coeff * delta;
+                }
+
+                if let Some(dens) = dens {
+                    let phi = one / denom;
+                    let dphi_term = params.a * params.b * dist_sq_b / dist_sq * phi;
+                    let common = one - params.b * (one - phi);
+
+                    let dr_self =
+                        (phi / dens.phi_sum[node]) * (common / dens.re[node].exp() + dphi_term);
+                    let dr_other =
+                        (phi / dens.phi_sum[other]) * (common / dens.re[other].exp() + dphi_term);
+
+                    let cor = dens.coeff
+                        * (dens.weight[node] * dr_self + dens.weight[other] * dr_other)
+                        / csr.mu[edge_idx];
+                    let two_cor = two * cor;
+
+                    for d in 0..n_dim {
+                        let delta = embd_flat[base_self + d] - embd_flat[base_other + d];
+                        let g = (two_cor * delta).max(-clip_val).min(clip_val);
+                        grad[base_self + d] += two * g;
+                    }
                 }
             }
 
@@ -1146,7 +1557,7 @@ mod tests {
         let (embd, graph, params) = triangle_setup();
         let csr = UmapCsrGraph::from_graph(&graph).unwrap();
         let state =
-            UmapGpuState::<WgpuRuntime, f32>::upload(&embd, &csr, &params, &client).unwrap();
+            UmapGpuState::<WgpuRuntime, f32>::upload(&embd, &csr, &params, None, &client).unwrap();
         (client, csr, params, state)
     }
 
@@ -1316,7 +1727,7 @@ mod tests {
         params.n_epochs = 5;
         let csr = UmapCsrGraph::from_graph(&graph).unwrap();
         let state =
-            UmapGpuState::<WgpuRuntime, f32>::upload(&embd, &csr, &params, &client).unwrap();
+            UmapGpuState::<WgpuRuntime, f32>::upload(&embd, &csr, &params, None, &client).unwrap();
 
         assert_eq!(state.n_dim, 3);
         let got = state.embd.clone().read(&client).unwrap();
@@ -1335,13 +1746,125 @@ mod tests {
     ) -> (Vec<f32>, UmapCsrGraph<f32>, Vec<f32>) {
         let client = WgpuRuntime::client(device);
         let csr = UmapCsrGraph::from_graph(graph).unwrap();
-        let state = UmapGpuState::<WgpuRuntime, f32>::upload(embd, &csr, params, &client).unwrap();
+        let state =
+            UmapGpuState::<WgpuRuntime, f32>::upload(embd, &csr, params, None, &client).unwrap();
 
-        launch_grad_accum(&client, &state, params, epoch, seed);
+        launch_grad_accum(&client, &state, params, epoch, seed, None);
 
         let grad = state.node_grad.clone().read(&client).unwrap();
         let next_sample = state.epoch_of_next_sample.clone().read(&client).unwrap();
         (grad, csr, next_sample)
+    }
+
+    // -- densMAP kernels --
+
+    /// Build a density state whose original radii genuinely vary, so the
+    /// correlation is well defined.
+    fn dens_setup(n: usize) -> DensState<f32> {
+        let r: Vec<f32> = (0..n).map(|i| i as f32 - (n as f32 - 1.0) / 2.0).collect();
+        let norm = (r.iter().map(|x| x * x).sum::<f32>() / (n as f32 - 1.0)).sqrt();
+
+        DensState {
+            params: DensParams::new(Some(2.0_f32), Some(1.0), Some(0.1)),
+            r: r.iter().map(|x| x / norm).collect(),
+            mu_sum: vec![2.0_f32; n],
+            mu_tot: 2.0 * n as f32,
+        }
+    }
+
+    // The radii kernel against its host mirror. Attractive-side arithmetic
+    // only, so this is tight.
+    #[test]
+    fn test_dens_radii_matches_cpu() {
+        let Some(device) = try_device() else { return };
+        let client = WgpuRuntime::client(&device);
+        let (embd, graph, params) = triangle_setup();
+
+        let csr = UmapCsrGraph::from_graph(&graph).unwrap();
+        let dens = dens_setup(embd.len());
+        let state =
+            UmapGpuState::<WgpuRuntime, f32>::upload(&embd, &csr, &params, Some(&dens), &client)
+                .unwrap();
+
+        launch_dens_update(&client, &state, &params, &dens).unwrap();
+
+        let got_re = state.dens_re.clone().read(&client).unwrap();
+        let got_phi = state.dens_phi_sum.clone().read(&client).unwrap();
+
+        let embd_flat: Vec<f32> = embd.iter().flatten().copied().collect();
+        let (want_re, want_phi) = cpu_dens_radii(&embd_flat, &csr, embd[0].len(), &params);
+
+        assert_close(&got_re, &want_re, 1e-5, "dens-re");
+        assert_close(&got_phi, &want_phi, 1e-5, "dens-phi-sum");
+    }
+
+    // The full density gradient path against its host mirror. Negatives off so
+    // the only difference from the plain kernel is the density term.
+    #[test]
+    fn test_grad_with_density_matches_cpu() {
+        let Some(device) = try_device() else { return };
+        let client = WgpuRuntime::client(&device);
+        let (embd, graph, mut params) = triangle_setup();
+        params.neg_sample_rate = 0;
+
+        let csr = UmapCsrGraph::from_graph(&graph).unwrap();
+        let dens = dens_setup(embd.len());
+        let state =
+            UmapGpuState::<WgpuRuntime, f32>::upload(&embd, &csr, &params, Some(&dens), &client)
+                .unwrap();
+
+        let epoch = 5;
+        let coeff = launch_dens_update(&client, &state, &params, &dens).unwrap();
+        launch_grad_accum(&client, &state, &params, epoch, 42, Some(coeff));
+
+        let got = state.node_grad.clone().read(&client).unwrap();
+        let next_sample = state.epoch_of_next_sample.clone().read(&client).unwrap();
+
+        // rebuild the same intermediate state on the host
+        let embd_flat: Vec<f32> = embd.iter().flatten().copied().collect();
+        let (re, phi_sum) = cpu_dens_radii(&embd_flat, &csr, embd[0].len(), &params);
+        let (re_mean, re_std, cov) = correlation_stats(&re, &dens.r, dens.params.var_shift);
+        let inv_var = 1.0 / (re_std * re_std);
+        let weight: Vec<f32> = dens
+            .r
+            .iter()
+            .zip(re.iter())
+            .map(|(&r, &e)| r - cov * (e - re_mean) * inv_var)
+            .collect();
+        let denom = (csr.n.saturating_sub(1).max(1)) as f32;
+        let cpu_dens = CpuDensRef {
+            re,
+            phi_sum,
+            weight,
+            coeff: dens.params.lambda * dens.mu_tot / (re_std * denom),
+        };
+
+        let want = cpu_grad_accum(
+            &embd_flat,
+            &csr,
+            &next_sample,
+            embd[0].len(),
+            epoch,
+            42,
+            params.neg_sample_rate,
+            &params,
+            Some(&cpu_dens),
+        );
+
+        assert_close(&got, &want, 1e-4, "with-density");
+
+        // and it must actually differ from the plain gradient, otherwise the
+        // comptime arm silently compiled the density code away
+        let (plain, _, _) = run_grad_kernel(&device, &embd, &graph, &params, epoch, 42);
+        let max_diff = got
+            .iter()
+            .zip(plain.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff > 1e-6,
+            "density term had no effect on the gradient (max diff {max_diff})"
+        );
     }
 
     // No edges have ticked yet (epoch 0, periods >= 1.0) -> gradient is zero.
@@ -1377,6 +1900,7 @@ mod tests {
             42,
             params.neg_sample_rate,
             &params,
+            None,
         );
 
         assert_close(&got, &want, 0.0, "attractive-only");
@@ -1402,6 +1926,7 @@ mod tests {
             42,
             params.neg_sample_rate,
             &params,
+            None,
         );
 
         assert_close(&got, &want, 1e-4, "with-negatives");
@@ -1491,6 +2016,13 @@ mod tests {
             epoch_of_next_sample: placeholder_f.clone(),
 
             grad_norm_partial: placeholder_f.clone(),
+
+            dens_enabled: false,
+            dens_r: placeholder_f.clone(),
+            dens_re: placeholder_f.clone(),
+            dens_phi_sum: placeholder_f.clone(),
+            dens_weight: placeholder_f.clone(),
+            mu: placeholder_f.clone(),
 
             n,
             n_dim,
@@ -1745,6 +2277,7 @@ mod tests {
             &mut embd,
             &graph,
             &params,
+            None,
             WgpuDevice::DefaultDevice,
             42,
             0,
@@ -1789,6 +2322,7 @@ mod tests {
             &mut embd,
             &graph,
             &params,
+            None,
             WgpuDevice::DefaultDevice,
             42,
             0,
@@ -1815,6 +2349,7 @@ mod tests {
             &mut embd1,
             &graph,
             &params,
+            None,
             WgpuDevice::DefaultDevice,
             42,
             0,
@@ -1824,6 +2359,7 @@ mod tests {
             &mut embd2,
             &graph,
             &params,
+            None,
             WgpuDevice::DefaultDevice,
             42,
             0,
