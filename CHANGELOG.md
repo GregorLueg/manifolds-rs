@@ -1,5 +1,12 @@
 # News
 
+## 0.3.11
+
+**Feature:**
+
+- Implementations of dens-map and dens-sne, density-preserving versions of
+  UMAP and tSNE, see [Narayan et al.](https://www.nature.com/articles/s41587-020-00801-7)
+
 ## 0.3.10
 
 **Feature:**

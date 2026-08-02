@@ -17,6 +17,7 @@ pub use crate::training::mds_optimiser::{parse_mds_method, MdsMethod};
 pub use crate::training::pacmap_optimiser::{parse_pacmap_optimiser, PacmapOptimParams};
 pub use crate::training::tsne_optimiser::TsneOptimParams;
 pub use crate::training::umap_optimisers::UmapOptimParams;
+pub use crate::utils::density::{DensParams, DensState};
 pub use crate::utils::diffusions::PhateDiffusionParams;
 pub use crate::utils::diffusions::{parse_landmark_method, LandmarkMethod, PhateTime};
 pub use crate::utils::math::landmark_von_neumann_entropy;
