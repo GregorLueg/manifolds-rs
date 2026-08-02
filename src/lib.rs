@@ -3178,7 +3178,7 @@ pub struct UmapParamsGpu<T> {
     /// Which optimiser to use. Defaults to `"adam_gpu"`.
     pub optimiser: String,
     /// Which GPU nearest neighbour search to use. One of `"exhaustive_gpu"`,
-    /// `"ivf_gpu"` or `"nndescent_gpu"`. Defaults to `"ivf_gpu"`.
+    /// `"ivf_gpu"` or `"nndescent_gpu"`. Defaults to `"nndescent_gpu"`.
     pub ann_type: String,
     /// Which embedding initialisation to use. Defaults to spectral clustering.
     pub initialisation: String,
@@ -3204,7 +3204,7 @@ where
             n_dim: 2,
             k: 15,
             optimiser: "adam_gpu".to_string(),
-            ann_type: "nndescent".to_string(),
+            ann_type: "nndescent_gpu".to_string(),
             initialisation: "spectral".to_string(),
             init_range: None,
             nn_params: NearestNeighbourParamsGpu::default(),
@@ -3815,7 +3815,7 @@ pub struct TsneParamsGpu<T> {
     /// Perplexity parameter controlling neighbourhood size (typical: 5-50)
     pub perplexity: T,
     /// Which GPU ANN search to use. One of `"exhaustive_gpu"`, `"ivf_gpu"` or
-    /// `"nndescent_gpu"`. Defaults to `"ivf_gpu"`.
+    /// `"nndescent_gpu"`. Defaults to `"nndescent_gpu"`.
     pub ann_type: String,
     /// Embedding initialisation method: `"pca"`, `"random"`, or `"spectral"`
     pub initialisation: String,
@@ -3838,7 +3838,7 @@ where
         Self {
             n_dim: 2,
             perplexity: T::from_f64(30.0).unwrap(),
-            ann_type: "ivf_gpu".to_string(),
+            ann_type: "nndescent_gpu".to_string(),
             initialisation: "pca".to_string(),
             init_range: None,
             nn_params: NearestNeighbourParamsGpu::default(),
