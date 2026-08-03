@@ -429,10 +429,6 @@ where
 
     // `T -> f64` at point of use rather than as an up-front copy of the whole
     // value array: identical arithmetic, and half the bytes streamed for f32.
-    //
-    // Row-parallel is bit-identical to serial. Each `y[i]` is written by exactly
-    // one chunk and within a row the order is still `indptr[i]..indptr[i + 1]`,
-    // so the result is independent of both chunk size and thread count.
     let matvec = |x: &[f64], y: &mut [f64]| {
         let kernel = |base: usize, y_chunk: &mut [f64]| {
             for (offset, y_i) in y_chunk.iter_mut().enumerate() {

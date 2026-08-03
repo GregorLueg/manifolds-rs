@@ -327,9 +327,9 @@ struct Components {
 
 /// Find connected components in a sparse graph using BFS
 ///
-/// The traversal order (ascending start vertex, FIFO queue, CSR row order) fixes
-/// both the component ordering and the vertex ordering within each component,
-/// which in turn fixes the local indices every subgraph is cut with.
+/// The traversal order (ascending start vertex, FIFO queue, CSR row order)
+/// fixes both the component ordering and the vertex ordering within each
+/// component, which in turn fixes the local indices every subgraph is cut with.
 ///
 /// Note this follows edges in the row-to-column direction only. On a symmetric
 /// graph that gives true connected components; on a directed graph, such as the
@@ -425,7 +425,6 @@ where
 
     // Cutting every subgraph costs a full copy of the edge list, so skip it
     // when no component is large enough to take the spectral branch below.
-    // That is the common shape once the graph shatters into many small pieces.
     let needs_subgraphs = comps.members.iter().any(|c| c.len() >= 2 * n_comp);
     let subgraphs = if needs_subgraphs {
         extract_all_subgraphs(graph, comps)
@@ -621,9 +620,9 @@ where
 ///
 /// Fallback for when there are too many components to afford the dense
 /// affinity graph `component_spectral_meta` needs. It carries no information
-/// about how components relate, but it is `O(n_components * n_comp)` and, unlike
-/// the simplex placement, gives every component its own position instead of
-/// stacking all but the first `2 * n_comp` at the origin.
+/// about how components relate, but it is `O(n_components * n_comp)` and,
+/// unlike the simplex placement, gives every component its own position instead
+/// of stacking all but the first `2 * n_comp` at the origin.
 ///
 /// ### Params
 ///
