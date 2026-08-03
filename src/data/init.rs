@@ -22,6 +22,20 @@ pub const RANDOM_RANGE: f64 = 10.0;
 /// Range for PCA-based initialisation (based on uwot UMAP)
 pub const PCA_RANGE: f64 = 1.0;
 
+/// Component count above which the spectral meta-layout is abandoned.
+///
+/// `component_spectral_meta` builds a *dense* affinity graph over component
+/// centroids, costing `O(n_components^2)` edges plus an
+/// `O(n_components^2 * n_features)` distance loop before the Lanczos solve. At a
+/// few hundred components that is free; at a few thousand it dwarfs the rest of
+/// the initialisation.
+///
+/// The fallback above this threshold is deliberately NOT
+/// `component_simplex_meta`: that gives a non-zero centroid to only the first
+/// `2 * n_comp` components and leaves the rest at the origin, which would pile
+/// thousands of components on top of each other.
+const SPECTRAL_META_MAX_COMPONENTS: usize = 2_000;
+
 /////////////
 // Helpers //
 /////////////
@@ -78,12 +92,113 @@ where
 // Helpers //
 /////////////
 
+/// Build a CSR row index over a COO graph via counting sort
+///
+/// Entries keep their COO order within a row. The BFS that consumes this walks
+/// rows in that order, so the ordering is part of its reproducibility contract.
+///
+/// ### Params
+///
+/// * `graph` - Graph in COO format
+///
+/// ### Returns
+///
+/// `(indptr, indices)` describing the out-neighbours of each vertex.
+fn coo_to_csr_adjacency<T>(graph: &CoordinateList<T>) -> (Vec<usize>, Vec<usize>)
+where
+    T: ManifoldsFloat,
+{
+    let n = graph.n_samples;
+
+    let mut indptr = vec![0usize; n + 1];
+    for &i in &graph.row_indices {
+        indptr[i + 1] += 1;
+    }
+    for i in 0..n {
+        indptr[i + 1] += indptr[i];
+    }
+
+    let mut indices = vec![0usize; graph.row_indices.len()];
+    let mut cursor = indptr.clone();
+
+    for (&i, &j) in graph.row_indices.iter().zip(&graph.col_indices) {
+        indices[cursor[i]] = j;
+        cursor[i] += 1;
+    }
+
+    (indptr, indices)
+}
+
+/// Build a column-sorted CSR from a COO graph via a two-pass radix sort
+///
+/// Sorts by column first, then stably by row, so each row ends up with its
+/// column indices ascending, in `O(nnz + n)` and without a per-row allocation.
+///
+/// The column ordering is load-bearing: it fixes the summation order of the
+/// sparse matrix-vector product downstream. Subgraphs cut for disconnected
+/// components carry BFS-permuted local indices, so their columns genuinely do
+/// arrive out of order.
+///
+/// ### Params
+///
+/// * `graph` - Graph in COO format
+///
+/// ### Returns
+///
+/// `(indptr, indices, values)` in CSR order with values cast to `f64`.
+fn coo_to_csr_sorted<T>(graph: &CoordinateList<T>) -> (Vec<usize>, Vec<usize>, Vec<f64>)
+where
+    T: ManifoldsFloat,
+{
+    let n = graph.n_samples;
+    let nnz = graph.row_indices.len();
+
+    // pass one: order the edges by column
+    let mut counts = vec![0usize; n + 1];
+    for &j in &graph.col_indices {
+        counts[j + 1] += 1;
+    }
+    for j in 0..n {
+        counts[j + 1] += counts[j];
+    }
+    let mut by_col = vec![0usize; nnz];
+    for (e, &j) in graph.col_indices.iter().enumerate() {
+        by_col[counts[j]] = e;
+        counts[j] += 1;
+    }
+
+    // pass two: stable scatter into rows, preserving the column order above
+    let mut indptr = vec![0usize; n + 1];
+    for &i in &graph.row_indices {
+        indptr[i + 1] += 1;
+    }
+    for i in 0..n {
+        indptr[i + 1] += indptr[i];
+    }
+
+    let mut indices = vec![0usize; nnz];
+    let mut values = vec![0.0f64; nnz];
+    let mut cursor = indptr.clone();
+
+    for &e in &by_col {
+        let i = graph.row_indices[e];
+        let p = cursor[i];
+        indices[p] = graph.col_indices[e];
+        values[p] = graph.values[e].to_f64().unwrap();
+        cursor[i] += 1;
+    }
+
+    (indptr, indices, values)
+}
+
 /// Convert COO graph to negative normalised adjacency in CSR format
 ///
 /// Computes `M = - D^(-1/2) * A * D^(-1/2)`
 /// This allows the Lanczos solver (which finds largest magnitude/smallest
 /// algebraic) to converge to the cluster-structure eigenvectors (near -1) much
 /// faster than finding Laplacian eigenvectors near 0.
+///
+/// Degrees include self-loops; the matrix itself does not.
 ///
 /// ### Params
 ///
@@ -97,20 +212,13 @@ where
     T: ManifoldsFloat,
 {
     let n = graph.n_samples;
+    let (indptr, indices, values) = coo_to_csr_sorted(graph);
 
-    // Build adjacency list and compute degrees in one pass
-    let mut adj: Vec<Vec<(usize, f64)>> = vec![vec![]; n];
-    let mut degrees = vec![0.0; n];
-
-    for ((&i, &j), &w) in graph
-        .row_indices
-        .iter()
-        .zip(&graph.col_indices)
-        .zip(&graph.values)
-    {
-        let w_f64 = w.to_f64().unwrap();
-        adj[i].push((j, w_f64));
-        degrees[i] += w_f64;
+    // accumulated in COO order, not CSR order: the two differ once a subgraph's
+    // BFS-local indexing permutes the columns, and the sum order sets the bits
+    let mut degrees = vec![0.0f64; n];
+    for (&i, &w) in graph.row_indices.iter().zip(&graph.values) {
+        degrees[i] += w.to_f64().unwrap();
     }
 
     // Compute D^(-1/2), handling isolated vertices
@@ -120,32 +228,31 @@ where
         .collect();
 
     // Build matrix: M = - D^(-1/2) * A * D^(-1/2)
-    let mut data = Vec::new();
-    let mut indices = Vec::new();
-    let mut indptr = vec![0];
+    let mut out_data = Vec::with_capacity(values.len());
+    let mut out_indices = Vec::with_capacity(indices.len());
+    let mut out_indptr = Vec::with_capacity(n + 1);
+    out_indptr.push(0);
 
     for i in 0..n {
-        let mut row_entries = vec![];
-
-        for &(j, w) in &adj[i] {
+        for idx in indptr[i]..indptr[i + 1] {
+            let j = indices[idx];
             if i != j {
                 // Keep the negative sign
-                let normalised_weight = -d_inv_sqrt[i] * w * d_inv_sqrt[j];
-                row_entries.push((j, normalised_weight));
+                out_indices.push(j);
+                out_data.push(-d_inv_sqrt[i] * values[idx] * d_inv_sqrt[j]);
             }
         }
-
-        row_entries.sort_unstable_by_key(|&(idx, _)| idx);
-
-        for (idx, val) in row_entries {
-            indices.push(idx);
-            data.push(val);
-        }
-
-        indptr.push(data.len());
+        out_indptr.push(out_data.len());
     }
 
-    CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n))
+    // constructed directly rather than via `new_csr`, which copies all three
+    CompressedSparseData {
+        data: out_data,
+        indices: out_indices,
+        indptr: out_indptr,
+        cs_type: CompressedSparseFormat::Csr,
+        shape: (n, n),
+    }
 }
 
 /// Compute raw spectral embedding for a single connected component
@@ -205,7 +312,28 @@ where
     Ok(embedding)
 }
 
+/// Connected-component decomposition of a graph
+///
+/// Carries the inverse maps alongside the membership lists so per-component
+/// subgraphs can be cut in a single pass over the edges.
+struct Components {
+    /// Vertex indices belonging to each component
+    members: Vec<Vec<usize>>,
+    /// Component label of each vertex
+    labels: Vec<usize>,
+    /// Position of each vertex within its own component
+    local: Vec<usize>,
+}
+
 /// Find connected components in a sparse graph using BFS
+///
+/// The traversal order (ascending start vertex, FIFO queue, CSR row order) fixes
+/// both the component ordering and the vertex ordering within each component,
+/// which in turn fixes the local indices every subgraph is cut with.
+///
+/// Note this follows edges in the row-to-column direction only. On a symmetric
+/// graph that gives true connected components; on a directed graph, such as the
+/// raw kNN graph PaCMAP passes in, it gives forward reachability.
 ///
 /// ### Params
 ///
@@ -213,46 +341,49 @@ where
 ///
 /// ### Returns
 ///
-/// Vector of components, where each component is a vector of vertex indices
-fn find_connected_components<T>(graph: &CoordinateList<T>) -> Vec<Vec<usize>>
+/// The component decomposition, including per-vertex label and local index.
+fn find_connected_components<T>(graph: &CoordinateList<T>) -> Components
 where
     T: ManifoldsFloat,
 {
     let n = graph.n_samples;
+    let (indptr, indices) = coo_to_csr_adjacency(graph);
 
-    // Build adjacency list
-    let mut adj: Vec<Vec<usize>> = vec![vec![]; n];
-    for (&i, &j) in graph.row_indices.iter().zip(&graph.col_indices) {
-        adj[i].push(j);
-    }
-
-    let mut visited = vec![false; n];
-    let mut components = Vec::new();
+    let mut labels = vec![usize::MAX; n];
+    let mut local = vec![0usize; n];
+    let mut members = Vec::new();
+    let mut queue = VecDeque::new();
 
     for start in 0..n {
-        if visited[start] {
+        if labels[start] != usize::MAX {
             continue;
         }
 
+        let label = members.len();
         let mut component = Vec::new();
-        let mut queue = VecDeque::new();
+        queue.clear();
         queue.push_back(start);
-        visited[start] = true;
+        labels[start] = label;
 
         while let Some(node) = queue.pop_front() {
+            local[node] = component.len();
             component.push(node);
-            for &neighbor in &adj[node] {
-                if !visited[neighbor] {
-                    visited[neighbor] = true;
-                    queue.push_back(neighbor);
+            for &neighbour in &indices[indptr[node]..indptr[node + 1]] {
+                if labels[neighbour] == usize::MAX {
+                    labels[neighbour] = label;
+                    queue.push_back(neighbour);
                 }
             }
         }
 
-        components.push(component);
+        members.push(component);
     }
 
-    components
+    Components {
+        members,
+        labels,
+        local,
+    }
 }
 
 /// Initialise embedding for graphs with multiple connected components
@@ -264,7 +395,7 @@ where
 /// ### Params
 ///
 /// * `graph` - Full graph in COO format
-/// * `components` - Vector of component vertex indices
+/// * `comps` - Component decomposition of `graph`
 /// * `n_comp` - Number of embedding dimensions
 /// * `seed` - Random seed
 /// * `range` - Scaling range for embedding
@@ -275,7 +406,7 @@ where
 /// Initial embedding coordinates
 fn multi_component_init<T>(
     graph: &CoordinateList<T>,
-    components: &[Vec<usize>],
+    comps: &Components,
     n_comp: usize,
     seed: u64,
     range: T,
@@ -290,9 +421,19 @@ where
 
     // Position component centroids relative to each other, unit max-abs.
     // Final scaling to `range` happens at the end.
-    let meta = component_meta_layout(components, n_comp, data, seed)?;
+    let meta = component_meta_layout(&comps.members, n_comp, data, seed)?;
 
-    for (label, component) in components.iter().enumerate() {
+    // Cutting every subgraph costs a full copy of the edge list, so skip it
+    // when no component is large enough to take the spectral branch below.
+    // That is the common shape once the graph shatters into many small pieces.
+    let needs_subgraphs = comps.members.iter().any(|c| c.len() >= 2 * n_comp);
+    let subgraphs = if needs_subgraphs {
+        extract_all_subgraphs(graph, comps)
+    } else {
+        Vec::new()
+    };
+
+    for (label, component) in comps.members.iter().enumerate() {
         let centroid = &meta[label];
         let data_range = meta_data_range(&meta, label);
 
@@ -308,8 +449,7 @@ where
         }
 
         // Spectral embedding within the component, expanded to data_range
-        let subgraph = extract_subgraph(graph, component);
-        let sub = single_component_spectral_raw(&subgraph, n_comp, seed + label as u64)?;
+        let sub = single_component_spectral_raw(&subgraphs[label], n_comp, seed + label as u64)?;
 
         let max_abs = sub
             .iter()
@@ -394,13 +534,16 @@ where
 {
     let n_components = components.len();
 
-    let mut meta = if n_components > 2 * n_comp {
+    let mut meta = if n_components <= 2 * n_comp {
+        component_simplex_meta(n_components, n_comp)
+    } else {
         match data {
+            Some(_) if n_components > SPECTRAL_META_MAX_COMPONENTS => {
+                component_scatter_meta(n_components, n_comp, seed)
+            }
             Some(d) => component_spectral_meta(components, n_comp, d, seed)?,
             None => component_simplex_meta(n_components, n_comp),
         }
-    } else {
-        component_simplex_meta(n_components, n_comp)
     };
 
     let mut max_abs = meta
@@ -472,6 +615,37 @@ where
         }
     }
     meta
+}
+
+/// Scatter component centroids pseudo-randomly over the unit cube
+///
+/// Fallback for when there are too many components to afford the dense
+/// affinity graph `component_spectral_meta` needs. It carries no information
+/// about how components relate, but it is `O(n_components * n_comp)` and, unlike
+/// the simplex placement, gives every component its own position instead of
+/// stacking all but the first `2 * n_comp` at the origin.
+///
+/// ### Params
+///
+/// * `n_components` - Number of connected components
+/// * `n_comp` - Number of embedding dimensions
+/// * `seed` - Random seed
+///
+/// ### Returns
+///
+/// Centroid coordinates, one vector per component
+fn component_scatter_meta<T>(n_components: usize, n_comp: usize, seed: u64) -> Vec<Vec<T>>
+where
+    T: ManifoldsFloat,
+{
+    let mut rng = StdRng::seed_from_u64(seed);
+    (0..n_components)
+        .map(|_| {
+            (0..n_comp)
+                .map(|_| T::from_f64(rng.random_range(-1.0..1.0)).unwrap())
+                .collect()
+        })
+        .collect()
 }
 
 /// Place component centroids via spectral embedding of their affinity graph
@@ -597,54 +771,76 @@ where
     max_d / T::from_f64(2.0).unwrap()
 }
 
-/// Extract subgraph for a connected component
+/// Cut every component's subgraph in a single pass over the edges
 ///
-/// Creates a new graph containing only the vertices in the specified component
-/// with local index mapping.
+/// Bucketing by component label costs `O(nnz + n_components)` in total, rather
+/// than one full edge scan per component. The scatter is stable, so each
+/// subgraph keeps its edges in the original COO order.
+///
+/// Edges whose endpoints carry different labels are dropped. That can only
+/// happen on a directed graph, where BFS reachability is asymmetric.
+///
+/// Note this holds every subgraph in memory at once, so peak usage is roughly a
+/// second copy of the edge list.
 ///
 /// ### Params
 ///
 /// * `graph` - Full graph in COO format
-/// * `component` - Vertex indices in this component
+/// * `comps` - Component decomposition of `graph`
 ///
 /// ### Returns
 ///
-/// Subgraph with locally indexed vertices
-fn extract_subgraph<T>(graph: &CoordinateList<T>, component: &[usize]) -> CoordinateList<T>
+/// One locally indexed subgraph per component, in component order.
+fn extract_all_subgraphs<T>(graph: &CoordinateList<T>, comps: &Components) -> Vec<CoordinateList<T>>
 where
     T: ManifoldsFloat,
 {
-    let n = graph.n_samples;
+    let n_components = comps.members.len();
 
-    // Use Vec for O(1) lookup - faster than HashMap for dense component indices
-    let mut global_to_local = vec![None; n];
-    for (local, &global) in component.iter().enumerate() {
-        global_to_local[global] = Some(local);
+    let mut offsets = vec![0usize; n_components + 1];
+    for (&i, &j) in graph.row_indices.iter().zip(&graph.col_indices) {
+        if comps.labels[i] == comps.labels[j] {
+            offsets[comps.labels[i] + 1] += 1;
+        }
+    }
+    for c in 0..n_components {
+        offsets[c + 1] += offsets[c];
     }
 
-    let mut row_indices = Vec::new();
-    let mut col_indices = Vec::new();
-    let mut values = Vec::new();
+    let total = offsets[n_components];
+    let mut rows = vec![0usize; total];
+    let mut cols = vec![0usize; total];
+    let mut vals = vec![T::zero(); total];
+    let mut cursor = offsets.clone();
 
-    for ((&i, &j), &v) in graph
+    for ((&i, &j), &w) in graph
         .row_indices
         .iter()
         .zip(&graph.col_indices)
         .zip(&graph.values)
     {
-        if let (Some(local_i), Some(local_j)) = (global_to_local[i], global_to_local[j]) {
-            row_indices.push(local_i);
-            col_indices.push(local_j);
-            values.push(v);
+        let label = comps.labels[i];
+        if label != comps.labels[j] {
+            continue;
         }
+        let p = cursor[label];
+        rows[p] = comps.local[i];
+        cols[p] = comps.local[j];
+        vals[p] = w;
+        cursor[label] += 1;
     }
 
-    CoordinateList {
-        row_indices,
-        col_indices,
-        values,
-        n_samples: component.len(),
-    }
+    (0..n_components)
+        .map(|c| {
+            let (lo, hi) = (offsets[c], offsets[c + 1]);
+            CoordinateList {
+                row_indices: rows[lo..hi].to_vec(),
+                col_indices: cols[lo..hi].to_vec(),
+                values: vals[lo..hi].to_vec(),
+                n_samples: comps.members[c].len(),
+            }
+        })
+        .collect()
 }
 
 /// Perform spectral embedding for a single connected component
@@ -780,10 +976,10 @@ where
     T: ManifoldsFloat,
 {
     let range = range.unwrap_or(T::from_f64(SPECTRAL_RANGE).unwrap());
-    let components = find_connected_components(graph);
+    let comps = find_connected_components(graph);
 
-    if components.len() > 1 {
-        return multi_component_init(graph, &components, n_comp, seed, range, data);
+    if comps.members.len() > 1 {
+        return multi_component_init(graph, &comps, n_comp, seed, range, data);
     }
 
     single_component_spectral(graph, n_comp, seed, range)
@@ -1126,6 +1322,9 @@ mod test_init {
         }
     }
 
+    // NOTE: n = 3 with n_comp = 2 trips the `n <= n_comp + 1` guard in
+    // `single_component_spectral_raw`, so this covers the random fallback, NOT
+    // Lanczos. Real Lanczos determinism lives in `tests/spectral_bench.rs`.
     #[test]
     fn test_spectral_layout_reproducibility() {
         let graph = CoordinateList {
@@ -1184,6 +1383,9 @@ mod test_init {
         }
     }
 
+    // NOTE: both components have 2 < 2 * n_comp vertices, so this covers the
+    // random placement branch of `multi_component_init`, NOT Lanczos. Real
+    // multi-component determinism lives in `tests/spectral_bench.rs`.
     #[test]
     fn test_spectral_layout_disconnected_reproducibility() {
         let graph = CoordinateList {

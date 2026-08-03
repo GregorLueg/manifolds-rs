@@ -21,6 +21,22 @@ const VNE_DENSE_THRESHOLD: usize = 5000;
 /// Number of PCs to return on the sparse path
 const VNE_SPARSE_RANK: usize = 100;
 
+/// Rows handled per parallel chunk in the Lanczos sparse matrix-vector product.
+///
+/// Sized to keep a chunk's working set in L2 while still balancing across
+/// threads. The value cannot change the result: each output element is an
+/// independent sum over its own row, so the partition never reorders an
+/// accumulation.
+const SPMV_ROW_CHUNK: usize = 512;
+
+/// Vector length below which elementwise and row-parallel work runs serially.
+///
+/// The spectral path runs a full Lanczos solve per connected component, so on a
+/// graph with many small components rayon's dispatch cost would otherwise
+/// dominate the arithmetic. Going serial is bit-identical: neither the matvec
+/// nor `normalise` reduces across rows.
+const PARALLEL_VEC_MIN: usize = 4096;
+
 ////////////////////
 // Randomised SVD //
 ////////////////////
@@ -275,8 +291,13 @@ struct LanczosEigendecomp {
     tri_evals: Vec<f64>,
     /// Eigenvectors of the Eigen decomposition
     tri_evecs: Mat<f64>,
-    /// Basis vector
-    v_basis: Vec<Vec<f64>>,
+    /// Krylov basis, flat and row-major over the iteration index: basis vector
+    /// `k` is `v_basis[k * n..(k + 1) * n]`. Contiguous so each basis vector is
+    /// a single SIMD-friendly slice.
+    v_basis: Vec<f64>,
+    /// Number of Lanczos iterations actually completed. Below the requested
+    /// count when the recurrence broke down early.
+    n_iter: usize,
     /// Number of samples
     n: usize,
 }
@@ -325,7 +346,11 @@ where
     T: ManifoldsFloat,
 {
     let n = norm(v);
-    v.par_iter_mut().for_each(|x| *x /= n);
+    if v.len() < PARALLEL_VEC_MIN {
+        v.iter_mut().for_each(|x| *x /= n);
+    } else {
+        v.par_iter_mut().for_each(|x| *x /= n);
+    }
 }
 
 /// Helper function to calculate eigenvalues
@@ -382,29 +407,57 @@ where
     T: ManifoldsFloat,
 {
     let n = matrix.shape.0;
+    if n == 0 {
+        return Err(ManifoldsError::NoData);
+    }
     let n_iter = (n_components * 4 + 30).min(n);
 
-    let csr = match matrix.cs_type {
-        CompressedSparseFormat::Csr => matrix.clone(),
-        CompressedSparseFormat::Csc => matrix.transform(),
+    // Borrow when the input is already CSR; only the CSC path needs an owned copy
+    let csr_owned;
+    let csr: &CompressedSparseData<T> = match matrix.cs_type {
+        CompressedSparseFormat::Csr => matrix,
+        CompressedSparseFormat::Csc => {
+            csr_owned = matrix.transform();
+            &csr_owned
+        }
     };
+    let (data, indices, indptr) = (
+        csr.data.as_slice(),
+        csr.indices.as_slice(),
+        csr.indptr.as_slice(),
+    );
 
-    let data_f64: Vec<f64> = csr.data.iter().map(|v| v.to_f64().unwrap()).collect();
-
+    // `T -> f64` at point of use rather than as an up-front copy of the whole
+    // value array: identical arithmetic, and half the bytes streamed for f32.
+    //
+    // Row-parallel is bit-identical to serial. Each `y[i]` is written by exactly
+    // one chunk and within a row the order is still `indptr[i]..indptr[i + 1]`,
+    // so the result is independent of both chunk size and thread count.
     let matvec = |x: &[f64], y: &mut [f64]| {
-        y.fill(0.0);
-        for i in 0..n {
-            for idx in csr.indptr[i]..csr.indptr[i + 1] {
-                let j = csr.indices[idx];
-                y[i] += data_f64[idx] * x[j];
+        let kernel = |base: usize, y_chunk: &mut [f64]| {
+            for (offset, y_i) in y_chunk.iter_mut().enumerate() {
+                let i = base + offset;
+                let mut acc = 0.0;
+                for idx in indptr[i]..indptr[i + 1] {
+                    acc += data[idx].to_f64().unwrap() * x[indices[idx]];
+                }
+                *y_i = acc;
             }
+        };
+
+        if y.len() < PARALLEL_VEC_MIN {
+            kernel(0, y);
+        } else {
+            y.par_chunks_mut(SPMV_ROW_CHUNK)
+                .enumerate()
+                .for_each(|(chunk, y_chunk)| kernel(chunk * SPMV_ROW_CHUNK, y_chunk));
         }
     };
 
     let mut v = vec![0.0; n];
     let mut v_old = vec![0.0; n];
     let mut w = vec![0.0; n];
-    let mut v_basis = vec![vec![0.0; n]; n_iter];
+    let mut v_basis = vec![0.0; n_iter * n];
 
     let mut rng = StdRng::seed_from_u64(seed);
     for i in 0..n {
@@ -414,9 +467,11 @@ where
 
     let mut alpha = vec![0.0; n_iter];
     let mut beta = vec![0.0; n_iter];
+    let mut n_done = 0;
 
     for j in 0..n_iter {
-        v_basis[j].copy_from_slice(&v);
+        v_basis[j * n..(j + 1) * n].copy_from_slice(&v);
+        n_done = j + 1;
 
         matvec(&v, &mut w);
         alpha[j] = dot(&w, &v);
@@ -428,10 +483,13 @@ where
             }
         }
 
+        // Modified Gram-Schmidt: every coefficient is taken against the
+        // already-updated `w`, so the `k` loop is inherently sequential.
         for k in 0..=j {
-            let coeff = dot(&w, &v_basis[k]);
+            let basis_k = &v_basis[k * n..(k + 1) * n];
+            let coeff = dot(&w, basis_k);
             for i in 0..n {
-                w[i] -= coeff * v_basis[k][i];
+                w[i] -= coeff * basis_k[i];
             }
         }
 
@@ -445,12 +503,18 @@ where
         normalise(&mut v);
     }
 
-    let (tri_evals, tri_evecs) = tridiag_eig(&alpha[..n_iter], &beta[..n_iter - 1])?;
+    // Truncate to the iterations actually completed. On an early breakdown the
+    // untouched tail of alpha/beta stays zero, and feeding that to the
+    // tridiagonal solve injects spurious zero Ritz values whose basis rows are
+    // all zero, which back-transform into a dead embedding dimension.
+    let (tri_evals, tri_evecs) = tridiag_eig(&alpha[..n_done], &beta[..n_done.saturating_sub(1)])?;
+    v_basis.truncate(n_done * n);
 
     Ok(LanczosEigendecomp {
         tri_evals,
         tri_evecs,
         v_basis,
+        n_iter: n_done,
         n,
     })
 }
@@ -473,7 +537,7 @@ fn select_eigenpairs(
     largest: bool,
 ) -> (Vec<f32>, Vec<Vec<f32>>) {
     let n = decomp.n;
-    let n_iter = decomp.v_basis.len();
+    let n_iter = decomp.n_iter;
 
     let mut indices: Vec<usize> = (0..decomp.tri_evals.len()).collect();
     if largest {
@@ -490,14 +554,25 @@ fn select_eigenpairs(
         });
     }
 
-    let mut sel_evals: Vec<f32> = Vec::with_capacity(n_components);
-    let mut sel_evecs: Vec<Vec<f32>> = Vec::with_capacity(n_components);
+    // An early Lanczos breakdown leaves fewer Ritz values than were asked for:
+    // a clique, or any component whose operator has few distinct eigenvalues,
+    // exhausts the Krylov space in a couple of iterations. Return the short
+    // result rather than inventing eigenpairs; every caller checks the width.
+    let n_sel = n_components.min(indices.len());
 
-    for &idx in indices.iter().take(n_components) {
+    let mut sel_evals: Vec<f32> = Vec::with_capacity(n_sel);
+    let mut sel_evecs: Vec<Vec<f32>> = Vec::with_capacity(n_sel);
+
+    for &idx in indices.iter().take(n_sel) {
+        // `j` outer, `i` inner: each element still accumulates in ascending `j`,
+        // so this is bit-identical to the transposed order while streaming one
+        // contiguous basis vector at a time instead of interleaving `n_iter`.
         let mut evec = vec![0.0; n];
-        for i in 0..n {
-            for j in 0..n_iter {
-                evec[i] += decomp.v_basis[j][i] * decomp.tri_evecs[(j, idx)].to_f64().unwrap();
+        for j in 0..n_iter {
+            let c_j = decomp.tri_evecs[(j, idx)];
+            let basis_j = &decomp.v_basis[j * n..(j + 1) * n];
+            for i in 0..n {
+                evec[i] += basis_j[i] * c_j;
             }
         }
 
@@ -512,8 +587,8 @@ fn select_eigenpairs(
         sel_evecs.push(evec.iter().map(|&x| x as f32).collect());
     }
 
-    let mut transposed = vec![vec![0.0f32; n_components]; n];
-    for comp_idx in 0..n_components {
+    let mut transposed = vec![vec![0.0f32; n_sel]; n];
+    for comp_idx in 0..n_sel {
         for point_idx in 0..n {
             transposed[point_idx][comp_idx] = sel_evecs[comp_idx][point_idx];
         }
@@ -536,7 +611,13 @@ fn select_eigenpairs(
 /// ### Returns
 ///
 /// (eigenvalues, eigenvectors) where `eigenvectors[i][j]` is element j of
-/// eigenvector i
+/// eigenvector i.
+///
+/// Both are at most `n_components` wide, and can be SHORTER: an operator with
+/// fewer distinct eigenvalues than requested (a clique, a rank-deficient
+/// kernel) breaks the Lanczos recurrence down early and yields only as many
+/// Ritz pairs as its Krylov space admits. Callers must check the width rather
+/// than assume `n_components`.
 pub fn compute_smallest_eigenpairs_lanczos<T>(
     matrix: &CompressedSparseData<T>,
     n_components: usize,
@@ -562,7 +643,13 @@ where
 /// ### Returns
 ///
 /// (eigenvalues, eigenvectors) where `eigenvectors[i][j]` is element j of
-/// eigenvector i
+/// eigenvector i.
+///
+/// Both are at most `n_components` wide, and can be SHORTER: an operator with
+/// fewer distinct eigenvalues than requested (a clique, a rank-deficient
+/// kernel) breaks the Lanczos recurrence down early and yields only as many
+/// Ritz pairs as its Krylov space admits. Callers must check the width rather
+/// than assume `n_components`.
 pub fn compute_largest_eigenpairs_lanczos<T>(
     matrix: &CompressedSparseData<T>,
     n_components: usize,
@@ -756,8 +843,9 @@ mod test_utils_math {
 
     #[test]
     fn test_lanczos_reproducibility() {
-        // Use a proper sparse matrix, not identity
-        let n = 10;
+        // n must stay well above SPMV_ROW_CHUNK: a smaller matrix fits in a
+        // single parallel chunk and would leave every chunking bug undetected
+        let n = 5000;
 
         // Create a tridiagonal matrix (more realistic for Lanczos)
         let mut data = Vec::new();
@@ -785,6 +873,111 @@ mod test_utils_math {
 
         assert_eq!(evals1, evals2);
         assert_eq!(evecs1, evecs2);
+    }
+
+    /// Build a symmetric tridiagonal (2 on the diagonal, -1 off) in CSR arrays.
+    ///
+    /// ### Params
+    ///
+    /// * `n` - Matrix dimension
+    ///
+    /// ### Returns
+    ///
+    /// `(data, indices, indptr)`
+    fn tridiag_arrays(n: usize) -> (Vec<f64>, Vec<usize>, Vec<usize>) {
+        let mut data = Vec::new();
+        let mut indices = Vec::new();
+        let mut indptr = vec![0];
+        for i in 0..n {
+            if i > 0 {
+                data.push(-1.0);
+                indices.push(i - 1);
+            }
+            data.push(2.0);
+            indices.push(i);
+            if i < n - 1 {
+                data.push(-1.0);
+                indices.push(i + 1);
+            }
+            indptr.push(data.len());
+        }
+        (data, indices, indptr)
+    }
+
+    #[test]
+    fn test_lanczos_csc_input_matches_csr() {
+        // The CSC arm of the borrow-or-own dispatch goes through `transform()`
+        // and nothing else in the suite reaches it. The matrix is symmetric, so
+        // both layouts hold identical content and must give identical spectra.
+        let n = 200;
+        let (data, indices, indptr) = tridiag_arrays(n);
+
+        let csr = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
+        let csc = CompressedSparseData::new_csc(&data, &indices, &indptr, (n, n));
+
+        let (csr_evals, csr_evecs) = compute_smallest_eigenpairs_lanczos(&csr, 3, 42).unwrap();
+        let (csc_evals, csc_evecs) = compute_smallest_eigenpairs_lanczos(&csc, 3, 42).unwrap();
+
+        assert_eq!(csr_evals.len(), csc_evals.len());
+        assert_eq!(csr_evecs.len(), csc_evecs.len());
+        for (a, b) in csr_evals.iter().zip(&csc_evals) {
+            assert_relative_eq!(a, b, epsilon = 1e-4);
+        }
+    }
+
+    #[test]
+    fn test_lanczos_eigenpairs_satisfy_residual() {
+        // Checks ||Mv - lambda v||, which unlike a fixed bit pattern does not
+        // depend on the SIMD level `dot_simd` dispatches to, so it holds across
+        // machines. Catches a corrupted matrix or a botched back-transform,
+        // neither of which a self-comparison test can see.
+        //
+        // The spectrum is well separated and the LARGEST pairs are requested so
+        // that Lanczos converges. Asking for the smallest pairs of the 2/-1
+        // tridiagonal would measure convergence instead: those eigenvalues are
+        // too tightly clustered for the fixed iteration count to resolve.
+        let n = 200;
+        let mut data = Vec::new();
+        let mut indices = Vec::new();
+        let mut indptr = vec![0];
+        for i in 0..n {
+            if i > 0 {
+                data.push(-1e-3);
+                indices.push(i - 1);
+            }
+            data.push(1.0 / (i as f64 + 1.0));
+            indices.push(i);
+            if i < n - 1 {
+                data.push(-1e-3);
+                indices.push(i + 1);
+            }
+            indptr.push(data.len());
+        }
+        let matrix = CompressedSparseData::new_csr(&data, &indices, &indptr, (n, n));
+
+        let (evals, evecs) = compute_largest_eigenpairs_lanczos(&matrix, 3, 42).unwrap();
+        assert_eq!(evals.len(), 3);
+
+        for (k, &lambda) in evals.iter().enumerate() {
+            let v: Vec<f64> = (0..n).map(|i| evecs[i][k] as f64).collect();
+            let norm_v = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+            assert!(
+                norm_v > 0.5,
+                "eigenvector {k} is degenerate (norm {norm_v})"
+            );
+
+            let mut resid_sq = 0.0;
+            for i in 0..n {
+                let mut mv = 0.0;
+                for idx in indptr[i]..indptr[i + 1] {
+                    mv += data[idx] * v[indices[idx]];
+                }
+                let r = mv - lambda as f64 * v[i];
+                resid_sq += r * r;
+            }
+            let rel = resid_sq.sqrt() / norm_v;
+            assert!(rel < 1e-3, "residual {rel} too large for eigenpair {k}");
+        }
     }
 
     #[test]

@@ -464,9 +464,15 @@ where
         );
     }
 
-    let start_layout = Instant::now();
+    let start_init = Instant::now();
 
     let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data)?;
+
+    if verbosity.normal_verbosity() {
+        println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
+    }
+
+    let start_layout = Instant::now();
 
     let graph_adj = coo_to_adjacency_list(&graph);
 
@@ -517,10 +523,7 @@ where
     let end_layout = start_layout.elapsed();
 
     if verbosity.normal_verbosity() {
-        println!(
-            "Initialised and optimised embedding in: {:.2?}.",
-            end_layout
-        );
+        println!("Optimised embedding in: {:.2?}.", end_layout);
         println!("UMAP complete!");
     }
 
@@ -946,7 +949,13 @@ where
         }
     });
 
+    let start_init = Instant::now();
+
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
+
+    if verbosity.normal_verbosity() {
+        println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
+    }
 
     // parse the optimisation type
     let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
@@ -1178,7 +1187,13 @@ where
         }
     });
 
+    let start_init = Instant::now();
+
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
+
+    if verbosity.normal_verbosity() {
+        println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
+    }
 
     // parse the optimisation type
     let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
@@ -2368,6 +2383,8 @@ where
         );
     }
 
+    let start_init = Instant::now();
+
     let dummy_graph = knn_to_coo_unweighted(&knn_indices);
     let mut embd = initialise_embedding(
         &init_type,
@@ -2376,6 +2393,10 @@ where
         &dummy_graph,
         data,
     )?;
+
+    if verbosity.normal_verbosity() {
+        println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
+    }
 
     let optimiser = parse_pacmap_optimiser(&params_pacmap.optimiser_type).unwrap_or_default();
 
@@ -2786,6 +2807,15 @@ where
             let n_ask = (dm_params.n_dim + 5).min(sqrt_degrees.len() - 1);
             let (evals, evecs) = compute_largest_eigenpairs_lanczos(&p_sym, n_ask, seed as u64)?;
 
+            // Lanczos can converge fewer pairs than asked for on a degenerate
+            // operator; the loop below indexes up to `n_dim` unconditionally
+            if evals.len() <= dm_params.n_dim {
+                return Err(ManifoldsError::InsufficientEigenpairs {
+                    found: evals.len(),
+                    requested: dm_params.n_dim + 1,
+                });
+            }
+
             if verbosity.normal_verbosity() {
                 println!("Eigendecomposition done in {:.2?}.", start_eig.elapsed());
             }
@@ -2832,6 +2862,14 @@ where
             }
             let start_eig = Instant::now();
             let (evals, evecs) = landmarks.eigendecompose(dm_params.n_dim, seed as u64)?;
+
+            // as above: `compute_landmark_embedding` indexes up to `n_dim`
+            if evals.len() <= dm_params.n_dim {
+                return Err(ManifoldsError::InsufficientEigenpairs {
+                    found: evals.len(),
+                    requested: dm_params.n_dim + 1,
+                });
+            }
 
             if verbosity.detailed_verbosity() {
                 println!("Eigendecomposition done in {:.2?}.", start_eig.elapsed());
@@ -3554,9 +3592,15 @@ where
         );
     }
 
-    let start_layout = Instant::now();
+    let start_init = Instant::now();
 
     let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data)?;
+
+    if verbosity.normal_verbosity() {
+        println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
+    }
+
+    let start_layout = Instant::now();
 
     let graph_adj = coo_to_adjacency_list(&graph);
 
@@ -3640,10 +3684,7 @@ where
     }
 
     if verbosity.normal_verbosity() {
-        println!(
-            "Initialised and optimised embedding in: {:.2?}.",
-            start_layout.elapsed()
-        );
+        println!("Optimised embedding in: {:.2?}.", start_layout.elapsed());
         println!("UMAP (GPU) complete!");
     }
 
@@ -4120,7 +4161,13 @@ where
         }
     });
 
+    let start_init = Instant::now();
+
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
+
+    if verbosity.normal_verbosity() {
+        println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
+    }
 
     let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
 
@@ -4237,7 +4284,13 @@ where
         }
     });
 
+    let start_init = Instant::now();
+
     let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
+
+    if verbosity.normal_verbosity() {
+        println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
+    }
 
     let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
 
