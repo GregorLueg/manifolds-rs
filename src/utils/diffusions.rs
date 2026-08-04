@@ -1557,7 +1557,7 @@ where
     /// Compute the top `n_dim + 1` eigenpairs of the symmetric landmark
     /// operator via Lanczos.
     ///
-    /// Returns `n_dim + 1` pairs so the caller can discard the trivial first
+    /// Asks for `n_dim + 1` pairs so the caller can discard the trivial first
     /// eigenvalue (λ₀ ≈ 1) and retain `n_dim` meaningful components.
     ///
     /// ### Params
@@ -1569,7 +1569,13 @@ where
     /// ### Returns
     ///
     /// `(eigenvalues, eigenvectors)` both in f32; eigenvectors indexed as
-    /// `evecs[point][component]`
+    /// `evecs[point][component]`.
+    ///
+    /// Fewer than `n_dim + 1` pairs come back when the landmark operator has
+    /// too few distinct eigenvalues for the Lanczos recurrence to fill the
+    /// requested Krylov space, which degenerate landmark sets (duplicates, a
+    /// disconnected landmark graph) do hit. Callers must check the width
+    /// before indexing up to `n_dim`.
     pub fn eigendecompose(
         &self,
         n_dim: usize,

@@ -2734,12 +2734,19 @@ where
 /// 2. Gaussian kernel via alpha-decay with decay = 2 (adaptive bandwidth)
 /// 3. Anisotropic (alpha) normalisation for density correction
 /// 4. Symmetric diffusion operator P_sym = D^{-1/2} K D^{-1/2}
-/// 5. Top (n_dim + 1) eigenpairs of P_sym via Lanczos
+/// 5. Top eigenpairs of P_sym via Lanczos; the dense path asks for
+///    (n_dim + 5) to give the solve some headroom, the landmark path for
+///    (n_dim + 1)
 /// 6. Drop the trivial eigenvalue (= 1) and scale each non-trivial eigenvector
 ///    phi_k by lambda_k^t
 ///
 /// With landmarks, steps 4–6 run on the L×L operator and are Nystroem-extended
 /// back to N points.
+///
+/// Degenerate data (duplicate points, a disconnected landmark set) can leave
+/// Lanczos with fewer than `n_dim + 1` converged eigenpairs, which surfaces as
+/// [`ManifoldsError::InsufficientEigenpairs`] rather than a truncated
+/// embedding.
 ///
 /// ### Params
 ///

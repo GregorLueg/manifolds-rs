@@ -73,12 +73,13 @@ const GRAD_DIST_SQ_THRESHOLD: f64 = 1e-8;
 /// Preferred workgroup size for every kernel in this module, before device
 /// clamping by [`resolve_workgroup_size`].
 ///
-/// `ann-search-rs` exports 32, which on Apple Silicon is one SIMD group per
-/// cube. `umap_grad_accum` dominates the epoch loop and is a gather-heavy walk
-/// over a node's CSR slice, so it wants several SIMD groups resident per cube
-/// to hide gather latency. It uses no shared memory, so a wider cube costs
-/// nothing in occupancy. 256 is a knee rather than a plateau: 512 and 1024 are
-/// both slower.
+/// `umap_grad_accum` dominates the epoch loop and is a gather-heavy walk over a
+/// node's CSR slice, so it wants several SIMD groups resident per cube to hide
+/// gather latency. It uses no shared memory, so a wider cube costs nothing in
+/// occupancy. The value is a trade-off against the tail waste of a partially
+/// filled cube, and worth retuning per backend.
+// Picked from local benchmarking only: 256 beat both the 32 `ann-search-rs`
+// exports and the wider 512/1024. Treat as indicative, not measured broadly.
 const UMAP_WORKGROUP_SIZE: u32 = 256;
 
 ///////////////////

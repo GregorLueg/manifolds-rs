@@ -207,7 +207,7 @@ where
 /// ### Returns
 ///
 /// Negative normalised adjacency matrix as CSR
-fn graph_to_normalised_laplacian<T>(graph: &CoordinateList<T>) -> CompressedSparseData<f64>
+fn graph_to_negative_normalised_adjacency<T>(graph: &CoordinateList<T>) -> CompressedSparseData<f64>
 where
     T: ManifoldsFloat,
 {
@@ -258,8 +258,12 @@ where
 /// Compute raw spectral embedding for a single connected component
 ///
 /// Computes eigenvectors of the negative normalised adjacency matrix and
-/// returns them as embedding coordinates. Falls back to random initialisation
-/// for graphs too small for spectral decomposition.
+/// returns them as embedding coordinates.
+///
+/// There are two random fallbacks. A graph with `n <= n_comp + 1` vertices is
+/// too small for the decomposition and is filled at random wholesale. Beyond
+/// that, Lanczos can converge fewer eigenpairs than were asked for, in which
+/// case only the dimensions it did not supply are filled at random.
 ///
 /// ### Params
 ///
@@ -291,9 +295,9 @@ where
         return Ok(embedding);
     }
 
-    let laplacian = graph_to_normalised_laplacian(graph);
+    let neg_adjacency = graph_to_negative_normalised_adjacency(graph);
     let n_eigs = (n_comp + 1).min(n);
-    let (_, evecs) = compute_smallest_eigenpairs_lanczos(&laplacian, n_eigs, seed)?;
+    let (_, evecs) = compute_smallest_eigenpairs_lanczos(&neg_adjacency, n_eigs, seed)?;
 
     for comp_idx in 0..n_comp {
         let evec_idx = comp_idx + 1;
@@ -388,9 +392,11 @@ where
 
 /// Initialise embedding for graphs with multiple connected components
 ///
-/// Places component centroids on a hypersphere and performs spectral
-/// embedding within each sufficiently large component. Small components
-/// are randomly placed around their centroids.
+/// Lays the component centroids out relative to each other via
+/// [`component_meta_layout`], then embeds each component around its own
+/// centroid: spectrally when it has at least `2 * n_comp` vertices, uniformly
+/// at random otherwise. The result is centred and rescaled to `range` so it
+/// matches the single-component path's contract.
 ///
 /// ### Params
 ///
@@ -507,16 +513,24 @@ where
 
 /// Compute centroid layout for connected components
 ///
-/// Positions component centroids in embedding space. Uses spectral embedding
-/// of the inter-component affinity graph when the number of components exceeds
-/// `2 * n_comp`, otherwise falls back to simplex placement. Normalises the
-/// result so the maximum absolute value is 1.
+/// Positions component centroids in embedding space, picking one of three
+/// placements:
+///
+/// * At most `2 * n_comp` components, or no feature matrix: simplex placement.
+/// * More than that, with a feature matrix: spectral embedding of the
+///   inter-component affinity graph.
+/// * More than [`SPECTRAL_META_MAX_COMPONENTS`], with a feature matrix: random
+///   scatter, since the dense affinity graph the spectral path needs is no
+///   longer affordable.
+///
+/// Normalises the result so the maximum absolute value is 1.
 ///
 /// ### Params
 ///
 /// * `components` - Vector of component vertex indices
 /// * `n_comp` - Number of embedding dimensions
-/// * `data` - Optional feature matrix used for spectral meta-layout
+/// * `data` - Optional feature matrix; without it the simplex placement is the
+///   only option, as both other paths need centroids in feature space
 /// * `seed` - Random seed
 ///
 /// ### Returns
@@ -844,9 +858,10 @@ where
 
 /// Perform spectral embedding for a single connected component
 ///
-/// Computes eigenvectors of the normalised Laplacian and uses them as
-/// embedding coordinates. Falls back to random initialisation for trivially
-/// small graphs.
+/// Computes eigenvectors of the negative normalised adjacency matrix and uses
+/// them as embedding coordinates, then centres, scales to `range` and adds
+/// stabilising noise. Falls back to random initialisation for trivially small
+/// graphs, and for any dimension Lanczos failed to converge.
 ///
 /// ### Params
 ///
@@ -950,16 +965,20 @@ where
 
 /// Compute spectral layout initialisation for graph
 ///
-/// Uses spectral decomposition of the normalised Laplacian to initialise
-/// embedding coordinates. Handles disconnected graphs by placing components
-/// separately and performing spectral embedding within each component.
+/// Uses spectral decomposition of the negative normalised adjacency matrix
+/// `-D^(-1/2) A D^(-1/2)` to initialise embedding coordinates. Handles
+/// disconnected graphs by placing components separately and performing
+/// spectral embedding within each component.
 ///
 /// ### Params
 ///
 /// * `graph` - Symmetric weighted graph in COO format
 /// * `n_comp` - Number of embedding dimensions
 /// * `seed` - Random seed for reproducibility
-/// * `range` - Optional scaling range (defaults to SPECTRAL_RANGE)
+/// * `range` - Optional scaling range (defaults to [`SPECTRAL_RANGE`])
+/// * `data` - Optional feature matrix, used only on the disconnected path to
+///   place component centroids relative to each other. Without it that
+///   placement falls back to a simplex
 ///
 /// ### Returns
 ///
@@ -1229,7 +1248,7 @@ mod test_init {
     }
 
     #[test]
-    fn test_graph_to_normalised_laplacian_simple() {
+    fn test_graph_to_negative_normalised_adjacency_simple() {
         // Simple graph: 0 <-> 1 with equal weights
         let graph = CoordinateList {
             row_indices: vec![0, 1],
@@ -1238,17 +1257,17 @@ mod test_init {
             n_samples: 2,
         };
 
-        let laplacian = graph_to_normalised_laplacian(&graph);
+        let neg_adjacency = graph_to_negative_normalised_adjacency(&graph);
 
-        assert_eq!(laplacian.shape(), (2, 2));
-        assert!(laplacian.cs_type.is_csr());
+        assert_eq!(neg_adjacency.shape(), (2, 2));
+        assert!(neg_adjacency.cs_type.is_csr());
 
         // Only off-diagonal entries (no diagonal in negative normalised adjacency)
-        assert_eq!(laplacian.get_nnz(), 2);
+        assert_eq!(neg_adjacency.get_nnz(), 2);
     }
 
     #[test]
-    fn test_graph_to_normalised_laplacian_isolated_vertex() {
+    fn test_graph_to_negative_normalised_adjacency_isolated_vertex() {
         // Graph with isolated vertex
         let graph = CoordinateList {
             row_indices: vec![0],
@@ -1257,9 +1276,9 @@ mod test_init {
             n_samples: 3,
         };
 
-        let laplacian = graph_to_normalised_laplacian(&graph);
+        let neg_adjacency = graph_to_negative_normalised_adjacency(&graph);
 
-        assert_eq!(laplacian.shape(), (3, 3));
+        assert_eq!(neg_adjacency.shape(), (3, 3));
         // Should handle isolated vertex (vertex 2) gracefully
     }
 
