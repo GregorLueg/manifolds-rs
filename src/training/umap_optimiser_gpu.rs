@@ -6,8 +6,8 @@
 
 #![allow(missing_docs)] // cubecl weirdness
 
+use ann_search_rs::gpu::grid_2d;
 use ann_search_rs::gpu::tensor::GpuTensor;
-use ann_search_rs::gpu::{grid_2d, WORKGROUP_SIZE_X};
 use cubecl::prelude::*;
 
 use crate::prelude::*;
@@ -69,6 +69,18 @@ const GRAD_REP_EPS: f64 = 0.001;
 /// this threshold, avoiding a division by zero when two endpoints have
 /// collapsed onto each other.
 const GRAD_DIST_SQ_THRESHOLD: f64 = 1e-8;
+
+/// Preferred workgroup size for every kernel in this module, before device
+/// clamping by [`resolve_workgroup_size`].
+///
+/// `umap_grad_accum` dominates the epoch loop and is a gather-heavy walk over a
+/// node's CSR slice, so it wants several SIMD groups resident per cube to hide
+/// gather latency. It uses no shared memory, so a wider cube costs nothing in
+/// occupancy. The value is a trade-off against the tail waste of a partially
+/// filled cube, and worth retuning per backend.
+// Picked from local benchmarking only: 256 beat both the 32 `ann-search-rs`
+// exports and the wider 512/1024. Treat as indicative, not measured broadly.
+const UMAP_WORKGROUP_SIZE: u32 = 256;
 
 ///////////////////
 // Host-side CSR //
@@ -198,6 +210,33 @@ where
     }
 }
 
+/////////////////////
+// Device geometry //
+/////////////////////
+
+/// Resolve the workgroup size for a device.
+///
+/// Takes `UMAP_WORKGROUP_SIZE` as the preference and makes it legal on the
+/// target: capped at `max_units_per_cube`, and rounded down to a whole number
+/// of planes so no cube ever runs a partial SIMD group. Floors at one plane.
+///
+/// ### Params
+///
+/// * `client` - CubeCL compute client for the target device
+///
+/// ### Returns
+///
+/// Workgroup size in units, a multiple of the device plane size.
+pub fn resolve_workgroup_size<R>(client: &ComputeClient<R>) -> u32
+where
+    R: Runtime,
+{
+    let hw = &client.properties().hardware;
+    let plane = hw.plane_size_max.max(1);
+    let wanted = UMAP_WORKGROUP_SIZE.min(hw.max_units_per_cube);
+    (wanted / plane).max(1) * plane
+}
+
 //////////////////
 // Device state //
 //////////////////
@@ -244,6 +283,9 @@ where
     pub n_edges: usize,
     /// Total number of optimisation epochs.
     pub n_epochs: usize,
+    /// Workgroup size for every launch, resolved once from the device by
+    /// [`resolve_workgroup_size`]. Also passed as the comptime `wg_size`.
+    pub wg_size: u32,
     /// Per-node partial `sum_d grad[node, d]^2` `[n]`, written by
     /// `umap_grad_norm_sq` and reduced on the host for progress logging.
     pub grad_norm_partial: GpuTensor<R, T>,
@@ -353,6 +395,7 @@ where
             n_dim,
             n_edges,
             n_epochs,
+            wg_size: resolve_workgroup_size(client),
         })
     }
 }
@@ -382,7 +425,9 @@ where
 /// * `dens_eps` - Additive shift inside the log
 /// * `tiny` - Floor on the kernel sum, for nodes left isolated by edge pruning
 /// * `wg_size` - Workgroup size; comptime
-/// * `n_dim_ct` - Embedding dimensionality; comptime, matches `n_dim`
+/// * `n_dim_ct` - Embedding dimensionality; comptime, matches `n_dim`. Loops
+///   over it are `#[unroll]`ed. The crate targets 2D embeddings; a large
+///   `n_dim` would pay for this in code size
 ///
 /// ### Grid mapping
 ///
@@ -422,6 +467,7 @@ pub fn umap_dens_radii<F: Float + CubeElement>(
         let base_other = other * n_dim;
 
         let mut dist_sq = F::new(0.0);
+        #[unroll]
         for d in 0..n_dim_ct {
             let diff = embd[(base_self + d) as usize] - embd[(base_other + d) as usize];
             dist_sq += diff * diff;
@@ -554,7 +600,6 @@ fn gpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: 
 /// * `epoch_f` - Current epoch as `F`, used to compare against
 ///   `epoch_of_next_sample`
 /// * `seed` - Random seed for negative sampling
-/// * `neg_sample_rate` - Number of negatives drawn per active edge
 /// * `a`, `b` - UMAP curve parameters
 /// * `two_a_b` - Precomputed `2 * a * b`
 /// * `two_gamma_b` - Precomputed `2 * gamma * b`
@@ -567,10 +612,17 @@ fn gpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: 
 /// * `dens_weight` - Per-node correlation sensitivities `[n]`; densMAP only
 /// * `dens_coeff` - `lambda * mu_tot / (re_std * (n - 1))`; densMAP only
 /// * `wg_size` - Workgroup size; comptime
-/// * `n_dim_ct` - Embedding dimensionality; comptime, matches `n_dim`
+/// * `n_dim_ct` - Embedding dimensionality; comptime, matches `n_dim`. Loops
+///   over it are `#[unroll]`ed, which keeps the per-thread `grad` array
+///   constant-indexed and therefore register-resident. The crate targets 2D
+///   embeddings; a large `n_dim` would pay for this in code size
 /// * `dens_enabled` - Whether to add the densMAP term; comptime, so plain UMAP
 ///   compiles to a kernel with none of the density code and never touches the
 ///   four dummy density bindings
+/// * `neg_rate_ct` - Negatives drawn per active edge; comptime, so the
+///   negative loop unrolls and every gather can be issued before the first
+///   is consumed. The kernel recompiles per distinct value, which is fine:
+///   it is fixed for a run
 ///
 /// ### Grid mapping
 ///
@@ -590,7 +642,6 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
     epoch: u32,
     epoch_f: F,
     seed: u32,
-    neg_sample_rate: u32,
     a: F,
     b: F,
     two_a_b: F,
@@ -606,6 +657,7 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
     #[comptime] wg_size: u32,
     #[comptime] n_dim_ct: u32,
     #[comptime] dens_enabled: bool,
+    #[comptime] neg_rate_ct: u32,
 ) {
     let node = (CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X;
     if node >= n {
@@ -615,9 +667,14 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
     let base_self = node * n_dim;
 
     let mut grad = Array::<F>::new(n_dim_ct as usize);
+    #[unroll]
     for d in 0..n_dim_ct {
         grad[d as usize] = F::new(0.0);
     }
+
+    // Staging for the negative-sample gather, see the loop below.
+    let mut neg_node = Array::<u32>::new(neg_rate_ct as usize);
+    let mut neg_pos = Array::<F>::new((neg_rate_ct * n_dim_ct) as usize);
 
     let start = node_edge_offsets[node as usize];
     let end = node_edge_offsets[(node + 1u32) as usize];
@@ -635,6 +692,7 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
             let base_other = other * n_dim;
 
             let mut dist_sq = F::new(0.0);
+            #[unroll]
             for d in 0..n_dim_ct {
                 let diff = embd[(base_self + d) as usize] - embd[(base_other + d) as usize];
                 dist_sq += diff * diff;
@@ -645,6 +703,7 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
                 let denom = F::new(1.0) + a * dist_sq_b;
                 let grad_coeff = two_a_b * dist_sq_b / (dist_sq * denom);
 
+                #[unroll]
                 for d in 0..n_dim_ct {
                     let delta = embd[(base_other + d) as usize] - embd[(base_self + d) as usize];
                     grad[d as usize] += two * grad_coeff * delta;
@@ -671,6 +730,7 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
                         / mu[edge_idx as usize];
                     let two_cor = two * cor;
 
+                    #[unroll]
                     for d in 0..n_dim_ct {
                         let delta =
                             embd[(base_self + d) as usize] - embd[(base_other + d) as usize];
@@ -686,15 +746,33 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
                 }
             }
 
-            let mut neg: u32 = 0u32;
-            while neg < neg_sample_rate {
+            // Gather every negative before consuming any of them, so the
+            // random row loads are all in flight at once. Fused, the loop is
+            // hash -> gather -> consume with one load outstanding at a time.
+            // Self-hits are gathered rather than branched around: that row is
+            // the thread's own and already hot.
+            #[unroll]
+            for neg in 0..neg_rate_ct {
                 let k = gpu_hash_neg(seed, node, epoch, edge_local, neg, n);
+                neg_node[neg as usize] = k;
+                let base_k = k * n_dim;
+                #[unroll]
+                for d in 0..n_dim_ct {
+                    neg_pos[(neg * n_dim_ct + d) as usize] = embd[(base_k + d) as usize];
+                }
+            }
+
+            #[unroll]
+            for neg in 0..neg_rate_ct {
+                let k = neg_node[neg as usize];
                 if k != node {
-                    let base_k = k * n_dim;
+                    let base_neg = neg * n_dim_ct;
 
                     let mut dist_sq_k = F::new(0.0);
+                    #[unroll]
                     for d in 0..n_dim_ct {
-                        let diff = embd[(base_self + d) as usize] - embd[(base_k + d) as usize];
+                        let diff =
+                            embd[(base_self + d) as usize] - neg_pos[(base_neg + d) as usize];
                         dist_sq_k += diff * diff;
                     }
 
@@ -709,18 +787,20 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
                         grad_coeff = -clip_val;
                     }
 
+                    #[unroll]
                     for d in 0..n_dim_ct {
-                        let delta = embd[(base_self + d) as usize] - embd[(base_k + d) as usize];
+                        let delta =
+                            embd[(base_self + d) as usize] - neg_pos[(base_neg + d) as usize];
                         grad[d as usize] += grad_coeff * delta;
                     }
                 }
-                neg += 1u32;
             }
         }
         edge_local += 1u32;
         pos += 1u32;
     }
 
+    #[unroll]
     for d in 0..n_dim_ct {
         node_grad[(base_self + d) as usize] = grad[d as usize];
     }
@@ -834,7 +914,9 @@ pub fn umap_edge_schedule_update<F: Float + CubeElement>(
 /// * `n` - Number of nodes
 /// * `n_dim` - Embedding dimensionality
 /// * `wg_size` - Workgroup size; comptime
-/// * `n_dim_ct` - Embedding dimensionality; comptime, matches `n_dim`
+/// * `n_dim_ct` - Embedding dimensionality; comptime, matches `n_dim`. Loops
+///   over it are `#[unroll]`ed. The crate targets 2D embeddings; a large
+///   `n_dim` would pay for this in code size
 ///
 /// ### Grid mapping
 ///
@@ -854,6 +936,7 @@ pub fn umap_grad_norm_sq<F: Float + CubeElement>(
     }
     let base = node * n_dim;
     let mut acc = F::new(0.0);
+    #[unroll]
     for d in 0..n_dim_ct {
         let g = node_grad[(base + d) as usize];
         acc += g * g;
@@ -890,7 +973,7 @@ pub fn launch_grad_accum<R, T>(
     T: ManifoldsFloatGpu,
 {
     let two = T::from(2.0).unwrap();
-    let wg = WORKGROUP_SIZE_X;
+    let wg = state.wg_size;
     let n_workgroups = (state.n as u32).div_ceil(wg);
     let (gx, gy) = grid_2d(n_workgroups);
 
@@ -914,7 +997,6 @@ pub fn launch_grad_accum<R, T>(
             epoch as u32,
             T::from(epoch).unwrap(),
             seed,
-            params.neg_sample_rate as u32,
             params.a,
             params.b,
             two * params.a * params.b,
@@ -930,6 +1012,7 @@ pub fn launch_grad_accum<R, T>(
             wg,
             state.n_dim as u32,
             dens_enabled,
+            params.neg_sample_rate as u32,
         );
     }
 }
@@ -963,7 +1046,7 @@ where
     R: Runtime,
     T: ManifoldsFloatGpu,
 {
-    let wg = WORKGROUP_SIZE_X;
+    let wg = state.wg_size;
     let n_workgroups = (state.n as u32).div_ceil(wg);
     let (gx, gy) = grid_2d(n_workgroups);
 
@@ -1032,7 +1115,7 @@ pub fn launch_adam_update<R, T>(
 {
     let one = T::one();
     let n_total = (state.n * state.n_dim) as u32;
-    let wg = WORKGROUP_SIZE_X;
+    let wg = state.wg_size;
     let n_workgroups = n_total.div_ceil(wg);
     let (gx, gy) = grid_2d(n_workgroups);
 
@@ -1081,7 +1164,7 @@ pub fn launch_edge_schedule_update<R, T>(
     R: Runtime,
     T: ManifoldsFloatGpu,
 {
-    let wg = WORKGROUP_SIZE_X;
+    let wg = state.wg_size;
     let n_workgroups = (state.n_edges as u32).div_ceil(wg);
     let (gx, gy) = grid_2d(n_workgroups);
 
@@ -1123,7 +1206,7 @@ where
     R: Runtime,
     T: ManifoldsFloatGpu,
 {
-    let wg = WORKGROUP_SIZE_X;
+    let wg = state.wg_size;
     let n_workgroups = (state.n as u32).div_ceil(wg);
     let (gx, gy) = grid_2d(n_workgroups);
 
@@ -2023,6 +2106,8 @@ mod tests {
             dens_phi_sum: placeholder_f.clone(),
             dens_weight: placeholder_f.clone(),
             mu: placeholder_f.clone(),
+
+            wg_size: resolve_workgroup_size(&client),
 
             n,
             n_dim,

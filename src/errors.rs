@@ -53,6 +53,15 @@ pub enum ManifoldsError {
     /// Error for Eigen decomposition from faer
     #[error("The faer Eigen decomposition failed - please verify the data")]
     FaerEigenError,
+
+    /// Error when Lanczos converges fewer eigenpairs than were requested
+    #[error("only {found} eigenpairs converged out of the {requested} requested; the operator has fewer distinct eigenvalues, which usually means degenerate data (duplicate points or a disconnected landmark set)")]
+    InsufficientEigenpairs {
+        /// Number of eigenpairs actually obtained
+        found: usize,
+        /// Number of eigenpairs requested
+        requested: usize,
+    },
     // -- input errors --
     /// Error if a square matrix is not square
     #[error("The matrix needs to be square")]

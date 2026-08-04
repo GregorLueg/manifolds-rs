@@ -3,3 +3,7 @@
 
 # Apple
 .DS_Store
+
+# Claude
+
+.claude/*

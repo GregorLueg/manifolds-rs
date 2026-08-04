@@ -39,6 +39,7 @@ pub fn create_diagnostic_data(
 
     for (cluster_id, centre) in centres.iter().enumerate() {
         for _ in 0..n_per_cluster {
+            #[allow(clippy::needless_range_loop)]
             for dim in 0..n_dim {
                 let noise: f64 = rng.random::<f64>() * 3.0 - 1.5;
                 data_vec.push(centre[dim] + noise);

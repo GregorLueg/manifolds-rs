@@ -25,6 +25,8 @@ cargo test --release --features gpu umap_gpu_integration_01_knn_correctness
 
 # Large-scale diagnostics (dev-only feature, prints scaling metrics)
 cargo test --release --features large_scale_diagnostics --test tsne_large_scale_diag
+cargo test --release --features large_scale_diagnostics --test spectral_bench -- --nocapture
+cargo test --release --features gpu,large_scale_diagnostics --test umap_gpu_bench -- --nocapture
 
 # Lint / format
 cargo clippy --release --all-targets --features gpu,parametric,fft_tsne
@@ -41,7 +43,7 @@ Linux GPU tests need Vulkan (`libvulkan1 mesa-vulkan-drivers libgl1-mesa-dri`) a
 - `parametric` — parametric UMAP via `burn` (+ `serde`, `bincode` for model I/O).
 - `fft_tsne` — FFT-accelerated tSNE via `fftw` (system FFTW required).
 - `gpu` — GPU kNN + GPU Adam UMAP via `cubecl` (wgpu/CUDA) and `ann-search-rs/gpu`. GPU code paths run in `f32` only (WGSL has no `f64`).
-- `large_scale_diagnostics` — dev-only, gates `tests/tsne_large_scale_diag.rs`.
+- `large_scale_diagnostics` — dev-only, gates `tests/tsne_large_scale_diag.rs`, all of `tests/umap_gpu_bench.rs` (which also needs `gpu`), and the timing benchmarks in `tests/spectral_bench.rs`. Put heavy tests here so CI never compiles them.
 
 Feature-gated code, tests, and prelude re-exports are conditional on these; when adding a new symbol, mirror the `#[cfg(feature = "…")]` gating in `src/prelude.rs`.
 
