@@ -1,5 +1,13 @@
 # News
 
+## 0.3.12
+
+**Feature:**
+
+- Improved spectral initialisation via better layout and parallelisation in
+  some parts.
+- Improved GPU-accelerated Adam optimiser for even faster UMAP performance.
+
 ## 0.3.11
 
 **Feature:**
