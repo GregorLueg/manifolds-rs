@@ -46,6 +46,12 @@ pub enum ManifoldsError {
     /// Propagate errors from the ann-search-rs crate
     #[error("Error from the ann-search-rs crate: {0}")]
     AnnSearchRsError(#[from] ann_search_rs::errors::AnnSearchErrors),
+    // -- cubecl-utils-rs --
+    /// Propagate device-limit and allocation errors from the cubecl-utils-rs
+    /// crate
+    #[cfg(feature = "gpu")]
+    #[error("Error from the cubecl-utils-rs crate: {0}")]
+    CubeclUtilsError(#[from] cubecl_utils_rs::CubeclUtilsErrors),
     // -- math errors --
     /// Error for SVDs from faer
     #[error("The faer SVD failed - please verify the data")]

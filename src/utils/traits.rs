@@ -59,10 +59,7 @@ impl<T> ManifoldsFloat for T where
 /// Trait for floating-point types in manifolds-rs. Has common shared trait
 /// boundaries. This version also supports GPU-accelerated methods via cubecl.
 #[cfg(feature = "gpu")]
-pub trait ManifoldsFloatGpu: ManifoldsFloat + cubecl::prelude::Float + cubecl::CubeElement {}
+pub trait ManifoldsFloatGpu: ManifoldsFloat + CubeclFloat {}
 
 #[cfg(feature = "gpu")]
-impl<T> ManifoldsFloatGpu for T where
-    T: ManifoldsFloat + cubecl::prelude::Float + cubecl::CubeElement
-{
-}
+impl<T> ManifoldsFloatGpu for T where T: ManifoldsFloat + CubeclFloat {}

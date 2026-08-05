@@ -264,7 +264,7 @@ pub fn run_ann_search_gpu<T, R>(
     verbose: usize,
 ) -> ManifoldsKnnResults<T>
 where
-    T: AnnSearchFloat + AnnSearchGpuFloat,
+    T: AnnSearchFloat + CubeclFloat,
     R: Runtime,
 {
     let verbosity = parse_verbosity_level(verbose);
