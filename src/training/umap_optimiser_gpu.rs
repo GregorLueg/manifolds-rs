@@ -452,9 +452,9 @@ where
     }
 }
 
-/////////////////////////
-// Density (densMAP)   //
-/////////////////////////
+///////////////////////
+// Density (densMAP) //
+///////////////////////
 
 /// Embedding local radii for densMAP. One thread per node.
 ///
