@@ -1,5 +1,13 @@
 # News
 
+## 0.3.13
+
+**Feature:**
+
+- GPU pieces now depend on `cubecl-utils-rs` which unifies all of the cubecl
+  utilties scattered across different crates.
+- GPU-accelerated Adam optimiser for Umap is also updated to now use that one.
+
 ## 0.3.12
 
 **Feature:**
