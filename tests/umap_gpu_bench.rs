@@ -28,17 +28,17 @@ mod commons;
 
 use std::time::{Duration, Instant};
 
-use ann_search_rs::gpu::grid_2d;
 use cubecl::prelude::ComputeClient;
 use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
 use cubecl::Runtime;
+use cubecl_utils_rs::prelude::*;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
 use manifolds_rs::construct_umap_graph_gpu;
 use manifolds_rs::data::graph::coo_to_adjacency_list;
 use manifolds_rs::prelude::*;
 use manifolds_rs::training::umap_optimiser_gpu::{
-    optimise_embedding_adam_gpu, resolve_workgroup_size, UmapCsrGraph,
+    optimise_embedding_adam_gpu, umap_workgroup_size, UmapCsrGraph,
 };
 
 use commons::{create_diagnostic_data, mat_to_f32};
@@ -148,8 +148,9 @@ fn assert_did_work(before: &[Vec<f32>], after: &[Vec<f32>]) {
 /// * `n` - Number of nodes
 /// * `n_edges` - Number of unique undirected edges
 fn print_geometry(client: &ComputeClient<WgpuRuntime>, n: usize, n_edges: usize) {
-    let wg = resolve_workgroup_size(client);
-    let (max_x, max_y, _) = client.properties().hardware.max_cube_count;
+    let limits = GpuLimits::from_client(client);
+    let wg = umap_workgroup_size(&limits);
+    let (max_x, max_y, _) = limits.max_cube_count;
 
     let grids = [
         ("grad", (n as u32).div_ceil(wg)),
@@ -158,7 +159,7 @@ fn print_geometry(client: &ComputeClient<WgpuRuntime>, n: usize, n_edges: usize)
     ];
     print!("  geometry (wg = {wg}, max cube count {max_x} x {max_y}):");
     for (name, cubes) in grids {
-        let (gx, gy) = grid_2d(cubes);
+        let (gx, gy) = grid_2d(cubes, &limits).unwrap();
         assert!(
             gx <= max_x && gy <= max_y,
             "{name} grid {gx} x {gy} exceeds the device limit {max_x} x {max_y}"

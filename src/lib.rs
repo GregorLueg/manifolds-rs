@@ -35,7 +35,7 @@ use burn::tensor::{backend::AutodiffBackend, Element};
 use num_traits::ToPrimitive;
 
 #[cfg(feature = "gpu")]
-use ann_search_rs::gpu::traits_gpu::AnnSearchGpuFloat;
+use ann_search_rs::prelude::CubeclFloat;
 #[cfg(feature = "gpu")]
 use cubecl::prelude::*;
 
@@ -3386,7 +3386,7 @@ pub fn construct_umap_graph_gpu<T, R>(
     verbose: usize,
 ) -> UmapGraphResults<T>
 where
-    T: ManifoldsFloat + AnnSearchGpuFloat,
+    T: ManifoldsFloat + CubeclFloat,
     R: Runtime,
 {
     let verbosity = parse_verbosity_level(verbose);
@@ -3471,7 +3471,7 @@ pub fn umap_gpu<T, R>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + AnnSearchGpuFloat,
+    T: ManifoldsFloat + CubeclFloat,
     R: Runtime,
     StandardNormal: Distribution<T>,
 {
@@ -3517,7 +3517,7 @@ fn umap_gpu_inner<T, R>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + AnnSearchGpuFloat,
+    T: ManifoldsFloat + CubeclFloat,
     R: Runtime,
     StandardNormal: Distribution<T>,
 {
@@ -3835,7 +3835,7 @@ pub fn densmap_gpu<T, R>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + AnnSearchGpuFloat,
+    T: ManifoldsFloat + CubeclFloat,
     R: Runtime,
     StandardNormal: Distribution<T>,
 {
@@ -4016,7 +4016,7 @@ pub fn construct_tsne_graph_gpu<T, R>(
     verbose: usize,
 ) -> TsneGraph<T>
 where
-    T: ManifoldsFloat + AnnSearchGpuFloat,
+    T: ManifoldsFloat + CubeclFloat,
     R: Runtime,
 {
     let verbosity = parse_verbosity_level(verbose);
@@ -4125,7 +4125,7 @@ pub fn tsne_gpu<T, R>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + AnnSearchGpuFloat + FftwFloat,
+    T: ManifoldsFloat + CubeclFloat + FftwFloat,
     R: Runtime,
     StandardNormal: Distribution<T>,
 {
@@ -4248,7 +4248,7 @@ pub fn tsne_gpu<T, R>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + AnnSearchGpuFloat,
+    T: ManifoldsFloat + CubeclFloat,
     R: Runtime,
     StandardNormal: Distribution<T>,
 {

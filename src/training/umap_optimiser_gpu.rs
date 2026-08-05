@@ -6,9 +6,8 @@
 
 #![allow(missing_docs)] // cubecl weirdness
 
-use ann_search_rs::gpu::grid_2d;
-use ann_search_rs::gpu::tensor::GpuTensor;
 use cubecl::prelude::*;
+use cubecl_utils_rs::prelude::*;
 
 use crate::prelude::*;
 use crate::training::umap_optimisers::UmapOptimParams;
@@ -71,7 +70,7 @@ const GRAD_REP_EPS: f64 = 0.001;
 const GRAD_DIST_SQ_THRESHOLD: f64 = 1e-8;
 
 /// Preferred workgroup size for every kernel in this module, before device
-/// clamping by [`resolve_workgroup_size`].
+/// clamping by [`umap_workgroup_size`].
 ///
 /// `umap_grad_accum` dominates the epoch loop and is a gather-heavy walk over a
 /// node's CSR slice, so it wants several SIMD groups resident per cube to hide
@@ -216,25 +215,58 @@ where
 
 /// Resolve the workgroup size for a device.
 ///
-/// Takes `UMAP_WORKGROUP_SIZE` as the preference and makes it legal on the
-/// target: capped at `max_units_per_cube`, and rounded down to a whole number
-/// of planes so no cube ever runs a partial SIMD group. Floors at one plane.
+/// Takes `UMAP_WORKGROUP_SIZE` as the preference and hands it to
+/// [`resolve_workgroup_size`], which caps it at the device's unit and cube-dim
+/// limits and rounds down to a whole number of planes so no cube ever runs a
+/// partial SIMD group.
 ///
 /// ### Params
 ///
-/// * `client` - CubeCL compute client for the target device
+/// * `limits` - Device limits for the target device
 ///
 /// ### Returns
 ///
 /// Workgroup size in units, a multiple of the device plane size.
-pub fn resolve_workgroup_size<R>(client: &ComputeClient<R>) -> u32
-where
-    R: Runtime,
-{
-    let hw = &client.properties().hardware;
-    let plane = hw.plane_size_max.max(1);
-    let wanted = UMAP_WORKGROUP_SIZE.min(hw.max_units_per_cube);
-    (wanted / plane).max(1) * plane
+pub fn umap_workgroup_size(limits: &GpuLimits) -> u32 {
+    resolve_workgroup_size(UMAP_WORKGROUP_SIZE, limits)
+}
+
+/// Plan and validate the three dispatch geometries the epoch loop uses.
+///
+/// All three are constant across a run, so they are resolved once at upload and
+/// the per-epoch launchers stay infallible. [`grid_2d`] packs x-fast row-major,
+/// which every kernel body in this module decodes by hand as
+/// `CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X`.
+///
+/// ### Params
+///
+/// * `n` - Number of nodes
+/// * `n_dim` - Embedding dimensionality
+/// * `n_edges` - Number of unique undirected edges
+/// * `wg` - Resolved workgroup size
+/// * `limits` - Device limits for the target device
+///
+/// ### Returns
+///
+/// `(node grid, element grid, edge grid)` on success, or the limit breach that
+/// would otherwise have made a kernel silently do nothing.
+fn plan_grids(
+    n: usize,
+    n_dim: usize,
+    n_edges: usize,
+    wg: u32,
+    limits: &GpuLimits,
+) -> Result<(CubeCount, CubeCount, CubeCount), ManifoldsError> {
+    let plan = |kernel: &'static str, total: usize| -> Result<CubeCount, ManifoldsError> {
+        let (gx, gy) = grid_2d((total as u32).div_ceil(wg), limits)?;
+        Ok(checked_cube_count(kernel, gx, gy, 1, limits)?)
+    };
+
+    Ok((
+        plan("umap_grad_accum", n)?,
+        plan("umap_adam_update", n * n_dim)?,
+        plan("umap_edge_schedule_update", n_edges)?,
+    ))
 }
 
 //////////////////
@@ -284,8 +316,15 @@ where
     /// Total number of optimisation epochs.
     pub n_epochs: usize,
     /// Workgroup size for every launch, resolved once from the device by
-    /// [`resolve_workgroup_size`]. Also passed as the comptime `wg_size`.
+    /// [`umap_workgroup_size`]. Also passed as the comptime `wg_size`.
     pub wg_size: u32,
+    /// One cube per `wg_size` nodes. Used by the gradient, density and gradient
+    /// norm kernels. Validated against the device limits at upload.
+    pub cubes_node: CubeCount,
+    /// One cube per `wg_size` embedding elements, for the Adam step.
+    pub cubes_elem: CubeCount,
+    /// One cube per `wg_size` edges, for the edge-schedule advance.
+    pub cubes_edge: CubeCount,
     /// Per-node partial `sum_d grad[node, d]^2` `[n]`, written by
     /// `umap_grad_norm_sq` and reduced on the host for progress logging.
     pub grad_norm_partial: GpuTensor<R, T>,
@@ -329,7 +368,9 @@ where
     ///
     /// ### Returns
     ///
-    /// Device state on success. `ManifoldsError::NoData` if `embd` is empty.
+    /// Device state on success. `ManifoldsError::NoData` if `embd` is empty,
+    /// or a `CubeclUtilsError` if a buffer or a dispatch grid does not fit the
+    /// device.
     pub fn upload(
         embd: &[Vec<T>],
         csr: &UmapCsrGraph<T>,
@@ -362,47 +403,58 @@ where
             None => vec![T::zero(); 1],
         };
 
+        let limits = GpuLimits::from_client(client);
+        let wg_size = umap_workgroup_size(&limits);
+        let (cubes_node, cubes_elem, cubes_edge) = plan_grids(n, n_dim, n_edges, wg_size, &limits)?;
+
         Ok(Self {
-            embd: GpuTensor::from_slice(&embd_flat, vec![n, n_dim], client),
-            m: GpuTensor::from_slice(&zeros, vec![n, n_dim], client),
-            v: GpuTensor::from_slice(&zeros, vec![n, n_dim], client),
-            node_grad: GpuTensor::from_slice(&zeros, vec![n, n_dim], client),
+            embd: GpuTensor::from_slice(&embd_flat, vec![n, n_dim], client)?,
+            m: GpuTensor::from_slice(&zeros, vec![n, n_dim], client)?,
+            v: GpuTensor::from_slice(&zeros, vec![n, n_dim], client)?,
+            node_grad: GpuTensor::from_slice(&zeros, vec![n, n_dim], client)?,
 
-            node_edge_offsets: GpuTensor::from_slice(&csr.node_edge_offsets, vec![n + 1], client),
-            csr_edge_idx: GpuTensor::from_slice(&csr.csr_edge_idx, vec![2 * n_edges], client),
-            csr_other_node: GpuTensor::from_slice(&csr.csr_other_node, vec![2 * n_edges], client),
+            node_edge_offsets: GpuTensor::from_slice(&csr.node_edge_offsets, vec![n + 1], client)?,
+            csr_edge_idx: GpuTensor::from_slice(&csr.csr_edge_idx, vec![2 * n_edges], client)?,
+            csr_other_node: GpuTensor::from_slice(&csr.csr_other_node, vec![2 * n_edges], client)?,
 
-            epochs_per_sample: GpuTensor::from_slice(&csr.epochs_per_sample, vec![n_edges], client),
+            epochs_per_sample: GpuTensor::from_slice(
+                &csr.epochs_per_sample,
+                vec![n_edges],
+                client,
+            )?,
             // Cursors initialise to one period from time 0 (first sample event).
             epoch_of_next_sample: GpuTensor::from_slice(
                 &csr.epochs_per_sample,
                 vec![n_edges],
                 client,
-            ),
+            )?,
 
-            has_update: GpuTensor::from_slice(&vec![0u32; n], vec![n], client),
+            has_update: GpuTensor::from_slice(&vec![0u32; n], vec![n], client)?,
 
-            grad_norm_partial: GpuTensor::from_slice(&vec![T::zero(); n], vec![n], client),
+            grad_norm_partial: GpuTensor::from_slice(&vec![T::zero(); n], vec![n], client)?,
 
             dens_enabled,
-            dens_r: GpuTensor::from_slice(&dens_r, vec![dens_len], client),
-            dens_re: GpuTensor::from_slice(&dens_zeros, vec![dens_len], client),
-            dens_phi_sum: GpuTensor::from_slice(&dens_zeros, vec![dens_len], client),
-            dens_weight: GpuTensor::from_slice(&dens_zeros, vec![dens_len], client),
-            mu: GpuTensor::from_slice(&csr.mu, vec![n_edges], client),
+            dens_r: GpuTensor::from_slice(&dens_r, vec![dens_len], client)?,
+            dens_re: GpuTensor::from_slice(&dens_zeros, vec![dens_len], client)?,
+            dens_phi_sum: GpuTensor::from_slice(&dens_zeros, vec![dens_len], client)?,
+            dens_weight: GpuTensor::from_slice(&dens_zeros, vec![dens_len], client)?,
+            mu: GpuTensor::from_slice(&csr.mu, vec![n_edges], client)?,
 
             n,
             n_dim,
             n_edges,
             n_epochs,
-            wg_size: resolve_workgroup_size(client),
+            wg_size,
+            cubes_node,
+            cubes_elem,
+            cubes_edge,
         })
     }
 }
 
-/////////////////////////
-// Density (densMAP)   //
-/////////////////////////
+///////////////////////
+// Density (densMAP) //
+///////////////////////
 
 /// Embedding local radii for densMAP. One thread per node.
 ///
@@ -974,8 +1026,6 @@ pub fn launch_grad_accum<R, T>(
 {
     let two = T::from(2.0).unwrap();
     let wg = state.wg_size;
-    let n_workgroups = (state.n as u32).div_ceil(wg);
-    let (gx, gy) = grid_2d(n_workgroups);
 
     let dens_enabled = dens_coeff.is_some();
     let dens_coeff = dens_coeff.unwrap_or_else(T::zero);
@@ -983,15 +1033,15 @@ pub fn launch_grad_accum<R, T>(
     unsafe {
         umap_grad_accum::launch_unchecked::<T, R>(
             client,
-            CubeCount::Static(gx, gy, 1),
+            state.cubes_node.clone(),
             CubeDim::new_1d(wg),
-            state.embd.clone().into_tensor_arg(),
-            state.node_edge_offsets.clone().into_tensor_arg(),
-            state.csr_edge_idx.clone().into_tensor_arg(),
-            state.csr_other_node.clone().into_tensor_arg(),
-            state.epoch_of_next_sample.clone().into_tensor_arg(),
-            state.node_grad.clone().into_tensor_arg(),
-            state.has_update.clone().into_tensor_arg(),
+            state.embd.into_tensor_arg(),
+            state.node_edge_offsets.into_tensor_arg(),
+            state.csr_edge_idx.into_tensor_arg(),
+            state.csr_other_node.into_tensor_arg(),
+            state.epoch_of_next_sample.into_tensor_arg(),
+            state.node_grad.into_tensor_arg(),
+            state.has_update.into_tensor_arg(),
             state.n as u32,
             state.n_dim as u32,
             epoch as u32,
@@ -1004,10 +1054,10 @@ pub fn launch_grad_accum<R, T>(
             T::from(GRAD_CLIP_VAL).unwrap(),
             T::from(GRAD_REP_EPS).unwrap(),
             T::from(GRAD_DIST_SQ_THRESHOLD).unwrap(),
-            state.mu.clone().into_tensor_arg(),
-            state.dens_re.clone().into_tensor_arg(),
-            state.dens_phi_sum.clone().into_tensor_arg(),
-            state.dens_weight.clone().into_tensor_arg(),
+            state.mu.into_tensor_arg(),
+            state.dens_re.into_tensor_arg(),
+            state.dens_phi_sum.into_tensor_arg(),
+            state.dens_weight.into_tensor_arg(),
             dens_coeff,
             wg,
             state.n_dim as u32,
@@ -1047,19 +1097,17 @@ where
     T: ManifoldsFloatGpu,
 {
     let wg = state.wg_size;
-    let n_workgroups = (state.n as u32).div_ceil(wg);
-    let (gx, gy) = grid_2d(n_workgroups);
 
     unsafe {
         umap_dens_radii::launch_unchecked::<T, R>(
             client,
-            CubeCount::Static(gx, gy, 1),
+            state.cubes_node.clone(),
             CubeDim::new_1d(wg),
-            state.embd.clone().into_tensor_arg(),
-            state.node_edge_offsets.clone().into_tensor_arg(),
-            state.csr_other_node.clone().into_tensor_arg(),
-            state.dens_re.clone().into_tensor_arg(),
-            state.dens_phi_sum.clone().into_tensor_arg(),
+            state.embd.into_tensor_arg(),
+            state.node_edge_offsets.into_tensor_arg(),
+            state.csr_other_node.into_tensor_arg(),
+            state.dens_re.into_tensor_arg(),
+            state.dens_phi_sum.into_tensor_arg(),
             state.n as u32,
             state.n_dim as u32,
             params.a,
@@ -1077,11 +1125,11 @@ where
     unsafe {
         umap_dens_weights::launch_unchecked::<T, R>(
             client,
-            CubeCount::Static(gx, gy, 1),
+            state.cubes_node.clone(),
             CubeDim::new_1d(wg),
-            state.dens_r.clone().into_tensor_arg(),
-            state.dens_re.clone().into_tensor_arg(),
-            state.dens_weight.clone().into_tensor_arg(),
+            state.dens_r.into_tensor_arg(),
+            state.dens_re.into_tensor_arg(),
+            state.dens_weight.into_tensor_arg(),
             state.n as u32,
             re_mean,
             T::one() / (re_std * re_std),
@@ -1116,8 +1164,6 @@ pub fn launch_adam_update<R, T>(
     let one = T::one();
     let n_total = (state.n * state.n_dim) as u32;
     let wg = state.wg_size;
-    let n_workgroups = n_total.div_ceil(wg);
-    let (gx, gy) = grid_2d(n_workgroups);
 
     let lr_alpha = params.lr * (one - T::from(epoch).unwrap() / T::from(state.n_epochs).unwrap());
 
@@ -1131,13 +1177,13 @@ pub fn launch_adam_update<R, T>(
     unsafe {
         umap_adam_update::launch_unchecked::<T, R>(
             client,
-            CubeCount::Static(gx, gy, 1),
+            state.cubes_elem.clone(),
             CubeDim::new_1d(wg),
-            state.node_grad.clone().into_tensor_arg(),
-            state.has_update.clone().into_tensor_arg(),
-            state.m.clone().into_tensor_arg(),
-            state.v.clone().into_tensor_arg(),
-            state.embd.clone().into_tensor_arg(),
+            state.node_grad.into_tensor_arg(),
+            state.has_update.into_tensor_arg(),
+            state.m.into_tensor_arg(),
+            state.v.into_tensor_arg(),
+            state.embd.into_tensor_arg(),
             n_total,
             state.n_dim as u32,
             lr_alpha * ad_scale,
@@ -1165,16 +1211,14 @@ pub fn launch_edge_schedule_update<R, T>(
     T: ManifoldsFloatGpu,
 {
     let wg = state.wg_size;
-    let n_workgroups = (state.n_edges as u32).div_ceil(wg);
-    let (gx, gy) = grid_2d(n_workgroups);
 
     unsafe {
         umap_edge_schedule_update::launch_unchecked::<T, R>(
             client,
-            CubeCount::Static(gx, gy, 1),
+            state.cubes_edge.clone(),
             CubeDim::new_1d(wg),
-            state.epochs_per_sample.clone().into_tensor_arg(),
-            state.epoch_of_next_sample.clone().into_tensor_arg(),
+            state.epochs_per_sample.into_tensor_arg(),
+            state.epoch_of_next_sample.into_tensor_arg(),
             state.n_edges as u32,
             T::from(epoch).unwrap(),
             wg,
@@ -1207,16 +1251,14 @@ where
     T: ManifoldsFloatGpu,
 {
     let wg = state.wg_size;
-    let n_workgroups = (state.n as u32).div_ceil(wg);
-    let (gx, gy) = grid_2d(n_workgroups);
 
     unsafe {
         umap_grad_norm_sq::launch_unchecked::<T, R>(
             client,
-            CubeCount::Static(gx, gy, 1),
+            state.cubes_node.clone(),
             CubeDim::new_1d(wg),
-            state.node_grad.clone().into_tensor_arg(),
-            state.grad_norm_partial.clone().into_tensor_arg(),
+            state.node_grad.into_tensor_arg(),
+            state.grad_norm_partial.into_tensor_arg(),
             state.n as u32,
             state.n_dim as u32,
             wg,
@@ -2082,15 +2124,20 @@ mod tests {
 
         // Adam kernel never touches CSR or schedule state, so those buffers
         // are just placeholders sized so nothing indexes out of bounds.
-        let placeholder_u32 = GpuTensor::from_slice(&[0u32], vec![1], &client);
-        let placeholder_f = GpuTensor::from_slice(&[0.0f32], vec![1], &client);
+        let placeholder_u32 = GpuTensor::from_slice(&[0u32], vec![1], &client).unwrap();
+        let placeholder_f = GpuTensor::from_slice(&[0.0f32], vec![1], &client).unwrap();
+
+        let limits = GpuLimits::from_client(&client);
+        let wg_size = umap_workgroup_size(&limits);
+        let (cubes_node, cubes_elem, cubes_edge) =
+            plan_grids(n, n_dim, 0, wg_size, &limits).unwrap();
 
         let state = UmapGpuState::<WgpuRuntime, f32> {
-            embd: GpuTensor::from_slice(embd, vec![n, n_dim], &client),
-            m: GpuTensor::from_slice(m, vec![n, n_dim], &client),
-            v: GpuTensor::from_slice(v, vec![n, n_dim], &client),
-            node_grad: GpuTensor::from_slice(node_grad, vec![n, n_dim], &client),
-            has_update: GpuTensor::from_slice(has_update, vec![n], &client),
+            embd: GpuTensor::from_slice(embd, vec![n, n_dim], &client).unwrap(),
+            m: GpuTensor::from_slice(m, vec![n, n_dim], &client).unwrap(),
+            v: GpuTensor::from_slice(v, vec![n, n_dim], &client).unwrap(),
+            node_grad: GpuTensor::from_slice(node_grad, vec![n, n_dim], &client).unwrap(),
+            has_update: GpuTensor::from_slice(has_update, vec![n], &client).unwrap(),
 
             node_edge_offsets: placeholder_u32.clone(),
             csr_edge_idx: placeholder_u32.clone(),
@@ -2107,7 +2154,10 @@ mod tests {
             dens_weight: placeholder_f.clone(),
             mu: placeholder_f.clone(),
 
-            wg_size: resolve_workgroup_size(&client),
+            wg_size,
+            cubes_node,
+            cubes_elem,
+            cubes_edge,
 
             n,
             n_dim,
