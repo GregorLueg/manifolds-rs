@@ -1,37 +1,19 @@
 name: Test the package
+
 on:
   push:
-    branches: [main, dev-branch]
+    branches: [ main ]
   pull_request:
-    branches: [main, dev-branch]
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test-cpu:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --release --no-default-features
-
-  test-gpu:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install Vulkan (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers libgl1-mesa-dri
-          echo "WGPU_BACKEND=vulkan" >> $GITHUB_ENV
-      - run: cargo test --release --features gpu,parametric,fft_tsne
+  test:
+    uses: GregorLueg/personal-actions/.github/workflows/rust-test.yml@v1
+    with:
+      cpu-args: '--release --no-default-features'
+      gpu-args: '--release --features gpu,parametric,fft_tsne'
+    secrets: inherit
