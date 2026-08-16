@@ -32,7 +32,7 @@ gpu = ["ann-search-rs/gpu", "cubecl", "cubecl-utils-rs"]
 large_scale_diagnostics = []
 
 [dependencies]
-ann-search-rs = { version = "0.5.0" }
+ann-search-rs = { version = "0.5.2" }
 approx = "0.5.1"
 bincode = { version = "2.0.1", features = ["serde"], optional = true }
 burn = { version = "0.21.0", features = [

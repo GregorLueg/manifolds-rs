@@ -1,5 +1,12 @@
 # News
 
+## 0.3.14
+
+**Feature:**
+
+- Version bump to the latest `ann-search-rs` with faster GPU-acceleration for
+  the vector searches.
+
 ## 0.3.13
 
 **Feature:**
