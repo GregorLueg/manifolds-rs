@@ -13,6 +13,12 @@ categories = ["algorithms", "mathematics", "science", "visualization"]
 name = "manifolds_rs"
 path = "src/lib.rs"
 
+## Stage-by-stage timings for UMAP graph construction. Plain `main`, no criterion.
+[[bench]]
+name = "umap_graph"
+harness = false
+required-features = ["large_scale_diagnostics"]
+
 [profile.test]
 opt-level = 2
 
