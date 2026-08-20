@@ -1102,9 +1102,11 @@ where
 ///
 /// ### Notes
 ///
-/// Edges whose symmetrised weight lands at or below `T::epsilon()` are dropped.
-/// The weights scale as `1 / 2N`, so in `f32` this threshold bites hard once `N`
-/// runs into the tens of thousands.
+/// Only structural zeros are dropped. The joint probabilities scale as `1 / 2N`,
+/// so a relative threshold like `T::epsilon()` acts as an absolute one here and
+/// deletes most of the graph in `f32` once `N` reaches the tens of thousands.
+/// The kernel keeps every edge present in either direction instead, which is
+/// what `f64` already did.
 ///
 /// ### Algorithm
 ///
@@ -1119,7 +1121,7 @@ where
     // Hoisted so the merge kernel multiplies rather than divides per edge.
     let inv_normalisation = T::one() / (two * n_float);
 
-    symmetrise_csr(&graph, T::epsilon(), |w_ij, w_ji| {
+    symmetrise_csr(&graph, T::zero(), |w_ij, w_ji| {
         (w_ij + w_ji) * inv_normalisation
     })
 }
