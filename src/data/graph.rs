@@ -2,7 +2,6 @@
 //! tSNE and PHATE.
 
 use rayon::prelude::*;
-use rustc_hash::{FxHashMap, FxHashSet};
 
 use thousands::*;
 
@@ -297,33 +296,36 @@ fn union_len<T>(a: &[(usize, T)], b: &[(usize, T)]) -> usize {
     count
 }
 
-/// Fuzzy-union merge of one vertex's outgoing and incoming edges.
+/// Pointwise merge of one vertex's outgoing and incoming edges.
 ///
-/// Walks two index-sorted rows in lockstep and writes
-/// `mix * (w_ij + w_ji - w_ij * w_ji) + (1 - mix) * w_ij` for every column that
-/// appears in either. Duplicate columns within an input collapse to the last
-/// occurrence, matching the map-insert semantics this replaced.
+/// Walks two index-sorted rows in lockstep and writes `combine(w_ij, w_ji)` for
+/// every column appearing in either, keeping only results strictly above
+/// `min_weight`. A column missing from one side contributes zero to that
+/// argument. Duplicate columns within an input collapse to the last occurrence,
+/// matching the map-insert semantics this replaced.
 ///
 /// ### Params
 ///
 /// * `out_row` - Outgoing edges as `(target, weight)`, sorted by target
 /// * `in_row` - Incoming edges as `(source, weight)`, sorted by source
-/// * `mix_weight` - Balance between fuzzy union and directed graph
+/// * `min_weight` - Results at or below this are dropped
+/// * `combine` - Symmetrisation kernel applied to `(w_ij, w_ji)`
 /// * `dst` - Destination, must hold at least `union_len(out_row, in_row)` entries
 ///
 /// ### Returns
 ///
 /// Number of entries written to `dst`, which is at most its length.
-fn merge_row<T>(
+fn merge_row<T, F>(
     out_row: &[(usize, T)],
     in_row: &[(usize, T)],
-    mix_weight: T,
+    min_weight: T,
+    combine: &F,
     dst: &mut [(usize, T)],
 ) -> usize
 where
     T: ManifoldsFloat,
+    F: Fn(T, T) -> T + Sync,
 {
-    let directed_weight = T::one() - mix_weight;
     let (mut ia, mut ib, mut written) = (0usize, 0usize, 0usize);
 
     while ia < out_row.len() || ib < in_row.len() {
@@ -346,16 +348,120 @@ where
             ib += 1;
         }
 
-        let union = w_ij + w_ji - w_ij * w_ji;
-        let w_sym = mix_weight * union + directed_weight * w_ij;
+        let w_sym = combine(w_ij, w_ji);
 
-        if w_sym > T::zero() {
+        if w_sym > min_weight {
             dst[written] = (col, w_sym);
             written += 1;
         }
     }
 
     written
+}
+
+/// Symmetrise a COO graph with an arbitrary pointwise kernel.
+///
+/// Shared by UMAP, tSNE and all three PHATE variants; only `combine` and
+/// `min_weight` differ between them. The graph is grouped into CSR by counting
+/// sort, transposed by counting sort, and the two are merged row by row with a
+/// two-pointer walk. Everything past the two counting sorts is parallel, and the
+/// output is allocated once from exact per-row survivor counts.
+///
+/// Both the input rows and the output are sorted ascending by column, so the
+/// result is reproducible run to run and downstream CSR conversion can skip its
+/// sort.
+///
+/// ### Params
+///
+/// * `graph` - Input graph in COO format, in any order
+/// * `min_weight` - Combined weights at or below this are dropped
+/// * `combine` - Applied to `(w_ij, w_ji)`; a missing direction passes zero
+///
+/// ### Returns
+///
+/// Symmetrised graph in COO format, grouped by row and sorted by column within
+/// each row.
+fn symmetrise_csr<T, F>(graph: &CoordinateList<T>, min_weight: T, combine: F) -> CoordinateList<T>
+where
+    T: ManifoldsFloat,
+    F: Fn(T, T) -> T + Sync,
+{
+    let n = graph.n_samples;
+
+    if n == 0 || graph.values.is_empty() {
+        return CoordinateList {
+            row_indices: Vec::new(),
+            col_indices: Vec::new(),
+            values: Vec::new(),
+            n_samples: n,
+        };
+    }
+
+    let (out_indptr, out_entries) = coo_to_sorted_csr(graph);
+    let (in_indptr, in_entries) = transpose_csr(&out_indptr, &out_entries, n);
+
+    let mut merge_indptr = vec![0usize; n + 1];
+    merge_indptr[1..]
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, slot)| {
+            *slot = union_len(
+                &out_entries[out_indptr[i]..out_indptr[i + 1]],
+                &in_entries[in_indptr[i]..in_indptr[i + 1]],
+            );
+        });
+    for i in 0..n {
+        merge_indptr[i + 1] += merge_indptr[i];
+    }
+
+    let mut merged = vec![(0usize, T::zero()); merge_indptr[n]];
+    let mut lengths = vec![0usize; n];
+
+    row_slices_mut(&mut merged, &merge_indptr)
+        .into_par_iter()
+        .zip(lengths.par_iter_mut())
+        .enumerate()
+        .for_each(|(i, (dst, len))| {
+            *len = merge_row(
+                &out_entries[out_indptr[i]..out_indptr[i + 1]],
+                &in_entries[in_indptr[i]..in_indptr[i + 1]],
+                min_weight,
+                &combine,
+                dst,
+            );
+        });
+
+    // Exact offsets now that the surviving edge count per row is known
+    let mut coo_indptr = vec![0usize; n + 1];
+    for i in 0..n {
+        coo_indptr[i + 1] = coo_indptr[i] + lengths[i];
+    }
+
+    let total = coo_indptr[n];
+    let mut row_indices = vec![0usize; total];
+    let mut col_indices = vec![0usize; total];
+    let mut values = vec![T::zero(); total];
+
+    row_slices_mut(&mut row_indices, &coo_indptr)
+        .into_par_iter()
+        .zip(row_slices_mut(&mut col_indices, &coo_indptr))
+        .zip(row_slices_mut(&mut values, &coo_indptr))
+        .enumerate()
+        .for_each(|(i, ((rows, cols), vals))| {
+            let src = &merged[merge_indptr[i]..merge_indptr[i] + lengths[i]];
+            for (idx, &(col, w)) in src.iter().enumerate() {
+                rows[idx] = i;
+                cols[idx] = col;
+                vals[idx] = w;
+            }
+        });
+
+    CoordinateList {
+        row_indices,
+        col_indices,
+        values,
+        n_samples: n,
+    }
 }
 
 ///////////////
@@ -576,81 +682,12 @@ pub fn symmetrise_graph<T>(graph: CoordinateList<T>, mix_weight: T) -> Coordinat
 where
     T: ManifoldsFloat,
 {
-    let n = graph.n_samples;
+    let directed_weight = T::one() - mix_weight;
 
-    if n == 0 || graph.values.is_empty() {
-        return CoordinateList {
-            row_indices: Vec::new(),
-            col_indices: Vec::new(),
-            values: Vec::new(),
-            n_samples: n,
-        };
-    }
-
-    let (out_indptr, out_entries) = coo_to_sorted_csr(&graph);
-    let (in_indptr, in_entries) = transpose_csr(&out_indptr, &out_entries, n);
-
-    let mut merge_indptr = vec![0usize; n + 1];
-    merge_indptr[1..]
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(i, slot)| {
-            *slot = union_len(
-                &out_entries[out_indptr[i]..out_indptr[i + 1]],
-                &in_entries[in_indptr[i]..in_indptr[i + 1]],
-            );
-        });
-    for i in 0..n {
-        merge_indptr[i + 1] += merge_indptr[i];
-    }
-
-    let mut merged = vec![(0usize, T::zero()); merge_indptr[n]];
-    let mut lengths = vec![0usize; n];
-
-    row_slices_mut(&mut merged, &merge_indptr)
-        .into_par_iter()
-        .zip(lengths.par_iter_mut())
-        .enumerate()
-        .for_each(|(i, (dst, len))| {
-            *len = merge_row(
-                &out_entries[out_indptr[i]..out_indptr[i + 1]],
-                &in_entries[in_indptr[i]..in_indptr[i + 1]],
-                mix_weight,
-                dst,
-            );
-        });
-
-    // Exact offsets now that the surviving edge count per row is known
-    let mut coo_indptr = vec![0usize; n + 1];
-    for i in 0..n {
-        coo_indptr[i + 1] = coo_indptr[i] + lengths[i];
-    }
-
-    let total = coo_indptr[n];
-    let mut row_indices = vec![0usize; total];
-    let mut col_indices = vec![0usize; total];
-    let mut values = vec![T::zero(); total];
-
-    row_slices_mut(&mut row_indices, &coo_indptr)
-        .into_par_iter()
-        .zip(row_slices_mut(&mut col_indices, &coo_indptr))
-        .zip(row_slices_mut(&mut values, &coo_indptr))
-        .enumerate()
-        .for_each(|(i, ((rows, cols), vals))| {
-            let src = &merged[merge_indptr[i]..merge_indptr[i] + lengths[i]];
-            for (idx, &(col, w)) in src.iter().enumerate() {
-                rows[idx] = i;
-                cols[idx] = col;
-                vals[idx] = w;
-            }
-        });
-
-    CoordinateList {
-        row_indices,
-        col_indices,
-        values,
-        n_samples: n,
-    }
+    symmetrise_csr(&graph, T::zero(), |w_ij, w_ji| {
+        let union = w_ij + w_ji - w_ij * w_ji;
+        mix_weight * union + directed_weight * w_ij
+    })
 }
 
 /// Convert COO sparse graph to adjacency list representation
@@ -816,6 +853,17 @@ where
 // tSNE //
 //////////
 
+////////////
+// Consts //
+////////////
+
+/// `log2(e)`, converting the natural-log form of the Shannon entropy into bits.
+///
+/// The perplexity target is stated in bits (`log2(perplexity)`), but the fused
+/// entropy falls out of the Gaussian kernel in nats, so the conversion happens
+/// once per binary-search iteration rather than once per neighbour.
+const LOG2_E: f64 = std::f64::consts::LOG2_E;
+
 /// Compute Gaussian affinities from k-nearest neighbours using perplexity-based
 /// calibration
 ///
@@ -879,91 +927,153 @@ where
         });
     }
 
-    let target_entropy = perplexity.log2();
+    // The search compares in `f64` regardless of `T`, matching `smooth_knn_dist`,
+    // so an `f32` tolerance is not swamped by rounding in the entropy.
+    let target_entropy = perp_f64.log2();
+    let tol_f64 = as_f64(tol);
     let machine_epsilon = T::epsilon();
+    let log2_e = T::from_f64(LOG2_E).unwrap();
+    let two = T::one() + T::one();
+    let widest_row = knn_dists.iter().map(|row| row.len()).max().unwrap_or(0);
 
-    let results: Vec<Vec<T>> = knn_indices
-        .par_iter()
-        .zip(knn_dists.par_iter())
-        .map(|(_, dists)| {
-            // binary search for precision (beta = 1 / (2*sigma^2))
-            let mut beta = T::one();
-            let mut min_beta = T::neg_infinity();
-            let mut max_beta = T::infinity();
-            let mut current_probs = vec![T::zero(); dists.len()];
+    // Upper-bound layout: one slot per input neighbour. Survivors are written to
+    // the front of each row, so the exact offsets are known after the search.
+    let mut in_offsets = vec![0usize; n + 1];
+    for i in 0..n {
+        in_offsets[i + 1] = in_offsets[i] + knn_dists[i].len();
+    }
 
-            for _ in 0..max_iter {
-                // compute P_i with current beta: p_{j|i} = exp(-beta * d²)
-                let mut sum_p = T::zero();
-                for (j, &d) in dists.iter().enumerate() {
-                    if d < T::epsilon() {
+    let mut col_flat = vec![0usize; in_offsets[n]];
+    let mut val_flat = vec![T::zero(); in_offsets[n]];
+    let mut kept = vec![0usize; n];
+
+    row_slices_mut(&mut col_flat, &in_offsets)
+        .into_par_iter()
+        .zip(row_slices_mut(&mut val_flat, &in_offsets))
+        .zip(kept.par_iter_mut())
+        .enumerate()
+        .for_each_init(
+            || {
+                (
+                    Vec::<T>::with_capacity(widest_row),
+                    Vec::<usize>::with_capacity(widest_row),
+                    Vec::<T>::with_capacity(widest_row),
+                )
+            },
+            |(d_sq, origin, probs), (i, ((cols, vals), keep))| {
+                // Squaring and the zero-distance skip do not depend on beta, so
+                // the row is compacted once rather than inside all `max_iter`
+                // passes. The search loop then runs over a dense slice with no
+                // branch in it. `origin` maps each survivor back to its slot in
+                // the kNN row.
+                d_sq.clear();
+                origin.clear();
+                for (m, &d) in knn_dists[i].iter().enumerate() {
+                    if d < machine_epsilon {
                         continue;
                     }
-                    let d_sq = if distances_squared { d } else { d * d };
-                    let p = (-beta * d_sq).exp();
-                    current_probs[j] = p;
-                    sum_p += p;
+                    d_sq.push(if distances_squared { d } else { d * d });
+                    origin.push(m);
                 }
 
-                // check for numerical stability
-                if sum_p.abs() < machine_epsilon {
-                    sum_p = machine_epsilon;
-                }
+                probs.clear();
+                probs.resize(d_sq.len(), T::zero());
 
-                // normalise to get probabilities and compute entropy H
-                let mut entropy = T::zero();
-                for p in current_probs.iter_mut() {
-                    *p /= sum_p;
-                    if *p > machine_epsilon {
-                        entropy -= *p * p.log2();
+                // binary search for precision (beta = 1 / (2*sigma^2))
+                let mut beta = T::one();
+                let mut min_beta = T::neg_infinity();
+                let mut max_beta = T::infinity();
+                let mut sum_p = machine_epsilon;
+
+                for _ in 0..max_iter {
+                    // Unnormalised kernel and its first moment in one scan; the
+                    // two accumulators are independent, so they pipeline.
+                    sum_p = T::zero();
+                    let mut sum_dp = T::zero();
+                    for (p, &d) in probs.iter_mut().zip(d_sq.iter()) {
+                        let e = (-beta * d).exp();
+                        *p = e;
+                        sum_p += e;
+                        sum_dp += d * e;
                     }
-                }
 
-                // check convergence
-                let entropy_diff = entropy - target_entropy;
-                if entropy_diff.abs() < tol {
-                    break;
-                }
+                    // check for numerical stability
+                    if sum_p.abs() < machine_epsilon {
+                        sum_p = machine_epsilon;
+                    }
 
-                // adjust beta
-                if entropy_diff > T::zero() {
-                    // entropy too high → distribution too flat → increase beta (narrow curve)
-                    min_beta = beta;
-                    if max_beta.is_infinite() {
-                        beta *= T::one() + T::one();
+                    // H = log2(S) - (1/S) * sum(p * log2 p) with
+                    // log2 p = -beta * d² * log2(e), so the whole entropy costs
+                    // one log rather than one per neighbour, and the row never
+                    // has to be normalised inside the search.
+                    let entropy = log2_e * (sum_p.ln() + beta * sum_dp / sum_p);
+                    let entropy_diff = as_f64(entropy) - target_entropy;
+
+                    if entropy_diff.abs() < tol_f64 {
+                        break;
+                    }
+
+                    // adjust beta
+                    if entropy_diff > 0.0 {
+                        // entropy too high → distribution too flat → increase beta (narrow curve)
+                        min_beta = beta;
+                        if max_beta.is_infinite() {
+                            beta *= two;
+                        } else {
+                            beta = (beta + max_beta) / two;
+                        }
                     } else {
-                        beta = (beta + max_beta) / (T::one() + T::one());
-                    }
-                } else {
-                    // entropy too low → distribution too peaked → decrease beta (widen curve)
-                    max_beta = beta;
-                    if min_beta.is_infinite() {
-                        beta /= T::one() + T::one();
-                    } else {
-                        beta = (beta + min_beta) / (T::one() + T::one());
+                        // entropy too low → distribution too peaked → decrease beta (widen curve)
+                        max_beta = beta;
+                        if min_beta.is_infinite() {
+                            beta /= two;
+                        } else {
+                            beta = (beta + min_beta) / two;
+                        }
                     }
                 }
-            }
 
-            current_probs
-        })
-        .collect();
+                // Normalise once, against the sum of the last evaluated beta.
+                let inv_sum_p = T::one() / sum_p;
+                let mut written = 0usize;
 
-    // build sparse graph
-    let capacity: usize = results.iter().map(|p| p.len()).sum();
-    let mut row_indices = Vec::with_capacity(capacity);
-    let mut col_indices = Vec::with_capacity(capacity);
-    let mut values = Vec::with_capacity(capacity);
+                for (&p, &m) in probs.iter().zip(origin.iter()) {
+                    let prob = p * inv_sum_p;
+                    let j = knn_indices[i][m];
 
-    for (i, probs) in results.into_iter().enumerate() {
-        for (&j, p) in knn_indices[i].iter().zip(probs) {
-            if p > machine_epsilon && j != i {
-                row_indices.push(i);
-                col_indices.push(j);
-                values.push(p);
-            }
-        }
+                    if prob > machine_epsilon && j != i {
+                        cols[written] = j;
+                        vals[written] = prob;
+                        written += 1;
+                    }
+                }
+
+                *keep = written;
+            },
+        );
+
+    // Exact offsets now that the surviving edge count per row is known
+    let mut out_offsets = vec![0usize; n + 1];
+    for i in 0..n {
+        out_offsets[i + 1] = out_offsets[i] + kept[i];
     }
+
+    let total = out_offsets[n];
+    let mut row_indices = vec![0usize; total];
+    let mut col_indices = vec![0usize; total];
+    let mut values = vec![T::zero(); total];
+
+    row_slices_mut(&mut row_indices, &out_offsets)
+        .into_par_iter()
+        .zip(row_slices_mut(&mut col_indices, &out_offsets))
+        .zip(row_slices_mut(&mut values, &out_offsets))
+        .enumerate()
+        .for_each(|(i, ((rows, cols), vals))| {
+            let lo = in_offsets[i];
+            rows.fill(i);
+            cols.copy_from_slice(&col_flat[lo..lo + kept[i]]);
+            vals.copy_from_slice(&val_flat[lo..lo + kept[i]]);
+        });
 
     Ok(CoordinateList {
         row_indices,
@@ -988,93 +1098,30 @@ where
 /// - Each edge (i,j) has weight P_ij = (P(j|i) + P(i|j)) / 2N
 /// - P_ij = P_ji (symmetric)
 /// - All weights sum to 1.0
+/// - Edges are grouped by row and sorted by column within each row
+///
+/// ### Notes
+///
+/// Edges whose symmetrised weight lands at or below `T::epsilon()` are dropped.
+/// The weights scale as `1 / 2N`, so in `f32` this threshold bites hard once `N`
+/// runs into the tens of thousands.
 ///
 /// ### Algorithm
 ///
-/// 1. Build adjacency map for fast lookup of P(j|i)
-/// 2. Collect all unique unordered pairs {i,j} from input edges
-/// 3. For each pair: compute P_ij = (P(j|i) + P(i|j)) / 2N
-/// 4. Add both directions (i,j) and (j,i) to output with weight P_ij
+/// Delegates to the shared CSR symmetrisation with the arithmetic-mean kernel.
 pub fn symmetrise_affinities_tsne<T>(graph: CoordinateList<T>) -> CoordinateList<T>
 where
     T: ManifoldsFloat,
 {
-    let n = graph.n_samples;
-    let n_float = T::from_usize(n).unwrap();
+    let n_float = T::from_usize(graph.n_samples).unwrap();
     let two = T::from_f64(2.0).unwrap();
-    let normalization = two * n_float;
 
-    // Build adjacency map for O(1) lookup
-    let mut adj: Vec<FxHashMap<usize, T>> = vec![FxHashMap::default(); n];
-    for ((&i, &j), &w) in graph
-        .row_indices
-        .iter()
-        .zip(&graph.col_indices)
-        .zip(&graph.values)
-    {
-        adj[i].insert(j, w);
-    }
+    // Hoisted so the merge kernel multiplies rather than divides per edge.
+    let inv_normalisation = T::one() / (two * n_float);
 
-    // Collect all unique unordered pairs {i,j} from edges
-    let mut pairs_set: FxHashSet<(usize, usize)> = FxHashSet::default();
-    for ((&i, &j), _) in graph
-        .row_indices
-        .iter()
-        .zip(&graph.col_indices)
-        .zip(&graph.values)
-    {
-        let pair = if i < j {
-            (i, j)
-        } else if i > j {
-            (j, i)
-        } else {
-            (i, i)
-        };
-        pairs_set.insert(pair);
-    }
-
-    let pairs: Vec<(usize, usize)> = pairs_set.into_iter().collect();
-
-    // Process each unique pair in parallel
-    let edges: Vec<Vec<(usize, usize, T)>> = pairs
-        .par_iter()
-        .map(|&(i, j)| {
-            // Get both directions (may not exist)
-            let w_ij = adj[i].get(&j).copied().unwrap_or_else(T::zero);
-            let w_ji = adj[j].get(&i).copied().unwrap_or_else(T::zero);
-            let p_sym = (w_ij + w_ji) / normalization;
-
-            let mut local_edges = Vec::new();
-            if p_sym > T::epsilon() {
-                local_edges.push((i, j, p_sym));
-                if i != j {
-                    local_edges.push((j, i, p_sym));
-                }
-            }
-            local_edges
-        })
-        .collect();
-
-    // Flatten into final arrays
-    let total_capacity: usize = edges.iter().map(|v| v.len()).sum();
-    let mut rows = Vec::with_capacity(total_capacity);
-    let mut cols = Vec::with_capacity(total_capacity);
-    let mut vals = Vec::with_capacity(total_capacity);
-
-    for edge_vec in edges {
-        for (i, j, w) in edge_vec {
-            rows.push(i);
-            cols.push(j);
-            vals.push(w);
-        }
-    }
-
-    CoordinateList {
-        row_indices: rows,
-        col_indices: cols,
-        values: vals,
-        n_samples: n,
-    }
+    symmetrise_csr(&graph, T::epsilon(), |w_ij, w_ji| {
+        (w_ij + w_ji) * inv_normalisation
+    })
 }
 
 ///////////
@@ -1129,51 +1176,19 @@ pub fn parse_phate_symmetrisation(s: &str) -> Option<PhateGraphSymmetrisation> {
 /// ### Params
 ///
 /// * `graph` - Reference to the graph to symmetrise
+///
+/// ### Notes
+///
+/// Duplicate `(i, j)` entries in the input collapse to the last occurrence
+/// rather than accumulating. kNN rows carry unique columns, so this only differs
+/// from a summing merge on malformed input.
 fn symmetrise_additive<T>(graph: &mut CoordinateList<T>)
 where
     T: ManifoldsFloat,
 {
-    let two = T::one() + T::one();
+    let half = T::one() / (T::one() + T::one());
 
-    // do this in parallel
-    // maybe slower for smaller graphs, but for sure much faster for larger ones
-    let edge_map: FxHashMap<(usize, usize), T> = graph
-        .row_indices
-        .par_iter()
-        .zip(&graph.col_indices)
-        .zip(&graph.values)
-        .fold(
-            FxHashMap::default, // Changed here
-            |mut local_map, ((&i, &j), &v)| {
-                *local_map.entry((i, j)).or_insert(T::zero()) += v;
-                *local_map.entry((j, i)).or_insert(T::zero()) += v;
-                local_map
-            },
-        )
-        .reduce(
-            FxHashMap::default, // And here
-            |mut map1, map2| {
-                for (key, val) in map2 {
-                    *map1.entry(key).or_insert(T::zero()) += val;
-                }
-                map1
-            },
-        );
-
-    // Rebuild graph with (K + K^T) / 2
-    graph.row_indices.clear();
-    graph.col_indices.clear();
-    graph.values.clear();
-
-    graph.row_indices.reserve(edge_map.len());
-    graph.col_indices.reserve(edge_map.len());
-    graph.values.reserve(edge_map.len());
-
-    for ((i, j), v) in edge_map {
-        graph.row_indices.push(i);
-        graph.col_indices.push(j);
-        graph.values.push(v / two);
-    }
+    *graph = symmetrise_csr(graph, T::zero(), |w_ij, w_ji| (w_ij + w_ji) * half);
 }
 
 /// Multiplicative symmetrisation
@@ -1183,60 +1198,16 @@ where
 /// ### Params
 ///
 /// * `graph` - Reference to the graph to symmetrise
+///
+/// ### Notes
+///
+/// A one-sided edge multiplies against zero and is dropped, so the result is the
+/// intersection of `K` and `K^T`.
 fn symmetrise_multiplicative<T>(graph: &mut CoordinateList<T>)
 where
     T: ManifoldsFloat,
 {
-    // forward map
-    let forward_map: FxHashMap<(usize, usize), T> = graph
-        .row_indices
-        .par_iter()
-        .zip(&graph.col_indices)
-        .zip(&graph.values)
-        .fold(FxHashMap::default, |mut map, ((&i, &j), &v)| {
-            map.insert((i, j), v);
-            map
-        })
-        .reduce(FxHashMap::default, |mut map1, map2| {
-            map1.extend(map2);
-            map1
-        });
-
-    // backward map
-    let backward_map: FxHashMap<(usize, usize), T> = graph
-        .row_indices
-        .par_iter()
-        .zip(&graph.col_indices)
-        .zip(&graph.values)
-        .fold(FxHashMap::default, |mut map, ((&i, &j), &v)| {
-            map.insert((j, i), v);
-            map
-        })
-        .reduce(FxHashMap::default, |mut map1, map2| {
-            map1.extend(map2);
-            map1
-        });
-
-    // compute element-wise product (parallel)
-    let products: Vec<(usize, usize, T)> = forward_map
-        .par_iter()
-        .filter_map(|(&(i, j), &v_ij)| backward_map.get(&(i, j)).map(|&v_ji| (i, j, v_ij * v_ji)))
-        .collect();
-
-    // rebuild graph
-    graph.row_indices.clear();
-    graph.col_indices.clear();
-    graph.values.clear();
-
-    graph.row_indices.reserve(products.len());
-    graph.col_indices.reserve(products.len());
-    graph.values.reserve(products.len());
-
-    for (i, j, v) in products {
-        graph.row_indices.push(i);
-        graph.col_indices.push(j);
-        graph.values.push(v);
-    }
+    *graph = symmetrise_csr(graph, T::zero(), |w_ij, w_ji| w_ij * w_ji);
 }
 
 /// MNN symmetrisation
@@ -1250,63 +1221,11 @@ fn symmetrise_mnn<T>(graph: &mut CoordinateList<T>, theta: T)
 where
     T: ManifoldsFloat,
 {
-    let edge_map: FxHashMap<(usize, usize), (Option<T>, Option<T>)> = graph
-        .row_indices
-        .par_iter()
-        .zip(&graph.col_indices)
-        .zip(&graph.values)
-        .fold(FxHashMap::default, |mut map, ((&i, &j), &v)| {
-            map.entry((i, j)).or_insert((None, None)).0 = Some(v);
-            map.entry((j, i)).or_insert((None, None)).1 = Some(v);
-            map
-        })
-        .reduce(FxHashMap::default, |mut map1, map2| {
-            for (key, (v_ij, v_ji)) in map2 {
-                let entry = map1.entry(key).or_insert((None, None));
-                if v_ij.is_some() {
-                    entry.0 = v_ij;
-                }
-                if v_ji.is_some() {
-                    entry.1 = v_ji;
-                }
-            }
-            map1
-        });
-
     let one_minus_theta = T::one() - theta;
 
-    // compute weighted min-max (parallel)
-    let results: Vec<(usize, usize, T)> = edge_map
-        .par_iter()
-        .filter_map(|(&(i, j), &(v_ij, v_ji))| {
-            let v_ij = v_ij.unwrap_or(T::zero());
-            let v_ji = v_ji.unwrap_or(T::zero());
-            let min_val = v_ij.min(v_ji);
-            let max_val = v_ij.max(v_ji);
-            let combined = theta * min_val + one_minus_theta * max_val;
-
-            if combined > T::epsilon() {
-                Some((i, j, combined))
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    // Rebuild graph
-    graph.row_indices.clear();
-    graph.col_indices.clear();
-    graph.values.clear();
-
-    graph.row_indices.reserve(results.len());
-    graph.col_indices.reserve(results.len());
-    graph.values.reserve(results.len());
-
-    for (i, j, v) in results {
-        graph.row_indices.push(i);
-        graph.col_indices.push(j);
-        graph.values.push(v);
-    }
+    *graph = symmetrise_csr(graph, T::epsilon(), |w_ij, w_ji| {
+        theta * w_ij.min(w_ji) + one_minus_theta * w_ij.max(w_ji)
+    });
 }
 
 /// Binary connectivity
