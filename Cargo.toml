@@ -1,6 +1,6 @@
 [package]
 name = "manifolds-rs"
-version = "0.3.14"
+version = "0.3.15"
 edition = "2021"
 authors = ["Gregor Lueg <gregorlueg@me.com>"]
 license = "MIT"
@@ -12,6 +12,18 @@ categories = ["algorithms", "mathematics", "science", "visualization"]
 [lib]
 name = "manifolds_rs"
 path = "src/lib.rs"
+
+## Stage-by-stage timings for UMAP graph construction. Plain `main`, no criterion.
+[[bench]]
+name = "umap_graph"
+harness = false
+required-features = ["large_scale_diagnostics"]
+
+## Stage-by-stage timings for tSNE graph construction. Plain `main`, no criterion.
+[[bench]]
+name = "tsne_graph"
+harness = false
+required-features = ["large_scale_diagnostics"]
 
 [profile.test]
 opt-level = 2

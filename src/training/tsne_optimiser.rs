@@ -6,6 +6,7 @@ use num_traits::{Float, FromPrimitive};
 use rayon::prelude::*;
 use thousands::*;
 
+use crate::data::graph::coo_to_adjacency_list;
 use crate::data::structures::*;
 use crate::prelude::*;
 use crate::utils::bh_tree::*;
@@ -605,15 +606,7 @@ pub fn optimise_bh_tsne<T>(
     // one tree across all epochs: rebuild reuses its buffers.
     let mut bh_tree = BarnesHutTree::empty();
 
-    let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
-    for ((&i, &j), &w) in graph
-        .row_indices
-        .iter()
-        .zip(&graph.col_indices)
-        .zip(&graph.values)
-    {
-        adj[i].push((j, w));
-    }
+    let adj = coo_to_adjacency_list(graph);
 
     for epoch in 0..params.n_epochs {
         let momentum = if epoch < TSNE_MOMENTUM_SWITCH_ITER {

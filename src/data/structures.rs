@@ -441,7 +441,9 @@ pub struct SparseRow<T> {
 /// Converts coordinate format to Compressed Sparse Row format. This is required
 /// for efficient row-based operations like normalization and matrix multiplication.
 ///
-/// Uses parallel sorting for performance.
+/// An input already in `(row, column)` order is copied straight through; anything
+/// else is sorted in parallel first. The graph symmetrisations in
+/// [`crate::data::graph`] emit sorted output, so their callers take the copy.
 ///
 /// ### Params
 ///
@@ -456,6 +458,26 @@ where
 {
     let n = graph.n_samples;
     let nnz = graph.values.len();
+
+    // Both keys must already be in order, not just the row: the sort is stable
+    // on `(row, column)` and downstream row operations assume sorted columns.
+    let sorted = graph
+        .row_indices
+        .par_windows(2)
+        .zip(graph.col_indices.par_windows(2))
+        .all(|(rows, cols)| rows[0] < rows[1] || (rows[0] == rows[1] && cols[0] <= cols[1]));
+
+    if sorted {
+        let mut indptr = vec![0; n + 1];
+        for &r in &graph.row_indices {
+            indptr[r + 1] += 1;
+        }
+        for i in 0..n {
+            indptr[i + 1] += indptr[i];
+        }
+
+        return CompressedSparseData::new_csr(&graph.values, &graph.col_indices, &indptr, (n, n));
+    }
 
     let mut triplets: Vec<(usize, usize, T)> = (0..nnz)
         .into_par_iter()
