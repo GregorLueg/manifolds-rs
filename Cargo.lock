@@ -4458,7 +4458,7 @@ checksum = "fc04a4c58212d57930a24bf47d3fa87485264a3a054e9c10e042eb373573ad3c"
 
 [[package]]
 name = "manifolds-rs"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "ann-search-rs",
  "approx",

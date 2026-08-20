@@ -13,13 +13,16 @@ use crate::prelude::*;
 // UMAP //
 //////////
 
+////////////
+// Consts //
+////////////
+
 /// Edges per chunk when compacting a COO graph in parallel.
-///
-/// The two-pass compaction stores one `usize` offset per chunk, so this trades
-/// that bookkeeping against parallel granularity. 16k edges is a few hundred
-/// kilobytes of working set per task, small enough to stay in L2 across both
-/// passes and large enough that the per-task overhead disappears.
 const FILTER_CHUNK: usize = 16_384;
+
+/////////////////////
+// UmapGraphParams //
+/////////////////////
 
 /// UMAP algorithm parameters
 ///
@@ -58,305 +61,9 @@ where
     }
 }
 
-/// Smooth kNN distances via binary search to find sigma for each point
-///
-/// For each point, finds the bandwidth (sigma) such that the sum of
-/// similarities to its k nearest neighbours approximates log(k). Uses binary
-/// search for efficiency.
-///
-/// ### Params
-///
-/// * `dist` - kNN distance matrix where each row contains distances to k
-///   nearest neighbours
-/// * `k` - Number of nearest neighbours (used to compute target = ln(k))
-/// * `local_connectivity` - Number of nearest neighbours to assume are at
-///   distance zero (typically 1.0). Allows for local manifold structure.
-/// * `bandwidth` - Convergence tolerance for binary search (typically 1e-5)
-/// * `n_iter` - Maximum number of binary search iterations (typically 64)
-///
-/// ### Returns
-///
-/// * `sigmas` - Smoothing bandwidth for each point
-/// * `rhos` - Distance to the `local_connectivity`-th nearest neighbour for
-///   each point
-///
-/// ### Notes
-///
-/// Used for UMAP
-pub fn smooth_knn_dist<T>(
-    dist: &[Vec<T>],
-    k: usize,
-    local_connectivity: T,
-    bandwidth: T,
-    n_iter: usize,
-) -> (Vec<T>, Vec<T>)
-where
-    T: ManifoldsFloat,
-{
-    let n = dist.len();
-    let target = (k as f64).ln();
-    let tol = as_f64(bandwidth);
-    let two = T::one() + T::one();
-    let widest_row = dist.iter().map(|row| row.len()).max().unwrap_or(0);
-
-    let mut sigmas = vec![T::zero(); n];
-    let mut rhos = vec![T::zero(); n];
-
-    sigmas
-        .par_iter_mut()
-        .zip(rhos.par_iter_mut())
-        .zip(dist.par_iter())
-        .for_each_init(
-            || Vec::<T>::with_capacity(widest_row),
-            |adjusted, ((sigma, rho_out), dists)| {
-                let rho = local_connectivity_distance(dists, local_connectivity);
-
-                // `max(d - rho, 0)` does not depend on the bandwidth, so it is
-                // computed once here rather than inside all `n_iter` passes.
-                adjusted.clear();
-                adjusted.extend(dists.iter().map(|&d| (d - rho).max(T::zero())));
-
-                let mut lo = T::zero();
-                let mut hi = T::max_value();
-                let mut mid = T::one();
-
-                for _ in 0..n_iter {
-                    // Reciprocal hoisted out of the row so the inner loop
-                    // multiplies rather than divides per element.
-                    let inv_mid = T::one() / mid;
-                    let val = as_f64(adjusted.iter().map(|&a| (-a * inv_mid).exp()).sum::<T>());
-
-                    if (val - target).abs() < tol {
-                        break;
-                    }
-
-                    if val > target {
-                        hi = mid;
-                        mid = (lo + hi) / two;
-                    } else {
-                        lo = mid;
-                        if hi == T::max_value() {
-                            mid *= two;
-                        } else {
-                            mid = (lo + hi) / two;
-                        }
-                    }
-                }
-
-                *sigma = mid;
-                *rho_out = rho;
-            },
-        );
-
-    (sigmas, rhos)
-}
-
-/// Convert kNN graph to sparse COO (Coordinate) format with membership
-/// strengths
-///
-/// Computes fuzzy simplicial set membership strengths based on distances,
-/// local connectivity (rho), and smoothed bandwidths (sigma).
-///
-/// ### Params
-///
-/// * `knn_indices` - Indices of k nearest neighbours for each point
-/// * `knn_dists` - Distances to k nearest neighbours for each point
-/// * `sigmas` - Smoothing bandwidth for each point (from `smooth_knn_dist`)
-/// * `rhos` - Local connectivity distance for each point (from
-///   `smooth_knn_dist`)
-///
-/// ### Returns
-///
-/// Sparse graph in COO format where weights represent membership strengths
-/// computed as exp(-(max(0, dist - rho) / sigma))
-pub fn knn_to_coo<T>(
-    knn_indices: &[Vec<usize>],
-    knn_dists: &[Vec<T>],
-    sigmas: &[T],
-    rhos: &[T],
-) -> CoordinateList<T>
-where
-    T: ManifoldsFloat,
-{
-    let n = knn_indices.len();
-
-    // Exact per-row edge counts, so the output is allocated once and every row
-    // can be written into its own disjoint slice in parallel.
-    let mut offsets = vec![0usize; n + 1];
-    offsets[1..]
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(i, slot)| {
-            *slot = knn_indices[i]
-                .iter()
-                .zip(knn_dists[i].iter())
-                .filter(|(&j, _)| j != i)
-                .count();
-        });
-
-    for i in 0..n {
-        offsets[i + 1] += offsets[i];
-    }
-
-    let total = offsets[n];
-    let mut row_indices = vec![0usize; total];
-    let mut col_indices = vec![0usize; total];
-    let mut values = vec![T::zero(); total];
-
-    row_slices_mut(&mut row_indices, &offsets)
-        .into_par_iter()
-        .zip(row_slices_mut(&mut col_indices, &offsets))
-        .zip(row_slices_mut(&mut values, &offsets))
-        .enumerate()
-        .for_each(|(i, ((rows, cols), vals))| {
-            let sigma = sigmas[i];
-            let rho = rhos[i];
-
-            // Reciprocal hoisted out of the row so the inner loop multiplies
-            // rather than divides per neighbour.
-            let smooth = sigma > T::zero();
-            let inv_sigma = if smooth { T::one() / sigma } else { T::zero() };
-
-            let mut written = 0usize;
-            for (&j, &dist) in knn_indices[i].iter().zip(knn_dists[i].iter()) {
-                if i == j {
-                    continue;
-                }
-
-                let adjusted = (dist - rho).max(T::zero());
-                let weight = if smooth {
-                    (-adjusted * inv_sigma).exp()
-                } else if adjusted > T::zero() {
-                    // Degenerate bandwidth: full membership only at rho itself.
-                    T::zero()
-                } else {
-                    T::one()
-                };
-
-                rows[written] = i;
-                cols[written] = j;
-                vals[written] = weight;
-                written += 1;
-            }
-        });
-
-    CoordinateList {
-        row_indices,
-        col_indices,
-        values,
-        n_samples: n,
-    }
-}
-
-/// Symmetrise graph using probabilistic t-conorm (fuzzy set union)
-///
-/// Creates symmetric graph by combining directed edges using fuzzy union:
-/// w_sym = w_ij + w_ji - w_ij * w_ji, weighted by `mix_weight`.
-///
-/// ### Params
-///
-/// * `graph` - Input directed graph in COO format
-/// * `mix_weight` - Balance between fuzzy union (0.5) and directed graph (1.0).
-///   Controls how much to weight the union operation.
-///
-/// ### Returns
-///
-/// Symmetrised graph in COO format
-///
-/// ### Notes
-///
-/// * `mix_weight = 1.0`: Full fuzzy union (standard UMAP, symmetric)
-/// * `mix_weight = 0.5`: Weighted average of union and directed)
-/// * `mix_weight = 0.0`: Use only outgoing edges (directed)
-pub fn symmetrise_graph<T>(graph: CoordinateList<T>, mix_weight: T) -> CoordinateList<T>
-where
-    T: ManifoldsFloat,
-{
-    let n = graph.n_samples;
-
-    if n == 0 || graph.values.is_empty() {
-        return CoordinateList {
-            row_indices: Vec::new(),
-            col_indices: Vec::new(),
-            values: Vec::new(),
-            n_samples: n,
-        };
-    }
-
-    // A as CSR with column-sorted rows, then A^T as CSR. Row i of the transpose
-    // is exactly the incoming edge set of vertex i, and it comes out
-    // column-sorted for free, so the union below is a linear merge.
-    let (out_indptr, out_entries) = coo_to_sorted_csr(&graph);
-    let (in_indptr, in_entries) = transpose_csr(&out_indptr, &out_entries, n);
-
-    // Upper bound on each merged row. Tight unless `mix_weight` zeroes an edge,
-    // which only happens at `mix_weight = 0` for purely incoming neighbours.
-    let mut merge_indptr = vec![0usize; n + 1];
-    merge_indptr[1..]
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(i, slot)| {
-            *slot = union_len(
-                &out_entries[out_indptr[i]..out_indptr[i + 1]],
-                &in_entries[in_indptr[i]..in_indptr[i + 1]],
-            );
-        });
-    for i in 0..n {
-        merge_indptr[i + 1] += merge_indptr[i];
-    }
-
-    let mut merged = vec![(0usize, T::zero()); merge_indptr[n]];
-    let mut lengths = vec![0usize; n];
-
-    row_slices_mut(&mut merged, &merge_indptr)
-        .into_par_iter()
-        .zip(lengths.par_iter_mut())
-        .enumerate()
-        .for_each(|(i, (dst, len))| {
-            *len = merge_row(
-                &out_entries[out_indptr[i]..out_indptr[i + 1]],
-                &in_entries[in_indptr[i]..in_indptr[i + 1]],
-                mix_weight,
-                dst,
-            );
-        });
-
-    // Exact offsets now that the surviving edge count per row is known
-    let mut coo_indptr = vec![0usize; n + 1];
-    for i in 0..n {
-        coo_indptr[i + 1] = coo_indptr[i] + lengths[i];
-    }
-
-    let total = coo_indptr[n];
-    let mut row_indices = vec![0usize; total];
-    let mut col_indices = vec![0usize; total];
-    let mut values = vec![T::zero(); total];
-
-    row_slices_mut(&mut row_indices, &coo_indptr)
-        .into_par_iter()
-        .zip(row_slices_mut(&mut col_indices, &coo_indptr))
-        .zip(row_slices_mut(&mut values, &coo_indptr))
-        .enumerate()
-        .for_each(|(i, ((rows, cols), vals))| {
-            let src = &merged[merge_indptr[i]..merge_indptr[i] + lengths[i]];
-            for (idx, &(col, w)) in src.iter().enumerate() {
-                rows[idx] = i;
-                cols[idx] = col;
-                vals[idx] = w;
-            }
-        });
-
-    CoordinateList {
-        row_indices,
-        col_indices,
-        values,
-        n_samples: n,
-    }
-}
-
-////////////////////
-// UMAP internals //
-////////////////////
+/////////////
+// Helpers //
+/////////////
 
 /// Widen a float to `f64`.
 ///
@@ -651,6 +358,301 @@ where
     written
 }
 
+///////////////
+// Front end //
+///////////////
+
+/// Smooth kNN distances via binary search to find sigma for each point
+///
+/// For each point, finds the bandwidth (sigma) such that the sum of
+/// similarities to its k nearest neighbours approximates log(k). Uses binary
+/// search for efficiency.
+///
+/// ### Params
+///
+/// * `dist` - kNN distance matrix where each row contains distances to k
+///   nearest neighbours
+/// * `k` - Number of nearest neighbours (used to compute target = ln(k))
+/// * `local_connectivity` - Number of nearest neighbours to assume are at
+///   distance zero (typically 1.0). Allows for local manifold structure.
+/// * `bandwidth` - Convergence tolerance for binary search (typically 1e-5)
+/// * `n_iter` - Maximum number of binary search iterations (typically 64)
+///
+/// ### Returns
+///
+/// * `sigmas` - Smoothing bandwidth for each point
+/// * `rhos` - Distance to the `local_connectivity`-th nearest neighbour for
+///   each point
+///
+/// ### Notes
+///
+/// Used for UMAP
+pub fn smooth_knn_dist<T>(
+    dist: &[Vec<T>],
+    k: usize,
+    local_connectivity: T,
+    bandwidth: T,
+    n_iter: usize,
+) -> (Vec<T>, Vec<T>)
+where
+    T: ManifoldsFloat,
+{
+    let n = dist.len();
+    let target = (k as f64).ln();
+    let tol = as_f64(bandwidth);
+    let two = T::one() + T::one();
+    let widest_row = dist.iter().map(|row| row.len()).max().unwrap_or(0);
+
+    let mut sigmas = vec![T::zero(); n];
+    let mut rhos = vec![T::zero(); n];
+
+    sigmas
+        .par_iter_mut()
+        .zip(rhos.par_iter_mut())
+        .zip(dist.par_iter())
+        .for_each_init(
+            || Vec::<T>::with_capacity(widest_row),
+            |adjusted, ((sigma, rho_out), dists)| {
+                let rho = local_connectivity_distance(dists, local_connectivity);
+
+                // `max(d - rho, 0)` does not depend on the bandwidth, so it is
+                // computed once here rather than inside all `n_iter` passes.
+                adjusted.clear();
+                adjusted.extend(dists.iter().map(|&d| (d - rho).max(T::zero())));
+
+                let mut lo = T::zero();
+                let mut hi = T::max_value();
+                let mut mid = T::one();
+
+                for _ in 0..n_iter {
+                    // Reciprocal hoisted out of the row so the inner loop
+                    // multiplies rather than divides per element.
+                    let inv_mid = T::one() / mid;
+                    let val = as_f64(adjusted.iter().map(|&a| (-a * inv_mid).exp()).sum::<T>());
+
+                    if (val - target).abs() < tol {
+                        break;
+                    }
+
+                    if val > target {
+                        hi = mid;
+                        mid = (lo + hi) / two;
+                    } else {
+                        lo = mid;
+                        if hi == T::max_value() {
+                            mid *= two;
+                        } else {
+                            mid = (lo + hi) / two;
+                        }
+                    }
+                }
+
+                *sigma = mid;
+                *rho_out = rho;
+            },
+        );
+
+    (sigmas, rhos)
+}
+
+/// Convert kNN graph to sparse COO (Coordinate) format with membership
+/// strengths
+///
+/// Computes fuzzy simplicial set membership strengths based on distances,
+/// local connectivity (rho), and smoothed bandwidths (sigma).
+///
+/// ### Params
+///
+/// * `knn_indices` - Indices of k nearest neighbours for each point
+/// * `knn_dists` - Distances to k nearest neighbours for each point
+/// * `sigmas` - Smoothing bandwidth for each point (from `smooth_knn_dist`)
+/// * `rhos` - Local connectivity distance for each point (from
+///   `smooth_knn_dist`)
+///
+/// ### Returns
+///
+/// Sparse graph in COO format where weights represent membership strengths
+/// computed as exp(-(max(0, dist - rho) / sigma))
+pub fn knn_to_coo<T>(
+    knn_indices: &[Vec<usize>],
+    knn_dists: &[Vec<T>],
+    sigmas: &[T],
+    rhos: &[T],
+) -> CoordinateList<T>
+where
+    T: ManifoldsFloat,
+{
+    let n = knn_indices.len();
+
+    // Exact per-row edge counts, so the output is allocated once and every row
+    // can be written into its own disjoint slice in parallel.
+    let mut offsets = vec![0usize; n + 1];
+    offsets[1..]
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, slot)| {
+            *slot = knn_indices[i]
+                .iter()
+                .zip(knn_dists[i].iter())
+                .filter(|(&j, _)| j != i)
+                .count();
+        });
+
+    for i in 0..n {
+        offsets[i + 1] += offsets[i];
+    }
+
+    let total = offsets[n];
+    let mut row_indices = vec![0usize; total];
+    let mut col_indices = vec![0usize; total];
+    let mut values = vec![T::zero(); total];
+
+    row_slices_mut(&mut row_indices, &offsets)
+        .into_par_iter()
+        .zip(row_slices_mut(&mut col_indices, &offsets))
+        .zip(row_slices_mut(&mut values, &offsets))
+        .enumerate()
+        .for_each(|(i, ((rows, cols), vals))| {
+            let sigma = sigmas[i];
+            let rho = rhos[i];
+
+            // Reciprocal hoisted out of the row so the inner loop multiplies
+            // rather than divides per neighbour.
+            let smooth = sigma > T::zero();
+            let inv_sigma = if smooth { T::one() / sigma } else { T::zero() };
+
+            let mut written = 0usize;
+            for (&j, &dist) in knn_indices[i].iter().zip(knn_dists[i].iter()) {
+                if i == j {
+                    continue;
+                }
+
+                let adjusted = (dist - rho).max(T::zero());
+                let weight = if smooth {
+                    (-adjusted * inv_sigma).exp()
+                } else if adjusted > T::zero() {
+                    // Degenerate bandwidth: full membership only at rho itself.
+                    T::zero()
+                } else {
+                    T::one()
+                };
+
+                rows[written] = i;
+                cols[written] = j;
+                vals[written] = weight;
+                written += 1;
+            }
+        });
+
+    CoordinateList {
+        row_indices,
+        col_indices,
+        values,
+        n_samples: n,
+    }
+}
+
+/// Symmetrise graph using probabilistic t-conorm (fuzzy set union)
+///
+/// Creates symmetric graph by combining directed edges using fuzzy union:
+/// w_sym = w_ij + w_ji - w_ij * w_ji, weighted by `mix_weight`.
+///
+/// ### Params
+///
+/// * `graph` - Input directed graph in COO format
+/// * `mix_weight` - Balance between fuzzy union (0.5) and directed graph (1.0).
+///   Controls how much to weight the union operation.
+///
+/// ### Returns
+///
+/// Symmetrised graph in COO format
+///
+/// ### Notes
+///
+/// * `mix_weight = 1.0`: Full fuzzy union (standard UMAP, symmetric)
+/// * `mix_weight = 0.5`: Weighted average of union and directed)
+/// * `mix_weight = 0.0`: Use only outgoing edges (directed)
+pub fn symmetrise_graph<T>(graph: CoordinateList<T>, mix_weight: T) -> CoordinateList<T>
+where
+    T: ManifoldsFloat,
+{
+    let n = graph.n_samples;
+
+    if n == 0 || graph.values.is_empty() {
+        return CoordinateList {
+            row_indices: Vec::new(),
+            col_indices: Vec::new(),
+            values: Vec::new(),
+            n_samples: n,
+        };
+    }
+
+    let (out_indptr, out_entries) = coo_to_sorted_csr(&graph);
+    let (in_indptr, in_entries) = transpose_csr(&out_indptr, &out_entries, n);
+
+    let mut merge_indptr = vec![0usize; n + 1];
+    merge_indptr[1..]
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, slot)| {
+            *slot = union_len(
+                &out_entries[out_indptr[i]..out_indptr[i + 1]],
+                &in_entries[in_indptr[i]..in_indptr[i + 1]],
+            );
+        });
+    for i in 0..n {
+        merge_indptr[i + 1] += merge_indptr[i];
+    }
+
+    let mut merged = vec![(0usize, T::zero()); merge_indptr[n]];
+    let mut lengths = vec![0usize; n];
+
+    row_slices_mut(&mut merged, &merge_indptr)
+        .into_par_iter()
+        .zip(lengths.par_iter_mut())
+        .enumerate()
+        .for_each(|(i, (dst, len))| {
+            *len = merge_row(
+                &out_entries[out_indptr[i]..out_indptr[i + 1]],
+                &in_entries[in_indptr[i]..in_indptr[i + 1]],
+                mix_weight,
+                dst,
+            );
+        });
+
+    // Exact offsets now that the surviving edge count per row is known
+    let mut coo_indptr = vec![0usize; n + 1];
+    for i in 0..n {
+        coo_indptr[i + 1] = coo_indptr[i] + lengths[i];
+    }
+
+    let total = coo_indptr[n];
+    let mut row_indices = vec![0usize; total];
+    let mut col_indices = vec![0usize; total];
+    let mut values = vec![T::zero(); total];
+
+    row_slices_mut(&mut row_indices, &coo_indptr)
+        .into_par_iter()
+        .zip(row_slices_mut(&mut col_indices, &coo_indptr))
+        .zip(row_slices_mut(&mut values, &coo_indptr))
+        .enumerate()
+        .for_each(|(i, ((rows, cols), vals))| {
+            let src = &merged[merge_indptr[i]..merge_indptr[i] + lengths[i]];
+            for (idx, &(col, w)) in src.iter().enumerate() {
+                rows[idx] = i;
+                cols[idx] = col;
+                vals[idx] = w;
+            }
+        });
+
+    CoordinateList {
+        row_indices,
+        col_indices,
+        values,
+        n_samples: n,
+    }
+}
+
 /// Convert COO sparse graph to adjacency list representation
 ///
 /// More efficient for SGD optimisation where we need to iterate over neighbours
@@ -670,18 +672,11 @@ where
 {
     let n = graph.n_samples;
 
-    // Counting the degrees up front means every row is allocated exactly once.
-    // Growing from empty instead reallocates and copies log(degree) times per
-    // vertex, which is where this used to spend its time.
     let mut degrees = vec![0usize; n];
     for &i in &graph.row_indices {
         degrees[i] += 1;
     }
 
-    // Fast path: rows already grouped in ascending order, which is what every
-    // producer in this module emits. Each vertex then owns a contiguous slice,
-    // so allocation and fill both happen in parallel with no scatter at all.
-    // The check is one parallel pass over the row indices.
     if graph
         .row_indices
         .par_windows(2)
@@ -759,9 +754,6 @@ where
 
     let threshold = max_weight / T::from(n_epochs).unwrap();
 
-    // Count survivors per chunk, prefix-sum to get each chunk's write offset,
-    // then compact in parallel. Two passes over the weights, both parallel, and
-    // the output is allocated exactly once. Order is preserved.
     let n_chunks = original_edge_no.div_ceil(FILTER_CHUNK);
     let mut offsets = vec![0usize; n_chunks + 1];
 

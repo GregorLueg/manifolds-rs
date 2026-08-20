@@ -1,5 +1,11 @@
 # News
 
+## 0.3.15
+
+**Feature**
+
+- Faster UMAP graph generation.
+
 ## 0.3.14
 
 **Feature:**
