@@ -96,7 +96,8 @@ where
 /// ### Params
 ///
 /// * `dists` - Distances to the nearest neighbours, sorted ascending
-/// * `local_connectivity` - Number of neighbours assumed to sit at distance zero
+/// * `local_connectivity` - Number of neighbours assumed to sit at distance
+///   zero
 ///
 /// ### Returns
 ///
@@ -141,9 +142,10 @@ fn chunk_bounds(chunk: usize, len: usize) -> (usize, usize) {
 
 /// Hand out one disjoint mutable slice per CSR row.
 ///
-/// Rayon has no variable-width counterpart to `par_chunks_mut`, so the row views
-/// are carved out sequentially with `split_at_mut` and consumed in parallel
-/// afterwards. The carving loop is `n` pointer bumps and never touches the data.
+/// Rayon has no variable-width counterpart to `par_chunks_mut`, so the row
+/// views are carved out sequentially with `split_at_mut` and consumed in
+/// parallel afterwards. The carving loop is `n` pointer bumps and never touches
+/// the data.
 ///
 /// ### Params
 ///
@@ -168,9 +170,9 @@ fn row_slices_mut<'a, U>(buf: &'a mut [U], indptr: &[usize]) -> Vec<&'a mut [U]>
 
 /// Convert a COO graph to CSR with every row sorted by column index.
 ///
-/// Row grouping is a counting sort rather than a comparison sort, so the cost is
-/// `O(nnz)` plus one `k log k` sort per row. Rows are sorted in parallel; the
-/// scatter itself is sequential because the per-row cursors alias.
+/// Row grouping is a counting sort rather than a comparison sort, so the cost
+/// is `O(nnz)` plus one `k log k` sort per row. Rows are sorted in parallel;
+/// the scatter itself is sequential because the per-row cursors alias.
 ///
 /// ### Params
 ///
@@ -217,8 +219,8 @@ where
 
 /// Transpose a square CSR matrix via counting sort.
 ///
-/// Because the source rows are visited in ascending order, each output row comes
-/// out sorted ascending by index without an extra sort. `O(nnz)` with one
+/// Because the source rows are visited in ascending order, each output row
+/// comes out sorted ascending by index without an extra sort. `O(nnz)` with one
 /// scattered write per entry.
 ///
 /// ### Params
@@ -310,7 +312,8 @@ fn union_len<T>(a: &[(usize, T)], b: &[(usize, T)]) -> usize {
 /// * `in_row` - Incoming edges as `(source, weight)`, sorted by source
 /// * `min_weight` - Results at or below this are dropped
 /// * `combine` - Symmetrisation kernel applied to `(w_ij, w_ji)`
-/// * `dst` - Destination, must hold at least `union_len(out_row, in_row)` entries
+/// * `dst` - Destination, must hold at least `union_len(out_row, in_row)`
+///   entries
 ///
 /// ### Returns
 ///
@@ -364,8 +367,8 @@ where
 /// Shared by UMAP, tSNE and all three PHATE variants; only `combine` and
 /// `min_weight` differ between them. The graph is grouped into CSR by counting
 /// sort, transposed by counting sort, and the two are merged row by row with a
-/// two-pointer walk. Everything past the two counting sorts is parallel, and the
-/// output is allocated once from exact per-row survivor counts.
+/// two-pointer walk. Everything past the two counting sorts is parallel, and
+/// the output is allocated once from exact per-row survivor counts.
 ///
 /// Both the input rows and the output are sorted ascending by column, so the
 /// result is reproducible run to run and downstream CSR conversion can skip its
@@ -858,10 +861,6 @@ where
 ////////////
 
 /// `log2(e)`, converting the natural-log form of the Shannon entropy into bits.
-///
-/// The perplexity target is stated in bits (`log2(perplexity)`), but the fused
-/// entropy falls out of the Gaussian kernel in nats, so the conversion happens
-/// once per binary-search iteration rather than once per neighbour.
 const LOG2_E: f64 = std::f64::consts::LOG2_E;
 
 /// Compute Gaussian affinities from k-nearest neighbours using perplexity-based
@@ -914,7 +913,6 @@ where
 {
     let n = knn_indices.len();
 
-    // perplexity vs kNN size validation
     let min_k = knn_indices.iter().map(|idx| idx.len()).min().unwrap_or(0);
 
     let perp_f64 = perplexity.to_f64().unwrap_or(f64::NAN);
@@ -927,8 +925,6 @@ where
         });
     }
 
-    // The search compares in `f64` regardless of `T`, matching `smooth_knn_dist`,
-    // so an `f32` tolerance is not swamped by rounding in the entropy.
     let target_entropy = perp_f64.log2();
     let tol_f64 = as_f64(tol);
     let machine_epsilon = T::epsilon();
@@ -936,8 +932,6 @@ where
     let two = T::one() + T::one();
     let widest_row = knn_dists.iter().map(|row| row.len()).max().unwrap_or(0);
 
-    // Upper-bound layout: one slot per input neighbour. Survivors are written to
-    // the front of each row, so the exact offsets are known after the search.
     let mut in_offsets = vec![0usize; n + 1];
     for i in 0..n {
         in_offsets[i + 1] = in_offsets[i] + knn_dists[i].len();
@@ -961,11 +955,6 @@ where
                 )
             },
             |(d_sq, origin, probs), (i, ((cols, vals), keep))| {
-                // Squaring and the zero-distance skip do not depend on beta, so
-                // the row is compacted once rather than inside all `max_iter`
-                // passes. The search loop then runs over a dense slice with no
-                // branch in it. `origin` maps each survivor back to its slot in
-                // the kNN row.
                 d_sq.clear();
                 origin.clear();
                 for (m, &d) in knn_dists[i].iter().enumerate() {
@@ -1090,7 +1079,8 @@ where
 ///
 /// ### Params
 ///
-/// * `graph` - Directed sparse graph containing conditional probabilities P(j|i)
+/// * `graph` - Directed sparse graph containing conditional probabilities
+///   P(j|i)
 ///
 /// ### Returns
 ///
@@ -1099,14 +1089,6 @@ where
 /// - P_ij = P_ji (symmetric)
 /// - All weights sum to 1.0
 /// - Edges are grouped by row and sorted by column within each row
-///
-/// ### Notes
-///
-/// Only structural zeros are dropped. The joint probabilities scale as `1 / 2N`,
-/// so a relative threshold like `T::epsilon()` acts as an absolute one here and
-/// deletes most of the graph in `f32` once `N` reaches the tens of thousands.
-/// The kernel keeps every edge present in either direction instead, which is
-/// what `f64` already did.
 ///
 /// ### Algorithm
 ///
@@ -1182,8 +1164,8 @@ pub fn parse_phate_symmetrisation(s: &str) -> Option<PhateGraphSymmetrisation> {
 /// ### Notes
 ///
 /// Duplicate `(i, j)` entries in the input collapse to the last occurrence
-/// rather than accumulating. kNN rows carry unique columns, so this only differs
-/// from a summing merge on malformed input.
+/// rather than accumulating. kNN rows carry unique columns, so this only
+/// differs from a summing merge on malformed input.
 fn symmetrise_additive<T>(graph: &mut CoordinateList<T>)
 where
     T: ManifoldsFloat,
@@ -1203,8 +1185,8 @@ where
 ///
 /// ### Notes
 ///
-/// A one-sided edge multiplies against zero and is dropped, so the result is the
-/// intersection of `K` and `K^T`.
+/// A one-sided edge multiplies against zero and is dropped, so the result is
+/// the intersection of `K` and `K^T`.
 fn symmetrise_multiplicative<T>(graph: &mut CoordinateList<T>)
 where
     T: ManifoldsFloat,

@@ -4,7 +4,7 @@
 
 **Feature**
 
-- Faster UMAP graph generation.
+- Faster UMAP, tSNE and PHATE graph generation.
 
 ## 0.3.14
 
