@@ -227,7 +227,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
 ///   distances excluding self.
@@ -247,7 +249,7 @@ where
 /// Tuple of (graph, knn_indices, knn_dist) for use in optimisation
 #[allow(clippy::too_many_arguments)]
 pub fn construct_umap_graph<T>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     k: usize,
     ann_type: String,
@@ -262,6 +264,8 @@ where
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     let verbosity = parse_verbosity_level(verbose);
 
     let (knn_indices, knn_dist) = match precomputed_knn {
@@ -329,7 +333,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
 ///   distances excluding self.
@@ -344,7 +350,7 @@ where
 /// `n_dim` and inner vectors have length `n_samples`. Each outer element
 /// represents one embedding dimension.
 pub fn umap<T>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     umap_params: &UmapParams<T>,
     seed: usize,
@@ -356,6 +362,8 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     umap_inner(data, precomputed_knn, umap_params, None, seed, verbose)
 }
 
@@ -680,7 +688,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
 ///   distances excluding self.
@@ -707,7 +717,7 @@ where
 /// The k value is automatically set to `3 × perplexity`, clamped between 5 and
 /// n-1. This is standard practice in t-SNE implementations.
 pub fn construct_tsne_graph<T>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     perplexity: T,
     ann_type: String,
@@ -720,6 +730,8 @@ where
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     let verbosity = parse_verbosity_level(verbose);
 
     let (knn_indices, knn_dist) = match precomputed_knn {
@@ -798,7 +810,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
 ///   distances excluding self.
@@ -823,7 +837,7 @@ where
 ///   visualization of single-cell RNA-seq data"
 #[cfg(feature = "fft_tsne")]
 pub fn tsne<T>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParams<T>,
     approx_type: &str,
@@ -836,6 +850,8 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     tsne_inner(
         data,
         precomputed_knn,
@@ -958,7 +974,13 @@ where
     }
 
     // parse the optimisation type
-    let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
+    let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_else(|| {
+        println!(
+            "Unrecognised tSNE approximation provided: {:?}. Default to Barnes-Hut.",
+            approx_type
+        );
+        TsneOpt::default()
+    });
 
     // 3. optimise
     let start_optim = Instant::now();
@@ -1036,7 +1058,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
 ///   distances excluding self.
@@ -1061,7 +1085,7 @@ where
 ///   visualization of single-cell RNA-seq data"
 #[cfg(not(feature = "fft_tsne"))]
 pub fn tsne<T>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParams<T>,
     approx_type: &str,
@@ -1074,6 +1098,8 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     tsne_inner(
         data,
         precomputed_knn,
@@ -1196,7 +1222,13 @@ where
     }
 
     // parse the optimisation type
-    let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
+    let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_else(|| {
+        println!(
+            "Unrecognised tSNE approximation provided: {:?}. Default to Barnes-Hut.",
+            approx_type
+        );
+        TsneOpt::default()
+    });
 
     // 3. optimise
     let start_optim = Instant::now();
@@ -1342,7 +1374,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
 ///   distances excluding self.
@@ -1368,7 +1402,7 @@ where
 /// variability through density-preserving data visualization", Nature
 /// Biotechnology
 pub fn densmap<T>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &DensmapParams<T>,
     seed: usize,
@@ -1380,6 +1414,8 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     umap_inner(
         data,
         precomputed_knn,
@@ -1489,7 +1525,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
 ///   distances excluding self.
@@ -1518,7 +1556,7 @@ where
 /// Biotechnology
 #[cfg(feature = "fft_tsne")]
 pub fn densne<T>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &DensneParams<T>,
     approx_type: &str,
@@ -1531,6 +1569,8 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     tsne_inner(
         data,
         precomputed_knn,
@@ -1564,7 +1604,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
 ///   distances excluding self.
@@ -1593,7 +1635,7 @@ where
 /// Biotechnology
 #[cfg(not(feature = "fft_tsne"))]
 pub fn densne<T>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &DensneParams<T>,
     approx_type: &str,
@@ -1606,6 +1648,8 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     tsne_inner(
         data,
         precomputed_knn,
@@ -1762,7 +1806,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `k` - Number of nearest neighbours for graph construction
 /// * `precomputed_knn` - Precomputed kNN indices and distances as
 ///   `Some((Vec<Vec<usize>>, Vec<Vec<T>>))`, or `None` to run search
@@ -1785,7 +1831,7 @@ where
 /// the compressed landmark operator and interpolation matrices.
 #[allow(clippy::too_many_arguments)]
 pub fn construct_phate_diffusion<T>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     k: usize,
     precomputed_knn: PreComputedKnn<T>,
     ann_type: &str,
@@ -1799,6 +1845,8 @@ where
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     let verbosity = parse_verbosity_level(verbose);
 
     let (knn_indices, knn_dist) = match precomputed_knn {
@@ -1906,7 +1954,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Precomputed kNN indices and distances as
 ///   `Some((Vec<Vec<usize>>, Vec<Vec<T>>))`, or `None` to run search
 ///   internally. Indices and distances must exclude self.
@@ -1927,7 +1977,7 @@ where
 /// - Moon et al. (2019): "Visualizing Structure and Transitions in
 ///   High-Dimensional Biological Data" (Nature Biotechnology)
 pub fn phate<T>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     phate_params: PhateParams<T>,
     seed: usize,
@@ -1939,6 +1989,8 @@ where
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
     StandardNormal: Distribution<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     let start_phate = Instant::now();
     let verbosity = parse_verbosity_level(verbose);
 
@@ -2269,7 +2321,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features).
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Optional precomputed kNN. Must have been computed
 ///   with k >= `params.mn_candidate_end` to support mid-near sampling.
 /// * `params` - PaCMAP parameters.
@@ -2281,7 +2335,7 @@ where
 ///
 /// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
 pub fn pacmap<T>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params_pacmap: &PacmapParams<T>,
     seed: usize,
@@ -2293,6 +2347,8 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     let n_samples = data.nrows();
 
     let verbosity = parse_verbosity_level(verbose);
@@ -2608,7 +2664,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (N × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `k` - Number of nearest neighbours
 /// * `precomputed_knn` - Optional precomputed kNN; skips search if provided
 /// * `ann_type` - ANN algorithm name
@@ -2623,7 +2681,7 @@ where
 /// `DiffusionMapsOperator` (full or landmark)
 #[allow(clippy::too_many_arguments)]
 pub fn construct_diffusion_maps_operator<T>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     k: usize,
     precomputed_knn: PreComputedKnn<T>,
     ann_type: &str,
@@ -2637,6 +2695,8 @@ where
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     let use_full = match dm_params.n_landmarks {
         None => true,
         Some(n) => n >= data.nrows(),
@@ -2750,7 +2810,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (N × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Optional precomputed kNN; skips search if provided.
 ///   Must have been computed with k >= `dm_params.k`.
 /// * `dm_params` - Diffusion maps parameters
@@ -2762,7 +2824,7 @@ where
 ///
 /// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`
 pub fn diffusion_maps<T>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     dm_params: DiffusionMapsParams<T>,
     seed: usize,
@@ -2773,6 +2835,8 @@ where
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     let start_dm = Instant::now();
 
     let verbosity = parse_verbosity_level(verbose);
@@ -3047,7 +3111,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
 ///   distances excluding self.
@@ -3063,7 +3129,7 @@ where
 /// `n_dim` and inner vectors have length `n_samples`. Each outer element
 /// represents one embedding dimension.
 pub fn parametric_umap<T, B>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     umap_params: &ParametricUmapParams<T>,
     device: &B::Device,
@@ -3076,6 +3142,8 @@ where
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     // parse various parameters
     let nn_params = umap_params.nn_params.clone();
 
@@ -3125,7 +3193,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `umap_params` - Configuration parameters for parametric UMAP
 /// * `device` - Burn backend device for neural network training
 /// * `seed` - Random seed for reproducibility
@@ -3149,7 +3219,7 @@ where
 ///
 /// Returns a tuple of embedding and the `TrainedUmapModel` for further usage.
 pub fn train_parametric_umap_model<T, B>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     umap_params: &ParametricUmapParams<T>,
     device: &B::Device,
     seed: usize,
@@ -3161,6 +3231,8 @@ where
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     // parse various parameters
     let nn_params = umap_params.nn_params.clone();
     let verbosity = parse_verbosity_level(verbose);
@@ -3353,7 +3425,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples x features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Optional precomputed kNN (indices, distances)
 ///   excluding self.
 /// * `k` - Number of nearest neighbours.
@@ -3374,7 +3448,7 @@ where
 #[cfg(feature = "gpu")]
 #[allow(clippy::too_many_arguments)]
 pub fn construct_umap_graph_gpu<T, R>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     k: usize,
     ann_type: String,
@@ -3389,6 +3463,8 @@ where
     T: ManifoldsFloat + CubeclFloat,
     R: Runtime,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     let verbosity = parse_verbosity_level(verbose);
 
     let (knn_indices, knn_dist) = match precomputed_knn {
@@ -3448,7 +3524,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples x features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Optional precomputed kNN (indices, distances)
 ///   excluding self.
 /// * `umap_params` - GPU UMAP parameters.
@@ -3463,7 +3541,7 @@ where
 /// `n_dim` and inner vectors have length `n_samples`.
 #[cfg(feature = "gpu")]
 pub fn umap_gpu<T, R>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     umap_params: &UmapParamsGpu<T>,
     device: R::Device,
@@ -3475,6 +3553,8 @@ where
     R: Runtime,
     StandardNormal: Distribution<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     umap_gpu_inner::<T, R>(
         data,
         precomputed_knn,
@@ -3800,7 +3880,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples x features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Optional precomputed kNN (indices, distances)
 ///   excluding self.
 /// * `params` - GPU densMAP parameters.
@@ -3827,7 +3909,7 @@ where
 /// Biotechnology
 #[cfg(feature = "gpu")]
 pub fn densmap_gpu<T, R>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &DensmapParamsGpu<T>,
     device: R::Device,
@@ -3839,6 +3921,8 @@ where
     R: Runtime,
     StandardNormal: Distribution<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     umap_gpu_inner::<T, R>(
         data,
         precomputed_knn,
@@ -3989,7 +4073,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Precomputed kNN (indices, distances) excluding self
 /// * `perplexity` - Target perplexity
 /// * `ann_type` - GPU ANN method: `"exhaustive_gpu"`, `"ivf_gpu"` or
@@ -4006,7 +4092,7 @@ where
 #[cfg(feature = "gpu")]
 #[allow(clippy::too_many_arguments)]
 pub fn construct_tsne_graph_gpu<T, R>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     perplexity: T,
     ann_type: String,
@@ -4019,6 +4105,8 @@ where
     T: ManifoldsFloat + CubeclFloat,
     R: Runtime,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     let verbosity = parse_verbosity_level(verbose);
 
     let (knn_indices, knn_dist) = match precomputed_knn {
@@ -4100,7 +4188,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Optional precomputed kNN, indices and distances
 ///   excluding self
 /// * `params` - GPU t-SNE parameters
@@ -4116,7 +4206,7 @@ where
 /// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
 #[cfg(all(feature = "gpu", feature = "fft_tsne"))]
 pub fn tsne_gpu<T, R>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParamsGpu<T>,
     approx_type: &str,
@@ -4129,6 +4219,8 @@ where
     R: Runtime,
     StandardNormal: Distribution<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     if params.n_dim != 2 {
         return Err(ManifoldsError::IncorrectDim {
             n_dim: params.n_dim,
@@ -4176,7 +4268,13 @@ where
         println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
     }
 
-    let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
+    let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_else(|| {
+        println!(
+            "Unrecognised tSNE approximation provided: {:?}. Default to Barnes-Hut.",
+            approx_type
+        );
+        TsneOpt::default()
+    });
 
     let start_optim = Instant::now();
     match tsne_approx {
@@ -4224,7 +4322,9 @@ where
 ///
 /// ### Params
 ///
-/// * `data` - Input data matrix (samples × features)
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Optional precomputed kNN, indices and distances
 ///   excluding self
 /// * `params` - GPU t-SNE parameters
@@ -4239,7 +4339,7 @@ where
 /// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
 #[cfg(all(feature = "gpu", not(feature = "fft_tsne")))]
 pub fn tsne_gpu<T, R>(
-    data: MatRef<T>,
+    data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParamsGpu<T>,
     approx_type: &str,
@@ -4252,6 +4352,8 @@ where
     R: Runtime,
     StandardNormal: Distribution<T>,
 {
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
     if params.n_dim != 2 {
         return Err(ManifoldsError::IncorrectDim {
             n_dim: params.n_dim,
@@ -4299,7 +4401,13 @@ where
         println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
     }
 
-    let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_default();
+    let tsne_approx = parse_tsne_optimiser(approx_type).unwrap_or_else(|| {
+        println!(
+            "Unrecognised tSNE approximation provided: {:?}. Default to Barnes-Hut.",
+            approx_type
+        );
+        TsneOpt::default()
+    });
 
     let start_optim = Instant::now();
     match tsne_approx {

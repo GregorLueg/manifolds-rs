@@ -42,9 +42,17 @@ fft_tsne = ["fftw"]
 gpu = ["ann-search-rs/gpu", "cubecl", "cubecl-utils-rs"]
 ## Tests for large scale diagonistics - for development only!
 large_scale_diagnostics = []
+## Accept `ndarray` 2-D arrays wherever a faer matrix is accepted.
+##
+## This makes `ndarray` a public dependency, so a downstream crate pinned to a
+## different major version ends up with two incompatible `ArrayView2` types in
+## the graph. If that bites, leave the feature off and pass
+## `(arr.as_slice().unwrap(), arr.nrows(), arr.ncols())` instead, which works on
+## any `ndarray` version.
+ndarray = ["dep:ndarray"]
 
 [dependencies]
-ann-search-rs = { version = "0.5.2" }
+ann-search-rs = { version = "0.6.0" }
 approx = "0.5.1"
 bincode = { version = "2.0.1", features = ["serde"], optional = true }
 burn = { version = "0.21.0", features = [
@@ -57,6 +65,7 @@ cubecl-utils-rs = { version = "0.1.0", optional = true }
 faer = "0.23.2"
 faer-traits = "0.23.2"
 fftw = { version = "0.8.0", optional = true }
+ndarray = { version = ">=0.16, <0.18", optional = true }
 num-traits = "0.2.19"
 rand = "0.9.2"
 rand_distr = "0.5.1"

@@ -15,5 +15,5 @@ jobs:
     uses: GregorLueg/personal-actions/.github/workflows/rust-test.yml@v1
     with:
       cpu-args: '--release --no-default-features'
-      gpu-args: '--release --features gpu,parametric,fft_tsne'
+      gpu-args: '--release --features gpu,parametric,fft_tsne,ndarray'
     secrets: inherit
