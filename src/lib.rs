@@ -221,8 +221,8 @@ where
     ///
     /// Hopefully sensible standard parameters for 2D visualisation.
     pub fn new_default_2d(min_dist: Option<T>, spread: Option<T>) -> Self {
-        let min_dist = min_dist.unwrap_or(T::from_f64(0.5).unwrap());
-        let spread = spread.unwrap_or(T::from_f64(1.0).unwrap());
+        let min_dist = min_dist.unwrap_or(T::from_f64(DEFAULT_MIN_DIST).unwrap());
+        let spread = spread.unwrap_or(T::from_f64(DEFAULT_SPREAD).unwrap());
 
         Self {
             optim_params: UmapOptimParams::from_min_dist_spread(
@@ -1706,7 +1706,11 @@ where
             Some(T::from_f64(40.0).unwrap()),
             T::from_f64(1.0).unwrap(),
             T::from_f64(1e-4).unwrap(),
-            "average".to_string(),
+            // `"add"`, not `"average"`: the latter is not a name
+            // `parse_phate_symmetrisation` knows, so it fell through to the
+            // parser's own default. Same operator either way, but a default
+            // that its own parser rejects is a trap for the next reader.
+            "add".to_string(),
             None,
             "spectral".to_string(),
             None,
@@ -3415,8 +3419,8 @@ where
     /// Hopefully sensible standard parameters for 2D visualisation with GPU
     /// kNN search.
     pub fn new_default_2d(min_dist: Option<T>, spread: Option<T>) -> Self {
-        let min_dist = min_dist.unwrap_or(T::from_f64(0.5).unwrap());
-        let spread = spread.unwrap_or(T::from_f64(1.0).unwrap());
+        let min_dist = min_dist.unwrap_or(T::from_f64(DEFAULT_MIN_DIST).unwrap());
+        let spread = spread.unwrap_or(T::from_f64(DEFAULT_SPREAD).unwrap());
 
         Self {
             optim_params: UmapOptimParams::from_min_dist_spread(

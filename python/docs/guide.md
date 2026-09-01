@@ -97,9 +97,9 @@ The core is rayon throughout. By default it uses rayon's global pool, sized from
 `RAYON_NUM_THREADS` or the core count.
 
 ```python
-mf.set_num_threads(4)   # cap it, for a shared machine or a job scheduler
+mf.set_num_threads(4)  # cap it, for a shared machine or a job scheduler
 mf.num_threads()
-mf.set_num_threads(0)   # back to the global pool
+mf.set_num_threads(0)  # back to the global pool
 ```
 
 The GIL is released for the entire computation, so an embedding running in a

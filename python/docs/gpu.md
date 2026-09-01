@@ -61,7 +61,7 @@ The neighbour graph is just two arrays, so you can build it wherever it is
 cheapest and hand it to whichever estimator you like:
 
 ```python
-ind, dist = mf.knn_graph(X, k=15, ann="hnsw")     # CPU search
+ind, dist = mf.knn_graph(X, k=15, ann="hnsw")  # CPU search
 embedding = mf.UMAPGpu().fit_transform(X, knn_indices=ind, knn_distances=dist)
 ```
 

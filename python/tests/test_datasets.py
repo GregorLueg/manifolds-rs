@@ -17,21 +17,21 @@ def test_swiss_roll_is_three_dimensional() -> None:
     assert X.dtype == np.float64
 
 
+def test_zero_density_bias_samples_uniformly() -> None:
+    """`0.0` is the neutral value, so `t` should be flat across the roll."""
+    _, t = mf.datasets.swiss_roll(4000, density_bias=0.0, seed=1)
+    lo, hi = t.min(), t.max()
+    counts, _ = np.histogram(t, bins=8, range=(lo, hi))
+    # Uniform to within sampling noise: no octile holds twice another's share.
+    assert counts.max() < 2 * counts.min()
+
+
 def test_density_bias_concentrates_the_sampling() -> None:
-    """The bias is an exponent on the uniform sample, so `1.0` is the neutral
-    value. A higher exponent drives each draw towards zero, and `t` with it, so
-    the points pile up at the inner end of the roll."""
-    _, uniform = mf.datasets.swiss_roll(2000, density_bias=1.0, seed=1)
+    """A higher bias drives each draw towards zero, and `t` with it, so the
+    points pile up at the inner end of the roll."""
+    _, uniform = mf.datasets.swiss_roll(2000, density_bias=0.0, seed=1)
     _, biased = mf.datasets.swiss_roll(2000, density_bias=2.5, seed=1)
     assert biased.mean() < uniform.mean()
-
-
-def test_zero_density_bias_is_degenerate() -> None:
-    """`0.0` raises every draw to the zeroth power, which collapses the roll to
-    a single `t`. The crate's doc comment calls this uniform sampling; it is
-    not, and the binding defaults to the neutral `1.0` instead."""
-    _, t = mf.datasets.swiss_roll(500, density_bias=0.0, seed=1)
-    assert np.allclose(t, t[0])
 
 
 def test_clustered_labels_cover_every_cluster() -> None:

@@ -16,7 +16,7 @@ pub use crate::errors::ManifoldsError;
 pub use crate::training::mds_optimiser::{parse_mds_method, MdsMethod};
 pub use crate::training::pacmap_optimiser::{parse_pacmap_optimiser, PacmapOptimParams};
 pub use crate::training::tsne_optimiser::TsneOptimParams;
-pub use crate::training::umap_optimisers::UmapOptimParams;
+pub use crate::training::umap_optimisers::{UmapOptimParams, DEFAULT_MIN_DIST, DEFAULT_SPREAD};
 pub use crate::utils::density::{DensParams, DensState};
 pub use crate::utils::diffusions::PhateDiffusionParams;
 pub use crate::utils::diffusions::{parse_landmark_method, LandmarkMethod, PhateTime};

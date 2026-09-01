@@ -15,6 +15,20 @@ use crate::utils::density::*;
 // UMAP //
 //////////
 
+///////////////
+// Constants //
+///////////////
+
+/// Minimum embedding distance the default curve is fitted to.
+///
+/// The single place the default lives. [`UmapOptimParams::default_2d`] and
+/// [`crate::UmapParams::new_default_2d`] both read it, so the two cannot drift
+/// apart the way they did when each wrote its own.
+pub const DEFAULT_MIN_DIST: f64 = 0.5;
+
+/// Spread the default curve is fitted to. See [`DEFAULT_MIN_DIST`].
+pub const DEFAULT_SPREAD: f64 = 1.0;
+
 //////////////////////////
 // Structures and Enums //
 //////////////////////////
@@ -22,9 +36,11 @@ use crate::utils::density::*;
 /// UMAP optimisation parameters
 #[derive(Clone, Debug)]
 pub struct UmapOptimParams<T> {
-    /// Curve parameter for repulsive force (typically ~1.5 for 2D)
+    /// Curve parameter for repulsive force. Fitted from `min_dist` and
+    /// `spread` rather than set by hand; `~0.59` at the defaults.
     pub a: T,
-    /// Curve parameter for repulsive force (typically ~0.9 for 2D)
+    /// Curve parameter for repulsive force. Fitted alongside `a`; `~1.33` at
+    /// the defaults.
     pub b: T,
     /// Initial learning rate (typically 1.0)
     pub lr: T,
@@ -34,7 +50,8 @@ pub struct UmapOptimParams<T> {
     pub n_epochs: usize,
     /// Number of negative samples per positive edge (typically 5)
     pub neg_sample_rate: usize,
-    /// Minimum distance between points in embedding (typically 0.1)
+    /// Minimum distance between points in embedding. Defaults to
+    /// [`DEFAULT_MIN_DIST`].
     pub min_dist: T,
     /// Beta1 parameter for Adam optimiser
     pub beta1: T,
@@ -50,22 +67,28 @@ where
 {
     /// Default parameters for 2D embedding
     ///
+    /// `a` and `b` are fitted from `min_dist = 0.5` and `spread = 1.0` rather
+    /// than written down. Hardcoding them meant this constructor and
+    /// [`UmapOptimParams::from_min_dist_spread`] disagreed about what the
+    /// default curve was, and a caller who set `min_dist` got a different `a`
+    /// and `b` from one who left it alone at a value that was not even the same
+    /// `min_dist`.
+    ///
     /// ### Returns
     ///
-    /// Self with sensible default parameters for the classical
+    /// Self with sensible default parameters for the classical 2D case.
     pub fn default_2d() -> Self {
-        Self {
-            a: T::from_f64(1.5).unwrap(),
-            b: T::from_f64(0.9).unwrap(),
-            lr: T::one(),
-            gamma: T::one(),
-            n_epochs: 500,
-            neg_sample_rate: 5,
-            min_dist: T::from_f64(0.1).unwrap(),
-            beta1: T::from(UMAP_BETA1).unwrap(),
-            beta2: T::from(UMAP_BETA2).unwrap(),
-            eps: T::from(EPS).unwrap(),
-        }
+        Self::from_min_dist_spread(
+            T::from_f64(DEFAULT_MIN_DIST).unwrap(),
+            T::from_f64(DEFAULT_SPREAD).unwrap(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
     /// Params from specified minimum distance and spread
@@ -1524,13 +1547,37 @@ mod test_umap_optimiser {
     fn test_optim_params_default_2d() {
         let params = UmapOptimParams::<f64>::default_2d();
 
-        assert_relative_eq!(params.a, 1.5, epsilon = 1e-6);
-        assert_relative_eq!(params.b, 0.9, epsilon = 1e-6);
         assert_eq!(params.lr, 1.0);
         assert_eq!(params.gamma, 1.0);
         assert_eq!(params.n_epochs, 500);
         assert_eq!(params.neg_sample_rate, 5);
-        assert_relative_eq!(params.min_dist, 0.1, epsilon = 1e-6);
+        assert_relative_eq!(params.min_dist, DEFAULT_MIN_DIST, epsilon = 1e-6);
+        assert!(params.a > 0.0);
+        assert!(params.b > 0.0);
+    }
+
+    #[test]
+    fn test_default_2d_curve_is_fitted_not_hardcoded() {
+        // The contract, rather than the two fitted floats: `default_2d` has to
+        // be exactly what a caller gets by asking for the default `min_dist`
+        // and `spread` explicitly. Pinning `a` and `b` as literals is what let
+        // the two disagree in the first place.
+        let implicit = UmapOptimParams::<f64>::default_2d();
+        let explicit = UmapOptimParams::<f64>::from_min_dist_spread(
+            DEFAULT_MIN_DIST,
+            DEFAULT_SPREAD,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert_relative_eq!(implicit.a, explicit.a, epsilon = 1e-12);
+        assert_relative_eq!(implicit.b, explicit.b, epsilon = 1e-12);
+        assert_relative_eq!(implicit.min_dist, explicit.min_dist, epsilon = 1e-12);
     }
 
     #[test]

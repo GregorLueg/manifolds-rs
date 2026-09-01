@@ -24,7 +24,7 @@ def swiss_roll(
     n_samples: int = 5000,
     *,
     noise: float = 0.05,
-    density_bias: float = 1.0,
+    density_bias: float = 0.0,
     seed: int = 42,
 ) -> tuple[np.ndarray, np.ndarray]:
     """A 2-D manifold rolled up in 3-D.
@@ -36,12 +36,10 @@ def swiss_roll(
     Args:
         n_samples: Number of points.
         noise: Standard deviation of the noise added to the surface.
-        density_bias: Exponent on the uniform sample along the roll. ``1.0``
-            is neutral and samples uniformly; higher values pile points up at
-            the inner end, which is what makes an embedding's density handling
-            visible, and ``2.5`` roughly matches the accumulation you see in
-            real trajectory data. ``0.0`` is degenerate, not uniform: it puts
-            every point at the same ``t``.
+        density_bias: Sampling bias along the roll. ``0.0`` samples uniformly;
+            higher values pile points up at the inner end, which is what makes
+            an embedding's density handling visible. ``2.5`` roughly matches
+            the accumulation you see in real trajectory data.
         seed: Fixes the sampling.
 
     Returns:

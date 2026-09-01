@@ -27,11 +27,12 @@ import numpy as np
 from sklearn.metrics import silhouette_score
 from sklearn.neighbors import NearestNeighbors
 
+
 def preservation(X, embedding, k=15):
     """Fraction of each point's high-dimensional neighbours still nearby."""
     hi = NearestNeighbors(n_neighbors=k).fit(X).kneighbors(return_distance=False)
-    lo = NearestNeighbors(n_neighbors=k).fit(embedding).kneighbors(
-        return_distance=False
+    lo = (
+        NearestNeighbors(n_neighbors=k).fit(embedding).kneighbors(return_distance=False)
     )
     return np.mean([len(set(a) & set(b)) for a, b in zip(hi, lo)]) / k
 ```
@@ -76,9 +77,7 @@ for name, estimator in [
     ("pacmap", mf.PaCMAP()),
     ("tsne", mf.TSNE()),
 ]:
-    results[name] = estimator.fit_transform(
-        X, knn_indices=ind, knn_distances=dist
-    )
+    results[name] = estimator.fit_transform(X, knn_indices=ind, knn_distances=dist)
 ```
 
 `k=50` because PaCMAP indexes into the kNN list up to `mn_candidate_end`, which
@@ -113,9 +112,6 @@ The roll is deliberately sampled unevenly. In the plain UMAP the dense end and
 the sparse end come out looking similar, because UMAP is free to rescale
 locally. In the densMAP they do not.
 
-Note `density_bias=1.0` is the neutral value, not `0.0`: it is an exponent on
-the uniform draw, and `0.0` collapses every point onto the same position.
-
 ## Turning the obscure knobs
 
 ```python
@@ -135,7 +131,7 @@ not pass at all is the same as passing an empty one. A misspelled field is a
 ## Capping threads
 
 ```python
-mf.set_num_threads(4)   # for a shared machine or a job scheduler
-mf.num_threads()        # 4
-mf.set_num_threads(0)   # back to rayon's global pool
+mf.set_num_threads(4)  # for a shared machine or a job scheduler
+mf.num_threads()  # 4
+mf.set_num_threads(0)  # back to rayon's global pool
 ```

@@ -42,12 +42,9 @@ type TwoLevel<'py> = (
 ///
 /// * `n_samples` - Number of points.
 /// * `noise` - Standard deviation of the Gaussian noise added to the surface.
-/// * `density_bias` - Exponent applied to the uniform sample along the roll.
-///   `1.0` is neutral and samples uniformly; higher values pile points up at
-///   the inner end, which is what makes an embedding's density handling
-///   visible. Note that `0.0` is degenerate rather than uniform: it collapses
-///   every point onto the same `t`. The crate's own doc comment says otherwise
-///   and is wrong.
+/// * `density_bias` - Sampling bias along the roll. `0.0` samples uniformly;
+///   higher values pile points up at the inner end, which is what makes an
+///   embedding's density handling visible.
 /// * `seed` - Fixes the sampling.
 ///
 /// ### Returns
@@ -59,7 +56,7 @@ type TwoLevel<'py> = (
 /// unbiased one does not report `t`, and a caller with no ground truth cannot
 /// score anything.
 #[pyfunction]
-#[pyo3(signature = (n_samples = 5000, *, noise = 0.05, density_bias = 1.0, seed = 42))]
+#[pyo3(signature = (n_samples = 5000, *, noise = 0.05, density_bias = 0.0, seed = 42))]
 pub fn swiss_roll(
     py: Python<'_>,
     n_samples: usize,
