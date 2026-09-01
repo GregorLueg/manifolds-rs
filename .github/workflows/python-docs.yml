@@ -25,4 +25,4 @@ permissions:
 
 jobs:
   docs:
-    uses: GregorLueg/personal-actions/.github/workflows/python-docs.yml@feat/python-workflows
+    uses: GregorLueg/personal-actions/.github/workflows/python-docs.yml@v1
