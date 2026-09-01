@@ -1,0 +1,39 @@
+name: Test the Python bindings
+
+# The name matters. python-release.yml keys its workflow_run trigger off it, so
+# renaming this silently stops every release.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'python/**'
+      - 'src/**'
+      - 'Cargo.toml'
+      - '.github/workflows/python-test.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'python/**'
+      - 'src/**'
+      - 'Cargo.toml'
+      - '.github/workflows/python-test.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    uses: GregorLueg/personal-actions/.github/workflows/python-maturin-test.yml@feat/python-workflows
+    with:
+      package: manifolds_rs
+      # scikit-learn is test-only: `clone` compatibility and the scoring in the
+      # docs examples. Nothing in the package imports it.
+      extra-deps: 'scikit-learn'
+      # `gpu` is a default feature, so the matrix above builds it. Hosted
+      # runners have no adapter, so `gpu_available()` is False and the GPU tests
+      # skip: this proves the feature compiles and that a GPU wheel degrades
+      # cleanly on a machine without a device, not that the kernels are correct.
+      # Kernel correctness needs a runner with a GPU.
+      cpu-only-args: '--no-default-features'

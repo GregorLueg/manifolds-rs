@@ -66,6 +66,16 @@ use crate::training::umap_optimiser_gpu::*;
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::FftwFloat;
 
+///////////////
+// Constants //
+///////////////
+
+/// Version of this crate, as declared in `Cargo.toml`.
+///
+/// Exposed so a wrapper built against it can report which numerics it actually
+/// vendored, independently of its own version number.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 ///////////
 // Types //
 ///////////

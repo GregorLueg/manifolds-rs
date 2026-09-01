@@ -1,0 +1,28 @@
+name: Python docs
+
+# A PR builds the site to prove it builds and publishes nothing. Only a push to
+# main deploys to gh-pages.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'python/**'
+      - '.github/workflows/python-docs.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'python/**'
+      - '.github/workflows/python-docs.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  docs:
+    uses: GregorLueg/personal-actions/.github/workflows/python-docs.yml@feat/python-workflows

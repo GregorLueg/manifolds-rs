@@ -1,0 +1,69 @@
+[build-system]
+requires = ["maturin>=1.15,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "manifolds-rs"
+description = "UMAP, t-SNE, PHATE, PaCMAP and diffusion maps for single-cell and computational biology, in Rust."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Gregor Lueg", email = "gregorlueg@me.com" }]
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.23", "beartype>=0.19"]
+dynamic = ["version"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+
+[project.urls]
+Documentation = "https://gregorlueg.github.io/manifolds-rs/"
+Repository = "https://github.com/GregorLueg/manifolds-rs"
+Changelog = "https://github.com/GregorLueg/manifolds-rs/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = [
+    "maturin>=1.15,<2.0",
+    "pytest>=8",
+    "ruff>=0.9",
+    "ty>=0.0.1",
+    "scikit-learn>=1.4",
+]
+# mkdocstrings reads the installed package, so a docs build needs the compiled
+# extension present: `maturin develop --release` before `mkdocs build`.
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+]
+
+[tool.maturin]
+manifest-path = "Cargo.toml"
+module-name = "manifolds_rs._manifolds"
+python-source = "."
+strip = true
+include = ["manifolds_rs/py.typed", "manifolds_rs/*.pyi"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+# `X` for the design matrix is the scikit-learn convention these estimators are
+# deliberately matching.
+ignore = ["N803"]
+
+[tool.ruff.lint.per-file-ignores]
+# `X` for the design matrix as a local, same convention as the `N803` ignore
+# above. Only in tests: the package itself never binds it as a variable.
+# `N802` for the `X` / `X32` fixtures, which are named for what they hold.
+"tests/*" = ["N802", "N806"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["manifolds_rs"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
