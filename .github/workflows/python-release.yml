@@ -48,9 +48,9 @@ jobs:
       # wheel matrix when the version is already there.
       publish: true
 
-      # SAFETY CATCH, flipped by ticking `tag` on a dispatch. Nothing tags on
-      # its own until this reads `|| true`.
-      tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || false }}
+      # ARMED. A dispatch still takes the form's value, so a rehearsal can opt
+      # out; anything else tags, which is what a version bump on main should do.
+      tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || true }}
 
       # Which index the check above consults. Pointing it at TestPyPI skips the
       # check entirely, which is right: TestPyPI is not a record of what has
@@ -74,13 +74,14 @@ jobs:
   publish:
     name: Publish to PyPI
     needs: build
-    # SAFETY CATCH: the `false` on the last line is the arming switch. Flip it
-    # to true and a green test on main publishes on its own; until then only a
-    # deliberate dispatch with `publish` ticked uploads anything.
+    # ARMED. `should-build` is false when the version is already on PyPI, so an
+    # ordinary push to main reaches here, finds nothing to do and stops. A
+    # version bump is what makes this fire. The `pypi` environment still holds
+    # it for a review before the upload, which is the last reversible moment.
     if: >-
       needs.build.outputs.should-build == 'true' &&
       (github.event_name == 'workflow_dispatch' && inputs.publish
-       || github.event_name != 'workflow_dispatch' && false)
+       || github.event_name != 'workflow_dispatch')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: pypi
@@ -99,8 +100,7 @@ jobs:
       # Spelled out rather than left to the action's default: an empty
       # `repository-url` overrides the default with nothing rather than falling
       # back to it. On a non-dispatch event `inputs.index` is empty and this
-      # resolves to PyPI, which is only reachable once the arming switch above
-      # is flipped.
+      # resolves to PyPI, which is the point of arming.
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
