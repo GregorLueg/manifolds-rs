@@ -4385,7 +4385,7 @@ checksum = "fc04a4c58212d57930a24bf47d3fa87485264a3a054e9c10e042eb373573ad3c"
 
 [[package]]
 name = "manifolds-rs"
-version = "0.3.15"
+version = "0.4.0"
 dependencies = [
  "ann-search-rs",
  "approx",
@@ -4396,7 +4396,7 @@ dependencies = [
  "faer",
  "faer-traits",
  "fftw",
- "ndarray 0.17.2",
+ "ndarray 0.16.1",
  "num-traits",
  "rand 0.9.5",
  "rand_distr 0.5.1",

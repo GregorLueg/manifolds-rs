@@ -1,5 +1,22 @@
 # News
 
+## 0.4.0
+
+**Features**
+
+- Python bindings added to expose the crate as a Python package.
+- Speed improvements taken from `ann-search-rs = "0.8.0"`
+- The NNDescent (GPU and CPU) have now the options to directly extract the kNN
+  graph without any beam search. This is faster, but can yield a slightly worse
+  graph. Think Recall ~ 0.98 vs Recall ~ 0.99/1.00 compared against exhaustive
+  query.
+
+**Breaking changes**
+
+- The Euclidean distance used to return squared Euclidean. This has now been
+  changed it the kNN backends will automatically transform the squared L2
+  distance to L2.
+
 ## 0.3.15
 
 **Feature**

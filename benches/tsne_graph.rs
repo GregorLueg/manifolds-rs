@@ -93,7 +93,6 @@ where
         T::from_f64(perplexity).unwrap(),
         T::from_f64(TOL).unwrap(),
         MAX_ITER,
-        nn_params.dist_metric == "euclidean",
     )
     .expect("affinity calibration failed");
     println!(
