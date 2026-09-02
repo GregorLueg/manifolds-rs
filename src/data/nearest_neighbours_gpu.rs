@@ -29,14 +29,14 @@ const NNDESCENT_GPU_DEFAULT_DEGREE: usize = 30;
 /////////////
 
 /// Which search algorithm to use for the GPU-accelerated approximate nearest
-/// neighbour search. Default is set to IVF GPU.
+/// neighbour search. Default is set to NNDescentGPU.
 #[derive(Default)]
 pub enum AnnSearchGpu {
-    /// IvfGpu
-    #[default]
-    IvfGpu,
     /// NNDescentGpu
+    #[default]
     NNDescentGpu,
+    /// IvfGpu
+    IvfGpu,
     /// Exhaustive
     ExhaustiveGpu,
 }
@@ -80,19 +80,6 @@ pub struct NearestNeighbourParamsGpu<T> {
     pub n_entry_points: Option<usize>,
     /// NNDescent-GPU: return the graph the descent already built instead of
     /// running a CAGRA beam search over it. Defaults to `true`.
-    ///
-    /// Roughly a third off a full GPU embedding: measured at 20k points in 50D,
-    /// 500 epochs, `0.74s` to `0.48s`, because the search is a large share of a
-    /// GPU run.
-    ///
-    /// It costs bit-reproducibility on some inputs. Two runs at the same seed
-    /// agree on about 99.4% of neighbour slots; where they disagree the two
-    /// candidates sit a median 0.4% apart in distance, and recall against
-    /// exhaustive ground truth matches to the fourth decimal. Note the search,
-    /// not extraction, is the whole source of this: the GPU optimiser is
-    /// bit-stable on a fixed graph, and the beam search is itself unstable at
-    /// 20k points in 50D, so extraction widens an existing behaviour rather
-    /// than introducing one.
     ///
     /// The build degree `k` is widened to cover the request, since extraction
     /// cannot return more neighbours than the graph holds, and `beam_width`,

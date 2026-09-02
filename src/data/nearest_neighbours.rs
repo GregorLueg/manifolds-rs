@@ -209,10 +209,7 @@ where
 /// Whether a metric name resolves to a squared distance in `ann-search-rs`.
 ///
 /// Squared Euclidean is the only one; cosine and Manhattan already come back as
-/// true distances. This asks the crate's own parser rather than comparing the
-/// string, which is what puts the documented alias `"l2"` on the same footing
-/// as `"euclidean"`. A string comparison did not, and every consumer that
-/// squared conditionally was silently wrong for `"l2"`.
+/// true distances.
 ///
 /// ### Params
 ///
@@ -221,8 +218,8 @@ where
 /// ### Returns
 ///
 /// `true` when the backend's distances need a square root to become true
-/// distances. An unrecognised name is `false`, matching the backend's own
-/// fallback to cosine-style handling rather than guessing.
+/// distances.
+#[inline]
 pub fn metric_returns_squared(metric: &str) -> bool {
     matches!(parse_ann_dist(metric), Some(Dist::SquaredEuclidean))
 }
@@ -427,9 +424,7 @@ where
         .collect();
 
     // The Euclidean backends skip the square root, since it does not change the
-    // ordering they sort on. Callers do care: a squared distance is not a
-    // distance, and leaving the two indistinguishable is what let `"l2"` and
-    // `"euclidean"` produce different embeddings from identical searches.
+    // ordering they sort on and is faster.
     if metric_returns_squared(&params_nn.dist_metric) {
         knn_dist
             .par_iter_mut()
