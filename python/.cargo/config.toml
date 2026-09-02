@@ -1,0 +1,12 @@
+# `extension-module` leaves the CPython symbols undefined for the interpreter to
+# resolve at load time. maturin passes these flags itself, so this only matters
+# for a bare `cargo build` / `cargo check` in this directory, which otherwise
+# dies in a wall of "Undefined symbols for architecture arm64".
+#
+# macOS only. ELF already allows undefined symbols in a shared object, so Linux
+# and Windows need nothing here.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]

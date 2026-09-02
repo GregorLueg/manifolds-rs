@@ -1,0 +1,59 @@
+[package]
+# Versioned independently of `manifolds-rs`, on purpose. Coupling the two means
+# a docstring fix here forces a crates.io release of a crate whose Rust source
+# did not change, and that version number is permanent. The wheel reports the
+# core version it vendored as `__core_version__` instead, which is the question
+# lockstep was actually answering.
+name = "manifolds-py"
+version = "0.1.0"
+edition = "2021"
+authors = ["Gregor Lueg <gregorlueg@me.com>"]
+license = "MIT"
+description = "Python bindings for manifolds-rs"
+publish = false
+
+# Own workspace root. The repo root has no `[workspace]` table, so cargo would
+# walk past it today, but that is accidental rather than intended.
+[workspace]
+
+[lib]
+name = "_manifolds"
+crate-type = ["cdylib"]
+
+[features]
+## On by default. The published wheel carries the GPU entry points, because the
+## backend is wgpu rather than CUDA: there is no driver runtime to ship. Build
+## with `--no-default-features` for a smaller CPU-only wheel.
+default = ["gpu"]
+
+## Bind `umap_gpu`, `densmap_gpu` and `tsne_gpu` alongside the CPU embeddings.
+## Fixed at wheel-build time: a Python extra cannot switch it, since extras only
+## add Python requirements and never change the compiled artefact.
+gpu = ["manifolds-rs/gpu", "dep:cubecl"]
+
+[dependencies]
+manifolds-rs = { path = "..", default-features = false }
+# `cpu` is deliberately absent. CubeCL's software CPU runtime pulls a prebuilt
+# LLVM needing glibc 2.33+, which no manylinux container has, so a wheel
+# carrying it cannot be built for Linux. Nothing here calls it.
+cubecl = { version = "0.10.0", features = ["wgpu"], optional = true }
+faer = "0.23.2"
+num-traits = "0.2"
+numpy = "0.29"
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py310"] }
+rayon = "1.11"
+
+# Profiles are only read from the workspace root, and this is its own workspace,
+# so the library crate's `lto = "thin"` does not reach here. Thin LTO gets
+# nearly all of the win: the hot kernels are already inlined within their own
+# crate, and the pyo3 shim is not hot.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+# Must stay unwind. pyo3 catches panics at the FFI boundary.
+panic = "unwind"
+
+# `maturin develop` builds dev by default, and a debug-speed embedding is
+# useless: these are 500-epoch optimisation loops.
+[profile.dev]
+opt-level = 2

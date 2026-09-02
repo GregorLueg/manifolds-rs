@@ -1,0 +1,108 @@
+name: Release the Python bindings
+
+# Triggered by a completed test run, not by a push, so a broken build can never
+# be published. `workflows:` must match the `name:` of python-test.yml.
+#
+# The tag prefix is `py-v`, not `v`: release.yml already owns `v$version` for
+# the crate. The two versions are independent lines, so a Python patch release
+# and a crate release never collide and never imply each other. The wheel
+# reports which crate it vendored as `manifolds_rs.__core_version__`.
+
+on:
+  workflow_run:
+    workflows: ["Test the Python bindings"]
+    branches: [ main ]
+    types: [ completed ]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload the wheels. Off by default, so a dispatch only builds.
+        type: boolean
+        default: false
+      index:
+        description: Which index to upload to.
+        type: choice
+        options:
+          - testpypi
+          - pypi
+        default: testpypi
+      tag:
+        description: Create the py-v tag and the GitHub release.
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  # PyPI trusted publishing. A called workflow's permissions are capped by the
+  # caller's token, so leaving this out makes the publish 403.
+  id-token: write
+
+jobs:
+  # Version read, tag, GitHub release and the wheel matrix. Leaves the built
+  # wheels as `dist-*` artefacts for the publish job below.
+  build:
+    uses: GregorLueg/personal-actions/.github/workflows/python-maturin-release.yml@v1
+    with:
+      # Does not upload. As of v1 the reusable workflow has no publish job at
+      # all, and this input only asks it to check the index first and skip the
+      # wheel matrix when the version is already there.
+      publish: true
+
+      # SAFETY CATCH, flipped by ticking `tag` on a dispatch. Nothing tags on
+      # its own until this reads `|| true`.
+      tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || false }}
+
+      # Which index the check above consults. Pointing it at TestPyPI skips the
+      # check entirely, which is right: TestPyPI is not a record of what has
+      # been released, so a version sitting there must not block a real build.
+      repository-url: ${{ (github.event_name == 'workflow_dispatch' && inputs.index == 'testpypi') && 'https://test.pypi.org/legacy/' || '' }}
+
+      # The sdist would carry a `path` dependency on the parent crate, which is
+      # not known to round-trip. Wheels only until `maturin sdist` plus a clean
+      # install has been shown to work.
+      sdist: false
+
+  # The upload lives here because it cannot live anywhere else. PyPI's trusted
+  # publishing matches the OIDC token's `job_workflow_ref`, which for a reusable
+  # workflow points at the *other* repository, and the publisher form cannot
+  # express that (pypi/warehouse#11096). Running it here makes
+  # `job_workflow_ref` this file, which is what the PyPI publisher names.
+  #
+  # So the trusted publisher on PyPI must be configured as:
+  #   owner GregorLueg, repo manifolds-rs, workflow python-release.yml,
+  #   environment pypi
+  publish:
+    name: Publish to PyPI
+    needs: build
+    # SAFETY CATCH: the `false` on the last line is the arming switch. Flip it
+    # to true and a green test on main publishes on its own; until then only a
+    # deliberate dispatch with `publish` ticked uploads anything.
+    if: >-
+      needs.build.outputs.should-build == 'true' &&
+      (github.event_name == 'workflow_dispatch' && inputs.publish
+       || github.event_name != 'workflow_dispatch' && false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+
+      - name: List what is about to be uploaded
+        run: ls -la dist
+
+      # Spelled out rather than left to the action's default: an empty
+      # `repository-url` overrides the default with nothing rather than falling
+      # back to it. On a non-dispatch event `inputs.index` is empty and this
+      # resolves to PyPI, which is only reachable once the arming switch above
+      # is flipped.
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist
+          repository-url: ${{ inputs.index == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          print-hash: true

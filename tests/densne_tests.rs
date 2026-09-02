@@ -169,7 +169,6 @@ fn densne_integration_01_original_radii_are_informative() {
         &graph,
         &knn_indices,
         &knn_dist,
-        true,
     )
     .unwrap();
 

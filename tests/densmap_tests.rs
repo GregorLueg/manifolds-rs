@@ -179,7 +179,6 @@ fn densmap_integration_01_original_radii_are_informative() {
         &graph,
         &knn_indices,
         &knn_dist,
-        true,
     )
     .unwrap();
 
@@ -423,6 +422,15 @@ fn densmap_integration_07_precomputed_knn() {
     println!("✓ Precomputed kNN gives an identical embedding");
 }
 
+/// Correlation above which the metric in test 8 has nothing left to improve.
+///
+/// The correlation there runs over three cluster radii, and three points sit
+/// close to a line whatever you do with them, so it saturates. Above this a
+/// strict `densMAP > UMAP` compares float noise rather than density
+/// preservation: the same seed puts plain UMAP with SGD at `0.859` on macOS and
+/// `0.9993` on Windows, and nothing beats `0.9993`.
+const SATURATED_CORRELATION: f64 = 0.99;
+
 /// Test 8: All three optimisers improve the density correlation
 #[test]
 fn densmap_integration_08_all_optimisers_preserve_density() {
@@ -453,9 +461,10 @@ fn densmap_integration_08_all_optimisers_preserve_density() {
         );
 
         assert!(
-            corr_dens > corr_plain,
-            "densMAP ({}) must beat UMAP ({:.4} vs {:.4})",
+            corr_dens > corr_plain || corr_dens > SATURATED_CORRELATION,
+            "densMAP ({}) must beat UMAP, or reach {:.2} itself ({:.4} vs {:.4})",
             optimiser,
+            SATURATED_CORRELATION,
             corr_dens,
             corr_plain
         );

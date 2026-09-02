@@ -157,10 +157,12 @@ where
 /// Type of optimisation to use for tSNE.
 #[derive(Default)]
 pub enum TsneOpt {
-    #[default]
-    /// FFT-accelerated version
+    /// FFT-accelerated version. Requires the `fft_tsne` feature, which pulls in
+    /// FFTW as a system dependency.
     Fft,
-    /// BarnesHut-accelerated version
+    /// BarnesHut-accelerated version. The default, as it is the only variant
+    /// available in every build configuration on every platform.
+    #[default]
     BarnesHut,
 }
 
@@ -168,15 +170,15 @@ pub enum TsneOpt {
 ///
 /// ### Params
 ///
-/// * `s` - String defining the optimiser. Accepts `"barnes hut"`, `"bh"`, or
-///   `"fft"`.
+/// * `s` - String defining the optimiser. Accepts `"barnes hut"`,
+///   `"barnes_hut"`, `"barnes-hut"`, `"bh"`, or `"fft"`.
 ///
 /// ### Returns
 ///
 /// `Some(TsneOpt)` if the string matches a known optimiser, `None` otherwise.
 pub fn parse_tsne_optimiser(s: &str) -> Option<TsneOpt> {
     match s.to_lowercase().as_str() {
-        "barnes hut" | "bh" => Some(TsneOpt::BarnesHut),
+        "barnes hut" | "barnes_hut" | "barnes-hut" | "bh" => Some(TsneOpt::BarnesHut),
         "fft" => Some(TsneOpt::Fft),
         _ => None,
     }

@@ -182,6 +182,10 @@ have a fixed accumulation order), but structural quality is consistent.
 This crate powers [manifoldsR](https://gregorlueg.github.io/manifoldsR/index.html),
 an R package leveraging the incredible speed that Rust offers.
 
+### Python package
+
+Python bindings are now available, see `/python`. A PyPI install is provided.
+
 ### UMAP Example
 
 Below are examples of how to use UMAP. The parameter structs live at the crate

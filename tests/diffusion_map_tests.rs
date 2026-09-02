@@ -107,16 +107,8 @@ fn dm_integration_02_gaussian_affinities() {
 
     println!("\n=== DM DIAGNOSTIC 2: Gaussian Affinities ===");
 
-    let graph = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
-        k,
-        Some(2.0),
-        1.0,
-        1e-4,
-        "add",
-        true,
-    );
+    let graph =
+        phate_alpha_decay_affinities(&knn_indices, &knn_dist, k, Some(2.0), 1.0, 1e-4, "add");
 
     for (&i, &j) in graph.row_indices.iter().zip(&graph.col_indices) {
         assert_ne!(i, j);
@@ -152,16 +144,8 @@ fn dm_integration_03_alpha_norm_zero() {
     let (knn_indices, knn_dist) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
-    let graph = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
-        k,
-        Some(2.0),
-        1.0,
-        1e-4,
-        "add",
-        true,
-    );
+    let graph =
+        phate_alpha_decay_affinities(&knn_indices, &knn_dist, k, Some(2.0), 1.0, 1e-4, "add");
     let kernel = coo_to_csr(&graph);
     let result = apply_anisotropic_normalisation(&kernel, 0.0).unwrap();
 
@@ -181,16 +165,8 @@ fn dm_integration_04_alpha_norm_one_symmetry() {
     let (knn_indices, knn_dist) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
-    let graph = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
-        k,
-        Some(2.0),
-        1.0,
-        1e-4,
-        "add",
-        true,
-    );
+    let graph =
+        phate_alpha_decay_affinities(&knn_indices, &knn_dist, k, Some(2.0), 1.0, 1e-4, "add");
     let kernel = coo_to_csr(&graph);
     let result = apply_anisotropic_normalisation(&kernel, 1.0).unwrap();
 
@@ -222,16 +198,8 @@ fn dm_integration_05_symmetric_operator() {
     let (knn_indices, knn_dist) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
-    let graph = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
-        k,
-        Some(2.0),
-        1.0,
-        1e-4,
-        "add",
-        true,
-    );
+    let graph =
+        phate_alpha_decay_affinities(&knn_indices, &knn_dist, k, Some(2.0), 1.0, 1e-4, "add");
     let kernel = coo_to_csr(&graph);
     let kernel_norm = apply_anisotropic_normalisation(&kernel, 1.0).unwrap();
     let (p_sym, sqrt_d) = build_symmetric_diffusion_operator(&kernel_norm).unwrap();
@@ -271,16 +239,8 @@ fn dm_integration_06_trivial_eigenvalue() {
     let (knn_indices, knn_dist) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
-    let graph = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
-        k,
-        Some(2.0),
-        1.0,
-        1e-4,
-        "add",
-        true,
-    );
+    let graph =
+        phate_alpha_decay_affinities(&knn_indices, &knn_dist, k, Some(2.0), 1.0, 1e-4, "add");
     let kernel = coo_to_csr(&graph);
     let kernel_norm = apply_anisotropic_normalisation(&kernel, 1.0).unwrap();
     let (p_sym, _) = build_symmetric_diffusion_operator(&kernel_norm).unwrap();
@@ -475,8 +435,8 @@ fn dm_integration_13_bandwidth_scale_effect() {
     let (ki, kd) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
-    let g_narrow = phate_alpha_decay_affinities(&ki, &kd, k, Some(2.0), 0.5, 1e-4, "none", true);
-    let g_wide = phate_alpha_decay_affinities(&ki, &kd, k, Some(2.0), 2.0, 1e-4, "none", true);
+    let g_narrow = phate_alpha_decay_affinities(&ki, &kd, k, Some(2.0), 0.5, 1e-4, "none");
+    let g_wide = phate_alpha_decay_affinities(&ki, &kd, k, Some(2.0), 2.0, 1e-4, "none");
 
     let mean_n = g_narrow.values.iter().sum::<f64>() / g_narrow.values.len() as f64;
     let mean_w = g_wide.values.iter().sum::<f64>() / g_wide.values.len() as f64;
@@ -632,7 +592,7 @@ fn dm_integration_19_landmark_coverage() {
     let (ki, kd) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
-    let graph = phate_alpha_decay_affinities(&ki, &kd, k, Some(2.0), 1.0, 1e-4, "add", true);
+    let graph = phate_alpha_decay_affinities(&ki, &kd, k, Some(2.0), 1.0, 1e-4, "add");
     let kernel = coo_to_csr(&graph);
 
     let landmarks = DiffusionMapsLandmarks::build(

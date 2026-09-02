@@ -63,7 +63,9 @@ pub fn generate_swiss_roll(n_samples: usize, noise: f64, seed: u64) -> Mat<f64> 
 /// * `noise` - Standard deviation of Gaussian noise added to the data
 /// * `density_bias` - Sampling bias along `t`. `0.0` recovers uniform sampling;
 ///   higher values concentrate samples at the inner end of the roll. A value
-///   of `2.5` mirrors the trajectory accumulation behaviour.
+///   of `2.5` mirrors the trajectory accumulation behaviour. Applied as the
+///   exponent `1.0 + density_bias` on a uniform draw, so `0.0` is the neutral
+///   value rather than a degenerate one.
 /// * `seed` - Random seed for reproducibility
 ///
 /// ### Returns
@@ -81,7 +83,10 @@ pub fn generate_swiss_roll_biased(
 
     for i in 0..n_samples {
         let u: f64 = rng.random();
-        let u_biased = u.powf(density_bias);
+        // `1.0 + density_bias`, not `density_bias`: a bare exponent of zero
+        // sends every draw to 1.0 and collapses the whole roll onto a single
+        // `t`, which is the opposite of the uniform sampling `0.0` promises.
+        let u_biased = u.powf(1.0 + density_bias);
         let t = 1.5 * std::f64::consts::PI * (1.0 + 2.0 * u_biased);
 
         let height = 21.0 * rng.random::<f64>();

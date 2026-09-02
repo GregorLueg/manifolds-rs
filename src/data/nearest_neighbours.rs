@@ -3,6 +3,7 @@
 use ann_search_rs::cpu::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::cpu::nndescent::{NNDescent, NNDescentQuery};
 use ann_search_rs::prelude::*;
+use ann_search_rs::utils::dist::{parse_ann_dist, Dist};
 use ann_search_rs::utils::nndescent_utils::ApplySortedUpdates;
 
 use ann_search_rs::*;
@@ -12,6 +13,18 @@ use rayon::prelude::*;
 use std::default::Default;
 
 use crate::prelude::*;
+
+///////////////
+// Constants //
+///////////////
+
+/// Graph degree `ann-search-rs` builds an NNDescent index with when given
+/// `None`.
+///
+/// Mirrored rather than imported because the crate does not export it. It only
+/// matters as a floor: widening the degree for extraction must never narrow it
+/// below what the query path would have built.
+const NNDESCENT_DEFAULT_DEGREE: usize = 30;
 
 /////////////
 // Helpers //
@@ -60,8 +73,17 @@ pub struct NearestNeighbourParams<T> {
     /// NNDescent: convergence criterium. If less than these percentage of
     /// neighbours have been udpated, the algorithm counts as converged.
     pub delta: T,
-    /// NNDescent: optional beam search budget for querying.
+    /// NNDescent: optional beam search budget for querying. Ignored when
+    /// `extract_knn` is set, since no search runs.
     pub ef_budget: Option<usize>,
+    /// NNDescent: return the graph the descent already built instead of running
+    /// a beam search over it. Defaults to `true`.
+    ///
+    /// A self-kNN query re-searches a graph that is already a kNN graph, which
+    /// is the work the descent just did. Extraction skips it. The build degree
+    /// is widened to cover `k` when this is set, since extraction cannot return
+    /// more neighbours than the graph holds. No effect on any other backend.
+    pub extract_knn: bool,
     /// BallTree: Proportions of N to search in the BallTree
     pub bt_budget: T,
     /// IVF: Number of lists, clusters to use. If not provided, will default
@@ -101,7 +123,8 @@ impl<T> NearestNeighbourParams<T> {
     /// * `diversify_prob` - Diversifying probability at the end of the index
     ///   generation. Generates additional random edges which can improve the
     ///   Recall.
-    /// * `ef_budget` - Optional query budget.
+    /// * `ef_budget` - Optional query budget. Ignored when `extract_knn` is set.
+    /// * `extract_knn` - Return the built graph rather than searching it.
     ///
     /// **BallTree**
     ///
@@ -125,6 +148,7 @@ impl<T> NearestNeighbourParams<T> {
         diversify_prob: T,
         delta: T,
         ef_budget: Option<usize>,
+        extract_knn: bool,
         // balltree
         bt_budget: T,
         // ivf / kmknn
@@ -141,6 +165,7 @@ impl<T> NearestNeighbourParams<T> {
             diversify_prob,
             delta,
             ef_budget,
+            extract_knn,
             bt_budget,
             n_list,
             n_probes,
@@ -171,6 +196,7 @@ where
             diversify_prob: T::from(0.0).unwrap(),
             delta: T::from(0.001).unwrap(),
             ef_budget: None,
+            extract_knn: true,
             // balltree
             bt_budget: T::from(0.1).unwrap(),
             // ivf
@@ -178,6 +204,24 @@ where
             n_probes: None,
         }
     }
+}
+
+/// Whether a metric name resolves to a squared distance in `ann-search-rs`.
+///
+/// Squared Euclidean is the only one; cosine and Manhattan already come back as
+/// true distances.
+///
+/// ### Params
+///
+/// * `metric` - Metric name as handed to the ANN backend.
+///
+/// ### Returns
+///
+/// `true` when the backend's distances need a square root to become true
+/// distances.
+#[inline]
+pub fn metric_returns_squared(metric: &str) -> bool {
+    matches!(parse_ann_dist(metric), Some(Dist::SquaredEuclidean))
 }
 
 /// Parse the AnnSearch to use
@@ -221,7 +265,10 @@ pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
 ///
 /// ### Returns
 ///
-/// `(knn_indices, knn_dist)` excluding self.
+/// `(knn_indices, knn_dist)` excluding self. Distances are true distances in
+/// whatever metric was asked for: the Euclidean backends compute squared
+/// distances for speed and this takes the square root before returning, so
+/// every metric means the same thing to a caller.
 pub fn run_ann_search<T>(
     data: MatRef<T>,
     k: usize,
@@ -276,12 +323,21 @@ where
             )?
         }
         AnnSearch::NNDescent => {
+            // Extraction can only hand back what the graph holds, so the degree
+            // has to cover the request. `None` leaves the crate's own 30, which
+            // is what the query path has always built.
+            let graph_k = if params_nn.extract_knn {
+                Some((k + 1).max(NNDESCENT_DEFAULT_DEGREE))
+            } else {
+                None
+            };
+
             let index = build_nndescent_index(
                 data,
                 &params_nn.dist_metric,
                 params_nn.delta,
                 params_nn.diversify_prob,
-                None, // will default to the 30 that is usually used in NNDescent
+                graph_k,
                 None,
                 None,
                 None,
@@ -289,13 +345,20 @@ where
                 verbosity.detailed_verbosity(),
             )?;
 
-            query_nndescent_self(
-                &index,
-                k + 1,
-                params_nn.ef_budget,
-                true,
-                verbosity.normal_verbosity(),
-            )?
+            if params_nn.extract_knn {
+                // `include_self` so the row shape matches the query path and the
+                // shared self-removal below applies to both. Asking for the self
+                // edge only to drop it costs one prepended entry per row.
+                extract_nndescent_knn(&index, Some(k + 1), true, true)?
+            } else {
+                query_nndescent_self(
+                    &index,
+                    k + 1,
+                    params_nn.ef_budget,
+                    true,
+                    verbosity.normal_verbosity(),
+                )?
+            }
         }
         AnnSearch::BallTree => {
             let index = build_balltree_index(data, &params_nn.dist_metric, seed)?;
@@ -355,10 +418,18 @@ where
         .map(|mut v| v.drain(1..).collect())
         .collect();
 
-    let knn_dist: Vec<Vec<T>> = knn_dist
+    let mut knn_dist: Vec<Vec<T>> = knn_dist
         .into_par_iter()
         .map(|mut v| v.drain(1..).collect())
         .collect();
+
+    // The Euclidean backends skip the square root, since it does not change the
+    // ordering they sort on and is faster.
+    if metric_returns_squared(&params_nn.dist_metric) {
+        knn_dist
+            .par_iter_mut()
+            .for_each(|row| row.iter_mut().for_each(|d| *d = d.sqrt()));
+    }
 
     Ok((knn_indices, knn_dist))
 }

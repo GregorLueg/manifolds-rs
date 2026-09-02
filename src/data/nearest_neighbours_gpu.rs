@@ -4,7 +4,8 @@
 use ann_search_rs::prelude::*;
 use ann_search_rs::{
     build_exhaustive_index_gpu, build_ivf_index_gpu, build_nndescent_index_gpu,
-    query_exhaustive_index_gpu_self, query_ivf_index_gpu_self, query_nndescent_index_gpu_self,
+    extract_nndescent_knn_gpu, query_exhaustive_index_gpu_self, query_ivf_index_gpu_self,
+    query_nndescent_index_gpu_self,
 };
 use cubecl::prelude::*;
 use faer::{Mat, MatRef};
@@ -12,19 +13,30 @@ use rayon::prelude::*;
 
 use crate::prelude::*;
 
+///////////////
+// Constants //
+///////////////
+
+/// CAGRA graph degree `ann-search-rs` builds with when given `None`.
+///
+/// Mirrored rather than imported because the crate does not export it. Only a
+/// floor: widening the degree for extraction must never narrow it below what
+/// the query path would have built.
+const NNDESCENT_GPU_DEFAULT_DEGREE: usize = 30;
+
 /////////////
 // Helpers //
 /////////////
 
 /// Which search algorithm to use for the GPU-accelerated approximate nearest
-/// neighbour search. Default is set to IVF GPU.
+/// neighbour search. Default is set to NNDescentGPU.
 #[derive(Default)]
 pub enum AnnSearchGpu {
-    /// IvfGpu
-    #[default]
-    IvfGpu,
     /// NNDescentGpu
+    #[default]
     NNDescentGpu,
+    /// IvfGpu
+    IvfGpu,
     /// Exhaustive
     ExhaustiveGpu,
 }
@@ -66,6 +78,14 @@ pub struct NearestNeighbourParamsGpu<T> {
     /// NNDescent-GPU: Number of entry points during querying to use. If `None`,
     /// will be automatically determined.
     pub n_entry_points: Option<usize>,
+    /// NNDescent-GPU: return the graph the descent already built instead of
+    /// running a CAGRA beam search over it. Defaults to `true`.
+    ///
+    /// The build degree `k` is widened to cover the request, since extraction
+    /// cannot return more neighbours than the graph holds, and `beam_width`,
+    /// `max_beam_iters` and `n_entry_points` are ignored. No effect on the
+    /// other GPU backends.
+    pub extract_knn: bool,
 }
 
 impl<T> NearestNeighbourParamsGpu<T>
@@ -102,6 +122,7 @@ where
     ///   if `None`.
     /// * `n_entry_points` - Number of entry points for querying.
     ///   Auto-determined if `None`.
+    /// * `extract_knn` - Return the built graph rather than searching it.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         dist_metric: String,
@@ -117,6 +138,7 @@ where
         beam_width: Option<usize>,
         max_beam_iters: Option<usize>,
         n_entry_points: Option<usize>,
+        extract_knn: bool,
     ) -> Self {
         Self {
             dist_metric,
@@ -130,6 +152,7 @@ where
             beam_width,
             max_beam_iters,
             n_entry_points,
+            extract_knn,
         }
     }
 
@@ -157,6 +180,7 @@ where
             beam_width: self.beam_width,
             max_beam_iters: self.max_beam_iters,
             n_entry_points: self.n_entry_points,
+            extract_knn: self.extract_knn,
         }
     }
 }
@@ -186,6 +210,7 @@ where
             beam_width: None,
             max_beam_iters: None,
             n_entry_points: None,
+            extract_knn: true,
         }
     }
 }
@@ -252,7 +277,9 @@ where
 ///
 /// ### Returns
 ///
-/// `(knn_indices, knn_dist)` excluding self.
+/// `(knn_indices, knn_dist)` excluding self. Distances are true distances, as
+/// in [`run_ann_search`]: the Euclidean backends compute squared distances for
+/// speed and the square root is taken before returning.
 #[cfg(feature = "gpu")]
 pub fn run_ann_search_gpu<T, R>(
     data: MatRef<T>,
@@ -309,10 +336,24 @@ where
             )?
         }
         AnnSearchGpu::NNDescentGpu => {
+            // Extraction can only hand back what the CAGRA graph holds, so the
+            // degree has to cover the request. Anything the caller pinned wins;
+            // a `None` is widened rather than left at the crate's 30.
+            let graph_k = if params_nn.extract_knn {
+                Some(
+                    params_nn
+                        .k
+                        .unwrap_or(NNDESCENT_GPU_DEFAULT_DEGREE)
+                        .max(k + 1),
+                )
+            } else {
+                params_nn.k
+            };
+
             let mut index = build_nndescent_index_gpu::<f32, R>(
                 data_fp32.as_ref(),
                 &params_nn.dist_metric,
-                params_nn.k,
+                graph_k,
                 params_nn.k_build,
                 None,
                 params_nn.n_tree,
@@ -325,25 +366,36 @@ where
                 device,
             )?;
 
-            // Mirror CagraGpuSearchParams::from_graph so beam_width/iters scale
-            // with the requested k_out and the CAGRA graph degree. Wrapping the
-            // params in Some(..) suppresses the crate's own from_graph fallback,
-            // so we must backfill here or the raw BEAM_WIDTH=16 default caps
-            // the returned neighbours at 16 - 1 = 15 after self-filtering.
-            let k_graph = params_nn.k.unwrap_or(30);
-            let scaled_bw = (k + 1).max(k_graph).max(16) * 2;
-            let query_params = CagraGpuSearchParams::new(
-                params_nn.beam_width.or(Some(scaled_bw)),
-                params_nn.max_beam_iters.or(Some(scaled_bw * 3)),
-                params_nn.n_entry_points,
-                None,
-            );
+            if params_nn.extract_knn {
+                // `include_self` so the row shape matches the query path and the
+                // shared self-filter below applies to both.
+                extract_nndescent_knn_gpu(&index, Some(k + 1), true, true)?
+            } else {
+                // Mirror CagraGpuSearchParams::from_graph so beam_width/iters
+                // scale with the requested k_out and the CAGRA graph degree.
+                // Wrapping the params in Some(..) suppresses the crate's own
+                // from_graph fallback, so we must backfill here or the raw
+                // BEAM_WIDTH=16 default caps the returned neighbours at
+                // 16 - 1 = 15 after self-filtering.
+                let k_graph = graph_k.unwrap_or(NNDESCENT_GPU_DEFAULT_DEGREE);
+                let scaled_bw = (k + 1).max(k_graph).max(16) * 2;
+                let query_params = CagraGpuSearchParams::new(
+                    params_nn.beam_width.or(Some(scaled_bw)),
+                    params_nn.max_beam_iters.or(Some(scaled_bw * 3)),
+                    params_nn.n_entry_points,
+                    None,
+                );
 
-            query_nndescent_index_gpu_self(&mut index, k + 1, Some(query_params), true)?
+                query_nndescent_index_gpu_self(&mut index, k + 1, Some(query_params), true)?
+            }
         }
     };
 
     let knn_dist = knn_dist.unwrap();
+
+    // The Euclidean backends skip the square root, since it does not change the
+    // ordering they sort on. Callers do care; see `run_ann_search`.
+    let rooted = metric_returns_squared(&params_nn.dist_metric);
 
     // remove self from indices/distances in a single pass and cast the f32
     // distances back up to T on the way out
@@ -356,7 +408,10 @@ where
                 .zip(dist)
                 .filter(|(j, _)| *j != i)
                 .take(k)
-                .map(|(j, d)| (j, T::from(d).unwrap()))
+                .map(|(j, d)| {
+                    let d = if rooted { d.sqrt() } else { d };
+                    (j, T::from(d).unwrap())
+                })
                 .unzip()
         })
         .unzip();

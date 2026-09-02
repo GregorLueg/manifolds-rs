@@ -1,0 +1,90 @@
+site_name: manifolds-rs
+site_description: UMAP, t-SNE, PHATE, PaCMAP and diffusion maps for single-cell and computational biology, in Rust.
+site_url: https://gregorlueg.github.io/manifolds-rs/
+repo_url: https://github.com/GregorLueg/manifolds-rs
+repo_name: GregorLueg/manifolds-rs
+edit_uri: edit/main/python/docs/
+copyright: MIT licensed
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - content.action.edit
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+
+nav:
+  - Home: index.md
+  - Choosing an algorithm: choosing.md
+  - Quickstart: quickstart.md
+  - GPU: gpu.md
+  - Guide: guide.md
+  - API reference:
+      - Estimators: api/embeddings.md
+      - GPU estimators: api/gpu.md
+      - Parameter groups: api/params.md
+      - Neighbours: api/neighbours.md
+      - Synthetic data: api/datasets.md
+      - Estimator base: api/base.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          # `manifolds_rs` sits next to mkdocs.yml, not under `docs/`.
+          paths: ["."]
+          options:
+            docstring_style: google
+            # The `Args:` sections carry one row per parameter, which is the
+            # whole point of writing them out; a table is how that reads.
+            docstring_section_style: table
+            # Constructor signature and class docstring render as one block,
+            # so a reader sees the defaults next to what they mean.
+            merge_init_into_class: true
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            members_order: source
+            show_root_heading: true
+            show_root_full_path: false
+            show_source: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            heading_level: 2
+            filters: ["!^_"]
+
+# `mkdocs serve` picks up a docstring edit without a restart.
+watch:
+  - manifolds_rs

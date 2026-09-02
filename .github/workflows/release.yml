@@ -14,5 +14,5 @@ jobs:
   release:
     uses: GregorLueg/personal-actions/.github/workflows/rust-release.yml@v1
     with:
-      publish-args: '--features parametric,fft_tsne,gpu'
+      publish-args: '--features parametric,fft_tsne,gpu,ndarray'
     secrets: inherit

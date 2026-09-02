@@ -142,16 +142,8 @@ fn phate_integration_02_alpha_decay_affinities() {
 
     println!("\n=== PHATE DIAGNOSTIC 2: Alpha Decay Affinities ===");
 
-    let graph = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
-        k,
-        Some(40.0),
-        1.0,
-        1e-4,
-        "add",
-        true,
-    );
+    let graph =
+        phate_alpha_decay_affinities(&knn_indices, &knn_dist, k, Some(40.0), 1.0, 1e-4, "add");
 
     println!("Graph has {} edges", graph.values.len());
 
@@ -218,7 +210,6 @@ fn phate_integration_03_binary_kernel() {
         1.0,
         1e-10,
         "add",
-        true,
     );
 
     // With binary kernel and very low threshold, all non-zero affinities
@@ -259,16 +250,8 @@ fn phate_integration_04_diffusion_operator() {
 
     println!("\n=== PHATE DIAGNOSTIC 4: Diffusion Operator ===");
 
-    let graph = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
-        k,
-        Some(40.0),
-        1.0,
-        1e-4,
-        "add",
-        true,
-    );
+    let graph =
+        phate_alpha_decay_affinities(&knn_indices, &knn_dist, k, Some(40.0), 1.0, 1e-4, "add");
 
     let kernel_csr = coo_to_csr(&graph);
     let diffusion_op = build_diffusion_operator(&kernel_csr);
@@ -311,16 +294,8 @@ fn phate_integration_05_matrix_power() {
 
     println!("\n=== PHATE DIAGNOSTIC 5: Matrix Power ===");
 
-    let graph = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
-        k,
-        Some(40.0),
-        1.0,
-        1e-4,
-        "add",
-        true,
-    );
+    let graph =
+        phate_alpha_decay_affinities(&knn_indices, &knn_dist, k, Some(40.0), 1.0, 1e-4, "add");
     let kernel_csr = coo_to_csr(&graph);
     let diffusion_op = build_diffusion_operator(&kernel_csr);
 
@@ -359,16 +334,8 @@ fn phate_integration_06_potential_calculation() {
 
     println!("\n=== PHATE DIAGNOSTIC 6: Potential Calculation ===");
 
-    let graph = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
-        k,
-        Some(40.0),
-        1.0,
-        1e-4,
-        "add",
-        true,
-    );
+    let graph =
+        phate_alpha_decay_affinities(&knn_indices, &knn_dist, k, Some(40.0), 1.0, 1e-4, "add");
     let kernel_csr = coo_to_csr(&graph);
     let diffusion_op = build_diffusion_operator(&kernel_csr);
 
@@ -451,7 +418,7 @@ fn phate_integration_08_landmark_phate_quality() {
             Some(40.0),
             1.0,
             1e-4,
-            "average".to_string(),
+            "add".to_string(),
             Some(20),
             "spectral".to_string(),
             None,
@@ -502,7 +469,7 @@ fn phate_integration_09_reproducibility() {
             Some(40.0),
             1.0,
             1e-4,
-            "average".to_string(),
+            "add".to_string(),
             None,
             "spectral".to_string(),
             None,
@@ -545,7 +512,7 @@ fn phate_integration_10_different_seeds() {
             Some(40.0),
             1.0,
             1e-4,
-            "average".to_string(),
+            "add".to_string(),
             None,
             "spectral".to_string(),
             None,
@@ -592,7 +559,7 @@ fn phate_integration_11_precomputed_knn() {
             Some(40.0),
             1.0,
             1e-4,
-            "average".to_string(),
+            "add".to_string(),
             None,
             "spectral".to_string(),
             None,
@@ -643,7 +610,7 @@ fn phate_integration_12_fixed_vs_auto_t() {
             Some(40.0),
             1.0,
             1e-4,
-            "average".to_string(),
+            "add".to_string(),
             None,
             "spectral".to_string(),
             None,
@@ -660,7 +627,7 @@ fn phate_integration_12_fixed_vs_auto_t() {
             Some(40.0),
             1.0,
             1e-4,
-            "average".to_string(),
+            "add".to_string(),
             None,
             "spectral".to_string(),
             None,
@@ -706,26 +673,10 @@ fn phate_integration_13_bandwidth_scale_effect() {
 
     println!("\n=== PHATE DIAGNOSTIC 13: Bandwidth Scale Effect ===");
 
-    let graph_narrow = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
-        k,
-        Some(40.0),
-        0.5,
-        1e-4,
-        "none",
-        true,
-    );
-    let graph_wide = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
-        k,
-        Some(40.0),
-        2.0,
-        1e-4,
-        "none",
-        true,
-    );
+    let graph_narrow =
+        phate_alpha_decay_affinities(&knn_indices, &knn_dist, k, Some(40.0), 0.5, 1e-4, "none");
+    let graph_wide =
+        phate_alpha_decay_affinities(&knn_indices, &knn_dist, k, Some(40.0), 2.0, 1e-4, "none");
 
     let mean_narrow = graph_narrow.values.iter().sum::<f64>() / graph_narrow.values.len() as f64;
     let mean_wide = graph_wide.values.iter().sum::<f64>() / graph_wide.values.len() as f64;
