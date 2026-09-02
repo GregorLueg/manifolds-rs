@@ -258,6 +258,7 @@ where
     set(&mut p.diversify_prob, r.float::<T>("diversify_prob")?);
     set(&mut p.delta, r.float::<T>("delta")?);
     p.ef_budget = r.get::<usize>("ef_budget")?.or(p.ef_budget);
+    set(&mut p.extract_knn, r.get::<bool>("extract_knn")?);
     set(&mut p.bt_budget, r.float::<T>("bt_budget")?);
     p.n_list = r.get::<usize>("n_list")?.or(p.n_list);
     p.n_probes = r.get::<usize>("n_probes")?.or(p.n_probes);
@@ -810,6 +811,7 @@ where
     p.beam_width = r.get::<usize>("beam_width")?.or(p.beam_width);
     p.max_beam_iters = r.get::<usize>("max_beam_iters")?.or(p.max_beam_iters);
     p.n_entry_points = r.get::<usize>("n_entry_points")?.or(p.n_entry_points);
+    set(&mut p.extract_knn, r.get::<bool>("extract_knn")?);
     r.finish()
 }
 

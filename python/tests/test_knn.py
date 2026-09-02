@@ -33,13 +33,12 @@ def test_distances_come_back_sorted(X: np.ndarray) -> None:
 def test_exhaustive_is_the_ground_truth(X: np.ndarray) -> None:
     """The exact backend has to agree with a brute-force scan done in numpy.
 
-    Distances are squared Euclidean throughout, so the comparison is too: no
-    square root is taken anywhere in the pipeline.
+    Distances are true Euclidean, so the brute-force comparison roots too.
     """
     ind, dist = mf.knn_graph(X, k=5, ann="exhaustive", seed=7)
     gram = ((X[:, None, :] - X[None, :, :]) ** 2).sum(axis=-1)
     np.fill_diagonal(gram, np.inf)
-    expected = np.sort(gram, axis=1)[:, :5]
+    expected = np.sqrt(np.sort(gram, axis=1)[:, :5])
     assert np.allclose(dist, expected)
     assert ind.shape == expected.shape
 
@@ -71,6 +70,37 @@ def test_backend_knobs_reach_the_search(X: np.ndarray) -> None:
         return hits / truth.size
 
     assert recall(wide) >= recall(narrow)
+
+
+def test_euclidean_and_l2_are_the_same_metric(X: np.ndarray) -> None:
+    """They map to the same metric in the core, so nothing downstream may tell
+    them apart. It used to: the squared-distance convention was detected by
+    comparing the metric name against "euclidean", and "l2" fell through it."""
+    ei, ed = mf.knn_graph(X, k=10, metric="euclidean", seed=7)
+    li, ld = mf.knn_graph(X, k=10, metric="l2", seed=7)
+    assert np.array_equal(ei, li)
+    assert np.array_equal(ed, ld)
+
+    a = mf.TSNE(metric="euclidean", n_epochs=40, seed=7).fit_transform(X)
+    b = mf.TSNE(metric="l2", n_epochs=40, seed=7).fit_transform(X)
+    assert np.array_equal(a, b)
+
+
+def test_extraction_matches_the_query_path(X: np.ndarray) -> None:
+    """NN-Descent can return the graph it built instead of searching it. Both
+    paths owe the caller full, self-free, sorted rows."""
+    truth, _ = mf.knn_graph(X, k=10, ann="exhaustive", seed=7)
+
+    for extract in (True, False):
+        params = mf.NeighbourParams(extract_knn=extract)
+        ind, dist = mf.knn_graph(X, k=10, ann="nndescent", nn_params=params, seed=7)
+
+        assert (ind >= 0).all(), f"extract={extract}: rows came back short"
+        assert not (ind == np.arange(X.shape[0])[:, None]).any()
+        assert (np.diff(dist, axis=1) >= 0).all()
+
+        hits = sum(len(set(a) & set(b)) for a, b in zip(ind, truth, strict=True))
+        assert hits / truth.size > 0.9
 
 
 def test_cosine_differs_from_euclidean(X: np.ndarray) -> None:

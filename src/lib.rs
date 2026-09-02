@@ -465,7 +465,6 @@ where
                 &graph,
                 &knn_indices,
                 &knn_dist,
-                umap_params.nn_params.dist_metric == "euclidean",
             )?)
         }
         None => None,
@@ -782,7 +781,6 @@ where
         perplexity,
         T::from_f64(1e-5).unwrap(),
         200,
-        nn_params.dist_metric == "euclidean",
     )?;
 
     let graph = symmetrise_affinities_tsne(directed_graph);
@@ -944,7 +942,6 @@ where
                 &graph,
                 &knn_indices,
                 &knn_dist,
-                params.nn_params.dist_metric == "euclidean",
             )?)
         }
         None => None,
@@ -1192,7 +1189,6 @@ where
                 &graph,
                 &knn_indices,
                 &knn_dist,
-                params.nn_params.dist_metric == "euclidean",
             )?)
         }
         None => None,
@@ -1899,7 +1895,6 @@ where
         phate_params.diffusion_params.bandwidth_scale,
         phate_params.diffusion_params.thresh,
         &phate_params.diffusion_params.graph_symmetry,
-        nn_params.dist_metric == "euclidean",
     );
 
     if verbosity.normal_verbosity() {
@@ -2756,7 +2751,6 @@ where
             dm_params.bandwidth_scale,
             dm_params.thresh,
             &dm_params.graph_symmetry,
-            nn_params.dist_metric == "euclidean",
         );
         Some(coo_to_csr(&graph))
     } else {
@@ -3676,7 +3670,6 @@ where
                 &graph,
                 &knn_indices,
                 &knn_dist,
-                umap_params.nn_params.dist_metric == "euclidean",
             )?)
         }
         None => None,
@@ -4180,7 +4173,6 @@ where
         perplexity,
         T::from_f64(1e-5).unwrap(),
         200,
-        nn_params.dist_metric == "euclidean",
     )?;
 
     let graph = symmetrise_affinities_tsne(directed_graph);

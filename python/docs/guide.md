@@ -14,16 +14,20 @@ neighbour search and the optimiser. There is no separate knob for it.
 The GPU estimators are the exception: they cast to float32 because WGSL has no
 float64. That is the only silent narrowing anywhere in the package.
 
-## Distances are not rooted
+## Distances
 
-`"euclidean"` computes *squared* Euclidean distance internally and never takes
-the square root. Every graph construction downstream expects that, so the
-distances you get from `knn_graph` are squared too.
+`knn_graph` returns true distances in whatever metric you asked for. The
+Euclidean backends compute squared distances internally, because that does not
+change the ordering they sort on, and the square root is taken before the
+distances reach you.
 
-This matters in exactly one place: if you build a graph yourself and hand it to
-`fit`, do not take a square root first. It changes the answer.
+So a graph you build yourself and hand to `fit` should hold true distances too.
 
 Metrics available: `"euclidean"`/`"l2"`, `"cosine"`, `"manhattan"`/`"l1"`.
+`"euclidean"` and `"l2"` are the same metric and now produce the same
+embedding; before 0.4 they did not, because the squared convention was
+detected by comparing the metric name against the string `"euclidean"` and
+`"l2"` fell through it.
 
 ## Reusing the neighbour graph
 

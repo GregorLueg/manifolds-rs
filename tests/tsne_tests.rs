@@ -119,15 +119,7 @@ fn tsne_integration_02_gaussian_affinities() {
 
     println!("\n=== t-SNE DIAGNOSTIC 2: Gaussian Affinities ===");
 
-    let graph = gaussian_knn_affinities(
-        &knn_indices,
-        &knn_dist,
-        perplexity,
-        1e-5,
-        200,
-        true, // squared distances
-    )
-    .unwrap();
+    let graph = gaussian_knn_affinities(&knn_indices, &knn_dist, perplexity, 1e-5, 200).unwrap();
 
     let adj = graph_to_adj(&graph);
 
@@ -191,8 +183,7 @@ fn tsne_integration_03_symmetrisation() {
     let (knn_indices, knn_dist) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
-    let directed =
-        gaussian_knn_affinities(&knn_indices, &knn_dist, perplexity, 1e-5, 200, true).unwrap();
+    let directed = gaussian_knn_affinities(&knn_indices, &knn_dist, perplexity, 1e-5, 200).unwrap();
     let symmetric = symmetrise_affinities_tsne(directed);
 
     println!("\n=== t-SNE DIAGNOSTIC 3: Symmetrisation ===");

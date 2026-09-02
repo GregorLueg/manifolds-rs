@@ -54,7 +54,6 @@ class UMAP(BaseEmbedding):
         n_neighbors: Neighbours per point. The locality knob: small values chase
             fine structure, large ones preserve more of the global picture.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
-            Euclidean is computed squared throughout and never rooted.
         min_dist: How tightly points may pack in the embedding. Together with
             `spread` it fits the repulsion curve; neither is used for anything
             else.

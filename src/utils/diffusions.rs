@@ -1521,7 +1521,6 @@ where
             bandwidth_scale,
             thresh,
             graph_symmetry,
-            distance == "euclidean",
         );
         let kernel_ll = coo_to_csr(&ll_graph);
         let kernel_ll_norm = apply_anisotropic_normalisation(&kernel_ll, alpha_norm)?;

@@ -169,10 +169,9 @@ where
     /// * `graph` - The symmetrised graph the optimiser will run on. Both
     ///   directions of every edge are expected to be present
     /// * `knn_indices` - kNN indices per point, self excluded
-    /// * `knn_dists` - kNN distances per point, aligned with `knn_indices`
-    /// * `distances_squared` - `true` when `knn_dists` already holds squared
-    ///   distances. The ANN backends return **squared** Euclidean distances,
-    ///   so this is `true` for `"euclidean"`
+    /// * `knn_dists` - kNN distances per point, aligned with `knn_indices`,
+    ///   as true distances. `run_ann_search` roots the Euclidean backends'
+    ///   squared output, so every metric arrives on the same footing
     ///
     /// ### Returns
     ///
@@ -183,9 +182,8 @@ where
         graph: &CoordinateList<T>,
         knn_indices: &[Vec<usize>],
         knn_dists: &[Vec<T>],
-        distances_squared: bool,
     ) -> Result<Self, ManifoldsError> {
-        let edge_d_sq = edge_distances_from_knn(graph, knn_indices, knn_dists, distances_squared);
+        let edge_d_sq = edge_distances_from_knn(graph, knn_indices, knn_dists);
         let (r, mu_sum) = original_log_radii(graph, &edge_d_sq)?;
 
         let mu_tot = mu_sum
@@ -300,8 +298,6 @@ where
 /// * `graph` - Graph in COO form
 /// * `knn_indices` - kNN indices per point, self excluded
 /// * `knn_dists` - kNN distances per point, aligned with `knn_indices`
-/// * `distances_squared` - `true` when `knn_dists` already holds squared
-///   distances, as the ANN backends do for `"euclidean"`
 ///
 /// ### Returns
 ///
@@ -310,7 +306,6 @@ pub fn edge_distances_from_knn<T>(
     graph: &CoordinateList<T>,
     knn_indices: &[Vec<usize>],
     knn_dists: &[Vec<T>],
-    distances_squared: bool,
 ) -> Vec<T>
 where
     T: ManifoldsFloat,
@@ -324,11 +319,7 @@ where
                 .or_else(|| lookup_knn_dist(knn_indices, knn_dists, j, i))
                 .unwrap_or_else(T::zero);
 
-            if distances_squared {
-                raw
-            } else {
-                raw * raw
-            }
+            raw * raw
         })
         .collect()
 }
@@ -557,20 +548,16 @@ mod tests {
     }
 
     #[test]
-    fn test_edge_distances_squared_input_is_not_squared_again() {
+    fn test_edge_distances_squares_the_true_distance() {
         let graph = tiny_graph();
         let knn_indices = vec![vec![1], vec![0]];
         let knn_dists = vec![vec![9.0], vec![9.0]];
 
-        let d_sq = edge_distances_from_knn(&graph, &knn_indices, &knn_dists, true);
+        let d_sq = edge_distances_from_knn(&graph, &knn_indices, &knn_dists);
 
-        // already squared -> passed straight through
-        assert_relative_eq!(d_sq[0], 9.0);
-        assert_relative_eq!(d_sq[1], 9.0);
-
-        let d_sq = edge_distances_from_knn(&graph, &knn_indices, &knn_dists, false);
-
-        // raw distance -> squared here
+        // kNN distances are true distances now, so squaring happens here and
+        // only here. There is no longer a mode where the input is passed
+        // through untouched.
         assert_relative_eq!(d_sq[0], 81.0);
         assert_relative_eq!(d_sq[1], 81.0);
     }
@@ -581,9 +568,9 @@ mod tests {
         // symmetrisation creates exactly this case.
         let graph = tiny_graph();
         let knn_indices = vec![vec![7], vec![0]];
-        let knn_dists = vec![vec![1.0], vec![4.0]];
+        let knn_dists = vec![vec![1.0], vec![2.0]];
 
-        let d_sq = edge_distances_from_knn(&graph, &knn_indices, &knn_dists, true);
+        let d_sq = edge_distances_from_knn(&graph, &knn_indices, &knn_dists);
 
         assert_relative_eq!(d_sq[0], 4.0);
         assert_relative_eq!(d_sq[1], 4.0);

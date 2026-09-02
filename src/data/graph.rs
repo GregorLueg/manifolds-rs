@@ -874,15 +874,12 @@ const LOG2_E: f64 = std::f64::consts::LOG2_E;
 /// ### Params
 ///
 /// * `knn_indices` - For each point, indices of its k nearest neighbours
-/// * `knn_dists` - For each point, distances to its k nearest neighbours
-///   (same order as indices!)
+/// * `knn_dists` - For each point, true distances to its k nearest neighbours
+///   (same order as indices!). Squared internally for the Gaussian kernel
 /// * `perplexity` - Target perplexity (effective number of neighbours). Typical
 ///   values: 5-50
 /// * `tol` - Convergence tolerance for entropy (typical: 1e-5)
 /// * `max_iter` - Maximum iterations for binary search (typical: 50-200)
-/// * `distances_squared` - If true, distances are already squared (e.g.,
-///   squared Euclidean). If false, distances will be squared before computing
-///   the kernel.
 ///
 /// ### Returns
 ///
@@ -906,7 +903,6 @@ pub fn gaussian_knn_affinities<T>(
     perplexity: T,
     tol: T,
     max_iter: usize,
-    distances_squared: bool,
 ) -> Result<CoordinateList<T>, ManifoldsError>
 where
     T: ManifoldsFloat,
@@ -961,7 +957,7 @@ where
                     if d < machine_epsilon {
                         continue;
                     }
-                    d_sq.push(if distances_squared { d } else { d * d });
+                    d_sq.push(d * d);
                     origin.push(m);
                 }
 
@@ -1287,8 +1283,6 @@ where
 /// * `bandwidth_scale` - Multiplicative factor for bandwidth (default: 1.0)
 /// * `thresh` - Threshold below which affinities are set to 0 (default: 1e-4,
 ///   for sparsity)
-/// * `distances_squared` - If true, distances are already squared (squared
-///   Euclidean). If false, use as-is (cosine, etc.)
 /// * `symmetrise` - symmetrisation method: "add" for (K+K^T)/2, "multiply" for
 ///   K*K^T, "none" for asymmetric.
 ///
@@ -1304,7 +1298,6 @@ pub fn phate_alpha_decay_affinities<T>(
     bandwidth_scale: T,
     thresh: T,
     symmetrise: &str,
-    distances_squared: bool,
 ) -> CoordinateList<T>
 where
     T: ManifoldsFloat,
@@ -1331,20 +1324,10 @@ where
             // note: indices[0] is self, so indices[knn-1] is the kth neighbour
             // (excluding self)
             let bandwidth_dist = if knn > 0 && knn <= dists.len() {
-                // this is needed as the ANN liibraries return squared distances
-                // for speed
-                if distances_squared {
-                    dists[knn - 1].sqrt() // convert squared distance to distance
-                } else {
-                    dists[knn - 1] // already a distance
-                }
+                dists[knn - 1]
             } else {
                 // fallback: use last neighbour
-                if distances_squared {
-                    dists[dists.len() - 1].sqrt()
-                } else {
-                    dists[dists.len() - 1]
-                }
+                dists[dists.len() - 1]
             };
 
             let bandwidth = bandwidth_dist * bandwidth_scale;
@@ -1370,15 +1353,8 @@ where
                     continue;
                 }
 
-                // convert to actual distance if needed
-                let d = if distances_squared {
-                    dist_val.sqrt() // convert squared distance to distance
-                } else {
-                    dist_val // already a distance
-                };
-
                 // compute affinity: exp(-(d / σ)^α)
-                let scaled = d / bandwidth;
+                let scaled = dist_val / bandwidth;
                 let powered = scaled.powf(decay_val);
                 let affinity = (-powered).exp();
 
@@ -1649,7 +1625,7 @@ mod test_data_gen {
 
         let perplexity = 2.0;
         let graph =
-            gaussian_knn_affinities(&knn_indices, &knn_dists, perplexity, 1e-5, 200, true).unwrap();
+            gaussian_knn_affinities(&knn_indices, &knn_dists, perplexity, 1e-5, 200).unwrap();
         let adj = graph_to_adj(&graph);
 
         for (i, neighbours) in adj.iter().enumerate() {
@@ -1685,7 +1661,7 @@ mod test_data_gen {
         let target_entropy = perplexity.log2();
 
         let graph =
-            gaussian_knn_affinities(&knn_indices, &knn_dists, perplexity, 1e-5, 200, true).unwrap();
+            gaussian_knn_affinities(&knn_indices, &knn_dists, perplexity, 1e-5, 200).unwrap();
         let adj = graph_to_adj(&graph);
 
         for (i, neighbours) in adj.iter().enumerate() {
@@ -1700,54 +1676,6 @@ mod test_data_gen {
             );
             assert_relative_eq!(h, target_entropy, epsilon = 1e-3, max_relative = 1e-3);
         }
-    }
-
-    #[test]
-    fn test_squared_vs_unsquared_equivalence() {
-        // Same underlying distances, but one is squared, one is not
-        let knn_indices = vec![
-            vec![1, 2, 3, 4],
-            vec![0, 2, 3, 4],
-            vec![0, 1, 3, 4],
-            vec![0, 1, 2, 4],
-            vec![0, 1, 2, 3],
-        ];
-
-        // Unsquared Euclidean distances
-        let unsquared: Vec<Vec<f64>> = vec![
-            vec![1.0, 2.0, 3.0, 4.0],
-            vec![1.0, 1.0, 2.0, 3.0],
-            vec![2.0, 1.0, 1.0, 2.0],
-            vec![3.0, 2.0, 1.0, 1.0],
-            vec![4.0, 3.0, 2.0, 1.0],
-        ];
-
-        // Squared Euclidean distances
-        let squared: Vec<Vec<f64>> = unsquared
-            .iter()
-            .map(|row| row.iter().map(|d| d * d).collect())
-            .collect();
-
-        let perplexity = 2.0;
-
-        let graph_unsq =
-            gaussian_knn_affinities(&knn_indices, &unsquared, perplexity, 1e-5, 200, false)
-                .unwrap();
-        let graph_sq =
-            gaussian_knn_affinities(&knn_indices, &squared, perplexity, 1e-5, 200, true).unwrap();
-
-        let adj_unsq = graph_to_adj(&graph_unsq);
-        let adj_sq = graph_to_adj(&graph_sq);
-
-        // Results should be identical
-        for i in 0..5 {
-            assert_eq!(adj_unsq[i].len(), adj_sq[i].len());
-            for (a, b) in adj_unsq[i].iter().zip(adj_sq[i].iter()) {
-                assert_eq!(a.0, b.0); // same neighbour index
-                assert_relative_eq!(a.1, b.1, epsilon = 1e-10);
-            }
-        }
-        println!("Squared vs unsquared: results match!");
     }
 
     #[test]
@@ -1766,8 +1694,7 @@ mod test_data_gen {
             vec![0.0, 9.0, 4.0, 1.0],
         ];
 
-        let graph =
-            gaussian_knn_affinities(&knn_indices, &knn_dists, 2.0, 1e-5, 200, true).unwrap();
+        let graph = gaussian_knn_affinities(&knn_indices, &knn_dists, 2.0, 1e-5, 200).unwrap();
 
         // Check no self-loops in output
         for (&i, &j) in graph.row_indices.iter().zip(&graph.col_indices) {
@@ -1782,8 +1709,7 @@ mod test_data_gen {
         // Strictly increasing squared distances
         let knn_dists = vec![vec![1.0, 4.0, 9.0, 16.0]];
 
-        let graph =
-            gaussian_knn_affinities(&knn_indices, &knn_dists, 2.0, 1e-5, 200, true).unwrap();
+        let graph = gaussian_knn_affinities(&knn_indices, &knn_dists, 2.0, 1e-5, 200).unwrap();
         let adj = graph_to_adj(&graph);
 
         let probs: Vec<(usize, f64)> = adj[0].clone();
@@ -1810,7 +1736,7 @@ mod test_data_gen {
 
         let perplexity = 3.99999999; // to not throw an error
         let graph =
-            gaussian_knn_affinities(&knn_indices, &knn_dists, perplexity, 1e-5, 200, true).unwrap();
+            gaussian_knn_affinities(&knn_indices, &knn_dists, perplexity, 1e-5, 200).unwrap();
         let adj = graph_to_adj(&graph);
 
         let probs: Vec<f64> = adj[0].iter().map(|(_, p)| *p).collect();
@@ -1828,15 +1754,13 @@ mod test_data_gen {
         let knn_dists = vec![vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]]; // unsquared
 
         // Low perplexity → more concentrated distribution
-        let graph_low =
-            gaussian_knn_affinities(&knn_indices, &knn_dists, 1.5, 1e-5, 200, false).unwrap();
+        let graph_low = gaussian_knn_affinities(&knn_indices, &knn_dists, 1.5, 1e-5, 200).unwrap();
         let adj_low = graph_to_adj(&graph_low);
         let probs_low: Vec<f64> = adj_low[0].iter().map(|(_, p)| *p).collect();
         let entropy_low = entropy(&probs_low);
 
         // High perplexity → more spread distribution
-        let graph_high =
-            gaussian_knn_affinities(&knn_indices, &knn_dists, 4.0, 1e-5, 200, false).unwrap();
+        let graph_high = gaussian_knn_affinities(&knn_indices, &knn_dists, 4.0, 1e-5, 200).unwrap();
         let adj_high = graph_to_adj(&graph_high);
         let probs_high: Vec<f64> = adj_high[0].iter().map(|(_, p)| *p).collect();
         let entropy_high = entropy(&probs_high);
@@ -1879,7 +1803,6 @@ mod test_data_gen {
             1.0,        // bandwidth_scale
             1e-4,       // thresh
             "none",     // no symmetrisation
-            true,
         );
 
         assert_eq!(graph.n_samples, 4);
@@ -1912,7 +1835,6 @@ mod test_data_gen {
             1.0,
             1e-4,
             "none",
-            true,
         );
 
         // Check no self-loops
@@ -1926,8 +1848,8 @@ mod test_data_gen {
     fn test_phate_closer_neighbours_higher_affinity() {
         // Single point with 4 neighbors at increasing distances
         let knn_indices = vec![vec![0, 1, 2, 3, 4]];
-        // Squared distances: 0 (self), 1, 4, 9, 16
-        let knn_dists = vec![vec![0.0, 1.0, 4.0, 9.0, 16.0]];
+        // True distances: 0 (self), 1, 2, 3, 4
+        let knn_dists = vec![vec![0.0, 1.0, 2.0, 3.0, 4.0]];
 
         let graph = phate_alpha_decay_affinities(
             &knn_indices,
@@ -1937,7 +1859,6 @@ mod test_data_gen {
             1.0,
             1e-10,
             "none",
-            true,
         );
 
         let adj = graph_to_adj(&graph);
@@ -1975,7 +1896,6 @@ mod test_data_gen {
             1.0,
             1e-10,
             "none",
-            true,
         );
 
         // Use k=3: bandwidth should be sqrt(4.0) = 2.0
@@ -1987,7 +1907,6 @@ mod test_data_gen {
             1.0,
             1e-10,
             "none",
-            true,
         );
 
         let adj_k2 = graph_to_adj(&graph_k2);
@@ -2034,7 +1953,7 @@ mod test_data_gen {
     #[test]
     fn test_phate_bandwidth_scale_effect() {
         let knn_indices = vec![vec![0, 1, 2, 3]];
-        let knn_dists = vec![vec![0.0, 1.0, 4.0, 9.0]];
+        let knn_dists = vec![vec![0.0, 1.0, 2.0, 3.0]];
 
         // Test with bandwidth_scale = 1.0
         let graph_scale1 = phate_alpha_decay_affinities(
@@ -2045,7 +1964,6 @@ mod test_data_gen {
             1.0,
             1e-10,
             "none",
-            true,
         );
 
         // Test with bandwidth_scale = 2.0 (wider kernel)
@@ -2057,7 +1975,6 @@ mod test_data_gen {
             2.0,
             1e-10,
             "none",
-            true,
         );
 
         let adj1 = graph_to_adj(&graph_scale1);
@@ -2091,7 +2008,6 @@ mod test_data_gen {
             1.0,
             1e-10,
             "none",
-            true,
         );
 
         // High decay (α=80): sharper falloff
@@ -2103,7 +2019,6 @@ mod test_data_gen {
             1.0,
             1e-10,
             "none",
-            true,
         );
 
         let adj_low = graph_to_adj(&graph_low);
@@ -2136,7 +2051,6 @@ mod test_data_gen {
             1.0,
             1e-5, // higher threshold
             "none",
-            true,
         );
 
         // Lenient threshold - should include more neighbors
@@ -2148,7 +2062,6 @@ mod test_data_gen {
             1.0,
             1e-10, // lower threshold
             "none",
-            true,
         );
 
         println!(
@@ -2187,7 +2100,6 @@ mod test_data_gen {
             1.0,
             1e-4,
             "none",
-            true,
         );
 
         // All edges should have weight 1.0
@@ -2222,7 +2134,6 @@ mod test_data_gen {
             1.0,
             1e-4,
             "add", // additive symmetrisation
-            true,
         );
 
         // Check symmetry: K[i,j] should equal K[j,i]
@@ -2263,7 +2174,6 @@ mod test_data_gen {
             1.0,
             1e-10,
             "none",
-            true,
         );
 
         // Get multiplicative symmetrized version
@@ -2275,7 +2185,6 @@ mod test_data_gen {
             1.0,
             1e-10,
             "multiply",
-            true,
         );
 
         // Multiplicative should have fewer edges (only mutual neighbors)
@@ -2327,18 +2236,9 @@ mod test_data_gen {
             1.0,
             1e-10,
             "none",
-            true,
         );
-        let graph_add = phate_alpha_decay_affinities(
-            &knn_indices,
-            &knn_dists,
-            2,
-            Some(2.0),
-            1.0,
-            1e-10,
-            "add",
-            true,
-        );
+        let graph_add =
+            phate_alpha_decay_affinities(&knn_indices, &knn_dists, 2, Some(2.0), 1.0, 1e-10, "add");
         let graph_mult = phate_alpha_decay_affinities(
             &knn_indices,
             &knn_dists,
@@ -2347,7 +2247,6 @@ mod test_data_gen {
             1.0,
             1e-10,
             "multiply",
-            true,
         );
 
         println!("Asymmetric: {} edges", graph_none.values.len());
@@ -2379,7 +2278,6 @@ mod test_data_gen {
             bandwidth_scale,
             1e-10,
             "none",
-            true,
         );
 
         // Manual calculation:
@@ -2412,7 +2310,6 @@ mod test_data_gen {
             1.0,
             1e-4,
             "none",
-            true,
         );
 
         // Find affinity for the zero-distance neighbor
@@ -2445,16 +2342,8 @@ mod test_data_gen {
             })
             .collect();
 
-        let graph = phate_alpha_decay_affinities(
-            &knn_indices,
-            &knn_dists,
-            5,
-            Some(2.0),
-            1.0,
-            1e-10,
-            "add",
-            true,
-        );
+        let graph =
+            phate_alpha_decay_affinities(&knn_indices, &knn_dists, 5, Some(2.0), 1.0, 1e-10, "add");
 
         println!(
             "Large dataset: {} vertices, {} edges",

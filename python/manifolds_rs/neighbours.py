@@ -9,9 +9,9 @@ most of the runtime. Build one here, hand it to as many embeddings as you like:
     >>> a = mf.UMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
     >>> b = mf.PaCMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
 
-The distances come back in whatever the metric produces, squared Euclidean
-included. That is deliberate and matches what the embeddings expect: taking a
-square root before handing the graph on changes the answer.
+Distances come back as true distances in the requested metric. The Euclidean
+backends compute squared distances internally, since that does not change the
+ordering they sort on, and the square root is taken before returning.
 """
 
 from __future__ import annotations

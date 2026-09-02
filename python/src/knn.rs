@@ -61,9 +61,8 @@ macro_rules! knn_arm {
 ///
 /// `(indices, distances)`, both `(n_samples, k)`. Indices are int64 and
 /// distances match the dtype of `x`. A row an approximate backend could not
-/// fill is padded with `-1` and `+inf`. Note that the distances are whatever
-/// the chosen metric returns, squared Euclidean included, and the embedding
-/// entry points expect exactly that.
+/// fill is padded with `-1` and `+inf`. Distances are true distances in the
+/// requested metric, which is what the embedding entry points expect.
 #[pyfunction]
 #[pyo3(signature = (x, k, *, ann = "kmknn", nn_params = None, seed = 42, verbose = 0))]
 pub fn knn_graph<'py>(

@@ -139,9 +139,8 @@ class BaseEmbedding:
                 indices, excluding self. Skips the neighbour search, which on
                 anything large is most of the runtime. See
                 `manifolds_rs.knn_graph`.
-            knn_distances: Distances matching `knn_indices`. Must be the
-                distances the same metric produced, squared Euclidean included:
-                no square root is taken anywhere.
+            knn_distances: Distances matching `knn_indices`, as true distances
+                in the same metric. `knn_graph` returns exactly that.
 
         Returns:
             self.
