@@ -23,11 +23,7 @@ distances reach you.
 
 So a graph you build yourself and hand to `fit` should hold true distances too.
 
-Metrics available: `"euclidean"`/`"l2"`, `"cosine"`, `"manhattan"`/`"l1"`.
-`"euclidean"` and `"l2"` are the same metric and now produce the same
-embedding; before 0.4 they did not, because the squared convention was
-detected by comparing the metric name against the string `"euclidean"` and
-`"l2"` fell through it.
+Metrics available: `"euclidean"`/`"l2"`, `"cosine"` and `"manhattan"`/`"l1"`.
 
 ## Reusing the neighbour graph
 
