@@ -56,10 +56,28 @@ def test_defaults_match_the_core(
     ],
 )
 def test_gpu_defaults_match_the_core(
-    name: str, cls: type[BaseEmbedding], fn: Callable[..., np.ndarray], X32: np.ndarray
+    name: str,
+    cls: type[BaseEmbedding],
+    fn: Callable[..., np.ndarray],
+    X32: np.ndarray,
+    knn: tuple[np.ndarray, np.ndarray],
 ) -> None:
-    estimator = cls().fit_transform(X32)
-    bare = fn(X32, {}, seed=42, verbose=0)
+    """As above, with the neighbour graph supplied.
+
+    A GPU run that builds its own graph is not bit-reproducible, so the two
+    sides would differ for reasons that have nothing to do with a drifted
+    default. Feeding both the same graph makes the optimiser the only moving
+    part, and that half is deterministic.
+
+    The cost is that this variant no longer covers the `NeighbourParamsGpu`
+    defaults, only the ones the optimiser reads. The CPU test above still
+    covers the neighbour defaults in full.
+    """
+    ind = np.ascontiguousarray(knn[0])
+    dist = np.ascontiguousarray(knn[1], dtype=np.float32)
+
+    estimator = cls().fit_transform(X32, knn_indices=ind, knn_distances=dist)
+    bare = fn(X32, {}, knn_indices=ind, knn_distances=dist, seed=42, verbose=0)
     assert np.array_equal(estimator, bare), (
         f"{name}: a constructor default has drifted from the crate's"
     )

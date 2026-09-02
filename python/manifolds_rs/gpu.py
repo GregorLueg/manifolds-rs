@@ -16,6 +16,10 @@ backend rather than choices:
 - **Only the search and the Adam update run on the device.** Graph construction
   and the spectral initialisation stay on the CPU, so a small dataset can easily
   come out slower than the CPU path once the transfers are paid for. Measure.
+- **Reproducible in structure, not in coordinates.** The device searches are not
+  always bit-stable at scale, and the optimiser amplifies a small difference in
+  the graph into visibly different positions. Cluster structure is preserved
+  exactly; the coordinates may move. See the guide.
 """
 
 from __future__ import annotations

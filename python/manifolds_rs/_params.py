@@ -157,11 +157,11 @@ class NeighbourParamsGpu:
         max_beam_iters: NN-Descent-GPU. Beam iterations when querying.
         n_entry_points: NN-Descent-GPU. Entry points per query.
         extract_knn: NN-Descent-GPU. Return the built CAGRA graph instead of
-            searching it. **Off** by default, unlike the CPU backend: GPU
-            extraction returns a different graph on two identical runs with a
-            fixed seed, so turning it on costs you a reproducible embedding.
-            The beam search is stable. `beam_width`, `max_beam_iters` and
-            `n_entry_points` do nothing when it is on.
+            searching it. On by default, as for the CPU backend, and worth
+            about a third off a full GPU embedding: 0.74s to 0.48s at 20k
+            points in 50D. It can cost bit-reproducibility on some inputs; see
+            the reproducibility section of the guide. `beam_width`,
+            `max_beam_iters` and `n_entry_points` do nothing when it is on.
     """
 
     n_list: int | None = None

@@ -32,6 +32,17 @@ fail somewhere inside a kernel, and that is the only silent narrowing this
 package performs anywhere. If that matters for your data, stay on the CPU
 estimators, which run in whatever precision you hand them.
 
+## Reproducibility
+
+GPU embeddings are reproducible in structure, not in coordinates. The device
+neighbour searches are not always bit-stable at scale, and 500 epochs of Adam
+turn a 0.16% difference in the graph into visibly different coordinates. The
+clusters, the branches and the separations come back; the exact positions may
+not. See [the guide](guide.md#reproducibility) for the measurements.
+
+The GPU Adam update itself is bit-stable given a fixed graph, so handing in a
+precomputed graph makes a GPU run reproducible too.
+
 ## Different neighbour backends
 
 The device backends are not the CPU ones with a suffix. `"nndescent_gpu"` builds

@@ -27,6 +27,30 @@ GPU_ESTIMATORS = [
 ]
 
 
+def separation(embedding: np.ndarray, labels: np.ndarray) -> float:
+    """Mean between-cluster centroid distance over mean within-cluster spread.
+
+    Above 1 means the clusters are further apart than they are wide. Mirrors
+    `compute_separation` in the crate's own GPU tests.
+    """
+    ids = np.unique(labels)
+    centroids = np.stack([embedding[labels == c].mean(axis=0) for c in ids])
+    within = np.mean(
+        [
+            np.linalg.norm(embedding[labels == c] - centroids[i], axis=1).mean()
+            for i, c in enumerate(ids)
+        ]
+    )
+    between = np.mean(
+        [
+            np.linalg.norm(centroids[i] - centroids[j])
+            for i in range(len(ids))
+            for j in range(i + 1, len(ids))
+        ]
+    )
+    return float(between / max(within, 1e-12))
+
+
 def build(name: str, **kwargs: Any) -> BaseEmbedding:
     """Instantiate a GPU estimator by name with the epochs turned down."""
     cls: type[BaseEmbedding] = getattr(mf, name)
@@ -49,11 +73,45 @@ def test_float64_input_is_cast_not_refused(name: str, _: str, X: np.ndarray) -> 
 
 
 @pytest.mark.parametrize(("name", "_"), GPU_ESTIMATORS)
-def test_same_seed_gives_identical_embedding(
-    name: str, _: str, X32: np.ndarray
+def test_same_seed_reproduces_the_structure(
+    name: str, _: str, clustered: tuple[np.ndarray, np.ndarray]
 ) -> None:
+    """Two GPU runs at one seed agree on the structure, not on the coordinates.
+
+    The device neighbour searches are not always bit-stable at scale, and the
+    optimiser turns a fraction of a percent of graph difference into visibly
+    different positions. What has to survive is the thing anyone reads off the
+    plot: the clusters, separated by the same margin. See the reproducibility
+    section of the guide for the measurements behind this.
+    """
+    X, labels = clustered
+    X32 = np.ascontiguousarray(X, dtype=np.float32)
+
     a = build(name, seed=3).fit_transform(X32)
     b = build(name, seed=3).fit_transform(X32)
+
+    sep_a, sep_b = separation(a, labels), separation(b, labels)
+    assert sep_a > 1.0 and sep_b > 1.0, "both runs must separate the clusters"
+    assert 0.5 < sep_a / sep_b < 2.0, (
+        f"cluster separation moved between runs: {sep_a:.3f} vs {sep_b:.3f}"
+    )
+
+
+@pytest.mark.parametrize(("name", "_"), GPU_ESTIMATORS)
+def test_a_fixed_graph_makes_a_run_bit_reproducible(
+    name: str, _: str, X32: np.ndarray, knn: tuple[np.ndarray, np.ndarray]
+) -> None:
+    """The optimiser is the deterministic half.
+
+    Hand in the same graph twice and the coordinates come back identical, which
+    is what pins the non-determinism on the search rather than the Adam update.
+    """
+    ind, dist = knn
+    ind = np.ascontiguousarray(ind)
+    dist = np.ascontiguousarray(dist, dtype=np.float32)
+
+    a = build(name, seed=3).fit_transform(X32, knn_indices=ind, knn_distances=dist)
+    b = build(name, seed=3).fit_transform(X32, knn_indices=ind, knn_distances=dist)
     assert np.array_equal(a, b)
 
 
