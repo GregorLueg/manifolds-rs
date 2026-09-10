@@ -9,6 +9,13 @@ search and the Adam update move to the device. No CUDA runtime to install: the
 GPU backend is wgpu, so it runs on Metal, Vulkan or DX12 and ships in the
 ordinary wheel.
 
+**Documentation: <https://gregorlueg.github.io/manifolds-rs/>**
+
+This package versions separately from the Rust crate. Changes here are in
+[`python/CHANGELOG.md`](https://github.com/GregorLueg/manifolds-rs/blob/main/python/CHANGELOG.md);
+the crate's are in
+[`CHANGELOG.md`](https://github.com/GregorLueg/manifolds-rs/blob/main/CHANGELOG.md).
+
 ## Install
 
 ```bash
