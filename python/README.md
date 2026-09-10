@@ -1,3 +1,7 @@
+[![PyPI](https://img.shields.io/pypi/v/manifolds-rs.svg)](https://pypi.org/project/manifolds-rs/)
+[![Docs](https://img.shields.io/badge/docs-latest-blue.svg)](https://gregorlueg.github.io/manifolds-rs/)
+[![CI](https://github.com/GregorLueg/manifolds-rs/actions/workflows/python-test.yml/badge.svg)](https://github.com/GregorLueg/manifolds-rs/actions/workflows/python-test.yml)
+
 # manifolds-rs
 
 Dimensionality reduction for single-cell and computational biology. The
