@@ -510,15 +510,15 @@ pub fn umap_dens_radii<F: Float + CubeElement>(
     let start = node_edge_offsets[node as usize];
     let end = node_edge_offsets[(node + 1u32) as usize];
 
-    let mut sum_sq = F::new(0.0);
-    let mut sum_phi = F::new(0.0);
+    let mut sum_sq = F::new(0.0_f32);
+    let mut sum_phi = F::new(0.0_f32);
 
     let mut pos = start;
     while pos < end {
         let other = csr_other_node[pos as usize];
         let base_other = other * n_dim;
 
-        let mut dist_sq = F::new(0.0);
+        let mut dist_sq = F::new(0.0_f32);
         #[unroll]
         for d in 0..n_dim_ct {
             let diff = embd[(base_self + d) as usize] - embd[(base_other + d) as usize];
@@ -526,7 +526,7 @@ pub fn umap_dens_radii<F: Float + CubeElement>(
         }
 
         let dist_sq_b = F::powf(dist_sq, b);
-        let phi = F::new(1.0) / (F::new(1.0) + a * dist_sq_b);
+        let phi = F::new(1.0_f32) / (F::new(1.0_f32) + a * dist_sq_b);
 
         sum_sq += phi * dist_sq;
         sum_phi += phi;
@@ -721,7 +721,7 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
     let mut grad = Array::<F>::new(n_dim_ct as usize);
     #[unroll]
     for d in 0..n_dim_ct {
-        grad[d as usize] = F::new(0.0);
+        grad[d as usize] = F::new(0.0_f32);
     }
 
     // Staging for the negative-sample gather, see the loop below.
@@ -731,7 +731,7 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
     let start = node_edge_offsets[node as usize];
     let end = node_edge_offsets[(node + 1u32) as usize];
 
-    let two = F::new(2.0);
+    let two = F::new(2.0_f32);
 
     let mut edge_local: u32 = 0u32;
     let mut active: u32 = 0u32;
@@ -743,7 +743,7 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
             let other = csr_other_node[pos as usize];
             let base_other = other * n_dim;
 
-            let mut dist_sq = F::new(0.0);
+            let mut dist_sq = F::new(0.0_f32);
             #[unroll]
             for d in 0..n_dim_ct {
                 let diff = embd[(base_self + d) as usize] - embd[(base_other + d) as usize];
@@ -752,7 +752,7 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
 
             if dist_sq >= dist_sq_threshold {
                 let dist_sq_b = F::powf(dist_sq, b);
-                let denom = F::new(1.0) + a * dist_sq_b;
+                let denom = F::new(1.0_f32) + a * dist_sq_b;
                 let grad_coeff = two_a_b * dist_sq_b / (dist_sq * denom);
 
                 #[unroll]
@@ -767,9 +767,9 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
                 // Signed along (y_self - y_other), opposite to the attractive
                 // delta, since this is ascent on the correlation.
                 if dens_enabled {
-                    let phi = F::new(1.0) / denom;
+                    let phi = F::new(1.0_f32) / denom;
                     let dphi_term = a * b * dist_sq_b / dist_sq * phi;
-                    let common = F::new(1.0) - b * (F::new(1.0) - phi);
+                    let common = F::new(1.0_f32) - b * (F::new(1.0_f32) - phi);
 
                     let dr_self = (phi / dens_phi_sum[node as usize])
                         * (common / F::exp(dens_re[node as usize]) + dphi_term);
@@ -820,7 +820,7 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
                 if k != node {
                     let base_neg = neg * n_dim_ct;
 
-                    let mut dist_sq_k = F::new(0.0);
+                    let mut dist_sq_k = F::new(0.0_f32);
                     #[unroll]
                     for d in 0..n_dim_ct {
                         let diff =
@@ -830,7 +830,7 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
 
                     let dist_sq_safe = dist_sq_k + rep_eps;
                     let dist_sq_b = F::powf(dist_sq_safe, b);
-                    let denom = dist_sq_safe * (F::new(1.0) + a * dist_sq_b);
+                    let denom = dist_sq_safe * (F::new(1.0_f32) + a * dist_sq_b);
                     let mut grad_coeff = two_gamma_b / denom;
                     if grad_coeff > clip_val {
                         grad_coeff = clip_val;
@@ -987,7 +987,7 @@ pub fn umap_grad_norm_sq<F: Float + CubeElement>(
         terminate!();
     }
     let base = node * n_dim;
-    let mut acc = F::new(0.0);
+    let mut acc = F::new(0.0_f32);
     #[unroll]
     for d in 0..n_dim_ct {
         let g = node_grad[(base + d) as usize];

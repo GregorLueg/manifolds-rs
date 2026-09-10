@@ -15,4 +15,9 @@ jobs:
     uses: GregorLueg/personal-actions/.github/workflows/rust-release.yml@v1
     with:
       publish-args: '--features parametric,fft_tsne,gpu,ndarray'
+      # The gh-pages site here is the Python docs, and mkdocs-material's header
+      # widget shows GitHub's latest release with no tag filter. Without this
+      # the crate's `v*` tag wins whenever it publishes after `py-v*`, and the
+      # Python docs advertise a crate version.
+      python-owns-latest: true
     secrets: inherit

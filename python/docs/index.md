@@ -62,3 +62,6 @@ in the group, so there is never a question of which wins.
   and the sharp edges.
 - [API reference](api/embeddings.md) for every parameter of every estimator,
   with what each `None` resolves to.
+- [Changelog](https://github.com/GregorLueg/manifolds-rs/blob/main/python/CHANGELOG.md)
+  for what changed in this package. It versions separately from the Rust crate,
+  which keeps its own.

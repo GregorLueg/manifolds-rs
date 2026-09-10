@@ -21,7 +21,7 @@ classifiers = [
 [project.urls]
 Documentation = "https://gregorlueg.github.io/manifolds-rs/"
 Repository = "https://github.com/GregorLueg/manifolds-rs"
-Changelog = "https://github.com/GregorLueg/manifolds-rs/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/GregorLueg/manifolds-rs/blob/main/python/CHANGELOG.md"
 
 [dependency-groups]
 dev = [

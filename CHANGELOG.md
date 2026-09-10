@@ -1,10 +1,19 @@
 # News
 
+Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
+own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
+
+## 0.4.1
+
+**Features**
+
+- avx2 and avx512 properly enabled from `ann-search-rs = "0.8.3"` without any
+  compile flags.
+
 ## 0.4.0
 
 **Features**
 
-- Python bindings added to expose the crate as a Python package.
 - Speed improvements taken from `ann-search-rs = "0.8.0"`
 - The NNDescent (GPU and CPU) have now the options to directly extract the kNN
   graph without any beam search. This is faster, but can yield a slightly worse
