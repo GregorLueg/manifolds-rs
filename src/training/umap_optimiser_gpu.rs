@@ -731,7 +731,7 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
     let start = node_edge_offsets[node as usize];
     let end = node_edge_offsets[(node + 1u32) as usize];
 
-    let two = F::new(2.0);
+    let two = F::new(2.0_f32);
 
     let mut edge_local: u32 = 0u32;
     let mut active: u32 = 0u32;
