@@ -1,5 +1,12 @@
 # News
 
+## 0.4.1
+
+**Features**
+
+- avx2 and avx512 properly enabled from `ann-search-rs = "0.8.3"` without any
+  compile flags.
+
 ## 0.4.0
 
 **Features**

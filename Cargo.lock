@@ -101,9 +101,9 @@ checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
 name = "ann-search-rs"
-version = "0.8.0"
+version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75d654aaca955b4de484887fa6f9a21b813aea48c5fb69fc260cfcc93335fc29"
+checksum = "fcf6a510e2f0f970e8af958b37410f49a5e87342602a5183f17bb6724654f132"
 dependencies = [
  "cubecl",
  "cubecl-utils-rs",
@@ -4385,7 +4385,7 @@ checksum = "fc04a4c58212d57930a24bf47d3fa87485264a3a054e9c10e042eb373573ad3c"
 
 [[package]]
 name = "manifolds-rs"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "ann-search-rs",
  "approx",
@@ -4396,7 +4396,7 @@ dependencies = [
  "faer",
  "faer-traits",
  "fftw",
- "ndarray 0.16.1",
+ "ndarray 0.17.2",
  "num-traits",
  "rand 0.9.5",
  "rand_distr 0.5.1",
