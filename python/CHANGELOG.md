@@ -3,6 +3,12 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.1.2
+
+Requires `manifolds-rs` 0.4.2.
+
+- Take in latest change from `ann-search-rs` version 0.9.0.
+
 ## 0.1.1
 
 Requires `manifolds-rs` 0.4.1.

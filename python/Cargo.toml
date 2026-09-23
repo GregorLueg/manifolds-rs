@@ -5,7 +5,7 @@
 # core version it vendored as `__core_version__` instead, which is the question
 # lockstep was actually answering.
 name = "manifolds-py"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Gregor Lueg <gregorlueg@me.com>"]
 license = "MIT"

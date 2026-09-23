@@ -3,6 +3,12 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.4.2
+
+**Features**
+
+- `ann-search-rs` bumped to recent version.
+
 ## 0.4.1
 
 **Features**

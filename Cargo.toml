@@ -1,6 +1,6 @@
 [package]
 name = "manifolds-rs"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 authors = ["Gregor Lueg <gregorlueg@me.com>"]
 license = "MIT"
@@ -52,7 +52,7 @@ large_scale_diagnostics = []
 ndarray = ["dep:ndarray"]
 
 [dependencies]
-ann-search-rs = { version = "0.8.3" }
+ann-search-rs = { version = "0.9.0" }
 approx = "0.5.1"
 bincode = { version = "2.0.1", features = ["serde"], optional = true }
 burn = { version = "0.21.0", features = [
