@@ -7,7 +7,7 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
 **Features**
 
-- Major `ann-search-rs` bumped to recent version.
+- `ann-search-rs` bumped to recent major version.
 
 ## 0.4.1
 
