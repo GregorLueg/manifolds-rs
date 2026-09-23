@@ -5,7 +5,7 @@ Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 
 ## 0.1.2
 
-Requires `manifolds-rs` 0.4.2.
+Requires `manifolds-rs` 0.5.0.
 
 - Take in latest change from `ann-search-rs` version 0.9.0.
 
