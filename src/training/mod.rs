@@ -1,5 +1,6 @@
 //! Contains all of the different optimiser to fit PHATE, tSNE and UMAP.
 
+pub mod fa2_optimiser;
 pub mod mds_optimiser;
 pub mod pacmap_optimiser;
 pub mod tsne_optimiser;

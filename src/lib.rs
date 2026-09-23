@@ -45,6 +45,7 @@ use crate::data::nearest_neighbours::*;
 use crate::data::pacmap_pairs::*;
 use crate::data::structures::*;
 use crate::prelude::*;
+use crate::training::fa2_optimiser::*;
 use crate::training::mds_optimiser::*;
 use crate::training::pacmap_optimiser::{
     optimise_pacmap, optimise_pacmap_parallel, PacMapOptimiser,
@@ -1665,6 +1666,398 @@ where
         seed,
         verbose,
     )
+}
+
+/////////////////
+// ForceAtlas2 //
+/////////////////
+
+/// Main configuration for ForceAtlas2 on a kNN graph
+#[derive(Debug, Clone)]
+pub struct Fa2Params<T> {
+    /// Number of neighbours
+    pub k: usize,
+    /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
+    /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    pub ann_type: String,
+    /// Embedding initialisation method: `"spectral"`, `"pca"` or `"random"`
+    pub initialisation: String,
+    /// Optional initialisation range
+    pub init_range: Option<T>,
+    /// Use randomised SVD for PCA initialisation
+    pub randomised_init: bool,
+    /// Nearest neighbour parameters
+    pub nn_params: NearestNeighbourParams<T>,
+    /// Parameters for the fuzzy simplicial set the layout runs on
+    pub graph_params: UmapGraphParams<T>,
+    /// ForceAtlas2 optimisation parameters
+    pub optim_params: Fa2OptimParams<T>,
+}
+
+impl<T> Default for Fa2Params<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            k: 15,
+            ann_type: "kmknn".to_string(),
+            initialisation: "spectral".to_string(),
+            init_range: None,
+            randomised_init: false,
+            nn_params: NearestNeighbourParams::default(),
+            graph_params: UmapGraphParams::default(),
+            optim_params: Fa2OptimParams::default(),
+        }
+    }
+}
+
+impl<T> Fa2Params<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Create new ForceAtlas2 parameters with full control over every field.
+    ///
+    /// ### Params
+    ///
+    /// * `k` - Number of neighbours.
+    /// * `ann_type` - (Approximate) nearest neighbour method. One of
+    ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
+    ///   `"kmknn"` or `"balltree"`.
+    /// * `initialisation` - Embedding initialisation method: `"spectral"`,
+    ///   `"pca"` or `"random"`.
+    /// * `init_range` - Optional initialisation range.
+    /// * `randomised_init` - Whether randomised SVD is used for PCA
+    ///   initialisation.
+    /// * `nn_params` - Nearest neighbour parameters.
+    /// * `graph_params` - Parameters for the fuzzy simplicial set.
+    /// * `optim_params` - ForceAtlas2 optimisation parameters.
+    ///
+    /// ### Returns
+    ///
+    /// A fully specified set of ForceAtlas2 parameters.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        k: usize,
+        ann_type: String,
+        initialisation: String,
+        init_range: Option<T>,
+        randomised_init: bool,
+        nn_params: NearestNeighbourParams<T>,
+        graph_params: UmapGraphParams<T>,
+        optim_params: Fa2OptimParams<T>,
+    ) -> Self {
+        Self {
+            k,
+            ann_type,
+            initialisation,
+            init_range,
+            randomised_init,
+            nn_params,
+            graph_params,
+            optim_params,
+        }
+    }
+
+    /// Default parameters for standard 2D visualisation.
+    ///
+    /// ### Params
+    ///
+    /// * `k` - Number of neighbours. Defaults to `15`.
+    ///
+    /// ### Returns
+    ///
+    /// Hopefully sensible standard parameters for 2D visualisation.
+    pub fn new_default_2d(k: Option<usize>) -> Self {
+        Self {
+            k: k.unwrap_or(15),
+            ..Self::default()
+        }
+    }
+}
+
+/// Construct the graph ForceAtlas2 lays out from high-dimensional data.
+///
+/// Runs the kNN search (or takes the pre-computed one), then builds the UMAP
+/// fuzzy simplicial set. Unlike UMAP there is no weak-edge filter, since FA2
+/// visits every edge each epoch rather than sampling them.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
+/// * `k` - Number of nearest neighbours.
+/// * `ann_type` - (Approximate) nearest neighbour method.
+/// * `graph_params` - Fuzzy simplicial set parameters.
+/// * `nn_params` - Nearest neighbour parameters.
+/// * `seed` - Random seed.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Tuple of (graph, knn_indices, knn_dist)
+#[allow(clippy::too_many_arguments)]
+pub fn construct_fa2_graph<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    k: usize,
+    ann_type: String,
+    graph_params: &UmapGraphParams<T>,
+    nn_params: &NearestNeighbourParams<T>,
+    seed: usize,
+    verbose: usize,
+) -> UmapGraphResults<T>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    let verbosity = parse_verbosity_level(verbose);
+
+    let (knn_indices, knn_dist) = match precomputed_knn {
+        Some((indices, distances)) => {
+            if verbosity.normal_verbosity() {
+                println!("Using precomputed kNN graph...");
+            }
+            (indices, distances)
+        }
+        None => {
+            if verbosity.normal_verbosity() {
+                println!("Running kNN search (k={}) using {}...", k, ann_type);
+            }
+            let start_knn = Instant::now();
+            let result = run_ann_search(data, k, ann_type, nn_params, seed, verbose)?;
+            if verbosity.normal_verbosity() {
+                println!("kNN search done in: {:.2?}.", start_knn.elapsed());
+            }
+            result
+        }
+    };
+
+    let start_graph = Instant::now();
+
+    let (sigma, rho) = smooth_knn_dist(
+        &knn_dist,
+        knn_dist[0].len(),
+        graph_params.local_connectivity,
+        graph_params.bandwidth,
+        64,
+    );
+    let graph = knn_to_coo(&knn_indices, &knn_dist, &sigma, &rho);
+    let graph = symmetrise_graph(graph, graph_params.mix_weight);
+
+    if verbosity.normal_verbosity() {
+        println!(
+            "Finalised graph generation in {:.2?}.",
+            start_graph.elapsed()
+        );
+    }
+
+    Ok((graph, knn_indices, knn_dist))
+}
+
+/// Shared tail of [`forceatlas2`] and [`forceatlas2_from_graph`]: run the
+/// optimiser and transpose to `[2][n_samples]`.
+///
+/// ### Params
+///
+/// * `embd` - Initial embedding, `[n_samples][2]`
+/// * `graph` - Symmetric weighted graph
+/// * `optim_params` - ForceAtlas2 optimisation parameters
+/// * `approx_type` - Repulsion approximation, `"barnes_hut" | "bh"`
+/// * `verbose` - Verbosity level
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>`, `[2][n_samples]`.
+fn fa2_optimise<T>(
+    mut embd: Vec<Vec<T>>,
+    graph: &CoordinateList<T>,
+    optim_params: &Fa2OptimParams<T>,
+    approx_type: &str,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let verbosity = parse_verbosity_level(verbose);
+
+    let fa2_approx = parse_fa2_optimiser(approx_type).unwrap_or_else(|| {
+        println!(
+            "Unrecognised ForceAtlas2 approximation provided: {:?}. Default to Barnes-Hut.",
+            approx_type
+        );
+        Fa2Opt::default()
+    });
+
+    let start_optim = Instant::now();
+    match fa2_approx {
+        Fa2Opt::BarnesHut => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via Barnes-Hut ForceAtlas2 ({} epochs)...",
+                    optim_params.n_epochs
+                );
+            }
+            optimise_fa2(&mut embd, optim_params, graph, verbose)?;
+        }
+    }
+
+    if verbosity.normal_verbosity() {
+        println!("Optimisation complete in {:.2?}.", start_optim.elapsed());
+    }
+
+    let n_samples = embd.len();
+    let mut transposed = vec![vec![T::zero(); n_samples]; 2];
+    for (sample_idx, point) in embd.iter().enumerate() {
+        transposed[0][sample_idx] = point[0];
+        transposed[1][sample_idx] = point[1];
+    }
+
+    Ok(transposed)
+}
+
+/// Run ForceAtlas2 on the kNN graph of high-dimensional data
+///
+/// Builds the UMAP fuzzy simplicial set (as scanpy's `draw_graph` does) and
+/// lays it out with ForceAtlas2: `1/d` repulsion between all node pairs with
+/// masses `1 + degree`, linear (or LinLog) attraction along edges, gravity
+/// towards the origin, and Gephi's adaptive per-node speed.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
+/// * `params` - ForceAtlas2 parameters
+/// * `approx_type` - Repulsion approximation: `"barnes_hut" | "bh"`
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>`, `[2][n_samples]`.
+///
+/// ### References
+///
+/// Jacomy et al., PLoS ONE, 2014 (ForceAtlas2)
+pub fn forceatlas2<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &Fa2Params<T>,
+    approx_type: &str,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    let verbosity = parse_verbosity_level(verbose);
+
+    let (graph, _, _) = construct_fa2_graph(
+        data,
+        precomputed_knn,
+        params.k,
+        params.ann_type.clone(),
+        &params.graph_params,
+        &params.nn_params,
+        seed,
+        verbose,
+    )?;
+
+    if verbosity.normal_verbosity() {
+        println!("Initialising embedding via {}...", &params.initialisation);
+    }
+
+    let init_type = parse_initilisation(
+        &params.initialisation,
+        params.randomised_init,
+        params.init_range,
+    )
+    .unwrap_or_else(|| {
+        println!(
+            "Unknown initialisation provided: {:?}. Defaulting to spectral.",
+            params.initialisation,
+        );
+        EmbdInit::SpectralInit { range: None }
+    });
+
+    let embd = initialise_embedding(&init_type, 2, seed as u64, &graph, data)?;
+
+    fa2_optimise(embd, &graph, &params.optim_params, approx_type, verbose)
+}
+
+/// Run ForceAtlas2 on a caller-supplied graph
+///
+/// For graphs that do not come from this crate's kNN pipeline, e.g. an SNN
+/// graph built in R.
+///
+/// ### Params
+///
+/// * `graph` - Symmetric weighted graph in COO format, no self-loops needed
+///   (they are dropped)
+/// * `init` - Optional initial embedding, `[2][n_samples]` (the layout this
+///   function returns). `None` draws a random layout in `[-10, 10]`.
+/// * `optim_params` - ForceAtlas2 optimisation parameters
+/// * `approx_type` - Repulsion approximation: `"barnes_hut" | "bh"`
+/// * `seed` - Random seed for the random layout
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>`, `[2][n_samples]`, or an error if
+/// the graph is asymmetric or does not match `init`.
+///
+/// ### References
+///
+/// Jacomy et al., PLoS ONE, 2014 (ForceAtlas2)
+pub fn forceatlas2_from_graph<T>(
+    graph: &CoordinateList<T>,
+    init: Option<Vec<Vec<T>>>,
+    optim_params: &Fa2OptimParams<T>,
+    approx_type: &str,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let n = graph.n_samples;
+
+    let embd = match init {
+        Some(init) => {
+            if init.len() != 2 {
+                return Err(ManifoldsError::IncorrectDim { n_dim: init.len() });
+            }
+            if init[0].len() != n || init[1].len() != n {
+                return Err(ManifoldsError::GraphSizeMismatch {
+                    n_graph: n,
+                    n_embd: init[0].len().min(init[1].len()),
+                });
+            }
+            (0..n).map(|i| vec![init[0][i], init[1][i]]).collect()
+        }
+        None => random_layout(n, 2, seed as u64, None),
+    };
+
+    fa2_optimise(embd, graph, optim_params, approx_type, verbose)
 }
 
 ///////////
