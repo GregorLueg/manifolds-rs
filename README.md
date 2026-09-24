@@ -26,7 +26,7 @@ implemented in Rust. Contains as for now:
 - **PaCMAP**
 - **ForceAtlas2**
   - Gephi's force-directed graph layout on the kNN graph (as in scanpy's
-  `draw_graph`), or on any symmetric graph you hand it.
+    `draw_graph`), or on any symmetric graph you hand it.
   - Barnes-Hut repulsion with node masses (`O(n log n)`).
 - **Diffusion Maps**
   - Classical diffusion maps (Coifman & Lafon, 2006) with anisotropic

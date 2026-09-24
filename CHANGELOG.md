@@ -3,7 +3,7 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
-## Unreleased
+## 0.5.1
 
 **Features**
 
@@ -15,6 +15,8 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   to 1e-9 with `theta = 0`.
 
 **Breaking changes**
+
+This should not affect most users.
 
 - `utils::bh_tree`: `Node::count: u32` is now `Node::mass: T`, and
   `BarnesHutTree::rebuild()` takes an extra `masses: Option<&[T]>` argument
