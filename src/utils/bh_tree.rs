@@ -30,6 +30,13 @@ const PAR_MIN_LEN: usize = 1024;
 /// (or a point coincident with it) and contributes no force.
 const MIN_DIST_SQ: f64 = 1e-12;
 
+/// Squared factor from cell width to the FA2 opening size. Gephi opens a
+/// region when `theta * d <= size`, with `size` twice the largest member
+/// distance from the centre of mass; that is at most twice the cell diagonal,
+/// `2 * sqrt(2) * width`. Using the bound means a cell holding the query point
+/// can only be summarised for `theta > 2`, as in Gephi.
+const FA2_SIZE_FACTOR_SQ: f64 = 8.0;
+
 /// Spread the low 32 bits of `x` into the even bit positions (one zero gap
 /// between each), the 2D Morton building block.
 ///
@@ -173,10 +180,17 @@ where
     /// ### Params
     ///
     /// * `pos` - Interleaved point coordinates `[x0, y0, x1, y1, ...]`
-    /// * `masses` - Per-point masses, length `n`. `None` gives every point
-    ///   unit mass, so node masses are point counts.
+    /// * `masses` - Per-point positive masses, length `n`. `None` gives every
+    ///   point unit mass, so node masses are point counts.
+    ///
+    /// ### Panics
+    ///
+    /// If `masses` does not have one entry per point.
     pub fn rebuild(&mut self, pos: &[T], masses: Option<&[T]>) {
         let n = pos.len() / 2;
+        if let Some(w) = masses {
+            assert_eq!(w.len(), n, "masses must have one entry per point");
+        }
 
         self.nodes.clear();
         self.ranges.clear();
@@ -317,6 +331,11 @@ where
             .with_min_len(PAR_MIN_LEN)
             .filter(|(node, _)| node.first_child == SENTINEL)
             .for_each(|(node, &(start, end))| {
+                // offsets from the first point keep the centre of mass exact
+                // for single-point and coincident leaves; `m x / m` does not
+                // round back to `x`, and the self-exclusion test needs it to
+                let anchor = sorted[start as usize].1 as usize;
+                let (ax, ay) = (pos[2 * anchor], pos[2 * anchor + 1]);
                 let mut sum_m = T::zero();
                 let mut sum_x = T::zero();
                 let mut sum_y = T::zero();
@@ -324,13 +343,13 @@ where
                     let idx = sorted[slot as usize].1 as usize;
                     let m = masses.map_or(T::one(), |w| w[idx]);
                     sum_m = sum_m + m;
-                    sum_x = sum_x + m * pos[2 * idx];
-                    sum_y = sum_y + m * pos[2 * idx + 1];
+                    sum_x = sum_x + m * (pos[2 * idx] - ax);
+                    sum_y = sum_y + m * (pos[2 * idx + 1] - ay);
                 }
                 let inv = sum_m.recip();
                 node.mass = sum_m;
-                node.com_x = sum_x * inv;
-                node.com_y = sum_y * inv;
+                node.com_x = ax + sum_x * inv;
+                node.com_y = ay + sum_y * inv;
             });
 
         for i in (0..nodes.len()).rev() {
@@ -437,10 +456,12 @@ where
 
     /// Compute the ForceAtlas2 repulsion sum on a point using Barnes-Hut.
     ///
-    /// Same traversal and opening criterion as
-    /// [`BarnesHutTree::compute_repulsive_force`], but with the FA2 kernel:
-    /// each summarised cell contributes `mass * (p - com) / |p - com|^2`. The
-    /// caller multiplies by `scaling_ratio * mass_i`.
+    /// Same traversal as [`BarnesHutTree::compute_repulsive_force`], with the
+    /// FA2 kernel: each summarised cell contributes
+    /// `mass * (p - com) / |p - com|^2`. The caller multiplies by
+    /// `scaling_ratio * mass_i`. The opening test uses twice the cell diagonal
+    /// (see `FA2_SIZE_FACTOR_SQ`), so `theta` matches Gephi's scale and a point
+    /// never repels its own cell for `theta <= 2`.
     ///
     /// ### Params
     ///
@@ -464,7 +485,7 @@ where
             return (force_x, force_y);
         }
 
-        let theta_sq = theta * theta;
+        let theta_sq = theta * theta / T::from_f64(FA2_SIZE_FACTOR_SQ).unwrap();
         let min_dist_sq = T::from_f64(MIN_DIST_SQ).unwrap();
 
         stack.clear();
@@ -743,5 +764,33 @@ mod tests {
         assert_relative_eq!(tree.nodes[0].mass, 4.0);
         assert_relative_eq!(tree.nodes[0].com_x, 1.0);
         assert_relative_eq!(tree.nodes[0].com_y, 0.0);
+    }
+
+    #[test]
+    fn test_fa2_default_theta_close_to_exact() {
+        let n = 2_000;
+        let pos = lcg_cloud(n, 13);
+        let masses: Vec<f64> = (0..n).map(|i| 1.0 + (i % 11) as f64).collect();
+        let mut tree = BarnesHutTree::empty();
+        tree.rebuild(&pos, Some(&masses));
+        let mut stack = Vec::new();
+        let (mut num, mut den) = (0.0, 0.0);
+        for i in 0..n {
+            let (ex, ey) = tree.compute_fa2_repulsion(pos[2 * i], pos[2 * i + 1], 0.0, &mut stack);
+            let (ax, ay) = tree.compute_fa2_repulsion(pos[2 * i], pos[2 * i + 1], 1.2, &mut stack);
+            num += (ax - ex).powi(2) + (ay - ey).powi(2);
+            den += ex * ex + ey * ey;
+        }
+        // 1.5e-3 with the diagonal-size test; the bare cell-width test, which
+        // lets a point repel its own cell, gives 1.9e-2 on this cloud
+        let rel_l2 = (num / den).sqrt();
+        assert!(rel_l2 < 5e-3, "relative L2 error {rel_l2:.3e}");
+    }
+
+    #[test]
+    #[should_panic(expected = "masses must have one entry per point")]
+    fn test_rebuild_rejects_short_masses() {
+        let mut tree = BarnesHutTree::empty();
+        tree.rebuild(&[0.0f64, 0.0, 1.0, 1.0], Some(&[1.0]));
     }
 }
