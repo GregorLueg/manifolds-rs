@@ -218,13 +218,9 @@ where
     }
 
     if edge_weight_influence != T::one() {
-        adj.par_iter_mut().flatten().for_each(|(_, w)| {
-            *w = if edge_weight_influence == T::zero() {
-                T::one()
-            } else {
-                w.powf(edge_weight_influence)
-            };
-        });
+        adj.par_iter_mut()
+            .flatten()
+            .for_each(|(_, w)| *w = w.powf(edge_weight_influence));
     }
 
     Ok(adj)
