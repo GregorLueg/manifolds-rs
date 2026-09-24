@@ -8,7 +8,7 @@ Dimensionality reduction for single-cell and computational biology. The
 [Rust crate](https://github.com/GregorLueg/manifolds-rs) does the work; this is
 a scikit-learn shaped layer over it.
 
-Seven algorithms on the CPU, three of them with GPU variants where the neighbour
+Eight algorithms on the CPU, three of them with GPU variants where the neighbour
 search and the Adam update move to the device. No CUDA runtime to install: the
 GPU backend is wgpu, so it runs on Metal, Vulkan or DX12 and ships in the
 ordinary wheel.
@@ -55,6 +55,7 @@ requirement.
 | `PHATE` | Continuous structure. Trajectories and branch points survive this. |
 | `PaCMAP` | Global structure without leaning on a spectral init. Three pair types. |
 | `DiffusionMaps` | The spectral embedding PHATE is built on. |
+| `ForceAtlas2` | Gephi's force-directed layout on the kNN graph, as in scanpy's `draw_graph`. 2-D only. |
 | `UMAPGpu`, `DensMAPGpu`, `TSNEGpu` | The same, with the neighbour search on the device. |
 
 ## Parameters

@@ -1,5 +1,5 @@
 site_name: manifolds-rs
-site_description: UMAP, t-SNE, PHATE, PaCMAP and diffusion maps for single-cell and computational biology, in Rust.
+site_description: UMAP, t-SNE, PHATE, PaCMAP, diffusion maps and ForceAtlas2 for single-cell and computational biology, in Rust.
 site_url: https://gregorlueg.github.io/manifolds-rs/
 repo_url: https://github.com/GregorLueg/manifolds-rs
 repo_name: GregorLueg/manifolds-rs

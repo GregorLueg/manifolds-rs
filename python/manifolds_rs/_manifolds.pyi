@@ -126,6 +126,16 @@ def diffusion_maps(
     seed: int = ...,
     verbose: int = ...,
 ) -> np.ndarray: ...
+def forceatlas2(
+    x: np.ndarray,
+    params: dict[str, Any],
+    *,
+    approx: str = ...,
+    knn_indices: np.ndarray | None = ...,
+    knn_distances: np.ndarray | None = ...,
+    seed: int = ...,
+    verbose: int = ...,
+) -> np.ndarray: ...
 def umap_gpu(
     x: np.ndarray,
     params: dict[str, Any],

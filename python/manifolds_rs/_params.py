@@ -79,6 +79,9 @@ TSNE_APPROX: frozenset[str] = frozenset(
     {"barnes_hut", "barnes-hut", "barnes hut", "bh", "fft"}
 )
 
+#: ForceAtlas2 repulsion approximations, from `parse_fa2_optimiser`.
+FA2_APPROX: frozenset[str] = frozenset({"barnes_hut", "barnes-hut", "barnes hut", "bh"})
+
 #: Trajectory topologies, from `parse_topology`.
 TOPOLOGIES: frozenset[str] = frozenset({"bifurcation", "linear", "combination"})
 
@@ -265,6 +268,32 @@ class PacmapOptim:
     eps: float | None = None
     phase1_end: int | None = None
     phase2_end: int | None = None
+
+
+@dataclass(frozen=True)
+class Fa2Optim:
+    """ForceAtlas2 knobs beyond the epochs, scaling ratio, gravity and LinLog.
+
+    Defaults follow Gephi.
+
+    Attributes:
+        strong_gravity: Distance-independent gravity, scaled by the scaling
+            ratio. Pulls the periphery in much harder than the linear default.
+        dissuade_hubs: Divide attraction by node mass, pushing hubs to the
+            periphery.
+        edge_weight_influence: Exponent applied to the edge weights. ``0``
+            ignores the weights.
+        jitter_tolerance: Tolerated swinging. Larger is faster and less
+            precise.
+        theta: Barnes-Hut opening parameter on Gephi's scale. Larger is faster
+            and coarser; ``0`` makes the repulsion exact and very slow.
+    """
+
+    strong_gravity: bool | None = None
+    dissuade_hubs: bool | None = None
+    edge_weight_influence: float | None = None
+    jitter_tolerance: float | None = None
+    theta: float | None = None
 
 
 @dataclass(frozen=True)

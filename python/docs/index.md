@@ -4,7 +4,7 @@ Dimensionality reduction for single-cell and computational biology. The
 [Rust crate](https://github.com/GregorLueg/manifolds-rs) does the work. This is a
 scikit-learn shaped layer over it.
 
-Seven algorithms on the CPU, three of them with GPU variants where the neighbour
+Eight algorithms on the CPU, three of them with GPU variants where the neighbour
 search and the Adam update move to the device. No CUDA runtime to install: the
 GPU backend is wgpu, so it runs on Metal, Vulkan or DX12 and ships in the
 ordinary wheel.
@@ -53,7 +53,7 @@ in the group, so there is never a question of which wins.
 ## Where to go next
 
 - [Choosing an algorithm](choosing.md) if you don't already know which one you
-  want. Seven is a lot of choice and most of them are wrong for your problem.
+  want. Eight is a lot of choice and most of them are wrong for your problem.
 - [Quickstart](quickstart.md) for worked examples over the synthetic generators,
   including how to score an embedding rather than squint at it.
 - [GPU](gpu.md) for the three device-accelerated estimators and what they

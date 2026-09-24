@@ -60,6 +60,7 @@ def cpu_estimators() -> list[tuple[str, type[BaseEmbedding]]]:
         ("PHATE", mf.PHATE),
         ("PaCMAP", mf.PaCMAP),
         ("DiffusionMaps", mf.DiffusionMaps),
+        ("ForceAtlas2", mf.ForceAtlas2),
     ]
 
 

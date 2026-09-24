@@ -13,3 +13,5 @@
 ::: manifolds_rs.PaCMAP
 
 ::: manifolds_rs.DiffusionMaps
+
+::: manifolds_rs.ForceAtlas2

@@ -63,6 +63,7 @@ impl From<ManErr> for PyErr {
             | ManifoldsError::NoGraphEdges
             | ManifoldsError::NotEnoughNeighbours { .. }
             | ManifoldsError::DegenerateLocalRadii
+            | ManifoldsError::Fa2InvalidParam { .. }
             | ManifoldsError::AnnSearchRsError(_) => PyValueError::new_err(msg),
 
             // Numerical routines that ran but did not get there. Usually
