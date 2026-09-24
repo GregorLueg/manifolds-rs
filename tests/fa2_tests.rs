@@ -300,3 +300,185 @@ fn fa2_from_graph_runs_and_rejects_asymmetry() {
     let err = forceatlas2_from_graph(&asym, None, &Fa2OptimParams::default(), "bh", 1, 0);
     assert!(matches!(err, Err(ManifoldsError::AsymmetricGraph { .. })));
 }
+
+/////////////////
+// Edge cases //
+/////////////////
+
+/// Graph with the given undirected edges, both directions stored, unit
+/// weights.
+fn graph_from_edges<T: ManifoldsFloat>(n: usize, edges: &[(usize, usize)]) -> CoordinateList<T> {
+    let mut graph = CoordinateList {
+        row_indices: Vec::new(),
+        col_indices: Vec::new(),
+        values: Vec::new(),
+        n_samples: n,
+    };
+    for &(i, j) in edges {
+        for (a, b) in [(i, j), (j, i)] {
+            graph.row_indices.push(a);
+            graph.col_indices.push(b);
+            graph.values.push(T::one());
+        }
+    }
+    graph
+}
+
+#[test]
+fn fa2_dissuade_hubs_is_identity_on_regular_graph() {
+    // every node has degree 2, so mean mass / own mass is 1 everywhere
+    let edges: Vec<(usize, usize)> = (0..N_PARITY).map(|i| (i, (i + 1) % N_PARITY)).collect();
+    let graph = graph_from_edges::<f64>(N_PARITY, &edges);
+    let init = parity_pos();
+    let run = |dissuade_hubs| {
+        let params = Fa2OptimParams {
+            n_epochs: 50,
+            dissuade_hubs,
+            ..Fa2OptimParams::default()
+        };
+        let mut embd = init.clone();
+        optimise_fa2(&mut embd, &params, &graph, 0).unwrap();
+        embd
+    };
+    assert_eq!(run(true), run(false));
+}
+
+#[test]
+fn fa2_single_node_at_origin_stays_finite_f32() {
+    // zero force every epoch, so zero swing; the speed must not blow up
+    let graph = graph_from_edges::<f32>(1, &[]);
+    let embd = forceatlas2_from_graph(
+        &graph,
+        Some(vec![vec![0.0], vec![0.0]]),
+        &Fa2OptimParams::default(),
+        "bh",
+        1,
+        0,
+    )
+    .unwrap();
+    assert_eq!(embd, vec![vec![0.0], vec![0.0]]);
+}
+
+#[test]
+fn fa2_graph_without_edges_stays_finite() {
+    let graph = graph_from_edges::<f64>(20, &[]);
+    let embd =
+        forceatlas2_from_graph(&graph, None, &Fa2OptimParams::default(), "bh", 3, 0).unwrap();
+    assert!(embd.iter().flatten().all(|v| v.is_finite()));
+}
+
+#[test]
+fn fa2_self_loops_are_dropped() {
+    let mut with_loops = parity_graph();
+    for i in [0, 5, 17] {
+        with_loops.row_indices.push(i);
+        with_loops.col_indices.push(i);
+        with_loops.values.push(2.0);
+    }
+    let init: Vec<Vec<f64>> = {
+        let p = parity_pos();
+        vec![
+            p.iter().map(|q| q[0]).collect(),
+            p.iter().map(|q| q[1]).collect(),
+        ]
+    };
+    let params = Fa2OptimParams {
+        n_epochs: 20,
+        ..Fa2OptimParams::default()
+    };
+    let a =
+        forceatlas2_from_graph(&parity_graph(), Some(init.clone()), &params, "bh", 1, 0).unwrap();
+    let b = forceatlas2_from_graph(&with_loops, Some(init), &params, "bh", 1, 0).unwrap();
+    assert_eq!(a, b);
+}
+
+#[test]
+fn fa2_rejects_out_of_bounds_edge() {
+    let mut graph = parity_graph();
+    graph.row_indices.push(0);
+    graph.col_indices.push(N_PARITY);
+    graph.values.push(1.0);
+    let err = forceatlas2_from_graph(&graph, None, &Fa2OptimParams::default(), "bh", 1, 0);
+    assert!(matches!(
+        err,
+        Err(ManifoldsError::AsymmetricGraph { row: 0, col }) if col == N_PARITY
+    ));
+}
+
+#[test]
+fn fa2_init_size_mismatch_reports_bad_length() {
+    let init = vec![vec![0.0; N_PARITY], vec![0.0; N_PARITY - 3]];
+    let err = forceatlas2_from_graph(
+        &parity_graph(),
+        Some(init),
+        &Fa2OptimParams::default(),
+        "bh",
+        1,
+        0,
+    );
+    assert!(matches!(
+        err,
+        Err(ManifoldsError::GraphSizeMismatch { n_graph, n_embd })
+            if n_graph == N_PARITY && n_embd == N_PARITY - 3
+    ));
+}
+
+#[test]
+fn fa2_rejects_invalid_params() {
+    let bad = [
+        Fa2OptimParams {
+            scaling_ratio: -1.0,
+            ..Fa2OptimParams::default()
+        },
+        Fa2OptimParams {
+            jitter_tolerance: 0.0,
+            ..Fa2OptimParams::default()
+        },
+        Fa2OptimParams {
+            gravity: f64::NAN,
+            ..Fa2OptimParams::default()
+        },
+        Fa2OptimParams {
+            theta: -0.1,
+            ..Fa2OptimParams::default()
+        },
+        Fa2OptimParams {
+            edge_weight_influence: -1.0,
+            ..Fa2OptimParams::default()
+        },
+    ];
+    for params in &bad {
+        let err = forceatlas2_from_graph(&parity_graph(), None, params, "bh", 1, 0);
+        assert!(matches!(err, Err(ManifoldsError::Fa2InvalidParam { .. })));
+    }
+}
+
+#[test]
+fn fa2_rejects_directed_mix_weight() {
+    let (data, _) = create_diagnostic_data(20, 5, 1);
+    let mut params = Fa2Params::<f64>::default();
+    params.graph_params.mix_weight = 0.5;
+    let err = forceatlas2(data.as_ref(), None, &params, "bh", 1, 0);
+    assert!(matches!(
+        err,
+        Err(ManifoldsError::Fa2InvalidParam {
+            param: "graph_params.mix_weight",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn fa2_separates_clusters_f32() {
+    let (data, labels) = create_diagnostic_data(200, 20, 42);
+    let data = mat_to_f32(data);
+    let params = Fa2Params::<f32>::default();
+    let embd = forceatlas2(data.as_ref(), None, &params, "bh", 42, 0).unwrap();
+    assert!(embd.iter().flatten().all(|v| v.is_finite()));
+    let embd: Vec<Vec<f64>> = embd
+        .iter()
+        .map(|row| row.iter().map(|&v| v as f64).collect())
+        .collect();
+    let ratio = separation_ratio(&embd, &labels);
+    assert!(ratio > 2.0, "clusters not separated, ratio = {ratio:.3}");
+}

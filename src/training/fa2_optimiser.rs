@@ -66,8 +66,8 @@ pub struct Fa2OptimParams<T> {
     pub edge_weight_influence: T,
     /// Tolerated swinging; larger is faster but less precise
     pub jitter_tolerance: T,
-    /// Barnes-Hut opening parameter. The tree compares cell width rather than
-    /// Gephi's region size, so equal values do not give equal accuracy.
+    /// Barnes-Hut opening parameter on Gephi's scale: a cell is summarised
+    /// when `theta * d` exceeds an upper bound on Gephi's region size
     pub theta: T,
 }
 
@@ -115,6 +115,53 @@ where
             jitter_tolerance,
             theta,
         }
+    }
+}
+
+impl<T> Fa2OptimParams<T>
+where
+    T: Float + FromPrimitive,
+{
+    /// Check the parameters against the ranges Gephi accepts. Written as
+    /// `!(x > 0)` so NaN fails too.
+    ///
+    /// ### Returns
+    ///
+    /// `Ok(())`, or `ManifoldsError::Fa2InvalidParam` for the first
+    /// parameter out of range
+    pub fn validate(&self) -> Result<(), ManifoldsError> {
+        let checks = [
+            ("scaling_ratio", self.scaling_ratio, true, "must be > 0"),
+            (
+                "jitter_tolerance",
+                self.jitter_tolerance,
+                true,
+                "must be > 0",
+            ),
+            ("gravity", self.gravity, false, "must be >= 0"),
+            ("theta", self.theta, false, "must be >= 0"),
+            (
+                "edge_weight_influence",
+                self.edge_weight_influence,
+                false,
+                "must be >= 0",
+            ),
+        ];
+        for (param, value, strict, requirement) in checks {
+            let ok = if strict {
+                value > T::zero()
+            } else {
+                value >= T::zero()
+            };
+            if !ok {
+                return Err(ManifoldsError::Fa2InvalidParam {
+                    param,
+                    value: value.to_f64().unwrap_or(f64::NAN),
+                    requirement,
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -239,7 +286,7 @@ where
 ///
 /// ### Returns
 ///
-/// Updated `(speed, efficiency)`
+/// Updated `(speed, efficiency)`, unchanged when `swing` is zero
 fn update_speed(
     speed: f64,
     mut efficiency: f64,
@@ -248,6 +295,12 @@ fn update_speed(
     jitter_tolerance: f64,
     n: usize,
 ) -> (f64, f64) {
+    // nothing moved: Gephi's target speed is infinite here and the speed
+    // would grow by FA2_MAX_RISE every epoch until it overflows
+    if swing == 0.0 {
+        return (speed, efficiency);
+    }
+
     let n = n as f64;
     let estimated_jt = FA2_JITTER_SCALE * n.sqrt();
     let min_jt = estimated_jt.sqrt();
@@ -264,11 +317,7 @@ fn update_speed(
         jt = jt.max(jitter_tolerance);
     }
 
-    let target = if swing == 0.0 {
-        f64::INFINITY
-    } else {
-        jt * efficiency * traction / swing
-    };
+    let target = jt * efficiency * traction / swing;
 
     if swing > jt * traction {
         if efficiency > FA2_MIN_SPEED_EFFICIENCY {
@@ -309,7 +358,8 @@ fn update_speed(
 /// ### Returns
 ///
 /// `Ok(())`, or an error if the embedding is not 2D, is empty, does not
-/// match the graph size, or the graph is not symmetric
+/// match the graph size, the graph is not symmetric, or a parameter is out of
+/// range
 ///
 /// ### References
 ///
@@ -339,6 +389,8 @@ where
             n_embd: n,
         });
     }
+
+    params.validate()?;
 
     let adj = fa2_adjacency(graph, params.edge_weight_influence)?;
     let masses: Vec<T> = adj

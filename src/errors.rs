@@ -100,6 +100,17 @@ pub enum ManifoldsError {
         n_embd: usize,
     },
 
+    /// Error if a ForceAtlas2 parameter is out of range
+    #[error("ForceAtlas2: {param} = {value} is invalid, {requirement}")]
+    Fa2InvalidParam {
+        /// Name of the parameter
+        param: &'static str,
+        /// Supplied value
+        value: f64,
+        /// What the parameter must satisfy
+        requirement: &'static str,
+    },
+
     // -- pacmap
     /// If the pre-computed kNN does not have enough neighbours for the
     /// parameter settings

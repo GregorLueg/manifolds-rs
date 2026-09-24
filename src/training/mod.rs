@@ -1,4 +1,5 @@
-//! Contains all of the different optimiser to fit PHATE, tSNE and UMAP.
+//! Contains all of the different optimiser to fit PHATE, tSNE, UMAP, PaCMAP and
+//! ForceAtlas2.
 
 pub mod fa2_optimiser;
 pub mod mds_optimiser;

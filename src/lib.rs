@@ -1,5 +1,5 @@
 //! Dimensionality reduction algorithms including UMAP, t-SNE, PHATE, Diffusion
-//! Maps and PacMAP.
+//! Maps, PacMAP and ForceAtlas2.
 //!
 //! Provides both standard and approximate nearest-neighbour-based graph
 //! construction, multiple optimisers, and (optionally) parametric UMAP via a
@@ -1688,7 +1688,8 @@ pub struct Fa2Params<T> {
     pub randomised_init: bool,
     /// Nearest neighbour parameters
     pub nn_params: NearestNeighbourParams<T>,
-    /// Parameters for the fuzzy simplicial set the layout runs on
+    /// Parameters for the fuzzy simplicial set the layout runs on.
+    /// `mix_weight` must stay at 1; lower values leave the graph directed.
     pub graph_params: UmapGraphParams<T>,
     /// ForceAtlas2 optimisation parameters
     pub optim_params: Fa2OptimParams<T>,
@@ -1966,6 +1967,16 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    // mix_weight < 1 keeps a directed term in `symmetrise_graph`, and FA2
+    // needs a symmetric graph
+    if params.graph_params.mix_weight != T::one() {
+        return Err(ManifoldsError::Fa2InvalidParam {
+            param: "graph_params.mix_weight",
+            value: params.graph_params.mix_weight.to_f64().unwrap_or(f64::NAN),
+            requirement: "must be 1 (FA2 needs the symmetric fuzzy union)",
+        });
+    }
+
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
     let verbosity = parse_verbosity_level(verbose);
@@ -2046,10 +2057,10 @@ where
             if init.len() != 2 {
                 return Err(ManifoldsError::IncorrectDim { n_dim: init.len() });
             }
-            if init[0].len() != n || init[1].len() != n {
+            if let Some(bad) = init.iter().map(|row| row.len()).find(|&len| len != n) {
                 return Err(ManifoldsError::GraphSizeMismatch {
                     n_graph: n,
-                    n_embd: init[0].len().min(init[1].len()),
+                    n_embd: bad,
                 });
             }
             (0..n).map(|i| vec![init[0][i], init[1][i]]).collect()
