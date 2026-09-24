@@ -24,6 +24,10 @@ implemented in Rust. Contains as for now:
 - **den-SNE**, the density-preserving variant of tSNE (Barnes-Hut and FFT).
 - **PHATE**
 - **PaCMAP**
+- **ForceAtlas2**
+  - Gephi's force-directed graph layout on the kNN graph (as in scanpy's
+  `draw_graph`), or on any symmetric graph you hand it.
+  - Barnes-Hut repulsion with node masses (`O(n log n)`).
 - **Diffusion Maps**
   - Classical diffusion maps (Coifman & Lafon, 2006) with anisotropic
   (alpha) normalisation for density correction.
@@ -48,7 +52,8 @@ recently, classical [diffusion maps](https://www.sciencedirect.com/science/artic
 have been added as well. Since `0.3.11` there are also the density-preserving
 variants [densMAP and den-SNE](https://www.nature.com/articles/s41587-020-00801-7),
 which stop the embedding from rendering a tight cluster and a diffuse one at
-the same size.
+the same size. [ForceAtlas2](https://doi.org/10.1371/journal.pone.0098679),
+the force-directed layout from Gephi, joined the party as well.
 Changelog can be found [here](https://github.com/GregorLueg/manifolds-rs/blob/main/CHANGELOG.md))
 
 ## Features
@@ -71,6 +76,12 @@ Trajectory Embedding with different landmark methods.
 - **PaCMAP**: Pairwise Controlled Manifold Approximation, preserving local and
 global structure through near, mid-near and further pairs with a three-phase
 optimisation schedule.
+- **ForceAtlas2**: Gephi's force-directed layout with degree-based node
+masses, linear or LinLog attraction, (strong) gravity, dissuade hubs and
+Gephi's adaptive speed. Runs on the fuzzy kNN graph built from the data, or on
+a graph you supply (SNN graph from R, anything symmetric). Repulsion uses a
+mass-weighted Barnes-Hut tree; with `theta = 0` it matches the reference Python
+implementation to 1e-9.
 - **Diffusion Maps**: Classical diffusion maps with anisotropic normalisation
 (alpha in [0, 1] controlling density correction from the normalised graph
 Laplacian to the Laplace-Beltrami operator), Von Neumann entropy-based
@@ -627,6 +638,67 @@ let embedding = pacmap(
 The defaults are 10 near, 5 mid-near and 20 further pairs, PCA initialisation
 and the `"adam_parallel"` optimiser. `PacmapParams::new_default_2d(Some(n))`
 gives the same with a different near-pair count.
+
+### ForceAtlas2 Example
+
+ForceAtlas2 lays out the fuzzy kNN graph (the same one UMAP builds) with
+repulsion between all node pairs, attraction along edges and gravity towards
+the origin. Node masses are `1 + degree`, so hubs push harder. Layouts grow
+with the data: expect coordinates in the thousands to tens of thousands.
+
+```rust
+use manifolds_rs::prelude::*;
+use manifolds_rs::*;
+
+// Generate synthetic clustered data
+let (data, labels) = generate_clustered_data(1000, 50, 5, 42);
+
+// Default: k = 15, spectral initialisation, 500 epochs, Gephi's settings
+let params = Fa2Params::default();
+
+// Run ForceAtlas2
+let embedding = forceatlas2(
+    data.as_ref(),
+    None,    // precomputed kNN (None = compute internally)
+    &params,
+    "bh",    // repulsion approximation: Barnes-Hut
+    42,      // seed
+    1,       // verbose -> light levels of verbosity
+)
+.unwrap();
+```
+
+The knobs live in `params.optim_params` (`Fa2OptimParams`): `scaling_ratio`
+(repulsion), `gravity`, `strong_gravity`, `lin_log` (tighter communities),
+`dissuade_hubs`, `edge_weight_influence`, `jitter_tolerance` and the
+Barnes-Hut `theta` (on Gephi's scale, default `1.2`).
+
+Already have a graph, say an SNN graph from R? Hand it over directly. It must
+be symmetric (both directions stored with equal weights); self-loops are
+dropped.
+
+```rust
+use manifolds_rs::prelude::*;
+use manifolds_rs::*;
+
+// Undirected triangle, both directions stored
+let graph = CoordinateList {
+    row_indices: vec![0, 1, 1, 2, 2, 0],
+    col_indices: vec![1, 0, 2, 1, 0, 2],
+    values: vec![1.0_f64; 6],
+    n_samples: 3,
+};
+
+let embedding = forceatlas2_from_graph(
+    &graph,
+    None,                        // initial layout (None = random in [-10, 10])
+    &Fa2OptimParams::default(),
+    "bh",
+    42,                          // seed
+    0,                           // verbose
+)
+.unwrap();
+```
 
 ### Diffusion Maps Example
 
