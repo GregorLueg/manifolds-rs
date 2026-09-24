@@ -28,6 +28,7 @@ CASES = [
     ("PHATE", mf.PHATE, core.phate),
     ("PaCMAP", mf.PaCMAP, core.pacmap),
     ("DiffusionMaps", mf.DiffusionMaps, core.diffusion_maps),
+    ("ForceAtlas2", mf.ForceAtlas2, core.forceatlas2),
 ]
 
 

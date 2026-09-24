@@ -1,7 +1,7 @@
 """Dimensionality reduction for single-cell and computational biology, in Rust.
 
-UMAP, densMAP, t-SNE, den-SNE, PHATE, PaCMAP and diffusion maps behind one
-estimator surface, with GPU variants of the first three where the neighbour
+UMAP, densMAP, t-SNE, den-SNE, PHATE, PaCMAP, diffusion maps and ForceAtlas2
+behind one estimator surface, with GPU variants of the first three where the neighbour
 search and the Adam update move to the device.
 
     >>> import manifolds_rs as mf
@@ -44,6 +44,7 @@ from ._manifolds import (
 )
 from ._params import (
     DensParams,
+    Fa2Optim,
     NeighbourParams,
     NeighbourParamsGpu,
     PacmapOptim,
@@ -52,7 +53,16 @@ from ._params import (
     UmapGraph,
     UmapOptim,
 )
-from .embeddings import PHATE, TSNE, UMAP, DensMAP, DensNE, DiffusionMaps, PaCMAP
+from .embeddings import (
+    PHATE,
+    TSNE,
+    UMAP,
+    DensMAP,
+    DensNE,
+    DiffusionMaps,
+    ForceAtlas2,
+    PaCMAP,
+)
 from .neighbours import knn_graph
 
 __all__ = [
@@ -65,6 +75,8 @@ __all__ = [
     "DensNE",
     "DensParams",
     "DiffusionMaps",
+    "Fa2Optim",
+    "ForceAtlas2",
     "ManifoldsRsError",
     "NeighbourParams",
     "NeighbourParamsGpu",

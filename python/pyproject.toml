@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "manifolds-rs"
-description = "UMAP, t-SNE, PHATE, PaCMAP and diffusion maps for single-cell and computational biology, in Rust."
+description = "UMAP, t-SNE, PHATE, PaCMAP, diffusion maps and ForceAtlas2 for single-cell and computational biology, in Rust."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Gregor Lueg", email = "gregorlueg@me.com" }]

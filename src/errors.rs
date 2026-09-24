@@ -81,6 +81,36 @@ pub enum ManifoldsError {
     #[error("UMAP: no edges to optimise - upstream error?")]
     NoGraphEdges,
 
+    // -- ForceAtlas2 --
+    /// Error if the graph is not symmetric or indexes past its own size
+    #[error("ForceAtlas2 needs a symmetric graph: edge ({row}, {col}) has no reverse edge of equal weight or is out of bounds")]
+    AsymmetricGraph {
+        /// Row index of the offending edge
+        row: usize,
+        /// Column index of the offending edge
+        col: usize,
+    },
+
+    /// Error if the graph and the embedding disagree on the number of nodes
+    #[error("The graph has {n_graph} nodes but the embedding has {n_embd}")]
+    GraphSizeMismatch {
+        /// Number of nodes in the graph
+        n_graph: usize,
+        /// Number of points in the embedding
+        n_embd: usize,
+    },
+
+    /// Error if a ForceAtlas2 parameter is out of range
+    #[error("ForceAtlas2: {param} = {value} is invalid, {requirement}")]
+    Fa2InvalidParam {
+        /// Name of the parameter
+        param: &'static str,
+        /// Supplied value
+        value: f64,
+        /// What the parameter must satisfy
+        requirement: &'static str,
+    },
+
     // -- pacmap
     /// If the pre-computed kNN does not have enough neighbours for the
     /// parameter settings

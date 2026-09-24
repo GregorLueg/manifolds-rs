@@ -16,8 +16,8 @@
 
 use manifolds_rs::prelude::*;
 use manifolds_rs::{
-    DensmapParams, DensneParams, DiffusionMapsParams, PacmapParams, PhateParams, TsneParams,
-    UmapParams,
+    DensmapParams, DensneParams, DiffusionMapsParams, Fa2Params, PacmapParams, PhateParams,
+    TsneParams, UmapParams,
 };
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -375,6 +375,36 @@ where
     r.finish()
 }
 
+/// Fill [`Fa2OptimParams`] from a dictionary.
+///
+/// ### Params
+///
+/// * `d` - The `optim_params` group.
+/// * `p` - Struct holding the crate defaults, overwritten in place.
+///
+/// ### Returns
+///
+/// Nothing, or the first bad or unknown key.
+pub(crate) fn fill_fa2_optim<T>(d: &Bound<'_, PyDict>, p: &mut Fa2OptimParams<T>) -> PyResult<()>
+where
+    T: ManifoldsFloat,
+{
+    let mut r = Reader::new(d, "optim_params");
+    set(&mut p.n_epochs, r.get::<usize>("n_epochs")?);
+    set(&mut p.scaling_ratio, r.float::<T>("scaling_ratio")?);
+    set(&mut p.gravity, r.float::<T>("gravity")?);
+    set(&mut p.strong_gravity, r.get::<bool>("strong_gravity")?);
+    set(&mut p.lin_log, r.get::<bool>("lin_log")?);
+    set(&mut p.dissuade_hubs, r.get::<bool>("dissuade_hubs")?);
+    set(
+        &mut p.edge_weight_influence,
+        r.float::<T>("edge_weight_influence")?,
+    );
+    set(&mut p.jitter_tolerance, r.float::<T>("jitter_tolerance")?);
+    set(&mut p.theta, r.float::<T>("theta")?);
+    r.finish()
+}
+
 /// Fill [`DensParams`] from a dictionary.
 ///
 /// ### Params
@@ -702,6 +732,33 @@ where
     p.n_svd = r.get::<usize>("n_svd")?.or(p.n_svd);
     p.t = read_time(&mut r, &p.t)?;
     nested(&mut r, "nn_params", &mut p.ann_params, fill_nn)?;
+    r.finish()?;
+    Ok(p)
+}
+
+/// Build [`Fa2Params`] from a dictionary.
+///
+/// ### Params
+///
+/// * `d` - The full parameter dictionary sent by the Python layer.
+///
+/// ### Returns
+///
+/// A fully specified parameter struct, or the first bad or unknown key.
+pub(crate) fn forceatlas2<T>(d: &Bound<'_, PyDict>) -> PyResult<Fa2Params<T>>
+where
+    T: ManifoldsFloat,
+{
+    let mut p = Fa2Params::<T>::default();
+    let mut r = Reader::new(d, "Fa2Params");
+    set(&mut p.k, r.get::<usize>("k")?);
+    set(&mut p.ann_type, r.get::<String>("ann_type")?);
+    set(&mut p.initialisation, r.get::<String>("initialisation")?);
+    p.init_range = r.float::<T>("init_range")?.or(p.init_range);
+    set(&mut p.randomised_init, r.get::<bool>("randomised_init")?);
+    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nested(&mut r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
+    nested(&mut r, "optim_params", &mut p.optim_params, fill_fa2_optim)?;
     r.finish()?;
     Ok(p)
 }

@@ -43,9 +43,10 @@ algorithms cleanly. 5000 points, defaults throughout:
 | | neighbourhood preservation |
 | --- | --- |
 | `TSNE` | 0.83 |
-| `UMAP` | 0.66 |
-| `PHATE` | 0.39 |
-| `PaCMAP` | 0.17 |
+| `UMAP` | 0.67 |
+| `ForceAtlas2` | 0.59 |
+| `PHATE` | 0.37 |
+| `PaCMAP` | 0.16 |
 
 That ordering is the local-versus-global trade-off, measured. t-SNE wins on
 local structure because that is the only thing it optimises.

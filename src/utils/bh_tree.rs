@@ -1,12 +1,12 @@
-//! Morton (Z-order) linear quad-tree Barnes-Hut implementation for tSNE
-//! fitting.
+//! Morton (Z-order) linear quad-tree Barnes-Hut implementation for tSNE and
+//! ForceAtlas2 fitting.
 //!
 //! The build quantises the embedding into per-axis 32-bit integer buckets,
 //! interleaves them into 64-bit Morton codes, sorts a `(code, index)`
 //! permutation, and walks the sorted codes breadth-first to emit nodes whose
 //! children occupy a contiguous arena range. Nodes store only what the force
-//! traversal reads (centre of mass, count, level); raw coordinates are never
-//! stored.
+//! traversal reads (centre of mass, mass, level); raw coordinates are never
+//! stored. Points carry unit mass (tSNE) or caller-supplied masses (FA2).
 
 use num_traits::{Float, FromPrimitive};
 use rayon::prelude::*;
@@ -25,6 +25,17 @@ const BITS: u32 = 32;
 
 /// Minimum rayon chunk length, so small inputs stay on one thread.
 const PAR_MIN_LEN: usize = 1024;
+
+/// Squared distance at or below which a leaf counts as the query point itself
+/// (or a point coincident with it) and contributes no force.
+const MIN_DIST_SQ: f64 = 1e-12;
+
+/// Squared factor from cell width to the FA2 opening size. Gephi opens a
+/// region when `theta * d <= size`, with `size` twice the largest member
+/// distance from the centre of mass; that is at most twice the cell diagonal,
+/// `2 * sqrt(2) * width`. Using the bound means a cell holding the query point
+/// can only be summarised for `theta > 2`, as in Gephi.
+const FA2_SIZE_FACTOR_SQ: f64 = 8.0;
 
 /// Spread the low 32 bits of `x` into the even bit positions (one zero gap
 /// between each), the 2D Morton building block.
@@ -89,7 +100,7 @@ fn quantise<T: Float>(v: T, min: T, inv_scale: T) -> u32 {
 
 /// A node in the flat quad-tree arena.
 ///
-/// The force traversal reads `com_x`, `com_y`, `count`, and `level` (which
+/// The force traversal reads `com_x`, `com_y`, `mass`, and `level` (which
 /// sizes the cell through the per-tree width table), and follows
 /// `first_child` for the `child_count` children stored contiguously. A leaf
 /// is marked by `first_child == SENTINEL`.
@@ -102,8 +113,8 @@ pub struct Node<T> {
     pub com_x: T,
     /// Centre of mass (Y)
     pub com_y: T,
-    /// Number of points in this subtree
-    pub count: u32,
+    /// Total mass of the subtree; the point count under unit masses
+    pub mass: T,
     /// Arena index of the first child; `SENTINEL` for leaves
     pub first_child: u32,
     /// Number of contiguous children (at most 4)
@@ -147,15 +158,20 @@ where
         }
     }
 
-    /// Build a fresh tree over `pos`. Convenience for one-shot callers; the
-    /// epoch loop should hold one tree and call [`BarnesHutTree::rebuild`].
+    /// Build a fresh unit-mass tree over `pos`. Convenience for one-shot
+    /// callers; the epoch loop should hold one tree and call
+    /// [`BarnesHutTree::rebuild`].
     ///
     /// ### Params
     ///
     /// * `pos` - Interleaved point coordinates `[x0, y0, x1, y1, ...]`
+    ///
+    /// ### Returns
+    ///
+    /// The built tree
     pub fn new(pos: &[T]) -> Self {
         let mut tree = Self::empty();
-        tree.rebuild(pos);
+        tree.rebuild(pos, None);
         tree
     }
 
@@ -164,8 +180,17 @@ where
     /// ### Params
     ///
     /// * `pos` - Interleaved point coordinates `[x0, y0, x1, y1, ...]`
-    pub fn rebuild(&mut self, pos: &[T]) {
+    /// * `masses` - Per-point positive masses, length `n`. `None` gives every
+    ///   point unit mass, so node masses are point counts.
+    ///
+    /// ### Panics
+    ///
+    /// If `masses` does not have one entry per point.
+    pub fn rebuild(&mut self, pos: &[T], masses: Option<&[T]>) {
         let n = pos.len() / 2;
+        if let Some(w) = masses {
+            assert_eq!(w.len(), n, "masses must have one entry per point");
+        }
 
         self.nodes.clear();
         self.ranges.clear();
@@ -253,7 +278,7 @@ where
         nodes.push(Node {
             com_x: T::zero(),
             com_y: T::zero(),
-            count: n as u32,
+            mass: T::zero(),
             first_child: SENTINEL,
             child_count: 0,
             level: BITS as u8,
@@ -286,7 +311,7 @@ where
                 nodes.push(Node {
                     com_x: T::zero(),
                     com_y: T::zero(),
-                    count: child_end - child_start,
+                    mass: T::zero(),
                     first_child: SENTINEL,
                     child_count: 0,
                     level: BITS as u8,
@@ -306,16 +331,25 @@ where
             .with_min_len(PAR_MIN_LEN)
             .filter(|(node, _)| node.first_child == SENTINEL)
             .for_each(|(node, &(start, end))| {
+                // offsets from the first point keep the centre of mass exact
+                // for single-point and coincident leaves; `m x / m` does not
+                // round back to `x`, and the self-exclusion test needs it to
+                let anchor = sorted[start as usize].1 as usize;
+                let (ax, ay) = (pos[2 * anchor], pos[2 * anchor + 1]);
+                let mut sum_m = T::zero();
                 let mut sum_x = T::zero();
                 let mut sum_y = T::zero();
                 for slot in start..end {
                     let idx = sorted[slot as usize].1 as usize;
-                    sum_x = sum_x + pos[2 * idx];
-                    sum_y = sum_y + pos[2 * idx + 1];
+                    let m = masses.map_or(T::one(), |w| w[idx]);
+                    sum_m = sum_m + m;
+                    sum_x = sum_x + m * (pos[2 * idx] - ax);
+                    sum_y = sum_y + m * (pos[2 * idx + 1] - ay);
                 }
-                let inv = T::from_u32(node.count).unwrap().recip();
-                node.com_x = sum_x * inv;
-                node.com_y = sum_y * inv;
+                let inv = sum_m.recip();
+                node.mass = sum_m;
+                node.com_x = ax + sum_x * inv;
+                node.com_y = ay + sum_y * inv;
             });
 
         for i in (0..nodes.len()).rev() {
@@ -324,14 +358,16 @@ where
             }
             let first = nodes[i].first_child as usize;
             let last = first + nodes[i].child_count as usize;
+            let mut sum_m = T::zero();
             let mut sum_x = T::zero();
             let mut sum_y = T::zero();
             for child in &nodes[first..last] {
-                let w = T::from_u32(child.count).unwrap();
-                sum_x = sum_x + child.com_x * w;
-                sum_y = sum_y + child.com_y * w;
+                sum_m = sum_m + child.mass;
+                sum_x = sum_x + child.com_x * child.mass;
+                sum_y = sum_y + child.com_y * child.mass;
             }
-            let inv = T::from_u32(nodes[i].count).unwrap().recip();
+            let inv = sum_m.recip();
+            nodes[i].mass = sum_m;
             nodes[i].com_x = sum_x * inv;
             nodes[i].com_y = sum_y * inv;
         }
@@ -339,8 +375,9 @@ where
         debug_assert_eq!(
             nodes
                 .iter()
-                .filter(|node| node.first_child == SENTINEL)
-                .map(|node| node.count as u64)
+                .zip(ranges.iter())
+                .filter(|(node, _)| node.first_child == SENTINEL)
+                .map(|(_, &(start, end))| (end - start) as u64)
                 .sum::<u64>(),
             n as u64,
             "tree lost or invented points"
@@ -380,7 +417,7 @@ where
         }
 
         let theta_sq = theta * theta;
-        let min_dist_sq = T::from_f64(1e-12).unwrap();
+        let min_dist_sq = T::from_f64(MIN_DIST_SQ).unwrap();
 
         stack.clear();
         stack.push(0);
@@ -407,7 +444,7 @@ where
 
             // Summarise the cell by its centre of mass.
             let q = (T::one() + dist_sq).recip();
-            let mass_q = T::from_u32(node.count).unwrap() * q;
+            let mass_q = node.mass * q;
             sum_q = sum_q + mass_q;
             let mult = mass_q * q;
             force_x = force_x + mult * dx;
@@ -415,6 +452,69 @@ where
         }
 
         (force_x, force_y, sum_q)
+    }
+
+    /// Compute the ForceAtlas2 repulsion sum on a point using Barnes-Hut.
+    ///
+    /// Same traversal as [`BarnesHutTree::compute_repulsive_force`], with the
+    /// FA2 kernel: each summarised cell contributes
+    /// `mass * (p - com) / |p - com|^2`. The caller multiplies by
+    /// `scaling_ratio * mass_i`. The opening test uses twice the cell diagonal
+    /// (see `FA2_SIZE_FACTOR_SQ`), so `theta` matches Gephi's scale and a point
+    /// never repels its own cell for `theta <= 2`.
+    ///
+    /// ### Params
+    ///
+    /// * `p_x` - X coordinate of the query point
+    /// * `p_y` - Y coordinate of the query point
+    /// * `theta` - Barnes-Hut opening parameter
+    /// * `stack` - Reusable traversal scratch (cleared here, capacity kept)
+    ///
+    /// ### Returns
+    ///
+    /// Tuple `(sum_x, sum_y)` of the mass-weighted inverse-distance sum
+    ///
+    /// ### References
+    ///
+    /// Jacomy et al., PLoS ONE, 2014 (ForceAtlas2)
+    pub fn compute_fa2_repulsion(&self, p_x: T, p_y: T, theta: T, stack: &mut Vec<u32>) -> (T, T) {
+        let mut force_x = T::zero();
+        let mut force_y = T::zero();
+
+        if self.nodes.is_empty() {
+            return (force_x, force_y);
+        }
+
+        let theta_sq = theta * theta / T::from_f64(FA2_SIZE_FACTOR_SQ).unwrap();
+        let min_dist_sq = T::from_f64(MIN_DIST_SQ).unwrap();
+
+        stack.clear();
+        stack.push(0);
+
+        while let Some(ni) = stack.pop() {
+            let node = &self.nodes[ni as usize];
+
+            let dx = p_x - node.com_x;
+            let dy = p_y - node.com_y;
+            let dist_sq = dx * dx + dy * dy;
+
+            if node.first_child == SENTINEL {
+                if dist_sq <= min_dist_sq {
+                    continue;
+                }
+            } else if self.level_width_sq[node.level as usize] >= theta_sq * dist_sq {
+                for child in 0..node.child_count as u32 {
+                    stack.push(node.first_child + child);
+                }
+                continue;
+            }
+
+            let factor = node.mass / dist_sq;
+            force_x = force_x + factor * dx;
+            force_y = force_y + factor * dy;
+        }
+
+        (force_x, force_y)
     }
 }
 
@@ -471,7 +571,7 @@ mod tests {
         let root = &tree.nodes[0];
         assert_relative_eq!(root.com_x, 1.0);
         assert_relative_eq!(root.com_y, 2.0);
-        assert_eq!(root.count, 1);
+        assert_relative_eq!(root.mass, 1.0);
         assert_eq!(root.first_child, SENTINEL);
     }
 
@@ -479,7 +579,7 @@ mod tests {
     fn test_two_points_different_quadrants() {
         let tree = BarnesHutTree::new(&pos_from_tuples(&[(0.0, 0.0), (10.0, 10.0)]));
         let root = &tree.nodes[0];
-        assert_eq!(root.count, 2);
+        assert_relative_eq!(root.mass, 2.0);
         assert_relative_eq!(root.com_x, 5.0);
         assert_relative_eq!(root.com_y, 5.0);
         assert_ne!(root.first_child, SENTINEL);
@@ -491,7 +591,7 @@ mod tests {
         let pos = vec![5.0f64; 1000];
         let tree = BarnesHutTree::new(&pos);
         assert_eq!(tree.nodes.len(), 1);
-        assert_eq!(tree.nodes[0].count, 500);
+        assert_relative_eq!(tree.nodes[0].mass, 500.0);
         assert_eq!(tree.nodes[0].first_child, SENTINEL);
     }
 
@@ -499,14 +599,14 @@ mod tests {
     fn test_mass_conservation() {
         let pos = lcg_cloud(2_000, 17);
         let tree = BarnesHutTree::new(&pos);
-        assert_eq!(tree.nodes[0].count, 2_000);
-        let leaf_sum: u64 = tree
+        assert_relative_eq!(tree.nodes[0].mass, 2_000.0);
+        let leaf_sum: f64 = tree
             .nodes
             .iter()
             .filter(|n| n.first_child == SENTINEL)
-            .map(|n| n.count as u64)
+            .map(|n| n.mass)
             .sum();
-        assert_eq!(leaf_sum, 2_000);
+        assert_relative_eq!(leaf_sum, 2_000.0);
     }
 
     #[test]
@@ -621,7 +721,7 @@ mod tests {
         let a = lcg_cloud(500, 1);
         let b = lcg_cloud(800, 2);
         let mut reused = BarnesHutTree::new(&a);
-        reused.rebuild(&b);
+        reused.rebuild(&b, None);
         let fresh = BarnesHutTree::new(&b);
         let mut stack = Vec::new();
         for i in (0..800).step_by(53) {
@@ -629,5 +729,68 @@ mod tests {
             let f = fresh.compute_repulsive_force(b[2 * i], b[2 * i + 1], 0.5, &mut stack);
             assert_eq!(r, f);
         }
+    }
+
+    #[test]
+    fn test_fa2_theta_zero_matches_brute_force() {
+        let pos = lcg_cloud(400, 31);
+        let masses: Vec<f64> = (0..400).map(|i| 1.0 + (i % 7) as f64).collect();
+        let mut tree = BarnesHutTree::empty();
+        tree.rebuild(&pos, Some(&masses));
+        let mut stack = Vec::new();
+        for i in 0..400 {
+            let (fx, fy) = tree.compute_fa2_repulsion(pos[2 * i], pos[2 * i + 1], 0.0, &mut stack);
+            let (mut bx, mut by) = (0.0, 0.0);
+            for j in 0..400 {
+                let dx = pos[2 * i] - pos[2 * j];
+                let dy = pos[2 * i + 1] - pos[2 * j + 1];
+                let d = dx * dx + dy * dy;
+                if d <= 1e-12 {
+                    continue;
+                }
+                bx += masses[j] * dx / d;
+                by += masses[j] * dy / d;
+            }
+            assert_relative_eq!(fx, bx, max_relative = 1e-9);
+            assert_relative_eq!(fy, by, max_relative = 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_weighted_root_is_mass_weighted_mean() {
+        let pos = pos_from_tuples(&[(0.0, 0.0), (4.0, 0.0)]);
+        let mut tree = BarnesHutTree::empty();
+        tree.rebuild(&pos, Some(&[3.0, 1.0]));
+        assert_relative_eq!(tree.nodes[0].mass, 4.0);
+        assert_relative_eq!(tree.nodes[0].com_x, 1.0);
+        assert_relative_eq!(tree.nodes[0].com_y, 0.0);
+    }
+
+    #[test]
+    fn test_fa2_default_theta_close_to_exact() {
+        let n = 2_000;
+        let pos = lcg_cloud(n, 13);
+        let masses: Vec<f64> = (0..n).map(|i| 1.0 + (i % 11) as f64).collect();
+        let mut tree = BarnesHutTree::empty();
+        tree.rebuild(&pos, Some(&masses));
+        let mut stack = Vec::new();
+        let (mut num, mut den) = (0.0, 0.0);
+        for i in 0..n {
+            let (ex, ey) = tree.compute_fa2_repulsion(pos[2 * i], pos[2 * i + 1], 0.0, &mut stack);
+            let (ax, ay) = tree.compute_fa2_repulsion(pos[2 * i], pos[2 * i + 1], 1.2, &mut stack);
+            num += (ax - ex).powi(2) + (ay - ey).powi(2);
+            den += ex * ex + ey * ey;
+        }
+        // 1.5e-3 with the diagonal-size test; the bare cell-width test, which
+        // lets a point repel its own cell, gives 1.9e-2 on this cloud
+        let rel_l2 = (num / den).sqrt();
+        assert!(rel_l2 < 5e-3, "relative L2 error {rel_l2:.3e}");
+    }
+
+    #[test]
+    #[should_panic(expected = "masses must have one entry per point")]
+    fn test_rebuild_rejects_short_masses() {
+        let mut tree = BarnesHutTree::empty();
+        tree.rebuild(&[0.0f64, 0.0, 1.0, 1.0], Some(&[1.0]));
     }
 }

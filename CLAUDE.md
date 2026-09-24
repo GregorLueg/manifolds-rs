@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Crate
 
-`manifolds-rs` (lib name `manifolds_rs`, Rust 2021). Dimensionality-reduction algorithms: UMAP, tSNE (Barnes-Hut + optional FFT), PHATE, PaCMAP, Diffusion Maps, and optional parametric UMAP via `burn`. Powers the `manifoldsR` R package.
+`manifolds-rs` (lib name `manifolds_rs`, Rust 2021). Dimensionality-reduction algorithms: UMAP, tSNE (Barnes-Hut + optional FFT), PHATE, PaCMAP, Diffusion Maps, ForceAtlas2 (Barnes-Hut), and optional parametric UMAP via `burn`. Powers the `manifoldsR` R package.
 
 ## Common commands
 
@@ -49,7 +49,7 @@ Feature-gated code, tests, and prelude re-exports are conditional on these; when
 
 ## Architecture
 
-`src/lib.rs` is the ~3.4k-line facade. Every user-facing algorithm has three things there: a `<Algo>Params<T>` struct (with `Default` and `new_default_2d`), an optional `construct_<algo>_graph` helper, and the entry-point free function (`umap`, `tsne`, `phate`, `pacmap`, `diffusion_maps`, `parametric_umap`, `umap_gpu`, `tsne_gpu`). Sub-modules hold the implementation:
+`src/lib.rs` is the ~3.4k-line facade. Every user-facing algorithm has three things there: a `<Algo>Params<T>` struct (with `Default` and `new_default_2d`), an optional `construct_<algo>_graph` helper, and the entry-point free function (`umap`, `tsne`, `phate`, `pacmap`, `diffusion_maps`, `forceatlas2`, `parametric_umap`, `umap_gpu`, `tsne_gpu`). Sub-modules hold the implementation:
 
 - `src/data/` — graph construction and neighbour indices.
   - `nearest_neighbours.rs` / `nearest_neighbours_gpu.rs` — thin wrapper over `ann-search-rs`. Backends are picked by **string keys**: CPU = `"exhaustive"`, `"kmknn"`, `"balltree"`, `"annoy"`, `"nndescent"`, `"hnsw"`, `"ivf"`; GPU = `"exhaustive_gpu"`, `"ivf_gpu"`, `"nndescent_gpu"`.
@@ -58,7 +58,7 @@ Feature-gated code, tests, and prelude re-exports are conditional on these; when
   - `pacmap_pairs.rs` — near / mid-near / further pair sampling for PaCMAP.
   - `structures.rs` — `CoordinateList<T>` (COO) and other sparse structures.
   - `synthetic.rs` — swiss roll, clusters, branching trajectories used by tests and README examples.
-- `src/training/` — optimisers. `umap_optimisers.rs` (SGD, Adam, parallel Adam), `umap_optimiser_gpu.rs` (GPU Adam), `tsne_optimiser.rs`, `pacmap_optimiser.rs`, `mds_optimiser.rs` (PHATE MDS). Shared Adam constants (`UMAP_BETA1`, `BETA1`, `EPS`, …) live in `training/mod.rs`.
+- `src/training/` — optimisers. `umap_optimisers.rs` (SGD, Adam, parallel Adam), `umap_optimiser_gpu.rs` (GPU Adam), `tsne_optimiser.rs`, `pacmap_optimiser.rs`, `fa2_optimiser.rs` (ForceAtlas2, mass-weighted BH repulsion), `mds_optimiser.rs` (PHATE MDS). Shared Adam constants (`UMAP_BETA1`, `BETA1`, `EPS`, …) live in `training/mod.rs`.
 - `src/utils/` — `bh_tree.rs` (Barnes-Hut quadtree), `fft.rs` (FFT-accelerated tSNE, `fft_tsne` only), `diffusions.rs` (PHATE + diffusion maps operators, VNE knee), `potentials.rs` (PHATE potential distance), `sparse_ops.rs`, `math.rs` (Lanczos eigenpairs, VNE), `traits.rs` (`ManifoldsFloat`, `ManifoldsFloatGpu`), `macros.rs`.
 - `src/parametric/` (feature `parametric`) — `model.rs` (encoder + `TrainedUmapModel` with serde/bincode I/O), `dataset.rs`, `batch.rs`, `parametric_train.rs`.
 - `src/errors.rs` — `ManifoldsError` (thiserror). Prefer returning errors over panics; recent versions have been migrating panics to variants here.

@@ -1,7 +1,7 @@
 # Choosing an algorithm
 
-Seven of them, and the honest summary is that three cover most work. Here is how
-to pick without running all seven.
+Eight of them, and the honest summary is that three cover most work. Here is how
+to pick without running all eight.
 
 ## Start here
 
@@ -13,6 +13,7 @@ to pick without running all seven.
 | You want the tightest possible local structure and nothing else | `TSNE` |
 | Relative density in the plot should mean something | `DensMAP` |
 | You want the spectral embedding itself, not a layout of it | `DiffusionMaps` |
+| You want a force-directed graph layout, scanpy `draw_graph` style | `ForceAtlas2` |
 
 ## What each one is actually doing
 
@@ -56,11 +57,19 @@ them. The knob worth understanding is `alpha`: `0` gives the normalised graph
 Laplacian, `0.5` the Fokker-Planck operator, `1` the Laplace-Beltrami operator,
 which is the one that removes the influence of sampling density.
 
+**ForceAtlas2** is Gephi's force-directed layout, run on the same fuzzy kNN
+graph UMAP builds, which is what scanpy's `draw_graph` does. Every pair of
+points repels, edges attract, and gravity keeps disconnected components from
+drifting off. Unlike UMAP there is no edge sampling: every edge is visited every
+epoch. `lin_log=True` pulls communities tighter; `scaling_ratio` spreads the
+whole layout. `graph_params.mix_weight` has to stay at 1, because the layout
+needs a symmetric graph. Two-dimensional only.
+
 ## Cost
 
 Rough ordering on the same data, dominated by different things:
 
-- `TSNE` and `DensNE` pay for the Barnes-Hut tree every epoch.
+- `TSNE`, `DensNE` and `ForceAtlas2` pay for the Barnes-Hut tree every epoch.
 - `UMAP`, `DensMAP` and `PaCMAP` pay for the neighbour search and then a cheap
   per-edge update. The parallel Adam optimiser is the default.
 - `PHATE` and `DiffusionMaps` pay for an eigendecomposition. Set `n_landmarks`

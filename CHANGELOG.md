@@ -3,6 +3,25 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.5.1
+
+**Features**
+
+- ForceAtlas2 via `forceatlas2()` (on the fuzzy kNN graph, like scanpy's
+  `draw_graph`) and `forceatlas2_from_graph()` (on any symmetric graph). Node
+  masses `1 + degree`, linear or LinLog attraction, (strong) gravity, dissuade
+  hubs, edge weight influence and Gephi's adaptive speed. Repulsion runs on a
+  mass-weighted Barnes-Hut tree. Matches the reference Python implementation
+  to 1e-9 with `theta = 0`.
+
+**Breaking changes**
+
+This should not affect most users.
+
+- `utils::bh_tree`: `Node::count: u32` is now `Node::mass: T`, and
+  `BarnesHutTree::rebuild()` takes an extra `masses: Option<&[T]>` argument
+  (`None` keeps the old unit-mass behaviour). tSNE results are unchanged.
+
 ## 0.5.0
 
 **Features**

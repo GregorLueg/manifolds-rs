@@ -631,7 +631,7 @@ pub fn optimise_bh_tsne<T>(
                 dst[1] = p[1];
             });
 
-        bh_tree.rebuild(&pos);
+        bh_tree.rebuild(&pos, None);
 
         // compute all repulsive forces in one parallel pass, writing into
         // the preallocated rep_forces buffer

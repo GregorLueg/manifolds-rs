@@ -20,6 +20,7 @@ from . import _manifolds as _core
 from ._base import BaseEmbedding
 from ._params import (
     ANN_CPU,
+    FA2_APPROX,
     INITS,
     LANDMARK_METHODS,
     MDS_METHODS,
@@ -29,6 +30,7 @@ from ._params import (
     TSNE_APPROX,
     UMAP_OPTIMISERS,
     DensParams,
+    Fa2Optim,
     NeighbourParams,
     PacmapOptim,
     PhateDiffusion,
@@ -640,5 +642,102 @@ class DiffusionMaps(BaseEmbedding):
             "nn_params": merge(
                 self.nn_params,
                 dist_metric=check_choice(self.metric, METRICS, name="metric"),
+            ),
+        }
+
+
+class ForceAtlas2(BaseEmbedding):
+    """ForceAtlas2, Gephi's force-directed layout, on the fuzzy kNN graph.
+
+    The graph is UMAP's fuzzy simplicial set, as in scanpy's ``draw_graph``, laid
+    out with ``1/d`` repulsion between all pairs (node masses ``1 + degree``),
+    linear or LinLog attraction along the edges, gravity towards the origin and
+    Gephi's adaptive per-node speed. Every edge is visited every epoch, so there
+    is no sampling and no weak-edge filter.
+
+    Two-dimensional only, which is the core's restriction.
+
+    Args:
+        n_neighbors: Neighbours per point used to build the graph.
+        metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
+        n_epochs: Optimisation epochs.
+        scaling_ratio: Repulsion strength. Larger values spread the layout.
+        gravity: Pull towards the origin. Keeps disconnected components from
+            drifting off.
+        lin_log: Logarithmic attraction (LinLog). Tighter communities.
+        init: ``"spectral"``, ``"pca"`` or ``"random"``.
+        ann: Neighbour backend.
+        approx: Repulsion approximation. ``"barnes_hut"`` is the only one.
+        randomised_init: Use randomised SVD for the PCA initialisation.
+        init_range: Scale of the initial coordinates. ``None`` lets the core
+            pick per initialisation.
+        seed: Fixes the initialisation.
+        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        nn_params: See `NeighbourParams`.
+        graph_params: Fuzzy simplicial set knobs. See `UmapGraph`.
+            ``mix_weight`` must stay at ``1``: anything lower leaves the graph
+            directed, and the core raises a `ValueError`.
+        optim_params: Remaining layout knobs. See `Fa2Optim`.
+    """
+
+    _FN: ClassVar[Callable[..., Any]] = _core.forceatlas2
+    _EXTRA: ClassVar[tuple[str, ...]] = ("approx",)
+
+    @beartype
+    def __init__(
+        self,
+        n_neighbors: int = 15,
+        metric: str = "euclidean",
+        n_epochs: int = 500,
+        scaling_ratio: float = 2.0,
+        gravity: float = 1.0,
+        lin_log: bool = False,
+        init: str = "spectral",
+        ann: str = "kmknn",
+        approx: str = "barnes_hut",
+        randomised_init: bool = False,
+        init_range: float | None = None,
+        seed: int = 42,
+        verbose: int = 0,
+        nn_params: NeighbourParams | None = None,
+        graph_params: UmapGraph | None = None,
+        optim_params: Fa2Optim | None = None,
+    ) -> None:
+        self.n_neighbors = n_neighbors
+        self.metric = metric
+        self.n_epochs = n_epochs
+        self.scaling_ratio = scaling_ratio
+        self.gravity = gravity
+        self.lin_log = lin_log
+        self.init = init
+        self.ann = ann
+        self.approx = approx
+        self.randomised_init = randomised_init
+        self.init_range = init_range
+        self.seed = seed
+        self.verbose = verbose
+        self.nn_params = nn_params
+        self.graph_params = graph_params
+        self.optim_params = optim_params
+
+    def _params(self) -> dict[str, Any]:
+        check_choice(self.approx, FA2_APPROX, name="approx")
+        return {
+            "k": self.n_neighbors,
+            "initialisation": check_choice(self.init, INITS, name="init"),
+            "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
+            "randomised_init": self.randomised_init,
+            "init_range": self.init_range,
+            "nn_params": merge(
+                self.nn_params,
+                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+            ),
+            "graph_params": merge(self.graph_params),
+            "optim_params": merge(
+                self.optim_params,
+                n_epochs=self.n_epochs,
+                scaling_ratio=self.scaling_ratio,
+                gravity=self.gravity,
+                lin_log=self.lin_log,
             ),
         }

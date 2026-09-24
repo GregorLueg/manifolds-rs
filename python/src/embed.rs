@@ -300,3 +300,50 @@ pub fn diffusion_maps<'py>(
         )
     )
 }
+
+/// ForceAtlas2 on the fuzzy kNN graph.
+///
+/// ### Params
+///
+/// * `x` - Samples by features, C-contiguous float32 or float64.
+/// * `params` - Parameters, as built by the Python layer. See
+///   [`crate::params::forceatlas2`].
+/// * `approx` - Repulsive-force approximation. Barnes-Hut is the only one.
+/// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices.
+/// * `knn_distances` - Optional `(n, k)` distances, same dtype as `x`.
+/// * `seed` - Fixes the initialisation.
+/// * `verbose` - `0` silent, `1` normal, `2` detailed.
+///
+/// ### Returns
+///
+/// The embedding as an `(n_samples, 2)` array of the input's float type.
+#[pyfunction]
+#[pyo3(signature = (x, params, *, approx = "barnes_hut", knn_indices = None, knn_distances = None, seed = 42, verbose = 0))]
+#[allow(clippy::too_many_arguments)]
+pub fn forceatlas2<'py>(
+    py: Python<'py>,
+    x: &Bound<'py, PyAny>,
+    params: &Bound<'py, PyDict>,
+    approx: &str,
+    knn_indices: Option<&Bound<'py, PyAny>>,
+    knn_distances: Option<&Bound<'py, PyAny>>,
+    seed: usize,
+    verbose: usize,
+) -> PyResult<Bound<'py, PyAny>> {
+    embed_dispatch!(
+        py,
+        x,
+        params,
+        knn_indices,
+        knn_distances,
+        forceatlas2,
+        |data, n, dim, p, knn| manifolds_rs::forceatlas2(
+            (data, n, dim),
+            knn,
+            p,
+            approx,
+            seed,
+            verbose
+        )
+    )
+}

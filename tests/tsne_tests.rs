@@ -288,9 +288,9 @@ fn tsne_integration_04_barnes_hut_tree() {
 
     println!("Tree has {} nodes for {} points", tree.nodes.len(), n);
 
-    // Root is always index 0; mass field is now `count`
+    // Root is always index 0; unit masses make its mass the point count
     let root = &tree.nodes[0];
-    assert_eq!(root.count, n as u32, "Root count should equal n={}", n);
+    assert_eq!(root.mass, n as f64, "Root mass should equal n={}", n);
     println!("✓ Root count equals n");
 
     // Check centre of mass is reasonable
