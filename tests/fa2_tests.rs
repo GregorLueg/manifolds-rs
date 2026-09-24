@@ -160,12 +160,12 @@ fn check_parity(params: Fa2OptimParams<f64>, reference: &[f64]) {
 }
 
 #[test]
-fn fa2_parity_linear() {
+fn fa2_integration_02_parity_linear() {
     check_parity(Fa2OptimParams::default(), &REF_LINEAR);
 }
 
 #[test]
-fn fa2_parity_lin_log() {
+fn fa2_integration_03_parity_lin_log() {
     let params = Fa2OptimParams {
         lin_log: true,
         ..Fa2OptimParams::default()
@@ -174,7 +174,7 @@ fn fa2_parity_lin_log() {
 }
 
 #[test]
-fn fa2_parity_strong_gravity() {
+fn fa2_integration_04_parity_strong_gravity() {
     let params = Fa2OptimParams {
         strong_gravity: true,
         gravity: 0.5,
@@ -185,7 +185,7 @@ fn fa2_parity_strong_gravity() {
 }
 
 #[test]
-fn fa2_parity_edge_weight_influence() {
+fn fa2_integration_05_parity_edge_weight_influence() {
     let params = Fa2OptimParams {
         edge_weight_influence: 0.5,
         jitter_tolerance: 0.8,
@@ -236,7 +236,51 @@ fn separation_ratio(embd: &[Vec<f64>], labels: &[usize]) -> f64 {
 }
 
 #[test]
-fn fa2_separates_clusters() {
+fn fa2_integration_01_graph_construction() {
+    let (data, _) = create_diagnostic_data(100, 10, 42);
+    let params = Fa2Params::<f64>::default();
+    let (graph, knn_idx, _) = construct_fa2_graph(
+        data.as_ref(),
+        None,
+        params.k,
+        params.ann_type.clone(),
+        &params.graph_params,
+        &params.nn_params,
+        42,
+        0,
+    )
+    .unwrap();
+
+    assert_eq!(graph.n_samples, 500);
+    assert_eq!(knn_idx[0].len(), params.k);
+
+    let mut edges = std::collections::HashMap::new();
+    for ((&i, &j), &w) in graph
+        .row_indices
+        .iter()
+        .zip(&graph.col_indices)
+        .zip(&graph.values)
+    {
+        assert_ne!(i, j, "self-loop at {i}");
+        assert!(w > 0.0 && w <= 1.0, "weight {w} outside (0, 1]");
+        edges.insert((i, j), w);
+    }
+    for (&(i, j), &w) in &edges {
+        assert_eq!(
+            edges.get(&(j, i)),
+            Some(&w),
+            "edge ({i}, {j}) not symmetric"
+        );
+    }
+    let mut degree = vec![0usize; 500];
+    for &i in &graph.row_indices {
+        degree[i] += 1;
+    }
+    assert!(degree.iter().all(|&d| d >= 1), "isolated node in kNN graph");
+}
+
+#[test]
+fn fa2_integration_06_cluster_separation() {
     let (data, labels) = create_diagnostic_data(200, 20, 42);
     let params = Fa2Params::<f64>::default();
     let embd = forceatlas2(data.as_ref(), None, &params, "bh", 42, 0).unwrap();
@@ -248,7 +292,7 @@ fn fa2_separates_clusters() {
 }
 
 #[test]
-fn fa2_same_seed_same_output() {
+fn fa2_integration_08_reproducibility() {
     let (data, _) = create_diagnostic_data(100, 10, 7);
     let params = Fa2Params::<f64> {
         optim_params: Fa2OptimParams {
@@ -263,7 +307,31 @@ fn fa2_same_seed_same_output() {
 }
 
 #[test]
-fn fa2_precomputed_knn_matches_internal_search() {
+fn fa2_integration_09_different_seeds_differ() {
+    let (data, _) = create_diagnostic_data(100, 10, 7);
+    let params = Fa2Params::<f64> {
+        initialisation: "random".to_string(),
+        optim_params: Fa2OptimParams {
+            n_epochs: 100,
+            ..Fa2OptimParams::default()
+        },
+        ..Fa2Params::default()
+    };
+    let a = forceatlas2(data.as_ref(), None, &params, "bh", 42, 0).unwrap();
+    let b = forceatlas2(data.as_ref(), None, &params, "bh", 123, 0).unwrap();
+    let max_diff = a
+        .iter()
+        .zip(&b)
+        .flat_map(|(x, y)| x.iter().zip(y).map(|(p, q)| (p - q).abs()))
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_diff > 0.01,
+        "different seeds produced identical results"
+    );
+}
+
+#[test]
+fn fa2_integration_10_precomputed_knn() {
     let (data, _) = create_diagnostic_data(100, 10, 11);
     let params = Fa2Params::<f64> {
         ann_type: "exhaustive".to_string(),
@@ -288,7 +356,7 @@ fn fa2_precomputed_knn_matches_internal_search() {
 }
 
 #[test]
-fn fa2_from_graph_runs_and_rejects_asymmetry() {
+fn fa2_integration_11_from_graph() {
     let graph = parity_graph();
     let embd =
         forceatlas2_from_graph(&graph, None, &Fa2OptimParams::default(), "bh", 1, 0).unwrap();
@@ -325,7 +393,7 @@ fn graph_from_edges<T: ManifoldsFloat>(n: usize, edges: &[(usize, usize)]) -> Co
 }
 
 #[test]
-fn fa2_dissuade_hubs_is_identity_on_regular_graph() {
+fn fa2_integration_12_dissuade_hubs_regular_graph() {
     // every node has degree 2, so mean mass / own mass is 1 everywhere
     let edges: Vec<(usize, usize)> = (0..N_PARITY).map(|i| (i, (i + 1) % N_PARITY)).collect();
     let graph = graph_from_edges::<f64>(N_PARITY, &edges);
@@ -344,7 +412,7 @@ fn fa2_dissuade_hubs_is_identity_on_regular_graph() {
 }
 
 #[test]
-fn fa2_single_node_at_origin_stays_finite_f32() {
+fn fa2_integration_13_single_node_f32() {
     // zero force every epoch, so zero swing; the speed must not blow up
     let graph = graph_from_edges::<f32>(1, &[]);
     let embd = forceatlas2_from_graph(
@@ -360,7 +428,7 @@ fn fa2_single_node_at_origin_stays_finite_f32() {
 }
 
 #[test]
-fn fa2_graph_without_edges_stays_finite() {
+fn fa2_integration_14_no_edges() {
     let graph = graph_from_edges::<f64>(20, &[]);
     let embd =
         forceatlas2_from_graph(&graph, None, &Fa2OptimParams::default(), "bh", 3, 0).unwrap();
@@ -368,7 +436,7 @@ fn fa2_graph_without_edges_stays_finite() {
 }
 
 #[test]
-fn fa2_self_loops_are_dropped() {
+fn fa2_integration_15_self_loops_dropped() {
     let mut with_loops = parity_graph();
     for i in [0, 5, 17] {
         with_loops.row_indices.push(i);
@@ -393,7 +461,7 @@ fn fa2_self_loops_are_dropped() {
 }
 
 #[test]
-fn fa2_rejects_out_of_bounds_edge() {
+fn fa2_integration_16_out_of_bounds_edge() {
     let mut graph = parity_graph();
     graph.row_indices.push(0);
     graph.col_indices.push(N_PARITY);
@@ -406,7 +474,7 @@ fn fa2_rejects_out_of_bounds_edge() {
 }
 
 #[test]
-fn fa2_init_size_mismatch_reports_bad_length() {
+fn fa2_integration_17_init_size_mismatch() {
     let init = vec![vec![0.0; N_PARITY], vec![0.0; N_PARITY - 3]];
     let err = forceatlas2_from_graph(
         &parity_graph(),
@@ -424,7 +492,7 @@ fn fa2_init_size_mismatch_reports_bad_length() {
 }
 
 #[test]
-fn fa2_rejects_invalid_params() {
+fn fa2_integration_18_invalid_params() {
     let bad = [
         Fa2OptimParams {
             scaling_ratio: -1.0,
@@ -454,7 +522,7 @@ fn fa2_rejects_invalid_params() {
 }
 
 #[test]
-fn fa2_rejects_directed_mix_weight() {
+fn fa2_integration_19_directed_mix_weight() {
     let (data, _) = create_diagnostic_data(20, 5, 1);
     let mut params = Fa2Params::<f64>::default();
     params.graph_params.mix_weight = 0.5;
@@ -469,7 +537,7 @@ fn fa2_rejects_directed_mix_weight() {
 }
 
 #[test]
-fn fa2_separates_clusters_f32() {
+fn fa2_integration_07_cluster_separation_f32() {
     let (data, labels) = create_diagnostic_data(200, 20, 42);
     let data = mat_to_f32(data);
     let params = Fa2Params::<f32>::default();
