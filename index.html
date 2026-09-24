@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="UMAP, t-SNE, PHATE, PaCMAP and diffusion maps for single-cell and computational biology, in Rust.">
+        <meta name="description" content="UMAP, t-SNE, PHATE, PaCMAP, diffusion maps and ForceAtlas2 for single-cell and computational biology, in Rust.">
       
       
       
@@ -805,7 +805,7 @@
 <p>Dimensionality reduction for single-cell and computational biology. The
 <a href="https://github.com/GregorLueg/manifolds-rs">Rust crate</a> does the work. This is a
 scikit-learn shaped layer over it.</p>
-<p>Seven algorithms on the CPU, three of them with GPU variants where the neighbour
+<p>Eight algorithms on the CPU, three of them with GPU variants where the neighbour
 search and the Adam update move to the device. No CUDA runtime to install: the
 GPU backend is wgpu, so it runs on Metal, Vulkan or DX12 and ships in the
 ordinary wheel.</p>
@@ -840,7 +840,7 @@ in the group, so there is never a question of which wins.</p>
 <h2 id="where-to-go-next">Where to go next<a class="headerlink" href="#where-to-go-next" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="choosing/">Choosing an algorithm</a> if you don't already know which one you
-  want. Seven is a lot of choice and most of them are wrong for your problem.</li>
+  want. Eight is a lot of choice and most of them are wrong for your problem.</li>
 <li><a href="quickstart/">Quickstart</a> for worked examples over the synthetic generators,
   including how to score an embedding rather than squint at it.</li>
 <li><a href="gpu/">GPU</a> for the three device-accelerated estimators and what they

@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="UMAP, t-SNE, PHATE, PaCMAP and diffusion maps for single-cell and computational biology, in Rust.">
+        <meta name="description" content="UMAP, t-SNE, PHATE, PaCMAP, diffusion maps and ForceAtlas2 for single-cell and computational biology, in Rust.">
       
       
       
@@ -804,8 +804,8 @@
 
 
 <h1 id="choosing-an-algorithm">Choosing an algorithm<a class="headerlink" href="#choosing-an-algorithm" title="Permanent link">&para;</a></h1>
-<p>Seven of them, and the honest summary is that three cover most work. Here is how
-to pick without running all seven.</p>
+<p>Eight of them, and the honest summary is that three cover most work. Here is how
+to pick without running all eight.</p>
 <h2 id="start-here">Start here<a class="headerlink" href="#start-here" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -838,6 +838,10 @@ to pick without running all seven.</p>
 <tr>
 <td>You want the spectral embedding itself, not a layout of it</td>
 <td><code>DiffusionMaps</code></td>
+</tr>
+<tr>
+<td>You want a force-directed graph layout, scanpy <code>draw_graph</code> style</td>
+<td><code>ForceAtlas2</code></td>
 </tr>
 </tbody>
 </table>
@@ -875,10 +879,17 @@ you want the diffusion coordinates themselves rather than a 2-D picture of
 them. The knob worth understanding is <code>alpha</code>: <code>0</code> gives the normalised graph
 Laplacian, <code>0.5</code> the Fokker-Planck operator, <code>1</code> the Laplace-Beltrami operator,
 which is the one that removes the influence of sampling density.</p>
+<p><strong>ForceAtlas2</strong> is Gephi's force-directed layout, run on the same fuzzy kNN
+graph UMAP builds, which is what scanpy's <code>draw_graph</code> does. Every pair of
+points repels, edges attract, and gravity keeps disconnected components from
+drifting off. Unlike UMAP there is no edge sampling: every edge is visited every
+epoch. <code>lin_log=True</code> pulls communities tighter; <code>scaling_ratio</code> spreads the
+whole layout. <code>graph_params.mix_weight</code> has to stay at 1, because the layout
+needs a symmetric graph. Two-dimensional only.</p>
 <h2 id="cost">Cost<a class="headerlink" href="#cost" title="Permanent link">&para;</a></h2>
 <p>Rough ordering on the same data, dominated by different things:</p>
 <ul>
-<li><code>TSNE</code> and <code>DensNE</code> pay for the Barnes-Hut tree every epoch.</li>
+<li><code>TSNE</code>, <code>DensNE</code> and <code>ForceAtlas2</code> pay for the Barnes-Hut tree every epoch.</li>
 <li><code>UMAP</code>, <code>DensMAP</code> and <code>PaCMAP</code> pay for the neighbour search and then a cheap
   per-edge update. The parallel Adam optimiser is the default.</li>
 <li><code>PHATE</code> and <code>DiffusionMaps</code> pay for an eigendecomposition. Set <code>n_landmarks</code>
