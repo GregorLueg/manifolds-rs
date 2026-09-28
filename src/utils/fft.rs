@@ -10,6 +10,8 @@ use rayon::prelude::*;
 use std::fmt::Debug;
 use std::sync::{Mutex, MutexGuard};
 
+pub use crate::utils::math::choose_grid_size;
+
 /// FFTW planning rigour. `Flag::MEASURE` plans slower but can execute faster.
 /// Has proven faster.
 const PLAN_FLAG: Flag = Flag::ESTIMATE;
@@ -732,45 +734,6 @@ pub fn lagrange_weights<T: FftwFloat>(
         }
         weights[i] = numerator / denominators[i];
     }
-}
-
-/// Determine optimal grid size based on data spread.
-///
-/// Follows FIt-SNE's heuristic: number of boxes scales with spread,
-/// then rounds up to FFT-friendly sizes. Allowed sizes match the C++
-/// reference implementation.
-///
-/// ### Params
-///
-/// * `coord_min` - Minimum coordinate
-/// * `coord_max` - Maximum coordinate
-/// * `intervals_per_integer` - Target interval size (typically 1.0)
-/// * `min_intervals` - Minimum number of intervals (typically 50)
-///
-/// ### Returns
-///
-/// Number of boxes per dimension
-pub fn choose_grid_size(
-    coord_min: f64,
-    coord_max: f64,
-    intervals_per_integer: f64,
-    min_intervals: usize,
-) -> usize {
-    let spread = coord_max - coord_min;
-    let n_boxes = ((spread / intervals_per_integer).max(min_intervals as f64)) as usize;
-
-    const ALLOWED_SIZES: [usize; 20] = [
-        25, 36, 50, 55, 60, 65, 70, 75, 80, 85, 90, 96, 100, 110, 120, 130, 140, 150, 175, 200,
-    ];
-
-    if n_boxes < ALLOWED_SIZES[19] {
-        for &size in &ALLOWED_SIZES {
-            if size >= n_boxes {
-                return size;
-            }
-        }
-    }
-    n_boxes
 }
 
 /// Compute repulsive forces/potentials using FFT acceleration.
