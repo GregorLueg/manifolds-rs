@@ -3,6 +3,12 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.1.4
+
+Requires `manifolds-rs` 0.5.2
+
+- Take advantage of faster FFT-accelerated tSNE.
+
 ## 0.1.3
 
 Requires `manifolds-rs` 0.5.1
