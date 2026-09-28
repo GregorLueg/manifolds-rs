@@ -164,6 +164,10 @@ pub enum TsneOpt {
     /// available in every build configuration on every platform.
     #[default]
     BarnesHut,
+    /// FFT-accelerated version with three kernels (`q`, `q^2 dx`, `q^2 dy`)
+    /// against a unit charge instead of the 4-term expansion. One forward and
+    /// three inverse transforms instead of four each. Requires `fft_tsne`.
+    Fft3Kernel,
 }
 
 /// Parse the tSNE optimiser to use.
@@ -171,7 +175,8 @@ pub enum TsneOpt {
 /// ### Params
 ///
 /// * `s` - String defining the optimiser. Accepts `"barnes hut"`,
-///   `"barnes_hut"`, `"barnes-hut"`, `"bh"`, or `"fft"`.
+///   `"barnes_hut"`, `"barnes-hut"`, `"bh"`, `"fft"`, or `"fft_3k"` /
+///   `"3-kernel"`.
 ///
 /// ### Returns
 ///
@@ -180,6 +185,7 @@ pub fn parse_tsne_optimiser(s: &str) -> Option<TsneOpt> {
     match s.to_lowercase().as_str() {
         "barnes hut" | "barnes_hut" | "barnes-hut" | "bh" => Some(TsneOpt::BarnesHut),
         "fft" => Some(TsneOpt::Fft),
+        "fft_3k" | "3-kernel" => Some(TsneOpt::Fft3Kernel),
         _ => None,
     }
 }
@@ -891,6 +897,71 @@ pub fn optimise_fft_tsne<T>(
 where
     T: FftwFloat + ManifoldsFloat,
 {
+    optimise_fft_tsne_impl(embd, params, graph, dens, verbose, false)
+}
+
+/// Optimise a 2D embedding using three-kernel FFT-accelerated t-SNE.
+///
+/// Same optimiser as [`optimise_fft_tsne`], but the repulsion convolves a
+/// unit charge grid with three kernels (`q`, `q^2 dx`, `q^2 dy`) instead of
+/// four charges with `q^2`. Gives `Z` and the repulsive forces directly, with
+/// one forward and three inverse transforms per epoch instead of four each.
+///
+/// ### Params
+///
+/// * `embd` - Initial embedding coordinates, shape `[n_samples][2]`
+///   (modified in place).
+/// * `params` - Optimisation hyperparameters.
+/// * `graph` - Sparse high-dimensional affinities in coordinate-list format.
+/// * `dens` - Density-preserving state for den-SNE, or `None` for plain tSNE.
+/// * `verbose` - Verbosity level: `0` silent, `1` normal, `2` detailed.
+///
+/// ### Returns
+///
+/// `Ok(())` on success, or `Err(ManifoldsError::IncorrectDim)` if the
+/// embedding is not 2D.
+#[cfg(feature = "fft_tsne")]
+pub fn optimise_fft3k_tsne<T>(
+    embd: &mut [Vec<T>],
+    params: &TsneOptimParams<T>,
+    graph: &CoordinateList<T>,
+    dens: Option<&DensState<T>>,
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
+    T: FftwFloat + ManifoldsFloat,
+{
+    optimise_fft_tsne_impl(embd, params, graph, dens, verbose, true)
+}
+
+/// Shared FFT t-SNE optimiser loop.
+///
+/// ### Params
+///
+/// * `embd` - Initial embedding coordinates, shape `[n_samples][2]`
+/// * `params` - Optimisation hyperparameters
+/// * `graph` - Sparse high-dimensional affinities
+/// * `dens` - Density-preserving state, or `None`
+/// * `verbose` - Verbosity level
+/// * `three_kernel` - Use the three-kernel repulsion instead of the 4-term
+///   expansion
+///
+/// ### Returns
+///
+/// `Ok(())` on success, or `Err(ManifoldsError::IncorrectDim)` if the
+/// embedding is not 2D.
+#[cfg(feature = "fft_tsne")]
+fn optimise_fft_tsne_impl<T>(
+    embd: &mut [Vec<T>],
+    params: &TsneOptimParams<T>,
+    graph: &CoordinateList<T>,
+    dens: Option<&DensState<T>>,
+    verbose: usize,
+    three_kernel: bool,
+) -> Result<(), ManifoldsError>
+where
+    T: FftwFloat + ManifoldsFloat,
+{
     let verbosity = parse_verbosity_level(verbose);
 
     let n = embd.len();
@@ -901,7 +972,9 @@ where
         return Err(ManifoldsError::IncorrectDim { n_dim });
     }
 
-    let n_terms = 4;
+    // 4-term: potentials of charges (1, x, y, x^2 + y^2); three-kernel:
+    // (Z_i, fx_i, fy_i) directly
+    let n_terms = if three_kernel { 3 } else { 4 };
 
     let initial_momentum = T::from_f64(TSNE_INITIAL_MOMENTUM).unwrap();
     let final_momentum = T::from_f64(TSNE_FINAL_MOMENTUM).unwrap();
@@ -918,7 +991,7 @@ where
     let adj = if dens.is_some() { adj_full } else { Vec::new() };
 
     // pre-allocated FFT-side buffers and position snapshot.
-    let mut charges = vec![T::zero(); n * n_terms];
+    let mut charges = vec![T::zero(); if three_kernel { 0 } else { n * n_terms }];
     let mut potentials = vec![T::zero(); n * n_terms];
     let mut xs = vec![T::zero(); n];
     let mut ys = vec![T::zero(); n];
@@ -933,6 +1006,8 @@ where
     let mut cached_n_boxes: usize = 0;
     let mut grid: Option<FftGrid<T>> = None;
     let mut workspace: Option<FftWorkspace<T>> = None;
+    let mut kernels_3k: Option<FftKernels3k<T>> = None;
+    let mut workspace_3k: Option<FftWorkspace3k<T>> = None;
 
     for epoch in 0..params.n_epochs {
         // snapshot positions in parallel.
@@ -981,8 +1056,17 @@ where
 
         if needs_rebuild {
             let half = T::from_f64(grid_half).unwrap();
-            let new_grid = FftGrid::new(-half, half, n_boxes, params.n_interp_points);
-            if cached_n_boxes != n_boxes {
+            let new_grid = if three_kernel {
+                FftGrid::new_geometry(-half, half, n_boxes, params.n_interp_points)
+            } else {
+                FftGrid::new(-half, half, n_boxes, params.n_interp_points)
+            };
+            if three_kernel {
+                kernels_3k = Some(FftKernels3k::new(&new_grid));
+                if cached_n_boxes != n_boxes {
+                    workspace_3k = Some(FftWorkspace3k::new(new_grid.n_fft));
+                }
+            } else if cached_n_boxes != n_boxes {
                 workspace = Some(FftWorkspace::new(new_grid.n_fft));
             }
             grid = Some(new_grid);
@@ -990,7 +1074,6 @@ where
         }
 
         let grid_ref = grid.as_ref().unwrap();
-        let ws = workspace.as_mut().unwrap();
 
         let momentum = if epoch < TSNE_MOMENTUM_SWITCH_ITER {
             initial_momentum
@@ -1003,39 +1086,65 @@ where
             params.get_late_exag_factor()
         };
 
-        // fill charges.
-        charges
-            .par_chunks_mut(n_terms)
-            .enumerate()
-            .for_each(|(i, chunk)| {
-                let x = xs[i];
-                let y = ys[i];
-                chunk[0] = T::one();
-                chunk[1] = x;
-                chunk[2] = y;
-                chunk[3] = x * x + y * y;
-            });
+        if three_kernel {
+            n_body_fft_2d_3k(
+                &xs,
+                &ys,
+                grid_ref,
+                kernels_3k.as_ref().unwrap(),
+                workspace_3k.as_mut().unwrap(),
+                &mut potentials,
+            );
+        } else {
+            // fill charges.
+            charges
+                .par_chunks_mut(n_terms)
+                .enumerate()
+                .for_each(|(i, chunk)| {
+                    let x = xs[i];
+                    let y = ys[i];
+                    chunk[0] = T::one();
+                    chunk[1] = x;
+                    chunk[2] = y;
+                    chunk[3] = x * x + y * y;
+                });
 
-        // zero potentials and run the FFT-accelerated convolution.
-        for v in potentials.iter_mut() {
-            *v = T::zero();
+            // zero potentials and run the FFT-accelerated convolution.
+            for v in potentials.iter_mut() {
+                *v = T::zero();
+            }
+            n_body_fft_2d(
+                &xs,
+                &ys,
+                &charges,
+                n_terms,
+                grid_ref,
+                workspace.as_mut().unwrap(),
+                &mut potentials,
+            );
         }
-        n_body_fft_2d(&xs, &ys, &charges, n_terms, grid_ref, ws, &mut potentials);
 
         // Z in f64; subtract n to remove the diagonal q_ii = 1 contribution.
-        let sum_q: f64 = (0..n)
-            .map(|i| {
-                let idx = i * n_terms;
-                let phi1 = potentials[idx].to_f64().unwrap();
-                let phi2 = potentials[idx + 1].to_f64().unwrap();
-                let phi3 = potentials[idx + 2].to_f64().unwrap();
-                let phi4 = potentials[idx + 3].to_f64().unwrap();
-                let x = xs[i].to_f64().unwrap();
-                let y = ys[i].to_f64().unwrap();
-                (1.0 + x * x + y * y) * phi1 - 2.0 * (x * phi2 + y * phi3) + phi4
-            })
-            .sum::<f64>()
-            - n as f64;
+        let sum_q: f64 = if three_kernel {
+            (0..n)
+                .map(|i| potentials[i * n_terms].to_f64().unwrap())
+                .sum::<f64>()
+                - n as f64
+        } else {
+            (0..n)
+                .map(|i| {
+                    let idx = i * n_terms;
+                    let phi1 = potentials[idx].to_f64().unwrap();
+                    let phi2 = potentials[idx + 1].to_f64().unwrap();
+                    let phi3 = potentials[idx + 2].to_f64().unwrap();
+                    let phi4 = potentials[idx + 3].to_f64().unwrap();
+                    let x = xs[i].to_f64().unwrap();
+                    let y = ys[i].to_f64().unwrap();
+                    (1.0 + x * x + y * y) * phi1 - 2.0 * (x * phi2 + y * phi3) + phi4
+                })
+                .sum::<f64>()
+                - n as f64
+        };
 
         let sum_q_safe = if sum_q > TSNE_EPS { sum_q } else { 1.0 };
 
@@ -1060,17 +1169,25 @@ where
                 let x = xs[i];
                 let y = ys[i];
 
-                // repulsive forces reconstructed in f64.
+                // repulsive forces, normalised in f64. The three-kernel path
+                // returns them directly; the 4-term path reconstructs them.
                 let pot_idx = i * n_terms;
-                let phi1 = potentials[pot_idx].to_f64().unwrap();
-                let phi2 = potentials[pot_idx + 1].to_f64().unwrap();
-                let phi3 = potentials[pot_idx + 2].to_f64().unwrap();
+                let (raw_x, raw_y) = if three_kernel {
+                    (
+                        potentials[pot_idx + 1].to_f64().unwrap(),
+                        potentials[pot_idx + 2].to_f64().unwrap(),
+                    )
+                } else {
+                    let phi1 = potentials[pot_idx].to_f64().unwrap();
+                    let phi2 = potentials[pot_idx + 1].to_f64().unwrap();
+                    let phi3 = potentials[pot_idx + 2].to_f64().unwrap();
+                    let xf = x.to_f64().unwrap();
+                    let yf = y.to_f64().unwrap();
+                    (xf * phi1 - phi2, yf * phi1 - phi3)
+                };
 
-                let xf = x.to_f64().unwrap();
-                let yf = y.to_f64().unwrap();
-
-                let rep_x = T::from_f64((xf * phi1 - phi2) / sum_q_safe).unwrap();
-                let rep_y = T::from_f64((yf * phi1 - phi3) / sum_q_safe).unwrap();
+                let rep_x = T::from_f64(raw_x / sum_q_safe).unwrap();
+                let rep_y = T::from_f64(raw_y / sum_q_safe).unwrap();
 
                 let (dens_x, dens_y) = match &dens_ctx {
                     Some((state, scratch, consts)) => {

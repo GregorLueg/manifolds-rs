@@ -408,7 +408,8 @@ pub struct FftGrid<T: FftwFloat> {
     /// `n_interp_points * n_boxes_per_dim`)
     pub global_y_coords: Vec<T>,
     /// Pre-computed FFT of convolution kernel, column-major: layout
-    /// `[k][u]` with `k < n_fft/2 + 1` and `u < n_fft`
+    /// `[k][u]` with `k < n_fft/2 + 1` and `u < n_fft`. Empty for grids from
+    /// [`FftGrid::new_geometry`]
     pub fft_kernel: Vec<T::Complex>,
     /// FFT array dimension: `2 * n_interp_points * n_boxes_per_dim`
     pub n_fft: usize,
@@ -433,6 +434,34 @@ impl<T: FftwFloat> FftGrid<T> {
     ///
     /// Initialised grid structure ready for FFT-accelerated convolution
     pub fn new(coord_min: T, coord_max: T, n_boxes_per_dim: usize, n_interp_points: usize) -> Self {
+        let mut grid = Self::new_geometry(coord_min, coord_max, n_boxes_per_dim, n_interp_points);
+        grid.fft_kernel =
+            Self::precompute_kernel(&grid.global_x_coords, &grid.global_y_coords, grid.n_fft);
+        grid
+    }
+
+    /// Create the grid geometry without the 4-term kernel spectrum.
+    ///
+    /// For the three-kernel path, which builds its own spectra via
+    /// [`FftKernels3k`]; `fft_kernel` is left empty.
+    ///
+    /// ### Params
+    ///
+    /// * `coord_min` - Minimum coordinate (applies to both x and y)
+    /// * `coord_max` - Maximum coordinate (applies to both x and y)
+    /// * `n_boxes_per_dim` - Number of boxes per dimension
+    /// * `n_interp_points` - Number of interpolation nodes per box per
+    ///   dimension
+    ///
+    /// ### Returns
+    ///
+    /// Grid geometry with an empty `fft_kernel`
+    pub fn new_geometry(
+        coord_min: T,
+        coord_max: T,
+        n_boxes_per_dim: usize,
+        n_interp_points: usize,
+    ) -> Self {
         let box_width = (coord_max - coord_min) / T::from_usize(n_boxes_per_dim).unwrap();
 
         let h = T::one() / T::from_usize(n_interp_points).unwrap();
@@ -468,7 +497,6 @@ impl<T: FftwFloat> FftGrid<T> {
         }
 
         let n_fft = 2 * n_interp_1d;
-        let fft_kernel = Self::precompute_kernel(&global_x_coords, &global_y_coords, n_fft);
 
         Self {
             n_boxes_per_dim,
@@ -479,7 +507,7 @@ impl<T: FftwFloat> FftGrid<T> {
             lagrange_denominators,
             global_x_coords,
             global_y_coords,
-            fft_kernel,
+            fft_kernel: Vec::new(),
             n_fft,
         }
     }
@@ -1014,6 +1042,455 @@ pub fn n_body_fft_2d<T: FftwFloat>(
                     }
                 }
             });
+    }
+}
+
+//////////////////////////
+// Three-kernel variant //
+//////////////////////////
+
+/// Pre-computed spectra of the three kernels `q`, `q^2 dx`, `q^2 dy` with
+/// `q = 1 / (1 + |d|^2)` and `d` the target-minus-source offset.
+///
+/// Convolving a unit charge grid with these gives `Z_i` and the repulsive
+/// force components directly, so nothing is reconstructed from absolute
+/// coordinates and nothing cancels.
+pub struct FftKernels3k<T: FftwFloat> {
+    /// Spectra for `[q, q^2 dx, q^2 dy]`, each column-major `[k][u]`,
+    /// pre-scaled by `1 / n_fft^2`
+    pub spectra: [Vec<T::Complex>; 3],
+}
+
+impl<T: FftwFloat> FftKernels3k<T> {
+    /// Build the three kernel spectra for a grid.
+    ///
+    /// ### Params
+    ///
+    /// * `grid` - FFT grid supplying node coordinates and `n_fft`
+    ///
+    /// ### Returns
+    ///
+    /// The three spectra.
+    pub fn new(grid: &FftGrid<T>) -> Self {
+        let xc = &grid.global_x_coords;
+        let yc = &grid.global_y_coords;
+        let m = xc.len() as isize;
+        let n_fft = grid.n_fft;
+        let n_half = n_fft / 2 + 1;
+        let n_complex = n_fft * n_half;
+        let norm = T::one() / T::from_usize(n_fft * n_fft).unwrap();
+
+        // signed node offsets for d in -(m - 1)..m, index d + m - 1
+        let offsets = |c: &[T]| -> Vec<T> {
+            (-(m - 1)..m)
+                .map(|d| {
+                    let v = c[d.unsigned_abs()] - c[0];
+                    if d < 0 {
+                        -v
+                    } else {
+                        v
+                    }
+                })
+                .collect()
+        };
+        let (ox, oy) = (offsets(xc), offsets(yc));
+
+        // spatial kernels, filled in parallel over rows. Row index carries
+        // the y offset, column the x offset.
+        let mut reals: Vec<AlignedVec<T>> = (0..3)
+            .map(|t| {
+                let mut real: AlignedVec<T> = T::aligned_real(n_fft * n_fft);
+                real.par_chunks_mut(n_fft).enumerate().for_each(|(r, row)| {
+                    row.fill(T::zero());
+                    if r == 0 {
+                        return;
+                    }
+                    let q_y = oy[r - 1];
+                    for (col, &q_x) in ox.iter().enumerate() {
+                        let q = T::one() / (T::one() + q_x * q_x + q_y * q_y);
+                        row[col + 1] = match t {
+                            0 => q,
+                            1 => q * q * q_x,
+                            _ => q * q * q_y,
+                        };
+                    }
+                });
+                real
+            })
+            .collect();
+
+        // FFTW planning is not thread-safe, so plans are made here and only
+        // the executions run in parallel.
+        let mut jobs: Vec<(T::R2CPlan, AlignedVec<T::Complex>)> = (0..3)
+            .map(|_| (T::plan_r2c_2d(n_fft), T::aligned_complex(n_complex)))
+            .collect();
+        jobs.par_iter_mut()
+            .zip(reals.par_iter_mut())
+            .for_each(|((plan, spec), real)| T::execute_r2c(plan, real, spec));
+
+        // transpose to [k][u] and fold in the normalisation, parallel over k
+        let spectra: Vec<Vec<T::Complex>> = jobs
+            .iter()
+            .map(|(_, spec)| {
+                let mut spec_t = vec![T::complex_zero(); n_complex];
+                spec_t
+                    .par_chunks_mut(n_fft)
+                    .enumerate()
+                    .for_each(|(k, col)| {
+                        for (u, v_out) in col.iter_mut().enumerate() {
+                            let v = spec[u * n_half + k];
+                            *v_out =
+                                T::new_complex(T::complex_re(v) * norm, T::complex_im(v) * norm);
+                        }
+                    });
+                spec_t
+            })
+            .collect();
+
+        Self {
+            spectra: spectra.try_into().ok().expect("three spectra"),
+        }
+    }
+}
+
+/// Per-thread 1D plans and scratch for the three-kernel convolution.
+pub struct FftLane3k<T: FftwFloat> {
+    /// Real row input, length `n_fft`; upper half stays zero
+    row_in: AlignedVec<T>,
+    /// Real row output, length `n_fft`
+    row_out: AlignedVec<T>,
+    /// Half spectrum of one row, length `n_fft / 2 + 1`
+    row_spec: AlignedVec<T::Complex>,
+    /// Column buffer, length `n_fft`
+    col_a: AlignedVec<T::Complex>,
+    /// Forward column spectrum, length `n_fft`
+    col_b: AlignedVec<T::Complex>,
+    /// Inverse column output, length `n_fft`
+    col_c: AlignedVec<T::Complex>,
+    /// Row real-to-complex plan
+    plan_r2c: T::R2CPlan,
+    /// Row complex-to-real plan
+    plan_c2r: T::C2RPlan,
+    /// Column forward plan
+    plan_fwd: T::C2CPlan,
+    /// Column backward plan
+    plan_bwd: T::C2CPlan,
+}
+
+impl<T: FftwFloat> FftLane3k<T> {
+    /// Create one lane for a given FFT length.
+    ///
+    /// ### Params
+    ///
+    /// * `n_fft` - FFT length along each axis
+    ///
+    /// ### Returns
+    ///
+    /// The lane, with `row_in` zeroed.
+    fn new(n_fft: usize) -> Self {
+        let mut row_in = T::aligned_real(n_fft);
+        for v in row_in.iter_mut() {
+            *v = T::zero();
+        }
+        Self {
+            row_in,
+            row_out: T::aligned_real(n_fft),
+            row_spec: T::aligned_complex(n_fft / 2 + 1),
+            col_a: T::aligned_complex(n_fft),
+            col_b: T::aligned_complex(n_fft),
+            col_c: T::aligned_complex(n_fft),
+            plan_r2c: T::plan_r2c_1d(n_fft),
+            plan_c2r: T::plan_c2r_1d(n_fft),
+            plan_fwd: T::plan_c2c_1d(n_fft, Sign::Forward),
+            plan_bwd: T::plan_c2c_1d(n_fft, Sign::Backward),
+        }
+    }
+}
+
+/// Reusable buffers for [`n_body_fft_2d_3k`].
+pub struct FftWorkspace3k<T: FftwFloat> {
+    /// FFT array dimension this workspace was built for
+    pub n_fft: usize,
+    /// One lane per rayon thread
+    lanes: Vec<Mutex<FftLane3k<T>>>,
+    /// Row spectra of the charge grid, layout `[row][k]`
+    spec_rows: Vec<T::Complex>,
+    /// Kernel-multiplied inverse column spectra, layout `[k][kernel][row]`
+    spec_cols: Vec<T::Complex>,
+    /// Per-point box index and intra-box position
+    box_data: Vec<((usize, usize), T, T)>,
+    /// Per-point Lagrange x-weights
+    x_weights: Vec<T>,
+    /// Per-point Lagrange y-weights
+    y_weights: Vec<T>,
+    /// Unit-charge grid, length `m^2`
+    w: Vec<T>,
+    /// Convolved grids, kernel-minor, length `3 m^2`
+    y_tilde: Vec<T>,
+    /// Counting-sort bucket starts over box rows
+    row_starts: Vec<u32>,
+    /// Point indices grouped by box row
+    order: Vec<u32>,
+}
+
+impl<T: FftwFloat> FftWorkspace3k<T> {
+    /// Create an empty workspace for a given FFT dimension.
+    ///
+    /// ### Params
+    ///
+    /// * `n_fft` - FFT array dimension of the grid
+    ///
+    /// ### Returns
+    ///
+    /// Workspace; buffers grow on first use.
+    pub fn new(n_fft: usize) -> Self {
+        Self {
+            n_fft,
+            lanes: Vec::new(),
+            spec_rows: Vec::new(),
+            spec_cols: Vec::new(),
+            box_data: Vec::new(),
+            x_weights: Vec::new(),
+            y_weights: Vec::new(),
+            w: Vec::new(),
+            y_tilde: Vec::new(),
+            row_starts: Vec::new(),
+            order: Vec::new(),
+        }
+    }
+}
+
+/// Lock the calling rayon thread's three-kernel lane.
+///
+/// ### Params
+///
+/// * `lanes` - One lane per rayon thread
+///
+/// ### Returns
+///
+/// Guard over this thread's lane.
+#[inline]
+fn lock_lane_3k<T: FftwFloat>(lanes: &[Mutex<FftLane3k<T>>]) -> MutexGuard<'_, FftLane3k<T>> {
+    let idx = rayon::current_thread_index().unwrap_or(0) % lanes.len();
+    lanes[idx].lock().expect("FFT lane mutex poisoned")
+}
+
+/// Repulsion via three kernels against a unit charge grid.
+///
+/// Returns, per point, `Z_i = sum_j q_ij` (self term included),
+/// `sum_j q_ij^2 (x_i - x_j)` and `sum_j q_ij^2 (y_i - y_j)`. One forward
+/// transform of the charge grid feeds three kernel multiplies and inverse
+/// transforms.
+///
+/// ### Params
+///
+/// * `xs` - X coordinates
+/// * `ys` - Y coordinates
+/// * `grid` - FFT grid
+/// * `kernels` - Spectra built from the same grid
+/// * `ws` - Workspace built with the grid's `n_fft`
+/// * `out` - Output, length `3 n_points`, `[z, fx, fy]` per point
+pub fn n_body_fft_2d_3k<T: FftwFloat>(
+    xs: &[T],
+    ys: &[T],
+    grid: &FftGrid<T>,
+    kernels: &FftKernels3k<T>,
+    ws: &mut FftWorkspace3k<T>,
+    out: &mut [T],
+) {
+    let n_points = xs.len();
+    let n_interp = grid.n_interp_points;
+    let n_boxes = grid.n_boxes_per_dim;
+    let m = n_interp * n_boxes;
+    let n_fft = ws.n_fft;
+    let n_half = n_fft / 2 + 1;
+
+    assert_eq!(ws.n_fft, grid.n_fft, "Workspace n_fft does not match grid");
+    assert_eq!(out.len(), n_points * 3, "Output buffer size mismatch");
+
+    if ws.box_data.len() != n_points {
+        ws.box_data.resize(n_points, ((0, 0), T::zero(), T::zero()));
+        ws.order.resize(n_points, 0);
+        ws.x_weights.resize(n_points * n_interp, T::zero());
+        ws.y_weights.resize(n_points * n_interp, T::zero());
+    }
+    if ws.w.len() != m * m {
+        ws.w.resize(m * m, T::zero());
+        ws.y_tilde.resize(3 * m * m, T::zero());
+        ws.spec_rows.resize(m * n_half, T::complex_zero());
+        ws.spec_cols.resize(3 * n_half * m, T::complex_zero());
+    }
+    if ws.lanes.is_empty() {
+        ws.lanes = (0..rayon::current_num_threads().max(1))
+            .map(|_| Mutex::new(FftLane3k::new(n_fft)))
+            .collect();
+    }
+
+    ws.box_data
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, slot)| {
+            let (box_y, box_x) = grid.point_to_box(xs[i], ys[i]);
+            let x_in_box = grid.position_in_box(xs[i], box_x);
+            let y_in_box = grid.position_in_box(ys[i], box_y);
+            *slot = ((box_y, box_x), x_in_box, y_in_box);
+        });
+
+    {
+        let box_data = &ws.box_data;
+        let sp = &grid.interp_spacings;
+        let dn = &grid.lagrange_denominators;
+        ws.x_weights
+            .par_chunks_mut(n_interp)
+            .zip(ws.y_weights.par_chunks_mut(n_interp))
+            .enumerate()
+            .for_each(|(i, (x_w, y_w))| {
+                let (_, x_pos, y_pos) = box_data[i];
+                lagrange_weights(x_pos, sp, dn, x_w);
+                lagrange_weights(y_pos, sp, dn, y_w);
+            });
+    }
+
+    ws.row_starts.clear();
+    ws.row_starts.resize(n_boxes + 1, 0);
+    for &((box_y, _), _, _) in ws.box_data.iter() {
+        ws.row_starts[box_y + 1] += 1;
+    }
+    for b in 0..n_boxes {
+        ws.row_starts[b + 1] += ws.row_starts[b];
+    }
+    let mut cursor = ws.row_starts.clone();
+    for i in 0..n_points {
+        let ((box_y, _), _, _) = ws.box_data[i];
+        ws.order[cursor[box_y] as usize] = i as u32;
+        cursor[box_y] += 1;
+    }
+
+    // unit-charge splat, parallel over box rows (disjoint grid slabs)
+    {
+        let box_data = &ws.box_data;
+        let x_weights = &ws.x_weights;
+        let y_weights = &ws.y_weights;
+        let order = &ws.order;
+        let row_starts = &ws.row_starts;
+        ws.w.par_chunks_mut(n_interp * m)
+            .enumerate()
+            .for_each(|(by, slab)| {
+                slab.fill(T::zero());
+                let (lo, hi) = (row_starts[by] as usize, row_starts[by + 1] as usize);
+                for &pi in &order[lo..hi] {
+                    let i = pi as usize;
+                    let ((_, box_x), _, _) = box_data[i];
+                    let wi = i * n_interp;
+                    for iy in 0..n_interp {
+                        let wy = y_weights[wi + iy];
+                        let row = iy * m + box_x * n_interp;
+                        for ix in 0..n_interp {
+                            slab[row + ix] = slab[row + ix] + wy * x_weights[wi + ix];
+                        }
+                    }
+                }
+            });
+    }
+
+    let lanes = &ws.lanes;
+
+    // forward r2c over the m non-zero rows
+    {
+        let w = &ws.w;
+        ws.spec_rows
+            .par_chunks_mut(n_half)
+            .enumerate()
+            .for_each(|(r, out_row)| {
+                let mut guard = lock_lane_3k(lanes);
+                let lane = &mut *guard;
+                lane.row_in[..m].copy_from_slice(&w[r * m..(r + 1) * m]);
+                T::execute_r2c(&mut lane.plan_r2c, &mut lane.row_in, &mut lane.row_spec);
+                out_row.copy_from_slice(&lane.row_spec);
+            });
+    }
+
+    // per column: one forward c2c, then per kernel a multiply and backward
+    // c2c, keeping the lower half
+    {
+        let spec_rows = &ws.spec_rows;
+        let spectra = &kernels.spectra;
+        ws.spec_cols
+            .par_chunks_mut(3 * m)
+            .enumerate()
+            .for_each(|(k, out_col)| {
+                let mut guard = lock_lane_3k(lanes);
+                let lane = &mut *guard;
+                for r in 0..m {
+                    lane.col_a[r] = spec_rows[r * n_half + k];
+                }
+                for v in lane.col_a[m..].iter_mut() {
+                    *v = T::complex_zero();
+                }
+                T::execute_c2c(&mut lane.plan_fwd, &mut lane.col_a, &mut lane.col_b);
+
+                for t in 0..3 {
+                    let kern = &spectra[t][k * n_fft..(k + 1) * n_fft];
+                    for u in 0..n_fft {
+                        let v = lane.col_b[u];
+                        let kv = kern[u];
+                        let (a, b) = (T::complex_re(v), T::complex_im(v));
+                        let (c, d) = (T::complex_re(kv), T::complex_im(kv));
+                        lane.col_a[u] = T::new_complex(a * c - b * d, a * d + b * c);
+                    }
+                    T::execute_c2c(&mut lane.plan_bwd, &mut lane.col_a, &mut lane.col_c);
+                    out_col[t * m..(t + 1) * m].copy_from_slice(&lane.col_c[m..2 * m]);
+                }
+            });
+    }
+
+    // inverse c2r over the kept rows, kernel-minor compact output
+    {
+        let spec_cols = &ws.spec_cols;
+        ws.y_tilde
+            .par_chunks_mut(3 * m)
+            .enumerate()
+            .for_each(|(gy, row_out)| {
+                let mut guard = lock_lane_3k(lanes);
+                let lane = &mut *guard;
+                for t in 0..3 {
+                    for k in 0..n_half {
+                        lane.row_spec[k] = spec_cols[(k * 3 + t) * m + gy];
+                    }
+                    T::execute_c2r(&mut lane.plan_c2r, &mut lane.row_spec, &mut lane.row_out);
+                    for gx in 0..m {
+                        row_out[gx * 3 + t] = lane.row_out[m + gx];
+                    }
+                }
+            });
+    }
+
+    // gather
+    {
+        let box_data = &ws.box_data;
+        let x_weights = &ws.x_weights;
+        let y_weights = &ws.y_weights;
+        let y_tilde = &ws.y_tilde;
+        out.par_chunks_mut(3).enumerate().for_each(|(i, o)| {
+            let (mut z, mut fx, mut fy) = (T::zero(), T::zero(), T::zero());
+            let ((box_y, box_x), _, _) = box_data[i];
+            let wi = i * n_interp;
+            for iy in 0..n_interp {
+                let gy = box_y * n_interp + iy;
+                let wy = y_weights[wi + iy];
+                for ix in 0..n_interp {
+                    let gx = box_x * n_interp + ix;
+                    let wt = wy * x_weights[wi + ix];
+                    let g = (gy * m + gx) * 3;
+                    z = z + wt * y_tilde[g];
+                    fx = fx + wt * y_tilde[g + 1];
+                    fy = fy + wt * y_tilde[g + 2];
+                }
+            }
+            o[0] = z;
+            o[1] = fx;
+            o[2] = fy;
+        });
     }
 }
 
