@@ -732,6 +732,91 @@ pub fn optimise_bh_tsne<T>(
 // FFT //
 /////////
 
+/// Flat CSR view of the affinity graph for the attractive pass.
+///
+/// `u32` indices halve the per-edge traffic against `Vec<(usize, T)>`, which
+/// pads to 16 bytes per edge for `f32`.
+#[cfg(feature = "fft_tsne")]
+struct AttrCsr<T> {
+    /// Row offsets, length `n + 1`
+    indptr: Vec<usize>,
+    /// Neighbour indices, length nnz
+    indices: Vec<u32>,
+    /// Edge weights `p_ij`, length nnz
+    values: Vec<T>,
+}
+
+#[cfg(feature = "fft_tsne")]
+impl<T: ManifoldsFloat> AttrCsr<T> {
+    /// Flatten an adjacency list into CSR.
+    ///
+    /// ### Params
+    ///
+    /// * `adj` - Row-major adjacency, `adj[i]` holds `(j, p_ij)` pairs
+    ///
+    /// ### Returns
+    ///
+    /// The CSR graph.
+    fn from_adjacency(adj: &[Vec<(usize, T)>]) -> Self {
+        let mut indptr = Vec::with_capacity(adj.len() + 1);
+        indptr.push(0);
+        for row in adj {
+            indptr.push(indptr.last().unwrap() + row.len());
+        }
+        let nnz = *indptr.last().unwrap();
+        let mut indices = Vec::with_capacity(nnz);
+        let mut values = Vec::with_capacity(nnz);
+        for row in adj {
+            for &(j, w) in row {
+                indices.push(j as u32);
+                values.push(w);
+            }
+        }
+        Self {
+            indptr,
+            indices,
+            values,
+        }
+    }
+}
+
+/// Attractive forces for every point from the CSR graph.
+///
+/// ### Params
+///
+/// * `csr` - Affinity graph in CSR
+/// * `pos` - Interleaved positions `[x0, y0, x1, y1, ...]`
+/// * `exag_factor` - Current exaggeration factor
+/// * `attr` - Output, interleaved attractive force per point, overwritten
+#[cfg(feature = "fft_tsne")]
+fn accumulate_attractive_csr<T>(csr: &AttrCsr<T>, pos: &[T], exag_factor: T, attr: &mut [T])
+where
+    T: ManifoldsFloat,
+{
+    attr.par_chunks_exact_mut(2)
+        .enumerate()
+        .for_each(|(i, out)| {
+            let px = pos[2 * i];
+            let py = pos[2 * i + 1];
+            let (lo, hi) = (csr.indptr[i], csr.indptr[i + 1]);
+
+            let mut attr_x = T::zero();
+            let mut attr_y = T::zero();
+            for (&j, &p_val) in csr.indices[lo..hi].iter().zip(&csr.values[lo..hi]) {
+                let j = j as usize;
+                let dx = px - pos[2 * j];
+                let dy = py - pos[2 * j + 1];
+                let q = T::one() / (T::one() + dx * dx + dy * dy);
+                let force = p_val * q;
+                attr_x += force * dx;
+                attr_y += force * dy;
+            }
+
+            out[0] = attr_x * exag_factor;
+            out[1] = attr_y * exag_factor;
+        });
+}
+
 /// Compute FFT grid geometry for a given embedding half-span.
 ///
 /// Below the box cap, `box_width` is fixed at `TSNE_FFT_MIN_BOX_WIDTH` and
@@ -826,18 +911,11 @@ where
     let mut uy = vec![vec![T::zero(); n_dim]; n];
     let mut gains = vec![vec![T::one(); n_dim]; n];
 
-    // adjacency list built once.
-    let mut adj: Vec<Vec<(usize, T)>> = vec![Vec::new(); n];
-    for ((&i, &j), &w) in graph
-        .row_indices
-        .iter()
-        .zip(&graph.col_indices)
-        .zip(&graph.values)
-    {
-        if i < n {
-            adj[i].push((j, w));
-        }
-    }
+    // the adjacency list is kept only for the density helpers shared with
+    // Barnes-Hut; the attractive pass reads the leaner CSR.
+    let adj_full = coo_to_adjacency_list(graph);
+    let csr = AttrCsr::from_adjacency(&adj_full);
+    let adj = if dens.is_some() { adj_full } else { Vec::new() };
 
     // pre-allocated FFT-side buffers and position snapshot.
     let mut charges = vec![T::zero(); n * n_terms];
@@ -845,16 +923,11 @@ where
     let mut xs = vec![T::zero(); n];
     let mut ys = vec![T::zero(); n];
 
-    // the density helpers are shared with the Barnes-Hut path, which works from
-    // an interleaved position buffer; the FFT needs xs/ys split, so build the
-    // interleaved view only when the density term is in play.
+    // the FFT wants xs/ys split, the attractive and density passes an
+    // interleaved buffer so each neighbour is one load.
+    let mut pos = vec![T::zero(); n * n_dim];
     let mut attr = vec![T::zero(); n * n_dim];
     let mut dens_scratch = dens.map(|_| DensScratch::<T>::new(n));
-    let mut dens_pos = if dens.is_some() {
-        vec![T::zero(); n * n_dim]
-    } else {
-        Vec::new()
-    };
 
     let min_intervals = 50;
     let mut cached_n_boxes: usize = 0;
@@ -866,9 +939,12 @@ where
         embd.par_iter()
             .zip(xs.par_iter_mut())
             .zip(ys.par_iter_mut())
-            .for_each(|((p, x), y)| {
+            .zip(pos.par_chunks_exact_mut(2))
+            .for_each(|(((p, x), y), slot)| {
                 *x = p[0];
                 *y = p[1];
+                slot[0] = p[0];
+                slot[1] = p[1];
             });
 
         let mut min_val = xs[0];
@@ -967,41 +1043,11 @@ where
         // when the density term is live this epoch.
         let dens_ctx = match (dens, dens_scratch.as_mut()) {
             (Some(state), Some(scratch)) if state.is_active(epoch, params.n_epochs) => {
-                dens_pos
-                    .par_chunks_exact_mut(2)
-                    .zip(xs.par_iter())
-                    .zip(ys.par_iter())
-                    .for_each(|((slot, &x), &y)| {
-                        slot[0] = x;
-                        slot[1] = y;
-                    });
-
-                accumulate_attractive_and_radii(&adj, &dens_pos, exag_factor, &mut attr, scratch);
+                accumulate_attractive_and_radii(&adj, &pos, exag_factor, &mut attr, scratch);
                 Some((state, &*scratch, DensGradConsts::new(&scratch.re, state)))
             }
             _ => {
-                // xs/ys are read directly here; no interleaved buffer needed
-                attr.par_chunks_exact_mut(2)
-                    .enumerate()
-                    .for_each(|(i, out)| {
-                        let x = xs[i];
-                        let y = ys[i];
-
-                        let mut attr_x = T::zero();
-                        let mut attr_y = T::zero();
-                        for &(j, p_val) in &adj[i] {
-                            let dx = x - xs[j];
-                            let dy = y - ys[j];
-                            let dist_sq = dx * dx + dy * dy;
-                            let q_ij = T::one() / (T::one() + dist_sq);
-                            let force = p_val * exag_factor * q_ij;
-                            attr_x += force * dx;
-                            attr_y += force * dy;
-                        }
-
-                        out[0] = attr_x;
-                        out[1] = attr_y;
-                    });
+                accumulate_attractive_csr(&csr, &pos, exag_factor, &mut attr);
                 None
             }
         };
@@ -1028,7 +1074,7 @@ where
 
                 let (dens_x, dens_y) = match &dens_ctx {
                     Some((state, scratch, consts)) => {
-                        density_gradient(i, &adj[i], &dens_pos, &state.r, scratch, consts)
+                        density_gradient(i, &adj[i], &pos, &state.r, scratch, consts)
                     }
                     None => (T::zero(), T::zero()),
                 };
