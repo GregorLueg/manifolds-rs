@@ -11,6 +11,8 @@ use crate::data::structures::*;
 use crate::prelude::*;
 use crate::utils::bh_tree::*;
 use crate::utils::density::*;
+#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+use crate::utils::math::choose_grid_size;
 
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::*;
@@ -24,19 +26,19 @@ use crate::utils::fft::*;
 /////////////
 
 /// Iteration from when on to switch the tSNE momentum
-const TSNE_MOMENTUM_SWITCH_ITER: usize = 250;
+pub(crate) const TSNE_MOMENTUM_SWITCH_ITER: usize = 250;
 
 /// Initial tSNE momentum
-const TSNE_INITIAL_MOMENTUM: f64 = 0.5;
+pub(crate) const TSNE_INITIAL_MOMENTUM: f64 = 0.5;
 
 /// Final tSNE momentum
-const TSNE_FINAL_MOMENTUM: f64 = 0.8;
+pub(crate) const TSNE_FINAL_MOMENTUM: f64 = 0.8;
 
 /// Minimum tSNE gain
-const TSNE_MIN_GAIN: f64 = 0.01;
+pub(crate) const TSNE_MIN_GAIN: f64 = 0.01;
 
 /// tSNE epsilon
-const TSNE_EPS: f64 = 1e-12;
+pub(crate) const TSNE_EPS: f64 = 1e-12;
 
 /// Per-point step cap as a fraction of `lr`, floored at `TSNE_MAX_STEP_FLOOR`.
 /// The Belkina lr scales as N/12, so a fixed cap forces every step at large N
@@ -55,17 +57,21 @@ const TSNE_LR_FLOOR: f64 = 200.0;
 /// O(n_boxes^2 log n_boxes); without a cap, n_boxes grows with the embedding
 /// span and per-epoch cost blows up. Box width adapts upward once this cap
 /// binds, keeping the grid covering the embedding.
-#[cfg(feature = "fft_tsne")]
-const TSNE_FFT_MAX_BOXES: usize = 140;
+#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+pub(crate) const TSNE_FFT_MAX_BOXES: usize = 140;
 
 /// Lower bound on the FFT box width (the original fixed value).
-#[cfg(feature = "fft_tsne")]
-const TSNE_FFT_MIN_BOX_WIDTH: f64 = 1.0;
+#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+pub(crate) const TSNE_FFT_MIN_BOX_WIDTH: f64 = 1.0;
+
+/// Minimum number of FFT boxes per dimension (FIt-SNE default).
+#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+pub(crate) const TSNE_FFT_MIN_INTERVALS: usize = 50;
 
 /// Headroom added to the grid bounds once the box-cap regime is active, so
 /// the embedding can move between rebuilds.
-#[cfg(feature = "fft_tsne")]
-const TSNE_FFT_GRID_MARGIN: f64 = 0.3;
+#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+pub(crate) const TSNE_FFT_GRID_MARGIN: f64 = 0.3;
 
 ////////////////
 // Structures //
@@ -168,6 +174,9 @@ pub enum TsneOpt {
     /// against a unit charge instead of the 4-term expansion. One forward and
     /// three inverse transforms instead of four each. Requires `fft_tsne`.
     Fft3Kernel,
+    /// Device-resident three-kernel FFT version. Only through `tsne_gpu`;
+    /// requires `gpu` but not `fft_tsne`.
+    Fft3KernelGpu,
 }
 
 /// Parse the tSNE optimiser to use.
@@ -175,8 +184,8 @@ pub enum TsneOpt {
 /// ### Params
 ///
 /// * `s` - String defining the optimiser. Accepts `"barnes hut"`,
-///   `"barnes_hut"`, `"barnes-hut"`, `"bh"`, `"fft"`, or `"fft_3k"` /
-///   `"3-kernel"`.
+///   `"barnes_hut"`, `"barnes-hut"`, `"bh"`, `"fft"`, `"fft_3k"` /
+///   `"3-kernel"`, or `"fft_3k_gpu"`.
 ///
 /// ### Returns
 ///
@@ -186,6 +195,7 @@ pub fn parse_tsne_optimiser(s: &str) -> Option<TsneOpt> {
         "barnes hut" | "barnes_hut" | "barnes-hut" | "bh" => Some(TsneOpt::BarnesHut),
         "fft" => Some(TsneOpt::Fft),
         "fft_3k" | "3-kernel" => Some(TsneOpt::Fft3Kernel),
+        "fft_3k_gpu" => Some(TsneOpt::Fft3KernelGpu),
         _ => None,
     }
 }
@@ -277,7 +287,7 @@ where
 ///
 /// Maximum permitted Euclidean step length per point per epoch.
 #[inline]
-fn step_cap_from_lr<T: ManifoldsFloat>(lr: T) -> T {
+pub(crate) fn step_cap_from_lr<T: ManifoldsFloat>(lr: T) -> T {
     let lr_f64 = lr.to_f64().unwrap();
     T::from_f64((lr_f64 * TSNE_MAX_STEP_FRACTION).max(TSNE_MAX_STEP_FLOOR)).unwrap()
 }
@@ -841,8 +851,8 @@ where
 ///
 /// `(n_boxes, box_width, grid_half)` where `grid_half` is the half-width of
 /// the square grid in embedding coordinates.
-#[cfg(feature = "fft_tsne")]
-fn fft_grid_geometry(half_span: f64, min_intervals: usize) -> (usize, f64, f64) {
+#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+pub(crate) fn fft_grid_geometry(half_span: f64, min_intervals: usize) -> (usize, f64, f64) {
     let span = 2.0 * half_span * 1.05;
 
     let n_boxes_unconstrained = choose_grid_size(0.0, span, TSNE_FFT_MIN_BOX_WIDTH, min_intervals);
@@ -1002,7 +1012,7 @@ where
     let mut attr = vec![T::zero(); n * n_dim];
     let mut dens_scratch = dens.map(|_| DensScratch::<T>::new(n));
 
-    let min_intervals = 50;
+    let min_intervals = TSNE_FFT_MIN_INTERVALS;
     let mut cached_n_boxes: usize = 0;
     let mut grid: Option<FftGrid<T>> = None;
     let mut workspace: Option<FftWorkspace<T>> = None;

@@ -14,3 +14,5 @@ pub mod traits;
 
 #[cfg(feature = "fft_tsne")]
 pub mod fft;
+#[cfg(feature = "gpu")]
+pub mod fft2d_gpu;

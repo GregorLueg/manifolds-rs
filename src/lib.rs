@@ -63,6 +63,8 @@ use crate::parametric::model::*;
 #[cfg(feature = "parametric")]
 use crate::parametric::parametric_train::*;
 #[cfg(feature = "gpu")]
+use crate::training::tsne_optimiser_gpu::*;
+#[cfg(feature = "gpu")]
 use crate::training::umap_optimiser_gpu::*;
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::FftwFloat;
@@ -1040,6 +1042,11 @@ where
                 verbose,
             )?;
         }
+        TsneOpt::Fft3KernelGpu => {
+            return Err(ManifoldsError::TsneOptimiserNeedsGpu {
+                name: approx_type.to_string(),
+            });
+        }
     }
 
     if verbosity.normal_verbosity() {
@@ -1274,6 +1281,11 @@ where
         #[cfg(not(feature = "fft_tsne"))]
         TsneOpt::Fft | TsneOpt::Fft3Kernel => {
             panic!("FFT-accelerated t-SNE not available. Recompile with 'fft_tsne' feature or use 'barnes_hut' approximation.");
+        }
+        TsneOpt::Fft3KernelGpu => {
+            return Err(ManifoldsError::TsneOptimiserNeedsGpu {
+                name: approx_type.to_string(),
+            });
         }
     }
 
@@ -4622,7 +4634,8 @@ where
 ///   excluding self
 /// * `params` - GPU t-SNE parameters
 /// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"`,
-///   `"fft"` or `"fft_3k" | "3-kernel"`
+///   `"fft"`, `"fft_3k" | "3-kernel"`, or `"fft_3k_gpu"` (optimiser on the
+///   GPU as well)
 /// * `device` - GPU device to use
 /// * `seed` - Random seed
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -4662,7 +4675,7 @@ where
         params.perplexity,
         params.ann_type.clone(),
         &params.nn_params,
-        device,
+        device.clone(),
         seed,
         verbose,
     )?;
@@ -4732,6 +4745,21 @@ where
             }
             optimise_fft3k_tsne(&mut embd, &params.optim_params, &graph, None, verbose)?;
         }
+        TsneOpt::Fft3KernelGpu => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via GPU three-kernel FFT t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne_gpu::<R, T>(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                device,
+                verbose,
+            )?;
+        }
     }
 
     if verbosity.normal_verbosity() {
@@ -4753,8 +4781,10 @@ where
 /// Run t-SNE with GPU-accelerated nearest neighbour search (non-FFT build)
 ///
 /// Identical to `tsne` except the kNN graph is constructed on the GPU.
-/// Barnes-Hut optimisation stays on CPU. Calling with `approx_type = "fft"`
-/// or `"fft_3k"` panics; recompile with the `fft_tsne` feature for FFT support.
+/// Barnes-Hut optimisation stays on CPU; `"fft_3k_gpu"` runs the optimiser on
+/// the GPU and needs no FFTW. Calling with `approx_type = "fft"` or
+/// `"fft_3k"` panics; recompile with the `fft_tsne` feature for CPU FFT
+/// support.
 ///
 /// ### Params
 ///
@@ -4764,7 +4794,8 @@ where
 /// * `precomputed_knn` - Optional precomputed kNN, indices and distances
 ///   excluding self
 /// * `params` - GPU t-SNE parameters
-/// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"`
+/// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"` or
+///   `"fft_3k_gpu"`
 /// * `device` - GPU device to use
 /// * `seed` - Random seed
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -4804,7 +4835,7 @@ where
         params.perplexity,
         params.ann_type.clone(),
         &params.nn_params,
-        device,
+        device.clone(),
         seed,
         verbose,
     )?;
@@ -4858,6 +4889,21 @@ where
         }
         TsneOpt::Fft | TsneOpt::Fft3Kernel => {
             panic!("FFT-accelerated t-SNE not available. Recompile with 'fft_tsne' feature or use 'barnes_hut' approximation.");
+        }
+        TsneOpt::Fft3KernelGpu => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via GPU three-kernel FFT t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne_gpu::<R, T>(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                device,
+                verbose,
+            )?;
         }
     }
 
