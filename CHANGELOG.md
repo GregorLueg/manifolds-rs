@@ -3,6 +3,12 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.5.2
+
+**Feature**
+
+- Faster FFT-accelerated tSNE.
+
 ## 0.5.1
 
 **Features**
