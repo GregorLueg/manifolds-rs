@@ -234,9 +234,9 @@ class TSNE(BaseEmbedding):
             what makes a t-SNE run reproducible in shape rather than only in
             seed.
         ann: Neighbour backend.
-        approx: Repulsion approximation. ``"barnes_hut"`` unless the extension
-            was built with the `fft_tsne` feature, which the published wheel is
-            not: FFTW is a system library no manylinux container carries.
+        approx: Repulsion approximation. ``"barnes_hut"`` only: CPU FFT t-SNE
+            needs FFTW, which is GPL and not in the wheel. See `TSNEGpu` for
+            ``"fft_3k_gpu"``.
         randomised_init: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation.

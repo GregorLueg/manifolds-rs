@@ -1,7 +1,8 @@
 //! The GPU embedding entry points.
 //!
-//! Only the neighbour search and the Adam update run on the device; the graph
-//! construction and the spectral initialisation stay on the CPU. That is the
+//! Only the neighbour search and the optimiser (UMAP's Adam, t-SNE's
+//! `"fft_3k_gpu"`) run on the device; the graph construction and the
+//! initialisation stay on the CPU. That is the
 //! crate's split, not a simplification made here.
 //!
 //! The runtime is pinned to `WgpuRuntime`. `R` is a type parameter in the
@@ -155,15 +156,16 @@ pub fn densmap_gpu<'py>(
     )
 }
 
-/// t-SNE with a GPU neighbour search.
+/// t-SNE with a GPU neighbour search, and a GPU optimiser for `"fft_3k_gpu"`.
 ///
 /// ### Params
 ///
 /// * `x` - Samples by features, C-contiguous float32.
 /// * `params` - Parameters, as built by the Python layer. See
 ///   [`crate::params::tsne_gpu`].
-/// * `approx` - Repulsive-force approximation. `"fft"` needs the `fft_tsne`
-///   feature, which the wheel is not built with.
+/// * `approx` - Repulsive-force approximation. `"barnes_hut"` optimises on
+///   the CPU, `"fft_3k_gpu"` on the device. `"fft"` and `"fft_3k"` need the
+///   `fft_tsne` feature, which the wheel is not built with.
 /// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices.
 /// * `knn_distances` - Optional `(n, k)` float32 distances.
 /// * `seed` - Fixes the initialisation.

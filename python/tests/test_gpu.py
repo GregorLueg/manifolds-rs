@@ -151,3 +151,18 @@ def test_gpu_and_cpu_umap_agree_on_a_shared_graph(X32: np.ndarray) -> None:
     cpu_d = np.linalg.norm(cpu[sample, None] - cpu[None, sample], axis=-1).ravel()
     gpu_d = np.linalg.norm(gpu[sample, None] - gpu[None, sample], axis=-1).ravel()
     assert np.corrcoef(cpu_d, gpu_d)[0, 1] > 0.7
+
+
+def test_fft_3k_gpu_separates_clusters(
+    clustered: tuple[np.ndarray, np.ndarray],
+) -> None:
+    """The device-resident optimiser, past early exaggeration."""
+    X, labels = clustered
+    embedding = mf.TSNEGpu(n_epochs=300, approx="fft_3k_gpu").fit_transform(X)
+    assert np.isfinite(embedding).all()
+    assert separation(embedding, labels) > 1.0
+
+
+def test_fft_3k_gpu_is_refused_on_the_cpu(X: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="approx"):
+        mf.TSNE(n_epochs=20, approx="fft_3k_gpu").fit_transform(X)

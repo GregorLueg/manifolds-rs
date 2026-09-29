@@ -58,6 +58,25 @@ requirement.
 | `ForceAtlas2` | Gephi's force-directed layout on the kNN graph, as in scanpy's `draw_graph`. 2-D only. |
 | `UMAPGpu`, `DensMAPGpu`, `TSNEGpu` | The same, with the neighbour search on the device. |
 
+## AnnData
+
+With `uv pip install 'manifolds-rs[anndata]'`, `mf.umap` and `mf.tsne` drop in
+for `sc.tl.umap` and `sc.tl.tsne`: same slots, so `sc.pl.umap` just works.
+
+```python
+import scanpy as sc
+import manifolds_rs as mf
+
+sc.pp.pca(adata)
+sc.pp.neighbors(adata)
+mf.umap(adata)  # obsm["X_umap"], uns["umap"]
+mf.tsne(adata)  # obsm["X_tsne"], uns["tsne"]
+sc.pl.umap(adata, color="leiden")
+```
+
+`device="gpu"` switches to the GPU estimators. See the
+[AnnData page](https://gregorlueg.github.io/manifolds-rs/anndata/) for details.
+
 ## Parameters
 
 The knobs people actually turn are ordinary constructor arguments. The rest live
@@ -105,8 +124,9 @@ has no float64 and the alternative is a failure inside a kernel.
 
 ## What is not in the wheel
 
-FFT-accelerated t-SNE. It needs FFTW, a system library no manylinux container
-carries, so `approx="fft"` raises unless you build the extension yourself with
-the `fft_tsne` feature. Barnes-Hut is the default and is what the wheel does.
+CPU FFT-accelerated t-SNE. It needs FFTW, which is GPL-2.0-or-later and would
+be linked statically, turning the whole wheel GPL. So the CPU estimators take
+Barnes-Hut only. On a GPU, `TSNEGpu(approx="fft_3k_gpu")` gives you
+FFT-interpolated repulsion without FFTW.
 
 Parametric UMAP is in the crate but not yet bound.

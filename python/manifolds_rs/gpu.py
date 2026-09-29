@@ -13,9 +13,10 @@ backend rather than choices:
   and the only one this package performs silently.
 - **Different neighbour backends.** ``"nndescent_gpu"``, ``"ivf_gpu"`` and
   ``"exhaustive_gpu"``, with their own knobs. See `NeighbourParamsGpu`.
-- **Only the search and the Adam update run on the device.** Graph construction
-  and the spectral initialisation stay on the CPU, so a small dataset can easily
-  come out slower than the CPU path once the transfers are paid for. Measure.
+- **Only the search and the optimiser run on the device.** The UMAP Adam update,
+  and the t-SNE optimiser with ``approx="fft_3k_gpu"``. Graph construction and
+  the initialisation stay on the CPU, so a small dataset can easily come out
+  slower than the CPU path once the transfers are paid for. Measure.
 - **Reproducible in structure, not in coordinates.** The device searches are not
   always bit-stable at scale, and the optimiser amplifies a small difference in
   the graph into visibly different positions. Cluster structure is preserved
@@ -36,7 +37,7 @@ from ._params import (
     ANN_GPU,
     INITS,
     METRICS,
-    TSNE_APPROX,
+    TSNE_APPROX_GPU,
     UMAP_OPTIMISERS_GPU,
     DensParams,
     NeighbourParamsGpu,
@@ -228,11 +229,12 @@ class DensMAPGpu(UMAPGpu):
 
 
 class TSNEGpu(BaseEmbedding):
-    """t-SNE with a GPU neighbour search.
+    """t-SNE with a GPU neighbour search and, optionally, a GPU optimiser.
 
-    Only the search moves to the device here; the Barnes-Hut repulsion stays on
-    the CPU. On a dataset where the search dominates that is most of the win,
-    and on one where it does not you should not expect much.
+    With ``approx="barnes_hut"`` only the search moves to the device and the
+    repulsion stays on the CPU. ``approx="fft_3k_gpu"`` runs the whole
+    optimisation on the device as well: FFT-interpolated repulsion with three
+    kernels, the embedding resident on the GPU throughout.
 
     When `ann` is ``"nndescent_gpu"`` and `NeighbourParamsGpu.k` is left unset,
     the CAGRA graph degree is backfilled to ``3 * perplexity`` so it is sized for
@@ -246,7 +248,8 @@ class TSNEGpu(BaseEmbedding):
         learning_rate: ``None`` applies the ``max(N / 12, 200)`` heuristic.
         init: ``"pca"``, ``"spectral"`` or ``"random"``.
         ann: ``"nndescent_gpu"``, ``"ivf_gpu"`` or ``"exhaustive_gpu"``.
-        approx: Repulsion approximation. See `manifolds_rs.TSNE`.
+        approx: ``"barnes_hut"`` (CPU optimiser) or ``"fft_3k_gpu"`` (GPU
+            optimiser).
         randomised_init: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation.
@@ -293,7 +296,7 @@ class TSNEGpu(BaseEmbedding):
         self.optim_params = optim_params
 
     def _params(self) -> dict[str, Any]:
-        check_choice(self.approx, TSNE_APPROX, name="approx")
+        check_choice(self.approx, TSNE_APPROX_GPU, name="approx")
         return {
             "n_dim": self.n_components,
             "perplexity": self.perplexity,

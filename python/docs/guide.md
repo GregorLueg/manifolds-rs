@@ -155,8 +155,9 @@ runs of the same configuration will differ, as they should.
 
 ## What is not in the wheel
 
-FFT-accelerated t-SNE. It needs FFTW, a system library no manylinux container
-carries, so `approx="fft"` needs an extension you built yourself with the
-`fft_tsne` feature. Barnes-Hut is the default and is what the wheel does.
+CPU FFT-accelerated t-SNE. It needs FFTW, which is GPL-2.0-or-later and would
+be linked statically, turning the whole wheel GPL. So the CPU estimators take
+Barnes-Hut only. On a GPU, `TSNEGpu(approx="fft_3k_gpu")` gives you
+FFT-interpolated repulsion without FFTW.
 
 Parametric UMAP exists in the crate but is not yet bound.

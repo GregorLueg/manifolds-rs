@@ -36,10 +36,12 @@ nav:
   - Choosing an algorithm: choosing.md
   - Quickstart: quickstart.md
   - GPU: gpu.md
+  - AnnData / scanpy: anndata.md
   - Guide: guide.md
   - API reference:
       - Estimators: api/embeddings.md
       - GPU estimators: api/gpu.md
+      - AnnData functions: api/anndata.md
       - Parameter groups: api/params.md
       - Neighbours: api/neighbours.md
       - Synthetic data: api/datasets.md

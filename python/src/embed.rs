@@ -98,8 +98,8 @@ pub fn densmap<'py>(
 /// * `params` - Parameters, as built by the Python layer. See
 ///   [`crate::params::tsne`].
 /// * `approx` - Repulsive-force approximation: `"barnes_hut"` always, `"fft"`
-///   only in a build with the `fft_tsne` feature. The wheel is built without
-///   it, since FFTW is a system dependency no manylinux container carries.
+///   and `"fft_3k"` only in a build with the `fft_tsne` feature. The wheel is
+///   built without it: FFTW is GPL-2.0-or-later and would be linked statically.
 /// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices.
 /// * `knn_distances` - Optional `(n, k)` distances, same dtype as `x`.
 /// * `seed` - Fixes the initialisation.

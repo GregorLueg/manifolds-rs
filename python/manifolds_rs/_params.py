@@ -72,12 +72,16 @@ SYMMETRIES: frozenset[str] = frozenset(
     {"additive", "add", "multiplicative", "mult", "multiply", "mnn", "none"}
 )
 
-#: t-SNE repulsion approximations, from `parse_tsne_optimiser`. ``"fft"`` needs
-#: a build with the `fft_tsne` feature, which the published wheel is not: FFTW
-#: is a system library no manylinux container carries. Barnes-Hut otherwise.
+#: t-SNE repulsion approximations, from `parse_tsne_optimiser`. The CPU FFT
+#: variants need the `fft_tsne` feature, which the wheel is built without: it
+#: links FFTW statically, and FFTW is GPL-2.0-or-later.
 TSNE_APPROX: frozenset[str] = frozenset(
-    {"barnes_hut", "barnes-hut", "barnes hut", "bh", "fft"}
+    {"barnes_hut", "barnes-hut", "barnes hut", "bh"}
 )
+
+#: As `TSNE_APPROX`, plus the device-resident three-kernel FFT optimiser. Only
+#: `tsne_gpu` accepts it.
+TSNE_APPROX_GPU: frozenset[str] = TSNE_APPROX | {"fft_3k_gpu"}
 
 #: ForceAtlas2 repulsion approximations, from `parse_fa2_optimiser`.
 FA2_APPROX: frozenset[str] = frozenset({"barnes_hut", "barnes-hut", "barnes hut", "bh"})
