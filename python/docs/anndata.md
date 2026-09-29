@@ -82,3 +82,28 @@ mf.tsne(adata, learning_rate=500.0, ann="hnsw", metric="cosine")
 ```
 
 Unknown names raise, same as the estimator constructors.
+
+## Benchmark
+
+25,000 cells from `mf.datasets.clustered(25_000, dim=50, n_clusters=8)`,
+`sc.pp.pca(n_comps=30)` and `sc.pp.neighbors(n_neighbors=15)` beforehand, not
+timed. Three repeats per row at seeds 0, 1 and 2, after an untimed warm-up
+(numba JIT for umap-learn, wgpu device initialisation). Cluster separation is
+the mean between-centroid distance over the mean within-cluster spread; higher
+means the clusters sit further apart than they are wide.
+
+| Call | Time (s) | Cluster separation |
+| --- | --- | --- |
+| `sc.tl.umap` | 10.64 ± 0.02 | 19.83 ± 0.90 |
+| `mf.umap` | 1.48 ± 0.07 | 26.04 ± 0.27 |
+| `mf.umap(device="gpu")` | 0.43 ± 0.01 | 19.06 ± 0.29 |
+| `sc.tl.tsne(n_jobs=10)` | 47.21 ± 1.07 | 11.14 ± 0.00 |
+| `mf.tsne` | 9.73 ± 0.27 | 8.71 ± 0.23 |
+| `mf.tsne(device="gpu")` | 12.18 ± 0.32 | 8.72 ± 0.24 |
+| `mf.tsne(device="gpu", approx="fft_3k_gpu")` | 4.89 ± 0.06 | 8.34 ± 0.14 |
+
+Mean ± sd over the three repeats. Run on an Apple M1 Max (10 cores), scanpy
+1.11.5. Defaults on both sides, with two things worth knowing: scanpy runs UMAP
+for 200 epochs above 10,000 cells where `mf.umap` runs 500, and `sc.tl.tsne`
+was given `n_jobs=10` since its default is single-threaded. One synthetic
+dataset on one machine; measure on your own data before relying on it.
