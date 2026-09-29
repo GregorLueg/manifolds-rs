@@ -26,10 +26,18 @@ Running several embeddings over the same data? Build the neighbour graph once
 with `knn_graph` and pass it to each `fit`; on anything large the search is most
 of the runtime.
 
+With `anndata` installed, `umap` and `tsne` are scanpy-style functions that
+write into an `AnnData` the way ``sc.tl.umap`` and ``sc.tl.tsne`` do:
+
+    >>> mf.umap(adata)  # doctest: +SKIP
+    >>> sc.pl.umap(adata, color="leiden")  # doctest: +SKIP
+
 None of these algorithms projects new points, so there is no `transform`. That
 is the crate's position, not a gap in the bindings: embedding new data means
 refitting, which moves the existing coordinates too.
 """
+
+from typing import TYPE_CHECKING
 
 from . import _manifolds, datasets
 from ._base import BaseEmbedding, NotFittedError
@@ -94,7 +102,28 @@ __all__ = [
     "knn_graph",
     "num_threads",
     "set_num_threads",
+    "tsne",
+    "umap",
 ]
+
+
+if TYPE_CHECKING:
+    from ._anndata import tsne, umap
+
+
+def __getattr__(name: str) -> object:
+    # `umap` and `tsne` import `anndata`, which is an optional extra. Resolving
+    # them lazily keeps `import manifolds_rs` working without it.
+    if name in ("umap", "tsne"):
+        try:
+            from . import _anndata
+        except ImportError as e:
+            raise ImportError(
+                f"manifolds_rs.{name} needs anndata: uv add 'manifolds-rs[anndata]'"
+            ) from e
+        return getattr(_anndata, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 # The GPU estimators exist only when the extension was built with them, which is
 # fixed at wheel-build time. They are re-exported at the top level when present

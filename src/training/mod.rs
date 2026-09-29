@@ -5,6 +5,8 @@ pub mod fa2_optimiser;
 pub mod mds_optimiser;
 pub mod pacmap_optimiser;
 pub mod tsne_optimiser;
+#[cfg(feature = "gpu")]
+pub mod tsne_optimiser_gpu;
 pub mod umap_optimisers;
 
 #[cfg(feature = "gpu")]

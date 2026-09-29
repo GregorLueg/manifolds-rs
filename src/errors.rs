@@ -130,6 +130,26 @@ pub enum ManifoldsError {
     )]
     DegenerateLocalRadii,
 
+    // -- GPU t-SNE --
+    /// Error when a GPU-only t-SNE optimiser is requested from a CPU entry
+    /// point
+    #[error("tSNE optimiser '{name}' runs only through tsne_gpu()")]
+    TsneOptimiserNeedsGpu {
+        /// Name of the requested optimiser
+        name: String,
+    },
+    /// Error when the requested GPU FFT size is not supported by the device
+    /// or the kernels
+    #[error("GPU FFT size {n} unsupported: needs a power of two in [{min}, {max}]")]
+    UnsupportedFftSize {
+        /// Requested transform size
+        n: usize,
+        /// Smallest supported size
+        min: usize,
+        /// Largest supported size on this device
+        max: usize,
+    },
+
     // -- parametric umap serialisation --
     /// Error when the model bytes cannot be serialised to disk format
     #[error("Failed to serialise parametric UMAP model: {0}")]

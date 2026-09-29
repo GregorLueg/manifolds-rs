@@ -33,6 +33,45 @@ fn graph_to_adj(graph: &CoordinateList<f64>) -> Vec<Vec<(usize, f64)>> {
     adj
 }
 
+/// Helper: minimum inter-centroid distance over mean intra-cluster distance
+#[cfg(feature = "fft_tsne")]
+fn separation(embedding: &[Vec<f64>], labels: &[usize]) -> f64 {
+    let mut cc: FxHashMap<usize, (f64, f64, usize)> = FxHashMap::default();
+    for (i, &l) in labels.iter().enumerate() {
+        let e = cc.entry(l).or_insert((0.0, 0.0, 0));
+        e.0 += embedding[0][i];
+        e.1 += embedding[1][i];
+        e.2 += 1;
+    }
+    let centroids: Vec<(usize, f64, f64)> = cc
+        .iter()
+        .map(|(&l, &(sx, sy, c))| (l, sx / c as f64, sy / c as f64))
+        .collect();
+
+    let mut min_inter = f64::INFINITY;
+    for i in 0..centroids.len() {
+        for j in (i + 1)..centroids.len() {
+            let d = ((centroids[i].1 - centroids[j].1).powi(2)
+                + (centroids[i].2 - centroids[j].2).powi(2))
+            .sqrt();
+            min_inter = min_inter.min(d);
+        }
+    }
+
+    let mut avg_intra = 0.0;
+    for (label, cx, cy) in &centroids {
+        let pts: Vec<usize> = (0..labels.len()).filter(|&i| labels[i] == *label).collect();
+        avg_intra += pts
+            .iter()
+            .map(|&i| ((embedding[0][i] - cx).powi(2) + (embedding[1][i] - cy).powi(2)).sqrt())
+            .sum::<f64>()
+            / pts.len() as f64;
+    }
+    avg_intra /= centroids.len() as f64;
+
+    min_inter / avg_intra
+}
+
 /// Test 1: Verify kNN search finds correct neighbours - tSNE
 #[test]
 fn tsne_integration_01_knn_correctness() {
@@ -970,4 +1009,135 @@ fn tsne_integration_13_precomputed_knn() {
     );
 
     println!("✓ Precomputed kNN produces identical and valid embeddings");
+}
+
+/// Test 14: Three-kernel FFT t-SNE - optimisation quality
+#[cfg(feature = "fft_tsne")]
+#[test]
+fn tsne_integration_14_fft3k_optimisation_quality() {
+    let (data, labels) = create_diagnostic_data(100, 10, 123);
+
+    println!("\n=== t-SNE DIAGNOSTIC 14: Three-kernel FFT Optimisation Quality ===");
+
+    let mut params = TsneParams {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(100.0);
+    params.optim_params.n_epochs = 500;
+
+    let embedding = tsne(data.as_ref(), None, &params, "fft_3k", 42, 0).unwrap();
+
+    assert!(embedding[0]
+        .iter()
+        .chain(&embedding[1])
+        .all(|x| x.is_finite()));
+
+    let all_coords: Vec<f64> = embedding.iter().flat_map(|d| d.iter().copied()).collect();
+    let min_c = all_coords.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_c = all_coords.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let range = max_c - min_c;
+    println!("Coordinate span: {:.2}", range);
+    assert!(range < 1000.0, "Embedding exploded! Range = {}", range);
+    assert!(range > 1.0, "Embedding collapsed! Range = {}", range);
+
+    let sep = separation(&embedding, &labels);
+    println!("Separation ratio: {:.2}", sep);
+    assert!(
+        sep > 1.0,
+        "Clusters should be well separated, got ratio {:.2}",
+        sep
+    );
+    println!("✓ Three-kernel FFT clusters are well separated");
+}
+
+/// Test 15: Three-kernel FFT t-SNE reproducibility
+#[cfg(feature = "fft_tsne")]
+#[test]
+fn tsne_integration_15_fft3k_reproducibility() {
+    let (data, _) = create_diagnostic_data(100, 10, 42);
+
+    println!("\n=== t-SNE DIAGNOSTIC 15: Three-kernel FFT Reproducibility ===");
+
+    let mut params = TsneParams {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 200;
+
+    let embd1 = tsne(data.as_ref(), None, &params, "fft_3k", 123, 0).unwrap();
+    let embd2 = tsne(data.as_ref(), None, &params, "fft_3k", 123, 0).unwrap();
+
+    let mut max_diff: f64 = 0.0;
+    for i in 0..embd1[0].len() {
+        for dim in 0..2 {
+            max_diff = max_diff.max((embd1[dim][i] - embd2[dim][i]).abs());
+        }
+    }
+    println!("Max coordinate difference: {:.10}", max_diff);
+    assert!(
+        max_diff < 1e-6,
+        "Three-kernel FFT t-SNE should be reproducible with same seed, got diff = {}",
+        max_diff
+    );
+    println!("✓ Three-kernel FFT t-SNE is reproducible");
+}
+
+/// Test 16: 4-term and three-kernel FFT produce comparable quality
+#[cfg(feature = "fft_tsne")]
+#[test]
+fn tsne_integration_16_fft_vs_fft3k_comparison() {
+    let (data, labels) = create_diagnostic_data(100, 10, 42);
+
+    println!("\n=== t-SNE DIAGNOSTIC 16: 4-term vs Three-kernel FFT ===");
+
+    let mut params = TsneParams {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 300;
+
+    let embd_fft = tsne(data.as_ref(), None, &params, "fft", 42, 0).unwrap();
+    let embd_3k = tsne(data.as_ref(), None, &params, "fft_3k", 42, 0).unwrap();
+
+    let sep_fft = separation(&embd_fft, &labels);
+    let sep_3k = separation(&embd_3k, &labels);
+    println!(
+        "4-term separation: {:.2}, three-kernel separation: {:.2}",
+        sep_fft, sep_3k
+    );
+
+    assert!(
+        sep_fft > 1.0 && sep_3k > 1.0,
+        "Both should separate clusters"
+    );
+    let ratio = sep_fft / sep_3k;
+    assert!(
+        ratio > 0.5 && ratio < 2.0,
+        "Both formulations should produce similar quality, got ratio {:.2}",
+        ratio
+    );
+    println!("✓ Both FFT formulations produce comparable quality");
+}
+
+/// Test 17: The GPU-only optimiser is refused by the CPU entry point
+#[test]
+fn tsne_integration_17_gpu_optimiser_needs_tsne_gpu() {
+    let (data, _) = create_diagnostic_data(20, 10, 42);
+
+    let params = TsneParams {
+        perplexity: 10.0,
+        ..Default::default()
+    };
+
+    let res = tsne(data.as_ref(), None, &params, "fft_3k_gpu", 42, 0);
+    assert!(
+        matches!(res, Err(ManifoldsError::TsneOptimiserNeedsGpu { .. })),
+        "CPU tsne() should refuse fft_3k_gpu"
+    );
 }

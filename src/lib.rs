@@ -63,6 +63,8 @@ use crate::parametric::model::*;
 #[cfg(feature = "parametric")]
 use crate::parametric::parametric_train::*;
 #[cfg(feature = "gpu")]
+use crate::training::tsne_optimiser_gpu::*;
+#[cfg(feature = "gpu")]
 use crate::training::umap_optimiser_gpu::*;
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::FftwFloat;
@@ -827,7 +829,7 @@ where
 ///   distances excluding self.
 /// * `params` - t-SNE parameters controlling algorithm behaviour
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`, `"fft"`
+///   Options: `"barnes_hut" | "bh"`, `"fft"`, `"fft_3k" | "3-kernel"`
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -883,7 +885,7 @@ where
 /// * `data` - Input data matrix (samples × features)
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances
 /// * `params` - t-SNE parameters
-/// * `approx_type` - `"barnes_hut" | "bh"` or `"fft"`
+/// * `approx_type` - `"barnes_hut" | "bh"`, `"fft"` or `"fft_3k" | "3-kernel"`
 /// * `dens_params` - Density knobs for den-SNE, or `None` for plain t-SNE
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -1024,6 +1026,27 @@ where
                 verbose,
             )?;
         }
+        #[cfg(feature = "fft_tsne")]
+        TsneOpt::Fft3Kernel => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via three-kernel FFT Interpolation-based t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dens_state.as_ref(),
+                verbose,
+            )?;
+        }
+        TsneOpt::Fft3KernelGpu => {
+            return Err(ManifoldsError::TsneOptimiserNeedsGpu {
+                name: approx_type.to_string(),
+            });
+        }
     }
 
     if verbosity.normal_verbosity() {
@@ -1074,7 +1097,7 @@ where
 ///   distances excluding self.
 /// * `params` - t-SNE parameters controlling algorithm behaviour
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`, `"fft"`
+///   Options: `"barnes_hut" | "bh"`, `"fft"`, `"fft_3k" | "3-kernel"`
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -1130,8 +1153,8 @@ where
 /// * `data` - Input data matrix (samples × features)
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances
 /// * `params` - t-SNE parameters
-/// * `approx_type` - `"barnes_hut" | "bh"`; `"fft"` panics without the
-///   `fft_tsne` feature
+/// * `approx_type` - `"barnes_hut" | "bh"`; `"fft"` and `"fft_3k"` panic
+///   without the `fft_tsne` feature
 /// * `dens_params` - Density knobs for den-SNE, or `None` for plain t-SNE
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -1256,8 +1279,13 @@ where
             );
         }
         #[cfg(not(feature = "fft_tsne"))]
-        TsneOpt::Fft => {
+        TsneOpt::Fft | TsneOpt::Fft3Kernel => {
             panic!("FFT-accelerated t-SNE not available. Recompile with 'fft_tsne' feature or use 'barnes_hut' approximation.");
+        }
+        TsneOpt::Fft3KernelGpu => {
+            return Err(ManifoldsError::TsneOptimiserNeedsGpu {
+                name: approx_type.to_string(),
+            });
         }
     }
 
@@ -1540,7 +1568,7 @@ where
 ///   distances excluding self.
 /// * `params` - den-SNE parameters
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`, `"fft"`
+///   Options: `"barnes_hut" | "bh"`, `"fft"`, `"fft_3k" | "3-kernel"`
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -1619,7 +1647,8 @@ where
 ///   distances excluding self.
 /// * `params` - den-SNE parameters
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`. `"fft"` requires the `fft_tsne` feature
+///   Options: `"barnes_hut" | "bh"`. `"fft"` and `"fft_3k"` require the
+///   `fft_tsne` feature
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -4604,8 +4633,9 @@ where
 /// * `precomputed_knn` - Optional precomputed kNN, indices and distances
 ///   excluding self
 /// * `params` - GPU t-SNE parameters
-/// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"` or
-///   `"fft"`
+/// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"`,
+///   `"fft"`, `"fft_3k" | "3-kernel"`, or `"fft_3k_gpu"` (optimiser on the
+///   GPU as well)
 /// * `device` - GPU device to use
 /// * `seed` - Random seed
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -4645,7 +4675,7 @@ where
         params.perplexity,
         params.ann_type.clone(),
         &params.nn_params,
-        device,
+        device.clone(),
         seed,
         verbose,
     )?;
@@ -4706,6 +4736,30 @@ where
             }
             optimise_fft_tsne(&mut embd, &params.optim_params, &graph, None, verbose)?;
         }
+        TsneOpt::Fft3Kernel => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via three-kernel FFT Interpolation-based t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne(&mut embd, &params.optim_params, &graph, None, verbose)?;
+        }
+        TsneOpt::Fft3KernelGpu => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via GPU three-kernel FFT t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne_gpu::<R, T>(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                device,
+                verbose,
+            )?;
+        }
     }
 
     if verbosity.normal_verbosity() {
@@ -4727,8 +4781,10 @@ where
 /// Run t-SNE with GPU-accelerated nearest neighbour search (non-FFT build)
 ///
 /// Identical to `tsne` except the kNN graph is constructed on the GPU.
-/// Barnes-Hut optimisation stays on CPU. Calling with `approx_type = "fft"`
-/// panics; recompile with the `fft_tsne` feature for FFT support.
+/// Barnes-Hut optimisation stays on CPU; `"fft_3k_gpu"` runs the optimiser on
+/// the GPU and needs no FFTW. Calling with `approx_type = "fft"` or
+/// `"fft_3k"` panics; recompile with the `fft_tsne` feature for CPU FFT
+/// support.
 ///
 /// ### Params
 ///
@@ -4738,7 +4794,8 @@ where
 /// * `precomputed_knn` - Optional precomputed kNN, indices and distances
 ///   excluding self
 /// * `params` - GPU t-SNE parameters
-/// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"`
+/// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"` or
+///   `"fft_3k_gpu"`
 /// * `device` - GPU device to use
 /// * `seed` - Random seed
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -4778,7 +4835,7 @@ where
         params.perplexity,
         params.ann_type.clone(),
         &params.nn_params,
-        device,
+        device.clone(),
         seed,
         verbose,
     )?;
@@ -4830,8 +4887,23 @@ where
             }
             optimise_bh_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
         }
-        TsneOpt::Fft => {
+        TsneOpt::Fft | TsneOpt::Fft3Kernel => {
             panic!("FFT-accelerated t-SNE not available. Recompile with 'fft_tsne' feature or use 'barnes_hut' approximation.");
+        }
+        TsneOpt::Fft3KernelGpu => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via GPU three-kernel FFT t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne_gpu::<R, T>(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                device,
+                verbose,
+            )?;
         }
     }
 

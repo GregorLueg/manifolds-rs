@@ -9,7 +9,8 @@ Dimensionality reduction for single-cell and computational biology. The
 a scikit-learn shaped layer over it.
 
 Eight algorithms on the CPU, three of them with GPU variants where the neighbour
-search and the Adam update move to the device. No CUDA runtime to install: the
+search and the optimiser (UMAP's Adam, t-SNE's three-kernel FFT) move to the
+device. Scanpy-style `mf.umap(adata)` and `mf.tsne(adata)` for `AnnData`. No CUDA runtime to install: the
 GPU backend is wgpu, so it runs on Metal, Vulkan or DX12 and ships in the
 ordinary wheel.
 
@@ -56,7 +57,29 @@ requirement.
 | `PaCMAP` | Global structure without leaning on a spectral init. Three pair types. |
 | `DiffusionMaps` | The spectral embedding PHATE is built on. |
 | `ForceAtlas2` | Gephi's force-directed layout on the kNN graph, as in scanpy's `draw_graph`. 2-D only. |
-| `UMAPGpu`, `DensMAPGpu`, `TSNEGpu` | The same, with the neighbour search on the device. |
+| `UMAPGpu`, `DensMAPGpu`, `TSNEGpu` | The same, with the neighbour search on the device. `TSNEGpu(approx="fft_3k_gpu")` runs the optimiser there too. |
+
+## AnnData
+
+With `uv pip install 'manifolds-rs[anndata]'`, `mf.umap` and `mf.tsne` drop in
+for `sc.tl.umap` and `sc.tl.tsne`: same slots, so `sc.pl.umap` just works.
+
+```python
+import scanpy as sc
+import manifolds_rs as mf
+
+sc.pp.pca(adata)
+sc.pp.neighbors(adata)
+mf.umap(adata)  # obsm["X_umap"], uns["umap"]
+mf.tsne(adata)  # obsm["X_tsne"], uns["tsne"]
+sc.pl.umap(adata, color="leiden")
+```
+
+`device="gpu"` switches to the GPU estimators. On 25,000 cells on an M1 Max,
+`mf.umap` ran in 1.5s against 10.6s for `sc.tl.umap`, and `mf.tsne` in 9.7s
+(4.9s with `device="gpu", approx="fft_3k_gpu"`) against 47.2s for a 10-thread
+`sc.tl.tsne`. The [AnnData page](https://gregorlueg.github.io/manifolds-rs/anndata/)
+has the full table, cluster separation included, and the caveats.
 
 ## Parameters
 
@@ -105,8 +128,9 @@ has no float64 and the alternative is a failure inside a kernel.
 
 ## What is not in the wheel
 
-FFT-accelerated t-SNE. It needs FFTW, a system library no manylinux container
-carries, so `approx="fft"` raises unless you build the extension yourself with
-the `fft_tsne` feature. Barnes-Hut is the default and is what the wheel does.
+CPU FFT-accelerated t-SNE. It needs FFTW, which is GPL-2.0-or-later and would
+be linked statically, turning the whole wheel GPL. So the CPU estimators take
+Barnes-Hut only. On a GPU, `TSNEGpu(approx="fft_3k_gpu")` gives you
+FFT-interpolated repulsion without FFTW.
 
 Parametric UMAP is in the crate but not yet bound.

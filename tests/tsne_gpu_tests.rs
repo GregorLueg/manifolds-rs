@@ -411,3 +411,134 @@ fn tsne_gpu_integration_08_bh_vs_fft() {
         ratio
     );
 }
+
+/// Test 9: Device-resident three-kernel FFT optimisation quality
+#[test]
+fn tsne_gpu_integration_09_fft3k_gpu_quality() {
+    let (data, labels) = create_diagnostic_data(100, 10, 123);
+    let data = mat_to_f32(data);
+
+    let device = WgpuDevice::default();
+    let mut params = TsneParamsGpu {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.ann_type = "exhaustive_gpu".to_string();
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(100.0);
+    params.optim_params.n_epochs = 500;
+
+    let embedding =
+        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft_3k_gpu", device, 42, 0)
+            .unwrap();
+
+    assert!(embedding[0].iter().all(|x| x.is_finite()));
+    assert!(embedding[1].iter().all(|x| x.is_finite()));
+
+    let sep = compute_separation(&embedding, &labels);
+    println!("GPU three-kernel FFT separation ratio: {:.2}", sep);
+    assert!(sep > 1.0);
+}
+
+/// Test 10: Device-resident three-kernel FFT structural consistency across runs
+#[test]
+fn tsne_gpu_integration_10_fft3k_gpu_reproducibility_structural() {
+    let (data, labels) = create_diagnostic_data(100, 10, 42);
+    let data = mat_to_f32(data);
+
+    let mut params = TsneParamsGpu {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.ann_type = "exhaustive_gpu".to_string();
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 200;
+
+    // summation order inside a grid box follows atomic bucketing, so runs are
+    // not bit-identical; test structural consistency.
+    let e1 = tsne_gpu::<f32, WgpuRuntime>(
+        data.as_ref(),
+        None,
+        &params,
+        "fft_3k_gpu",
+        WgpuDevice::default(),
+        123,
+        0,
+    )
+    .unwrap();
+    let e2 = tsne_gpu::<f32, WgpuRuntime>(
+        data.as_ref(),
+        None,
+        &params,
+        "fft_3k_gpu",
+        WgpuDevice::default(),
+        123,
+        0,
+    )
+    .unwrap();
+
+    let sep1 = compute_separation(&e1, &labels);
+    let sep2 = compute_separation(&e2, &labels);
+    println!(
+        "GPU three-kernel separations: run1 = {:.3}, run2 = {:.3}",
+        sep1, sep2
+    );
+    assert!(sep1 > 1.0 && sep2 > 1.0);
+    let ratio = sep1 / sep2;
+    assert!(
+        (0.5..2.0).contains(&ratio),
+        "GPU three-kernel quality inconsistent between runs: {:.2}",
+        ratio
+    );
+}
+
+/// Test 11: BH and the device-resident three-kernel FFT produce comparable quality
+#[test]
+fn tsne_gpu_integration_11_bh_vs_fft3k_gpu() {
+    let (data, labels) = create_diagnostic_data(100, 10, 42);
+    let data = mat_to_f32(data);
+
+    let mut params = TsneParamsGpu {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.ann_type = "exhaustive_gpu".to_string();
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 300;
+
+    let e_bh = tsne_gpu::<f32, WgpuRuntime>(
+        data.as_ref(),
+        None,
+        &params,
+        "bh",
+        WgpuDevice::default(),
+        42,
+        0,
+    )
+    .unwrap();
+    let e_3k = tsne_gpu::<f32, WgpuRuntime>(
+        data.as_ref(),
+        None,
+        &params,
+        "fft_3k_gpu",
+        WgpuDevice::default(),
+        42,
+        0,
+    )
+    .unwrap();
+
+    let sep_bh = compute_separation(&e_bh, &labels);
+    let sep_3k = compute_separation(&e_3k, &labels);
+    println!("BH sep: {:.3}, GPU three-kernel sep: {:.3}", sep_bh, sep_3k);
+
+    assert!(sep_bh > 1.0, "BH failed to separate");
+    assert!(sep_3k > 1.0, "GPU three-kernel failed to separate");
+    let ratio = sep_bh / sep_3k;
+    assert!(
+        (0.33..3.0).contains(&ratio),
+        "BH/GPU three-kernel quality ratio out of bounds: {:.2}",
+        ratio
+    );
+}

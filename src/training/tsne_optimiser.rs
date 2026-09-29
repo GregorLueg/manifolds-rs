@@ -11,6 +11,8 @@ use crate::data::structures::*;
 use crate::prelude::*;
 use crate::utils::bh_tree::*;
 use crate::utils::density::*;
+#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+use crate::utils::math::choose_grid_size;
 
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::*;
@@ -24,19 +26,19 @@ use crate::utils::fft::*;
 /////////////
 
 /// Iteration from when on to switch the tSNE momentum
-const TSNE_MOMENTUM_SWITCH_ITER: usize = 250;
+pub(crate) const TSNE_MOMENTUM_SWITCH_ITER: usize = 250;
 
 /// Initial tSNE momentum
-const TSNE_INITIAL_MOMENTUM: f64 = 0.5;
+pub(crate) const TSNE_INITIAL_MOMENTUM: f64 = 0.5;
 
 /// Final tSNE momentum
-const TSNE_FINAL_MOMENTUM: f64 = 0.8;
+pub(crate) const TSNE_FINAL_MOMENTUM: f64 = 0.8;
 
 /// Minimum tSNE gain
-const TSNE_MIN_GAIN: f64 = 0.01;
+pub(crate) const TSNE_MIN_GAIN: f64 = 0.01;
 
 /// tSNE epsilon
-const TSNE_EPS: f64 = 1e-12;
+pub(crate) const TSNE_EPS: f64 = 1e-12;
 
 /// Per-point step cap as a fraction of `lr`, floored at `TSNE_MAX_STEP_FLOOR`.
 /// The Belkina lr scales as N/12, so a fixed cap forces every step at large N
@@ -55,17 +57,21 @@ const TSNE_LR_FLOOR: f64 = 200.0;
 /// O(n_boxes^2 log n_boxes); without a cap, n_boxes grows with the embedding
 /// span and per-epoch cost blows up. Box width adapts upward once this cap
 /// binds, keeping the grid covering the embedding.
-#[cfg(feature = "fft_tsne")]
-const TSNE_FFT_MAX_BOXES: usize = 140;
+#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+pub(crate) const TSNE_FFT_MAX_BOXES: usize = 140;
 
 /// Lower bound on the FFT box width (the original fixed value).
-#[cfg(feature = "fft_tsne")]
-const TSNE_FFT_MIN_BOX_WIDTH: f64 = 1.0;
+#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+pub(crate) const TSNE_FFT_MIN_BOX_WIDTH: f64 = 1.0;
+
+/// Minimum number of FFT boxes per dimension (FIt-SNE default).
+#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+pub(crate) const TSNE_FFT_MIN_INTERVALS: usize = 50;
 
 /// Headroom added to the grid bounds once the box-cap regime is active, so
 /// the embedding can move between rebuilds.
-#[cfg(feature = "fft_tsne")]
-const TSNE_FFT_GRID_MARGIN: f64 = 0.3;
+#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+pub(crate) const TSNE_FFT_GRID_MARGIN: f64 = 0.3;
 
 ////////////////
 // Structures //
@@ -164,6 +170,13 @@ pub enum TsneOpt {
     /// available in every build configuration on every platform.
     #[default]
     BarnesHut,
+    /// FFT-accelerated version with three kernels (`q`, `q^2 dx`, `q^2 dy`)
+    /// against a unit charge instead of the 4-term expansion. One forward and
+    /// three inverse transforms instead of four each. Requires `fft_tsne`.
+    Fft3Kernel,
+    /// Device-resident three-kernel FFT version. Only through `tsne_gpu`;
+    /// requires `gpu` but not `fft_tsne`.
+    Fft3KernelGpu,
 }
 
 /// Parse the tSNE optimiser to use.
@@ -171,7 +184,8 @@ pub enum TsneOpt {
 /// ### Params
 ///
 /// * `s` - String defining the optimiser. Accepts `"barnes hut"`,
-///   `"barnes_hut"`, `"barnes-hut"`, `"bh"`, or `"fft"`.
+///   `"barnes_hut"`, `"barnes-hut"`, `"bh"`, `"fft"`, `"fft_3k"` /
+///   `"3-kernel"`, or `"fft_3k_gpu"`.
 ///
 /// ### Returns
 ///
@@ -180,6 +194,8 @@ pub fn parse_tsne_optimiser(s: &str) -> Option<TsneOpt> {
     match s.to_lowercase().as_str() {
         "barnes hut" | "barnes_hut" | "barnes-hut" | "bh" => Some(TsneOpt::BarnesHut),
         "fft" => Some(TsneOpt::Fft),
+        "fft_3k" | "3-kernel" => Some(TsneOpt::Fft3Kernel),
+        "fft_3k_gpu" => Some(TsneOpt::Fft3KernelGpu),
         _ => None,
     }
 }
@@ -271,7 +287,7 @@ where
 ///
 /// Maximum permitted Euclidean step length per point per epoch.
 #[inline]
-fn step_cap_from_lr<T: ManifoldsFloat>(lr: T) -> T {
+pub(crate) fn step_cap_from_lr<T: ManifoldsFloat>(lr: T) -> T {
     let lr_f64 = lr.to_f64().unwrap();
     T::from_f64((lr_f64 * TSNE_MAX_STEP_FRACTION).max(TSNE_MAX_STEP_FLOOR)).unwrap()
 }
@@ -835,8 +851,8 @@ where
 ///
 /// `(n_boxes, box_width, grid_half)` where `grid_half` is the half-width of
 /// the square grid in embedding coordinates.
-#[cfg(feature = "fft_tsne")]
-fn fft_grid_geometry(half_span: f64, min_intervals: usize) -> (usize, f64, f64) {
+#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+pub(crate) fn fft_grid_geometry(half_span: f64, min_intervals: usize) -> (usize, f64, f64) {
     let span = 2.0 * half_span * 1.05;
 
     let n_boxes_unconstrained = choose_grid_size(0.0, span, TSNE_FFT_MIN_BOX_WIDTH, min_intervals);
@@ -891,6 +907,71 @@ pub fn optimise_fft_tsne<T>(
 where
     T: FftwFloat + ManifoldsFloat,
 {
+    optimise_fft_tsne_impl(embd, params, graph, dens, verbose, false)
+}
+
+/// Optimise a 2D embedding using three-kernel FFT-accelerated t-SNE.
+///
+/// Same optimiser as [`optimise_fft_tsne`], but the repulsion convolves a
+/// unit charge grid with three kernels (`q`, `q^2 dx`, `q^2 dy`) instead of
+/// four charges with `q^2`. Gives `Z` and the repulsive forces directly, with
+/// one forward and three inverse transforms per epoch instead of four each.
+///
+/// ### Params
+///
+/// * `embd` - Initial embedding coordinates, shape `[n_samples][2]`
+///   (modified in place).
+/// * `params` - Optimisation hyperparameters.
+/// * `graph` - Sparse high-dimensional affinities in coordinate-list format.
+/// * `dens` - Density-preserving state for den-SNE, or `None` for plain tSNE.
+/// * `verbose` - Verbosity level: `0` silent, `1` normal, `2` detailed.
+///
+/// ### Returns
+///
+/// `Ok(())` on success, or `Err(ManifoldsError::IncorrectDim)` if the
+/// embedding is not 2D.
+#[cfg(feature = "fft_tsne")]
+pub fn optimise_fft3k_tsne<T>(
+    embd: &mut [Vec<T>],
+    params: &TsneOptimParams<T>,
+    graph: &CoordinateList<T>,
+    dens: Option<&DensState<T>>,
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
+    T: FftwFloat + ManifoldsFloat,
+{
+    optimise_fft_tsne_impl(embd, params, graph, dens, verbose, true)
+}
+
+/// Shared FFT t-SNE optimiser loop.
+///
+/// ### Params
+///
+/// * `embd` - Initial embedding coordinates, shape `[n_samples][2]`
+/// * `params` - Optimisation hyperparameters
+/// * `graph` - Sparse high-dimensional affinities
+/// * `dens` - Density-preserving state, or `None`
+/// * `verbose` - Verbosity level
+/// * `three_kernel` - Use the three-kernel repulsion instead of the 4-term
+///   expansion
+///
+/// ### Returns
+///
+/// `Ok(())` on success, or `Err(ManifoldsError::IncorrectDim)` if the
+/// embedding is not 2D.
+#[cfg(feature = "fft_tsne")]
+fn optimise_fft_tsne_impl<T>(
+    embd: &mut [Vec<T>],
+    params: &TsneOptimParams<T>,
+    graph: &CoordinateList<T>,
+    dens: Option<&DensState<T>>,
+    verbose: usize,
+    three_kernel: bool,
+) -> Result<(), ManifoldsError>
+where
+    T: FftwFloat + ManifoldsFloat,
+{
     let verbosity = parse_verbosity_level(verbose);
 
     let n = embd.len();
@@ -901,7 +982,9 @@ where
         return Err(ManifoldsError::IncorrectDim { n_dim });
     }
 
-    let n_terms = 4;
+    // 4-term: potentials of charges (1, x, y, x^2 + y^2); three-kernel:
+    // (Z_i, fx_i, fy_i) directly
+    let n_terms = if three_kernel { 3 } else { 4 };
 
     let initial_momentum = T::from_f64(TSNE_INITIAL_MOMENTUM).unwrap();
     let final_momentum = T::from_f64(TSNE_FINAL_MOMENTUM).unwrap();
@@ -918,7 +1001,7 @@ where
     let adj = if dens.is_some() { adj_full } else { Vec::new() };
 
     // pre-allocated FFT-side buffers and position snapshot.
-    let mut charges = vec![T::zero(); n * n_terms];
+    let mut charges = vec![T::zero(); if three_kernel { 0 } else { n * n_terms }];
     let mut potentials = vec![T::zero(); n * n_terms];
     let mut xs = vec![T::zero(); n];
     let mut ys = vec![T::zero(); n];
@@ -929,10 +1012,12 @@ where
     let mut attr = vec![T::zero(); n * n_dim];
     let mut dens_scratch = dens.map(|_| DensScratch::<T>::new(n));
 
-    let min_intervals = 50;
+    let min_intervals = TSNE_FFT_MIN_INTERVALS;
     let mut cached_n_boxes: usize = 0;
     let mut grid: Option<FftGrid<T>> = None;
     let mut workspace: Option<FftWorkspace<T>> = None;
+    let mut kernels_3k: Option<FftKernels3k<T>> = None;
+    let mut workspace_3k: Option<FftWorkspace3k<T>> = None;
 
     for epoch in 0..params.n_epochs {
         // snapshot positions in parallel.
@@ -981,8 +1066,17 @@ where
 
         if needs_rebuild {
             let half = T::from_f64(grid_half).unwrap();
-            let new_grid = FftGrid::new(-half, half, n_boxes, params.n_interp_points);
-            if cached_n_boxes != n_boxes {
+            let new_grid = if three_kernel {
+                FftGrid::new_geometry(-half, half, n_boxes, params.n_interp_points)
+            } else {
+                FftGrid::new(-half, half, n_boxes, params.n_interp_points)
+            };
+            if three_kernel {
+                kernels_3k = Some(FftKernels3k::new(&new_grid));
+                if cached_n_boxes != n_boxes {
+                    workspace_3k = Some(FftWorkspace3k::new(new_grid.n_fft));
+                }
+            } else if cached_n_boxes != n_boxes {
                 workspace = Some(FftWorkspace::new(new_grid.n_fft));
             }
             grid = Some(new_grid);
@@ -990,7 +1084,6 @@ where
         }
 
         let grid_ref = grid.as_ref().unwrap();
-        let ws = workspace.as_mut().unwrap();
 
         let momentum = if epoch < TSNE_MOMENTUM_SWITCH_ITER {
             initial_momentum
@@ -1003,39 +1096,65 @@ where
             params.get_late_exag_factor()
         };
 
-        // fill charges.
-        charges
-            .par_chunks_mut(n_terms)
-            .enumerate()
-            .for_each(|(i, chunk)| {
-                let x = xs[i];
-                let y = ys[i];
-                chunk[0] = T::one();
-                chunk[1] = x;
-                chunk[2] = y;
-                chunk[3] = x * x + y * y;
-            });
+        if three_kernel {
+            n_body_fft_2d_3k(
+                &xs,
+                &ys,
+                grid_ref,
+                kernels_3k.as_ref().unwrap(),
+                workspace_3k.as_mut().unwrap(),
+                &mut potentials,
+            );
+        } else {
+            // fill charges.
+            charges
+                .par_chunks_mut(n_terms)
+                .enumerate()
+                .for_each(|(i, chunk)| {
+                    let x = xs[i];
+                    let y = ys[i];
+                    chunk[0] = T::one();
+                    chunk[1] = x;
+                    chunk[2] = y;
+                    chunk[3] = x * x + y * y;
+                });
 
-        // zero potentials and run the FFT-accelerated convolution.
-        for v in potentials.iter_mut() {
-            *v = T::zero();
+            // zero potentials and run the FFT-accelerated convolution.
+            for v in potentials.iter_mut() {
+                *v = T::zero();
+            }
+            n_body_fft_2d(
+                &xs,
+                &ys,
+                &charges,
+                n_terms,
+                grid_ref,
+                workspace.as_mut().unwrap(),
+                &mut potentials,
+            );
         }
-        n_body_fft_2d(&xs, &ys, &charges, n_terms, grid_ref, ws, &mut potentials);
 
         // Z in f64; subtract n to remove the diagonal q_ii = 1 contribution.
-        let sum_q: f64 = (0..n)
-            .map(|i| {
-                let idx = i * n_terms;
-                let phi1 = potentials[idx].to_f64().unwrap();
-                let phi2 = potentials[idx + 1].to_f64().unwrap();
-                let phi3 = potentials[idx + 2].to_f64().unwrap();
-                let phi4 = potentials[idx + 3].to_f64().unwrap();
-                let x = xs[i].to_f64().unwrap();
-                let y = ys[i].to_f64().unwrap();
-                (1.0 + x * x + y * y) * phi1 - 2.0 * (x * phi2 + y * phi3) + phi4
-            })
-            .sum::<f64>()
-            - n as f64;
+        let sum_q: f64 = if three_kernel {
+            (0..n)
+                .map(|i| potentials[i * n_terms].to_f64().unwrap())
+                .sum::<f64>()
+                - n as f64
+        } else {
+            (0..n)
+                .map(|i| {
+                    let idx = i * n_terms;
+                    let phi1 = potentials[idx].to_f64().unwrap();
+                    let phi2 = potentials[idx + 1].to_f64().unwrap();
+                    let phi3 = potentials[idx + 2].to_f64().unwrap();
+                    let phi4 = potentials[idx + 3].to_f64().unwrap();
+                    let x = xs[i].to_f64().unwrap();
+                    let y = ys[i].to_f64().unwrap();
+                    (1.0 + x * x + y * y) * phi1 - 2.0 * (x * phi2 + y * phi3) + phi4
+                })
+                .sum::<f64>()
+                - n as f64
+        };
 
         let sum_q_safe = if sum_q > TSNE_EPS { sum_q } else { 1.0 };
 
@@ -1060,17 +1179,25 @@ where
                 let x = xs[i];
                 let y = ys[i];
 
-                // repulsive forces reconstructed in f64.
+                // repulsive forces, normalised in f64. The three-kernel path
+                // returns them directly; the 4-term path reconstructs them.
                 let pot_idx = i * n_terms;
-                let phi1 = potentials[pot_idx].to_f64().unwrap();
-                let phi2 = potentials[pot_idx + 1].to_f64().unwrap();
-                let phi3 = potentials[pot_idx + 2].to_f64().unwrap();
+                let (raw_x, raw_y) = if three_kernel {
+                    (
+                        potentials[pot_idx + 1].to_f64().unwrap(),
+                        potentials[pot_idx + 2].to_f64().unwrap(),
+                    )
+                } else {
+                    let phi1 = potentials[pot_idx].to_f64().unwrap();
+                    let phi2 = potentials[pot_idx + 1].to_f64().unwrap();
+                    let phi3 = potentials[pot_idx + 2].to_f64().unwrap();
+                    let xf = x.to_f64().unwrap();
+                    let yf = y.to_f64().unwrap();
+                    (xf * phi1 - phi2, yf * phi1 - phi3)
+                };
 
-                let xf = x.to_f64().unwrap();
-                let yf = y.to_f64().unwrap();
-
-                let rep_x = T::from_f64((xf * phi1 - phi2) / sum_q_safe).unwrap();
-                let rep_y = T::from_f64((yf * phi1 - phi3) / sum_q_safe).unwrap();
+                let rep_x = T::from_f64(raw_x / sum_q_safe).unwrap();
+                let rep_y = T::from_f64(raw_y / sum_q_safe).unwrap();
 
                 let (dens_x, dens_y) = match &dens_ctx {
                     Some((state, scratch, consts)) => {
@@ -1276,5 +1403,101 @@ mod test_tsne_optimiser {
             assert_relative_eq!(p1[0], p2[0]);
             assert_relative_eq!(p1[1], p2[1]);
         }
+    }
+
+    #[test]
+    fn test_parse_tsne_optimiser() {
+        assert!(matches!(
+            parse_tsne_optimiser("bh"),
+            Some(TsneOpt::BarnesHut)
+        ));
+        assert!(matches!(
+            parse_tsne_optimiser("Barnes_Hut"),
+            Some(TsneOpt::BarnesHut)
+        ));
+        assert!(matches!(parse_tsne_optimiser("fft"), Some(TsneOpt::Fft)));
+        assert!(matches!(
+            parse_tsne_optimiser("fft_3k"),
+            Some(TsneOpt::Fft3Kernel)
+        ));
+        assert!(matches!(
+            parse_tsne_optimiser("3-kernel"),
+            Some(TsneOpt::Fft3Kernel)
+        ));
+        assert!(matches!(
+            parse_tsne_optimiser("FFT_3K_GPU"),
+            Some(TsneOpt::Fft3KernelGpu)
+        ));
+        assert!(parse_tsne_optimiser("fft3").is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "fft_tsne")]
+    fn test_fft3k_tsne_basic_convergence() {
+        let edges = vec![(0, 1, 1.0), (1, 2, 1.0), (2, 0, 1.0)];
+        let graph = create_coo_graph(3, &edges);
+
+        let mut embd = vec![vec![0.0, 0.0], vec![1.0, 1.0], vec![2.0, 2.0]];
+        let initial_embd = embd.clone();
+
+        let params = TsneOptimParams {
+            n_epochs: 50,
+            lr: Some(50.0),
+            n_interp_points: 3,
+            ..TsneOptimParams::default()
+        };
+
+        optimise_fft3k_tsne(&mut embd, &params, &graph, None, 0).unwrap();
+
+        for point in &embd {
+            for val in point {
+                assert!(val.is_finite(), "Embedding contains non-finite values");
+            }
+        }
+
+        let total_movement: f64 = embd
+            .iter()
+            .zip(initial_embd.iter())
+            .map(|(n, o)| (n[0] - o[0]).powi(2) + (n[1] - o[1]).powi(2))
+            .sum();
+
+        assert!(
+            total_movement > 0.01,
+            "Three-kernel FFT t-SNE failed to move points significantly"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "fft_tsne")]
+    fn test_fft3k_tsne_determinism() {
+        let edges = vec![(0, 1, 1.0), (1, 2, 1.0)];
+        let graph = create_coo_graph(3, &edges);
+
+        let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
+        let mut embd2 = embd1.clone();
+
+        let params = TsneOptimParams {
+            n_epochs: 50,
+            ..TsneOptimParams::default()
+        };
+
+        optimise_fft3k_tsne(&mut embd1, &params, &graph, None, 0).unwrap();
+        optimise_fft3k_tsne(&mut embd2, &params, &graph, None, 0).unwrap();
+
+        for (p1, p2) in embd1.iter().zip(embd2.iter()) {
+            assert_eq!(p1, p2);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "fft_tsne")]
+    fn test_fft3k_tsne_rejects_non_2d() {
+        let graph = create_coo_graph(2, &[(0, 1, 1.0)]);
+        let mut embd = vec![vec![0.0, 0.0, 0.0], vec![1.0, 0.0, 0.0]];
+        let res = optimise_fft3k_tsne(&mut embd, &TsneOptimParams::default(), &graph, None, 0);
+        assert!(matches!(
+            res,
+            Err(ManifoldsError::IncorrectDim { n_dim: 3 })
+        ));
     }
 }

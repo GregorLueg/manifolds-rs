@@ -16,10 +16,21 @@ That one call answers both questions, which is what a caller choosing between
 ## What actually moves to the device
 
 Not everything. The neighbour search and the Adam update run on the GPU; the
-graph construction, the spectral initialisation and t-SNE's Barnes-Hut repulsion
-stay on the CPU.
+graph construction and the initialisation stay on the CPU. For t-SNE it depends
+on `approx`: with `"barnes_hut"` the repulsion stays on the CPU, with
+`"fft_3k_gpu"` the whole optimisation runs on the device.
 
-So the win depends entirely on whether the neighbour search was your bottleneck.
+```python
+mf.TSNEGpu(approx="fft_3k_gpu").fit_transform(X)
+```
+
+`"fft_3k_gpu"` is FFT-interpolated repulsion with three kernels (`q`, `q^2 dx`,
+`q^2 dy`) instead of the four-term expansion, with the embedding resident on the
+device between epochs. There is no CPU FFT t-SNE in the wheel (see
+[the guide](guide.md#what-is-not-in-the-wheel)), so this is the only FFT path
+from Python.
+
+Otherwise the win depends on whether the neighbour search was your bottleneck.
 On a few thousand points it will not be, and the transfers will make the GPU
 path slower than the CPU one. Past a few hundred thousand it usually is. Measure
 on your own data and hardware before switching; on Apple Silicon in particular
