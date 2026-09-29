@@ -10,29 +10,31 @@
       
       
       
-        <link rel="canonical" href="https://gregorlueg.github.io/manifolds-rs/">
+        <link rel="canonical" href="https://gregorlueg.github.io/manifolds-rs/anndata/">
       
       
+        <link rel="prev" href="../gpu/">
       
-        <link rel="next" href="choosing/">
+      
+        <link rel="next" href="../guide/">
       
       
         
       
       
-      <link rel="icon" href="assets/images/favicon.png">
+      <link rel="icon" href="../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
-        <title>manifolds-rs</title>
+        <title>AnnData / scanpy - manifolds-rs</title>
       
     
     
-      <link rel="stylesheet" href="assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
       
         
-        <link rel="stylesheet" href="assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -51,9 +53,9 @@
       
     
     
-      <link rel="stylesheet" href="assets/_mkdocstrings.css">
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
     
-    <script>__md_scope=new URL(".",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -78,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#manifolds-rs" class="md-skip">
+        <a href="#anndata-scanpy" class="md-skip">
           Skip to content
         </a>
       
@@ -94,7 +96,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="." title="manifolds-rs" class="md-header__button md-logo" aria-label="manifolds-rs" data-md-component="logo">
+    <a href=".." title="manifolds-rs" class="md-header__button md-logo" aria-label="manifolds-rs" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -114,7 +116,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Home
+              AnnData / scanpy
             
           </span>
         </div>
@@ -230,7 +232,7 @@
 
 <nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="." title="manifolds-rs" class="md-nav__button md-logo" aria-label="manifolds-rs" data-md-component="logo">
+    <a href=".." title="manifolds-rs" class="md-nav__button md-logo" aria-label="manifolds-rs" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
@@ -257,37 +259,10 @@
       
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Home
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="." class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
         
   
   
@@ -303,70 +278,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#install" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Install
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#thirty-seconds" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Thirty seconds
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#the-parameter-story" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The parameter story
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#where-to-go-next" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Where to go next
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -378,7 +289,7 @@
   
   
     <li class="md-nav__item">
-      <a href="choosing/" class="md-nav__link">
+      <a href="../choosing/" class="md-nav__link">
         
   
   
@@ -405,7 +316,7 @@
   
   
     <li class="md-nav__item">
-      <a href="quickstart/" class="md-nav__link">
+      <a href="../quickstart/" class="md-nav__link">
         
   
   
@@ -432,7 +343,7 @@
   
   
     <li class="md-nav__item">
-      <a href="gpu/" class="md-nav__link">
+      <a href="../gpu/" class="md-nav__link">
         
   
   
@@ -456,10 +367,37 @@
       
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="anndata/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AnnData / scanpy
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -475,6 +413,92 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#umap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        UMAP
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#t-sne" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        t-SNE
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gpu" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GPU
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-gets-written" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What gets written
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#everything-else" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Everything else
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmark
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -486,7 +510,7 @@
   
   
     <li class="md-nav__item">
-      <a href="guide/" class="md-nav__link">
+      <a href="../guide/" class="md-nav__link">
         
   
   
@@ -565,7 +589,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/embeddings/" class="md-nav__link">
+      <a href="../api/embeddings/" class="md-nav__link">
         
   
   
@@ -593,7 +617,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/gpu/" class="md-nav__link">
+      <a href="../api/gpu/" class="md-nav__link">
         
   
   
@@ -621,7 +645,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/anndata/" class="md-nav__link">
+      <a href="../api/anndata/" class="md-nav__link">
         
   
   
@@ -649,7 +673,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/params/" class="md-nav__link">
+      <a href="../api/params/" class="md-nav__link">
         
   
   
@@ -677,7 +701,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/neighbours/" class="md-nav__link">
+      <a href="../api/neighbours/" class="md-nav__link">
         
   
   
@@ -705,7 +729,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/datasets/" class="md-nav__link">
+      <a href="../api/datasets/" class="md-nav__link">
         
   
   
@@ -733,7 +757,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/base/" class="md-nav__link">
+      <a href="../api/base/" class="md-nav__link">
         
   
   
@@ -788,10 +812,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#install" class="md-nav__link">
+  <a href="#umap" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Install
+        UMAP
       
     </span>
   </a>
@@ -799,10 +823,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#thirty-seconds" class="md-nav__link">
+  <a href="#t-sne" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Thirty seconds
+        t-SNE
       
     </span>
   </a>
@@ -810,10 +834,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#the-parameter-story" class="md-nav__link">
+  <a href="#gpu" class="md-nav__link">
     <span class="md-ellipsis">
       
-        The parameter story
+        GPU
       
     </span>
   </a>
@@ -821,10 +845,32 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#where-to-go-next" class="md-nav__link">
+  <a href="#what-gets-written" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Where to go next
+        What gets written
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#everything-else" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Everything else
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmark
       
     </span>
   </a>
@@ -848,7 +894,7 @@
 
 
   
-    <a href="https://github.com/GregorLueg/manifolds-rs/edit/main/python/docs/index.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+    <a href="https://github.com/GregorLueg/manifolds-rs/edit/main/python/docs/anndata.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
       
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
     </a>
@@ -856,58 +902,144 @@
   
 
 
-<h1 id="manifolds-rs">manifolds-rs<a class="headerlink" href="#manifolds-rs" title="Permanent link">&para;</a></h1>
-<p>Dimensionality reduction for single-cell and computational biology. The
-<a href="https://github.com/GregorLueg/manifolds-rs">Rust crate</a> does the work. This is a
-scikit-learn shaped layer over it.</p>
-<p>Eight algorithms on the CPU, three of them with GPU variants where the neighbour
-search and the Adam update move to the device. No CUDA runtime to install: the
-GPU backend is wgpu, so it runs on Metal, Vulkan or DX12 and ships in the
-ordinary wheel.</p>
-<h2 id="install">Install<a class="headerlink" href="#install" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>manifolds-rs
+<h1 id="anndata-scanpy">AnnData / scanpy<a class="headerlink" href="#anndata-scanpy" title="Permanent link">&para;</a></h1>
+<p><code>mf.umap</code> and <code>mf.tsne</code> are drop-ins for <code>sc.tl.umap</code> and <code>sc.tl.tsne</code>. They
+write the same slots, so everything downstream (<code>sc.pl.umap</code>, <code>sc.pl.tsne</code>,
+<code>sc.pl.embedding</code>) works unchanged. They need the <code>anndata</code> extra; scanpy itself
+is not a dependency.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'manifolds-rs[anndata]'</span>
 </code></pre></div>
-<p>Wheels are built for Linux x86_64 and macOS on both architectures, against
-Python 3.10 and up. numpy and beartype are the only runtime dependencies.</p>
-<h2 id="thirty-seconds">Thirty seconds<a class="headerlink" href="#thirty-seconds" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">manifolds_rs</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">mf</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">X</span><span class="p">,</span> <span class="n">labels</span> <span class="o">=</span> <span class="n">mf</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">clustered</span><span class="p">(</span><span class="mi">20_000</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">50</span><span class="p">,</span> <span class="n">n_clusters</span><span class="o">=</span><span class="mi">12</span><span class="p">)</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">embedding</span> <span class="o">=</span> <span class="n">mf</span><span class="o">.</span><span class="n">UMAP</span><span class="p">(</span><span class="n">n_neighbors</span><span class="o">=</span><span class="mi">15</span><span class="p">,</span> <span class="n">min_dist</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span><span class="o">.</span><span class="n">fit_transform</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>
+<h2 id="umap">UMAP<a class="headerlink" href="#umap" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">scanpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">sc</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">manifolds_rs</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">mf</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">sc</span><span class="o">.</span><span class="n">pp</span><span class="o">.</span><span class="n">pca</span><span class="p">(</span><span class="n">adata</span><span class="p">)</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">sc</span><span class="o">.</span><span class="n">pp</span><span class="o">.</span><span class="n">neighbors</span><span class="p">(</span><span class="n">adata</span><span class="p">,</span> <span class="n">n_neighbors</span><span class="o">=</span><span class="mi">15</span><span class="p">)</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">mf</span><span class="o">.</span><span class="n">umap</span><span class="p">(</span><span class="n">adata</span><span class="p">)</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">sc</span><span class="o">.</span><span class="n">pl</span><span class="o">.</span><span class="n">umap</span><span class="p">(</span><span class="n">adata</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s2">"leiden"</span><span class="p">)</span>
 </code></pre></div>
-<p>Parameters in the constructor, data in <code>fit</code>, an <code>(n_samples, n_components)</code>
-array back. <code>get_params</code> and <code>set_params</code> are there, so <code>clone</code> and <code>Pipeline</code>
-work without scikit-learn being an install requirement.</p>
-<h2 id="the-parameter-story">The parameter story<a class="headerlink" href="#the-parameter-story" title="Permanent link">&para;</a></h2>
-<p>The knobs people actually turn are ordinary constructor arguments. Everything
-else lives in frozen dataclasses, one per group, and anything you leave alone
-keeps the crate's default:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">mf</span><span class="o">.</span><span class="n">UMAP</span><span class="p">(</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">n_neighbors</span><span class="o">=</span><span class="mi">30</span><span class="p">,</span>
-<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">ann</span><span class="o">=</span><span class="s2">"hnsw"</span><span class="p">,</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">nn_params</span><span class="o">=</span><span class="n">mf</span><span class="o">.</span><span class="n">NeighbourParams</span><span class="p">(</span><span class="n">m</span><span class="o">=</span><span class="mi">32</span><span class="p">,</span> <span class="n">ef_search</span><span class="o">=</span><span class="mi">200</span><span class="p">),</span>
-<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">optim_params</span><span class="o">=</span><span class="n">mf</span><span class="o">.</span><span class="n">UmapOptim</span><span class="p">(</span><span class="n">gamma</span><span class="o">=</span><span class="mf">1.5</span><span class="p">,</span> <span class="n">neg_sample_rate</span><span class="o">=</span><span class="mi">10</span><span class="p">),</span>
-<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="p">)</span>
+<p>Like scanpy's, <code>mf.umap</code> embeds the <code>sc.pp.neighbors</code> graph rather than
+searching again. It reads the neighbour indices and distances back out of
+<code>obsp["distances"]</code> and the crate builds its own fuzzy graph from them, so
+<code>n_neighbors</code> and the metric are whatever <code>sc.pp.neighbors</code> used. Scanpy counts
+the cell itself and this does not, so <code>n_neighbors=15</code> there is recorded as 14
+here. The
+representation (<code>use_rep</code>, <code>n_pcs</code>) comes from the same
+<code>uns["neighbors"]["params"]</code> and feeds the initialisation.</p>
+<p><code>obsp["distances"]</code> has to hold the same number of neighbours on every row,
+which it does for <code>sc.pp.neighbors</code> with its default settings. A ragged graph is
+an error.</p>
+<h2 id="t-sne">t-SNE<a class="headerlink" href="#t-sne" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">mf</span><span class="o">.</span><span class="n">tsne</span><span class="p">(</span><span class="n">adata</span><span class="p">)</span>  <span class="c1"># obsm["X_pca"]</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">mf</span><span class="o">.</span><span class="n">tsne</span><span class="p">(</span><span class="n">adata</span><span class="p">,</span> <span class="n">n_pcs</span><span class="o">=</span><span class="mi">30</span><span class="p">)</span>  <span class="c1"># the first 30 PCs</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">mf</span><span class="o">.</span><span class="n">tsne</span><span class="p">(</span><span class="n">adata</span><span class="p">,</span> <span class="n">use_rep</span><span class="o">=</span><span class="s2">"X_scVI"</span><span class="p">)</span>  <span class="c1"># any dense obsm key, or "X"</span>
 </code></pre></div>
-<p>Every parameter has exactly one home. If it is a constructor argument it is not
-in the group, so there is never a question of which wins.</p>
-<h2 id="where-to-go-next">Where to go next<a class="headerlink" href="#where-to-go-next" title="Permanent link">&para;</a></h2>
-<ul>
-<li><a href="choosing/">Choosing an algorithm</a> if you don't already know which one you
-  want. Eight is a lot of choice and most of them are wrong for your problem.</li>
-<li><a href="quickstart/">Quickstart</a> for worked examples over the synthetic generators,
-  including how to score an embedding rather than squint at it.</li>
-<li><a href="gpu/">GPU</a> for the three device-accelerated estimators and what they
-  actually buy you.</li>
-<li><a href="guide/">Guide</a> for metrics, precision, threads, reusing the neighbour graph
-  and the sharp edges.</li>
-<li><a href="api/embeddings/">API reference</a> for every parameter of every estimator,
-  with what each <code>None</code> resolves to.</li>
-<li><a href="https://github.com/GregorLueg/manifolds-rs/blob/main/python/CHANGELOG.md">Changelog</a>
-  for what changed in this package. It versions separately from the Rust crate,
-  which keeps its own.</li>
-</ul>
+<p><code>mf.tsne</code> does its own <code>3 * perplexity</code> neighbour search on the representation,
+as <code>sc.tl.tsne</code> does. The 15-neighbour graph from <code>sc.pp.neighbors</code> is far too
+narrow for t-SNE at the usual perplexity. There is no automatic PCA: without
+<code>obsm["X_pca"]</code> and no <code>use_rep</code>, it raises and tells you to run <code>sc.pp.pca</code>.</p>
+<h2 id="gpu">GPU<a class="headerlink" href="#gpu" title="Permanent link">&para;</a></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">mf</span><span class="o">.</span><span class="n">umap</span><span class="p">(</span><span class="n">adata</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">"gpu"</span><span class="p">)</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">mf</span><span class="o">.</span><span class="n">tsne</span><span class="p">(</span><span class="n">adata</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">"gpu"</span><span class="p">,</span> <span class="n">approx</span><span class="o">=</span><span class="s2">"fft_3k_gpu"</span><span class="p">)</span>
+</code></pre></div>
+<p><code>device="gpu"</code> swaps in <code>UMAPGpu</code> / <code>TSNEGpu</code>, float32 throughout. See
+<a href="../gpu/">GPU</a> for what runs on the device.</p>
+<h2 id="what-gets-written">What gets written<a class="headerlink" href="#what-gets-written" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Call</th>
+<th><code>obsm</code></th>
+<th><code>uns</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mf.umap(adata)</code></td>
+<td><code>"X_umap"</code></td>
+<td><code>"umap"</code></td>
+</tr>
+<tr>
+<td><code>mf.tsne(adata)</code></td>
+<td><code>"X_tsne"</code></td>
+<td><code>"tsne"</code></td>
+</tr>
+<tr>
+<td><code>key_added="foo"</code></td>
+<td><code>"foo"</code></td>
+<td><code>"foo"</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>uns[...]["params"]</code> holds the estimator's scalar parameters, plus <code>device</code> and
+<code>neighbors_key</code> (UMAP) or <code>use_rep</code> / <code>n_pcs</code> (t-SNE). Only scalars are kept, so
+the result survives <code>write_h5ad</code>. UMAP's <code>a</code> and <code>b</code> are not stored: the crate
+fits them from <code>min_dist</code> and <code>spread</code> and does not hand them back.</p>
+<p><code>copy=True</code> returns a modified copy and leaves <code>adata</code> alone.</p>
+<h2 id="everything-else">Everything else<a class="headerlink" href="#everything-else" title="Permanent link">&para;</a></h2>
+<p>Any other constructor argument of the estimator goes through as a keyword:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">mf</span><span class="o">.</span><span class="n">umap</span><span class="p">(</span><span class="n">adata</span><span class="p">,</span> <span class="n">n_epochs</span><span class="o">=</span><span class="mi">200</span><span class="p">,</span> <span class="n">init</span><span class="o">=</span><span class="s2">"pca"</span><span class="p">,</span> <span class="n">optim_params</span><span class="o">=</span><span class="n">mf</span><span class="o">.</span><span class="n">UmapOptim</span><span class="p">(</span><span class="n">gamma</span><span class="o">=</span><span class="mf">1.5</span><span class="p">))</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">mf</span><span class="o">.</span><span class="n">tsne</span><span class="p">(</span><span class="n">adata</span><span class="p">,</span> <span class="n">learning_rate</span><span class="o">=</span><span class="mf">500.0</span><span class="p">,</span> <span class="n">ann</span><span class="o">=</span><span class="s2">"hnsw"</span><span class="p">,</span> <span class="n">metric</span><span class="o">=</span><span class="s2">"cosine"</span><span class="p">)</span>
+</code></pre></div>
+<p>Unknown names raise, same as the estimator constructors.</p>
+<h2 id="benchmark">Benchmark<a class="headerlink" href="#benchmark" title="Permanent link">&para;</a></h2>
+<p>25,000 cells from <code>mf.datasets.clustered(25_000, dim=50, n_clusters=8)</code>,
+<code>sc.pp.pca(n_comps=30)</code> and <code>sc.pp.neighbors(n_neighbors=15)</code> beforehand, not
+timed. Three repeats per row at seeds 0, 1 and 2, after an untimed warm-up
+(numba JIT for umap-learn, wgpu device initialisation). Cluster separation is
+the mean between-centroid distance over the mean within-cluster spread; higher
+means the clusters sit further apart than they are wide.</p>
+<table>
+<thead>
+<tr>
+<th>Call</th>
+<th>Time (s)</th>
+<th>Cluster separation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sc.tl.umap</code></td>
+<td>10.64 ± 0.02</td>
+<td>19.83 ± 0.90</td>
+</tr>
+<tr>
+<td><code>mf.umap</code></td>
+<td>1.48 ± 0.07</td>
+<td>26.04 ± 0.27</td>
+</tr>
+<tr>
+<td><code>mf.umap(device="gpu")</code></td>
+<td>0.43 ± 0.01</td>
+<td>19.06 ± 0.29</td>
+</tr>
+<tr>
+<td><code>sc.tl.tsne(n_jobs=10)</code></td>
+<td>47.21 ± 1.07</td>
+<td>11.14 ± 0.00</td>
+</tr>
+<tr>
+<td><code>mf.tsne</code></td>
+<td>9.73 ± 0.27</td>
+<td>8.71 ± 0.23</td>
+</tr>
+<tr>
+<td><code>mf.tsne(device="gpu")</code></td>
+<td>12.18 ± 0.32</td>
+<td>8.72 ± 0.24</td>
+</tr>
+<tr>
+<td><code>mf.tsne(device="gpu", approx="fft_3k_gpu")</code></td>
+<td>4.89 ± 0.06</td>
+<td>8.34 ± 0.14</td>
+</tr>
+</tbody>
+</table>
+<p>Mean ± sd over the three repeats. Run on an Apple M1 Max (10 cores), scanpy
+1.11.5. Defaults on both sides, with two things worth knowing: scanpy runs UMAP
+for 200 epochs above 10,000 cells where <code>mf.umap</code> runs 500, and <code>sc.tl.tsne</code>
+was given <code>n_jobs=10</code> since its default is single-threaded. One synthetic
+dataset on one machine; measure on your own data before relying on it.</p>
 
 
 
@@ -967,10 +1099,10 @@ in the group, so there is never a question of which wins.</p>
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "content.action.edit", "toc.follow"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

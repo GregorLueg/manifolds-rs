@@ -16,7 +16,7 @@
         <link rel="prev" href="../embeddings/">
       
       
-        <link rel="next" href="../params/">
+        <link rel="next" href="../anndata/">
       
       
         
@@ -370,6 +370,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../../anndata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AnnData / scanpy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../guide/" class="md-nav__link">
         
   
@@ -412,10 +439,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
             
   
   
@@ -433,8 +460,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -575,6 +602,34 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../anndata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AnnData functions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -1366,10 +1421,11 @@ device alongside the rest of the update.</p>
 
 
 
-        <p>t-SNE with a GPU neighbour search.</p>
-<p>Only the search moves to the device here; the Barnes-Hut repulsion stays on
-the CPU. On a dataset where the search dominates that is most of the win,
-and on one where it does not you should not expect much.</p>
+        <p>t-SNE with a GPU neighbour search and, optionally, a GPU optimiser.</p>
+<p>With <code>approx="barnes_hut"</code> only the search moves to the device and the
+repulsion stays on the CPU. <code>approx="fft_3k_gpu"</code> runs the whole
+optimisation on the device as well: FFT-interpolated repulsion with three
+kernels, the embedding resident on the GPU throughout.</p>
 <p>When <code>ann</code> is <code>"nndescent_gpu"</code> and <code>NeighbourParamsGpu.k</code> is left unset,
 the CAGRA graph degree is backfilled to <code>3 * perplexity</code> so it is sized for
 the query t-SNE actually makes.</p>
@@ -1507,7 +1563,8 @@ the query t-SNE actually makes.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Repulsion approximation. See <code>manifolds_rs.TSNE</code>.</p>
+                <p><code>"barnes_hut"</code> (CPU optimiser) or <code>"fft_3k_gpu"</code> (GPU
+optimiser).</p>
               </div>
             </td>
             <td>

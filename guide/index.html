@@ -13,7 +13,7 @@
         <link rel="canonical" href="https://gregorlueg.github.io/manifolds-rs/guide/">
       
       
-        <link rel="prev" href="../gpu/">
+        <link rel="prev" href="../anndata/">
       
       
         <link rel="next" href="../api/embeddings/">
@@ -367,6 +367,33 @@
       
   
   
+  
+  
+    <li class="md-nav__item">
+      <a href="../anndata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AnnData / scanpy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
     
   
   
@@ -578,10 +605,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
             
   
   
@@ -599,8 +626,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -653,6 +680,34 @@
     
   
     GPU estimators
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/anndata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AnnData functions
   
 
     
@@ -1075,9 +1130,10 @@ runs of the same configuration will differ, as they should.</p>
   <code>ValueError</code> and <code>AttributeError</code>, matching scikit-learn's.</li>
 </ul>
 <h2 id="what-is-not-in-the-wheel">What is not in the wheel<a class="headerlink" href="#what-is-not-in-the-wheel" title="Permanent link">&para;</a></h2>
-<p>FFT-accelerated t-SNE. It needs FFTW, a system library no manylinux container
-carries, so <code>approx="fft"</code> needs an extension you built yourself with the
-<code>fft_tsne</code> feature. Barnes-Hut is the default and is what the wheel does.</p>
+<p>CPU FFT-accelerated t-SNE. It needs FFTW, which is GPL-2.0-or-later and would
+be linked statically, turning the whole wheel GPL. So the CPU estimators take
+Barnes-Hut only. On a GPU, <code>TSNEGpu(approx="fft_3k_gpu")</code> gives you
+FFT-interpolated repulsion without FFTW.</p>
 <p>Parametric UMAP exists in the crate but is not yet bound.</p>
 
 

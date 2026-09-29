@@ -16,7 +16,7 @@
         <link rel="prev" href="../quickstart/">
       
       
-        <link rel="next" href="../guide/">
+        <link rel="next" href="../anndata/">
       
       
         
@@ -483,6 +483,33 @@
   
   
     <li class="md-nav__item">
+      <a href="../anndata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AnnData / scanpy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../guide/" class="md-nav__link">
         
   
@@ -523,10 +550,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
             
   
   
@@ -544,8 +571,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -598,6 +625,34 @@
     
   
     GPU estimators
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/anndata/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    AnnData functions
   
 
     
@@ -859,9 +914,17 @@ same wheel works on Metal, Vulkan and DX12.</p>
 <code>UMAP</code> and <code>UMAPGpu</code> actually wants to know.</p>
 <h2 id="what-actually-moves-to-the-device">What actually moves to the device<a class="headerlink" href="#what-actually-moves-to-the-device" title="Permanent link">&para;</a></h2>
 <p>Not everything. The neighbour search and the Adam update run on the GPU; the
-graph construction, the spectral initialisation and t-SNE's Barnes-Hut repulsion
-stay on the CPU.</p>
-<p>So the win depends entirely on whether the neighbour search was your bottleneck.
+graph construction and the initialisation stay on the CPU. For t-SNE it depends
+on <code>approx</code>: with <code>"barnes_hut"</code> the repulsion stays on the CPU, with
+<code>"fft_3k_gpu"</code> the whole optimisation runs on the device.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">mf</span><span class="o">.</span><span class="n">TSNEGpu</span><span class="p">(</span><span class="n">approx</span><span class="o">=</span><span class="s2">"fft_3k_gpu"</span><span class="p">)</span><span class="o">.</span><span class="n">fit_transform</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>
+</code></pre></div>
+<p><code>"fft_3k_gpu"</code> is FFT-interpolated repulsion with three kernels (<code>q</code>, <code>q^2 dx</code>,
+<code>q^2 dy</code>) instead of the four-term expansion, with the embedding resident on the
+device between epochs. There is no CPU FFT t-SNE in the wheel (see
+<a href="../guide/#what-is-not-in-the-wheel">the guide</a>), so this is the only FFT path
+from Python.</p>
+<p>Otherwise the win depends on whether the neighbour search was your bottleneck.
 On a few thousand points it will not be, and the transfers will make the GPU
 path slower than the CPU one. Past a few hundred thousand it usually is. Measure
 on your own data and hardware before switching; on Apple Silicon in particular
@@ -887,11 +950,11 @@ like <code>"hnsw"</code> is an error rather than a silent fallback.</p>
 <p>Their knobs live in <a href="../api/params/"><code>NeighbourParamsGpu</code></a>, which is a different
 set from the CPU <code>NeighbourParams</code>: CAGRA build degrees and beam-search budgets
 have no CPU counterpart.</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">mf</span><span class="o">.</span><span class="n">UMAPGpu</span><span class="p">(</span>
-<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="n">n_neighbors</span><span class="o">=</span><span class="mi">15</span><span class="p">,</span>
-<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">ann</span><span class="o">=</span><span class="s2">"nndescent_gpu"</span><span class="p">,</span>
-<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">nn_params</span><span class="o">=</span><span class="n">mf</span><span class="o">.</span><span class="n">NeighbourParamsGpu</span><span class="p">(</span><span class="n">k_build</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span> <span class="n">beam_width</span><span class="o">=</span><span class="mi">32</span><span class="p">),</span>
-<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">mf</span><span class="o">.</span><span class="n">UMAPGpu</span><span class="p">(</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">n_neighbors</span><span class="o">=</span><span class="mi">15</span><span class="p">,</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">ann</span><span class="o">=</span><span class="s2">"nndescent_gpu"</span><span class="p">,</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">nn_params</span><span class="o">=</span><span class="n">mf</span><span class="o">.</span><span class="n">NeighbourParamsGpu</span><span class="p">(</span><span class="n">k_build</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span> <span class="n">beam_width</span><span class="o">=</span><span class="mi">32</span><span class="p">),</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="p">)</span>
 </code></pre></div>
 <p>Under <code>TSNEGpu</code> with <code>nndescent_gpu</code>, leaving <code>NeighbourParamsGpu.k</code> unset
 backfills the graph degree to <code>3 * perplexity</code>, so it is sized for the query
@@ -899,8 +962,8 @@ t-SNE actually makes.</p>
 <h2 id="mixing-cpu-and-gpu">Mixing CPU and GPU<a class="headerlink" href="#mixing-cpu-and-gpu" title="Permanent link">&para;</a></h2>
 <p>The neighbour graph is just two arrays, so you can build it wherever it is
 cheapest and hand it to whichever estimator you like:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">ind</span><span class="p">,</span> <span class="n">dist</span> <span class="o">=</span> <span class="n">mf</span><span class="o">.</span><span class="n">knn_graph</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">15</span><span class="p">,</span> <span class="n">ann</span><span class="o">=</span><span class="s2">"hnsw"</span><span class="p">)</span>  <span class="c1"># CPU search</span>
-<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">embedding</span> <span class="o">=</span> <span class="n">mf</span><span class="o">.</span><span class="n">UMAPGpu</span><span class="p">()</span><span class="o">.</span><span class="n">fit_transform</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">knn_indices</span><span class="o">=</span><span class="n">ind</span><span class="p">,</span> <span class="n">knn_distances</span><span class="o">=</span><span class="n">dist</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">ind</span><span class="p">,</span> <span class="n">dist</span> <span class="o">=</span> <span class="n">mf</span><span class="o">.</span><span class="n">knn_graph</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">15</span><span class="p">,</span> <span class="n">ann</span><span class="o">=</span><span class="s2">"hnsw"</span><span class="p">)</span>  <span class="c1"># CPU search</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">embedding</span> <span class="o">=</span> <span class="n">mf</span><span class="o">.</span><span class="n">UMAPGpu</span><span class="p">()</span><span class="o">.</span><span class="n">fit_transform</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">knn_indices</span><span class="o">=</span><span class="n">ind</span><span class="p">,</span> <span class="n">knn_distances</span><span class="o">=</span><span class="n">dist</span><span class="p">)</span>
 </code></pre></div>
 <p>That skips the GPU search entirely and leaves only the Adam update on the
 device, which is occasionally the right split.</p>
