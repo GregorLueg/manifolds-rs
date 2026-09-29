@@ -346,3 +346,101 @@ impl Fft2dPlan {
         }
     }
 }
+
+///////////
+// Tests //
+///////////
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+
+    /// Deterministic values in [-1, 1) from a fixed LCG.
+    fn lcg_values(n: usize, seed: u64) -> Vec<f32> {
+        let mut state = seed;
+        (0..n)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((state >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    /// Upload, transform in place, read back.
+    fn run(re: &[f32], im: &[f32], n: usize, batch: usize, forward: bool) -> (Vec<f32>, Vec<f32>) {
+        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let limits = GpuLimits::from_client(&client);
+        let plan = Fft2dPlan::new(n, batch, &limits).unwrap();
+        let len = batch * n * n;
+        let g_re = GpuTensor::<WgpuRuntime, f32>::from_slice(re, vec![len], &client).unwrap();
+        let g_im = GpuTensor::<WgpuRuntime, f32>::from_slice(im, vec![len], &client).unwrap();
+        let t_re = GpuTensor::<WgpuRuntime, f32>::empty(vec![len], &client).unwrap();
+        let t_im = GpuTensor::<WgpuRuntime, f32>::empty(vec![len], &client).unwrap();
+        plan.execute(&client, &g_re, &g_im, &t_re, &t_im, forward);
+        (g_re.read(&client).unwrap(), g_im.read(&client).unwrap())
+    }
+
+    #[test]
+    fn test_fft2d_matches_naive_dft() {
+        let n = 64;
+        let re = lcg_values(n * n, 1);
+        let im = lcg_values(n * n, 2);
+        for forward in [true, false] {
+            let (out_re, out_im) = run(&re, &im, n, 1, forward);
+            let sign = if forward { -1.0 } else { 1.0 };
+            let (mut max_err, mut max_mag) = (0.0f64, 0.0f64);
+            for u in 0..n {
+                for v in 0..n {
+                    let (mut sr, mut si) = (0.0f64, 0.0f64);
+                    for r in 0..n {
+                        for c in 0..n {
+                            let a = sign * std::f64::consts::TAU * ((u * r + v * c) % n) as f64
+                                / n as f64;
+                            let (x, y) = (re[r * n + c] as f64, im[r * n + c] as f64);
+                            sr += x * a.cos() - y * a.sin();
+                            si += x * a.sin() + y * a.cos();
+                        }
+                    }
+                    let k = u * n + v;
+                    max_err = max_err
+                        .max((out_re[k] as f64 - sr).abs())
+                        .max((out_im[k] as f64 - si).abs());
+                    max_mag = max_mag.max(sr.abs()).max(si.abs());
+                }
+            }
+            assert!(
+                max_err < 1e-4 * max_mag,
+                "forward = {forward}: max err {max_err:.3e} vs max |X| {max_mag:.3e}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_fft2d_batched_roundtrip() {
+        let (n, batch) = (128, 3);
+        let re = lcg_values(batch * n * n, 3);
+        let im = lcg_values(batch * n * n, 4);
+        let (f_re, f_im) = run(&re, &im, n, batch, true);
+        let (b_re, b_im) = run(&f_re, &f_im, n, batch, false);
+        let scale = 1.0 / (n * n) as f32;
+        for i in 0..re.len() {
+            assert!((b_re[i] * scale - re[i]).abs() < 1e-4, "re[{i}]");
+            assert!((b_im[i] * scale - im[i]).abs() < 1e-4, "im[{i}]");
+        }
+    }
+
+    #[test]
+    fn test_fft2d_plan_rejects_unsupported_sizes() {
+        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let limits = GpuLimits::from_client(&client);
+        for n in [32, 48, 2048] {
+            assert!(matches!(
+                Fft2dPlan::new(n, 1, &limits),
+                Err(ManifoldsError::UnsupportedFftSize { .. })
+            ));
+        }
+    }
+}

@@ -1410,3 +1410,169 @@ where
     }
     Ok(())
 }
+
+///////////
+// Tests //
+///////////
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+
+    /// Ten clusters in a square of half-width `radius`, recentred, from a
+    /// fixed LCG.
+    fn clustered(n: usize, radius: f64) -> Vec<Vec<f32>> {
+        let mut state = 7u64;
+        let mut unif = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let centres: Vec<(f64, f64)> = (0..10)
+            .map(|_| ((unif() * 2.0 - 1.0) * radius, (unif() * 2.0 - 1.0) * radius))
+            .collect();
+        let mut pts: Vec<(f64, f64)> = (0..n)
+            .map(|i| {
+                let (cx, cy) = centres[i % 10];
+                (cx + (unif() - 0.5) * 4.0, cy + (unif() - 0.5) * 4.0)
+            })
+            .collect();
+        let mx = pts.iter().map(|p| p.0).sum::<f64>() / n as f64;
+        let my = pts.iter().map(|p| p.1).sum::<f64>() / n as f64;
+        pts.iter_mut().for_each(|p| {
+            p.0 -= mx;
+            p.1 -= my;
+        });
+        pts.iter().map(|&(x, y)| vec![x as f32, y as f32]).collect()
+    }
+
+    fn empty_graph(n: usize) -> CoordinateList<f32> {
+        CoordinateList {
+            row_indices: vec![],
+            col_indices: vec![],
+            values: vec![],
+            n_samples: n,
+        }
+    }
+
+    #[test]
+    fn test_grid_geometry_mirrors_cpu() {
+        for half_span in [0.5, 12.0, 40.0, 69.0, 150.0] {
+            let g = GridGeometry::for_extent(half_span, 3);
+            let (nb, bw, half) = fft_grid_geometry(half_span, TSNE_FFT_MIN_INTERVALS);
+            assert_eq!(g.n_boxes, nb);
+            assert!((g.half - half).abs() < 1e-12);
+            assert!((g.box_width() - bw).abs() < 1e-12);
+            assert!(g.n_fft.is_power_of_two() && g.n_fft >= 2 * 3 * nb);
+            assert!(
+                !g.needs_rebuild(half_span, 3),
+                "fresh grid should fit {half_span}"
+            );
+            assert!(
+                g.needs_rebuild(g.half, 3),
+                "extent at the edge must rebuild"
+            );
+        }
+    }
+
+    #[test]
+    fn test_gpu_repulsion_matches_direct() {
+        let n = 2_000;
+        let embd = clustered(n, 30.0);
+        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let limits = GpuLimits::from_client(&client);
+        let (st, half_span) =
+            TsneGpuState::<WgpuRuntime, f32>::upload(&embd, &empty_graph(n), 3, &limits, &client)
+                .unwrap();
+        let grid = GridBuffers::<WgpuRuntime, f32>::new(
+            GridGeometry::for_extent(half_span, 3),
+            3,
+            st.wg,
+            &limits,
+            &client,
+        )
+        .unwrap();
+        st.enqueue_repulsion(&client, &grid);
+        let rep = st.rep.clone().read(&client).unwrap();
+        let z: f64 = st
+            .z_partial
+            .clone()
+            .read(&client)
+            .unwrap()
+            .iter()
+            .map(|&v| v as f64)
+            .sum();
+
+        let (mut z_ex, mut num, mut den) = (0.0f64, 0.0f64, 0.0f64);
+        let mut f_ex = vec![(0.0f64, 0.0f64); n];
+        for i in 0..n {
+            for j in 0..n {
+                if i != j {
+                    let dx = (embd[i][0] - embd[j][0]) as f64;
+                    let dy = (embd[i][1] - embd[j][1]) as f64;
+                    let q = 1.0 / (1.0 + dx * dx + dy * dy);
+                    z_ex += q;
+                    f_ex[i].0 += q * q * dx;
+                    f_ex[i].1 += q * q * dy;
+                }
+            }
+        }
+        for i in 0..n {
+            let (rx, ry) = (f_ex[i].0 / z_ex, f_ex[i].1 / z_ex);
+            let (gx, gy) = (rep[2 * i] as f64 / z, rep[2 * i + 1] as f64 / z);
+            num += (gx - rx).powi(2) + (gy - ry).powi(2);
+            den += rx * rx + ry * ry;
+        }
+        let z_err = (z - z_ex).abs() / z_ex;
+        let f_err = (num / den).sqrt();
+        assert!(z_err < 1e-2, "Z relative error {z_err:.3e}");
+        assert!(f_err < 0.05, "force relative RMS {f_err:.3e}");
+    }
+
+    #[test]
+    fn test_gpu_optimiser_rejects_bad_input() {
+        let params = TsneOptimParams::<f32>::default();
+        let dev = WgpuDevice::default;
+
+        let mut empty: Vec<Vec<f32>> = vec![];
+        let res = optimise_fft3k_tsne_gpu::<WgpuRuntime, f32>(
+            &mut empty,
+            &params,
+            &empty_graph(0),
+            dev(),
+            0,
+        );
+        assert!(matches!(res, Err(ManifoldsError::NoData)));
+
+        let mut three_d = vec![vec![0.0f32; 3]; 4];
+        let res = optimise_fft3k_tsne_gpu::<WgpuRuntime, f32>(
+            &mut three_d,
+            &params,
+            &empty_graph(4),
+            dev(),
+            0,
+        );
+        assert!(matches!(
+            res,
+            Err(ManifoldsError::IncorrectDim { n_dim: 3 })
+        ));
+
+        let mut two_d = vec![vec![0.0f32; 2]; 4];
+        let res = optimise_fft3k_tsne_gpu::<WgpuRuntime, f32>(
+            &mut two_d,
+            &params,
+            &empty_graph(5),
+            dev(),
+            0,
+        );
+        assert!(matches!(
+            res,
+            Err(ManifoldsError::GraphSizeMismatch {
+                n_graph: 5,
+                n_embd: 4
+            })
+        ));
+    }
+}

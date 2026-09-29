@@ -1743,4 +1743,129 @@ mod tests {
             sum_fy
         );
     }
+
+    /// Unit charges for a 4-term run: (1, x, y, x^2 + y^2) per point.
+    fn four_term_charges(xs: &[f64], ys: &[f64]) -> Vec<f64> {
+        let mut charges = vec![0.0; xs.len() * 4];
+        for i in 0..xs.len() {
+            charges[i * 4] = 1.0;
+            charges[i * 4 + 1] = xs[i];
+            charges[i * 4 + 2] = ys[i];
+            charges[i * 4 + 3] = xs[i] * xs[i] + ys[i] * ys[i];
+        }
+        charges
+    }
+
+    #[test]
+    fn test_3k_repulsion_matches_direct() {
+        let embd: Vec<Vec<f64>> = vec![
+            vec![-2.1, 0.3],
+            vec![-0.8, 1.2],
+            vec![0.2, -0.9],
+            vec![1.5, 0.4],
+            vec![2.3, -0.6],
+            vec![-1.2, -1.1],
+            vec![0.7, 1.8],
+            vec![1.9, -1.4],
+        ];
+        let n = embd.len();
+        let (direct_fx, direct_fy, direct_z) = direct_repulsive_forces(&embd);
+
+        let grid = FftGrid::<f64>::new(-5.0, 5.0, 20, 3);
+        let kernels = FftKernels3k::new(&grid);
+        let mut ws = FftWorkspace3k::new(grid.n_fft);
+        let xs: Vec<f64> = embd.iter().map(|p| p[0]).collect();
+        let ys: Vec<f64> = embd.iter().map(|p| p[1]).collect();
+        let mut out = vec![0.0; n * 3];
+        n_body_fft_2d_3k(&xs, &ys, &grid, &kernels, &mut ws, &mut out);
+
+        let z: f64 = (0..n).map(|i| out[i * 3]).sum::<f64>() - n as f64;
+        let z_rel_err = (z - direct_z).abs() / direct_z.abs();
+        assert!(
+            z_rel_err < 0.05,
+            "Z mismatch: FFT={z:.6}, Direct={direct_z:.6}"
+        );
+
+        for i in 0..n {
+            let fx = out[i * 3 + 1] / z;
+            let fy = out[i * 3 + 2] / z;
+            let force_mag = (direct_fx[i].powi(2) + direct_fy[i].powi(2))
+                .sqrt()
+                .max(1e-10);
+            let (ex, ey) = ((fx - direct_fx[i]).abs(), (fy - direct_fy[i]).abs());
+            assert!(
+                ex / force_mag < 0.15 || ex < 1e-5,
+                "Point {i} Fx: {fx} vs {}",
+                direct_fx[i]
+            );
+            assert!(
+                ey / force_mag < 0.15 || ey < 1e-5,
+                "Point {i} Fy: {fy} vs {}",
+                direct_fy[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_3k_agrees_with_4term() {
+        // pseudo-random layout from a fixed LCG, so no rng dependency
+        let n = 400;
+        let mut state = 12345u64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((state >> 11) as f64 / (1u64 << 53) as f64) * 16.0 - 8.0
+        };
+        let xs: Vec<f64> = (0..n).map(|_| next()).collect();
+        let ys: Vec<f64> = (0..n).map(|_| next()).collect();
+
+        let grid = FftGrid::<f64>::new(-10.0, 10.0, 25, 3);
+
+        let charges = four_term_charges(&xs, &ys);
+        let mut ws4 = FftWorkspace::new(grid.n_fft);
+        let mut pot = vec![0.0; n * 4];
+        n_body_fft_2d(&xs, &ys, &charges, 4, &grid, &mut ws4, &mut pot);
+        let z4: f64 = (0..n)
+            .map(|i| {
+                let r2 = xs[i] * xs[i] + ys[i] * ys[i];
+                (1.0 + r2) * pot[i * 4] - 2.0 * (xs[i] * pot[i * 4 + 1] + ys[i] * pot[i * 4 + 2])
+                    + pot[i * 4 + 3]
+            })
+            .sum::<f64>()
+            - n as f64;
+
+        let kernels = FftKernels3k::new(&grid);
+        let mut ws3 = FftWorkspace3k::new(grid.n_fft);
+        let mut out = vec![0.0; n * 3];
+        n_body_fft_2d_3k(&xs, &ys, &grid, &kernels, &mut ws3, &mut out);
+        let z3: f64 = (0..n).map(|i| out[i * 3]).sum::<f64>() - n as f64;
+
+        assert!((z3 - z4).abs() / z4 < 1e-2, "Z: 3-kernel {z3}, 4-term {z4}");
+
+        let (mut num, mut den) = (0.0, 0.0);
+        for i in 0..n {
+            let f4x = xs[i] * pot[i * 4] - pot[i * 4 + 1];
+            let f4y = ys[i] * pot[i * 4] - pot[i * 4 + 2];
+            num += (out[i * 3 + 1] - f4x).powi(2) + (out[i * 3 + 2] - f4y).powi(2);
+            den += f4x * f4x + f4y * f4y;
+        }
+        let rel_rms = (num / den).sqrt();
+        assert!(
+            rel_rms < 0.05,
+            "Force relative RMS between formulations: {rel_rms}"
+        );
+    }
+
+    #[test]
+    fn test_grid_geometry_matches_new() {
+        let full = FftGrid::<f64>::new(-7.5, 7.5, 30, 3);
+        let geom = FftGrid::<f64>::new_geometry(-7.5, 7.5, 30, 3);
+        assert!(geom.fft_kernel.is_empty());
+        assert_eq!(geom.n_fft, full.n_fft);
+        assert_eq!(geom.n_boxes_per_dim, full.n_boxes_per_dim);
+        assert_eq!(geom.box_width, full.box_width);
+        assert_eq!(geom.global_x_coords, full.global_x_coords);
+        assert_eq!(geom.lagrange_denominators, full.lagrange_denominators);
+    }
 }

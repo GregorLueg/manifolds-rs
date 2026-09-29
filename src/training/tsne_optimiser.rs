@@ -1404,4 +1404,100 @@ mod test_tsne_optimiser {
             assert_relative_eq!(p1[1], p2[1]);
         }
     }
+
+    #[test]
+    fn test_parse_tsne_optimiser() {
+        assert!(matches!(
+            parse_tsne_optimiser("bh"),
+            Some(TsneOpt::BarnesHut)
+        ));
+        assert!(matches!(
+            parse_tsne_optimiser("Barnes_Hut"),
+            Some(TsneOpt::BarnesHut)
+        ));
+        assert!(matches!(parse_tsne_optimiser("fft"), Some(TsneOpt::Fft)));
+        assert!(matches!(
+            parse_tsne_optimiser("fft_3k"),
+            Some(TsneOpt::Fft3Kernel)
+        ));
+        assert!(matches!(
+            parse_tsne_optimiser("3-kernel"),
+            Some(TsneOpt::Fft3Kernel)
+        ));
+        assert!(matches!(
+            parse_tsne_optimiser("FFT_3K_GPU"),
+            Some(TsneOpt::Fft3KernelGpu)
+        ));
+        assert!(parse_tsne_optimiser("fft3").is_none());
+    }
+
+    #[test]
+    #[cfg(feature = "fft_tsne")]
+    fn test_fft3k_tsne_basic_convergence() {
+        let edges = vec![(0, 1, 1.0), (1, 2, 1.0), (2, 0, 1.0)];
+        let graph = create_coo_graph(3, &edges);
+
+        let mut embd = vec![vec![0.0, 0.0], vec![1.0, 1.0], vec![2.0, 2.0]];
+        let initial_embd = embd.clone();
+
+        let params = TsneOptimParams {
+            n_epochs: 50,
+            lr: Some(50.0),
+            n_interp_points: 3,
+            ..TsneOptimParams::default()
+        };
+
+        optimise_fft3k_tsne(&mut embd, &params, &graph, None, 0).unwrap();
+
+        for point in &embd {
+            for val in point {
+                assert!(val.is_finite(), "Embedding contains non-finite values");
+            }
+        }
+
+        let total_movement: f64 = embd
+            .iter()
+            .zip(initial_embd.iter())
+            .map(|(n, o)| (n[0] - o[0]).powi(2) + (n[1] - o[1]).powi(2))
+            .sum();
+
+        assert!(
+            total_movement > 0.01,
+            "Three-kernel FFT t-SNE failed to move points significantly"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "fft_tsne")]
+    fn test_fft3k_tsne_determinism() {
+        let edges = vec![(0, 1, 1.0), (1, 2, 1.0)];
+        let graph = create_coo_graph(3, &edges);
+
+        let mut embd1 = vec![vec![0.0, 0.0], vec![1.0, 0.0], vec![0.0, 1.0]];
+        let mut embd2 = embd1.clone();
+
+        let params = TsneOptimParams {
+            n_epochs: 50,
+            ..TsneOptimParams::default()
+        };
+
+        optimise_fft3k_tsne(&mut embd1, &params, &graph, None, 0).unwrap();
+        optimise_fft3k_tsne(&mut embd2, &params, &graph, None, 0).unwrap();
+
+        for (p1, p2) in embd1.iter().zip(embd2.iter()) {
+            assert_eq!(p1, p2);
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "fft_tsne")]
+    fn test_fft3k_tsne_rejects_non_2d() {
+        let graph = create_coo_graph(2, &[(0, 1, 1.0)]);
+        let mut embd = vec![vec![0.0, 0.0, 0.0], vec![1.0, 0.0, 0.0]];
+        let res = optimise_fft3k_tsne(&mut embd, &TsneOptimParams::default(), &graph, None, 0);
+        assert!(matches!(
+            res,
+            Err(ManifoldsError::IncorrectDim { n_dim: 3 })
+        ));
+    }
 }
