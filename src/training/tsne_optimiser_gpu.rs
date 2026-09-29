@@ -40,10 +40,7 @@ use crate::utils::fft2d_gpu::{Fft2dPlan, FFT2D_MIN_N};
 /// device clamping. Rounded down to a power of two for the tree reductions.
 const TSNE_GPU_WORKGROUP_SIZE: u32 = 256;
 
-/// Epochs between extent readbacks. A blocking read costs a fixed ~1.2 ms on
-/// wgpu/Metal, so every epoch is too expensive; asynchronous reads
-/// interleaved with later submits trip wgpu's "buffer still mapped"
-/// validation in cubecl 0.10.
+/// Epochs between extent readbacks.
 const GRID_CHECK_INTERVAL: usize = 10;
 
 /// Multiple of the extent growth over the last check interval that the grid

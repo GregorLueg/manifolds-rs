@@ -3,6 +3,14 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.5.3
+
+**Feature**
+
+- FFT 3-kernel version added. Tends to be faster than the original FFT. Both
+  options are now supported and can be chosen.
+- A GPU-accelerated version of the FFT 3-kernel has also been implemented.
+
 ## 0.5.2
 
 **Feature**
