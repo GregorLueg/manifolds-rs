@@ -20,7 +20,11 @@ implemented in Rust. Contains as for now:
   - ***Barnes Hut tSNE*** (With a `O(n log n)` complexity).
   - ***Fast Fourier Transform-accelerated Interpolation-based t-SNE (Flt-SNE)***
   (optional feature; with a `O(n)` complexity for large datasets).
-  - Optional GPU-accelerated kNN search.
+  - ***Three-kernel FFT t-SNE***: the same interpolation with three kernels
+  instead of the four-term expansion. One forward and three inverse transforms
+  per iteration instead of four each (optional feature).
+  - Optional GPU-accelerated kNN search, and a device-resident three-kernel FFT
+  optimiser that needs no FFTW.
 - **den-SNE**, the density-preserving variant of tSNE (Barnes-Hut and FFT).
 - **PHATE**
 - **PaCMAP**
@@ -62,12 +66,14 @@ Changelog can be found [here](https://github.com/GregorLueg/manifolds-rs/blob/ma
 reduction algorithm with several optimisations: SGD, Adam and a parallelised
 version of ADAM for increased optimisation speed.
 - **tSNE algorithm**: Implementation of the Barnes-Hut accelerated version and
-the FFT-accelerated version (optional).
+the FFT-accelerated versions (optional): the original four-term expansion and a
+three-kernel variant (`q`, `q^2 dx`, `q^2 dy` against a unit charge) that
+needs fewer transforms per iteration.
 - **densMAP and den-SNE**: Density-preserving versions of UMAP and tSNE. An
 extra gradient term maximises the correlation between the local radius of a
 point in the original space and in the embedding, so cluster size carries
 meaning. Works with all four UMAP optimisers (SGD, Adam, parallel Adam, GPU
-Adam) and both tSNE optimisers (Barnes-Hut, FFT).
+Adam) and the CPU tSNE optimisers (Barnes-Hut, FFT, three-kernel FFT).
 - **Parametric UMAP** (optional feature `parametric`): A neural network encoder
 trained on the UMAP objective via [`burn`](https://burn.dev), so new points can
 be embedded without refitting. Models serialise to disk via `bincode`.
@@ -92,8 +98,9 @@ UMAP and tSNE for large datasets is the nearest neighbour search. With the
 `gpu` feature enabled, kNN search runs on the GPU via
 [`cubecl`](https://crates.io/crates/cubecl), with backends for Vulkan, Metal,
 DirectX 12 (through wgpu) and CUDA. UMAP additionally has a GPU Adam optimiser
-(the `"adam_gpu"` default for `umap_gpu`); for tSNE only the kNN search moves
-to the device.
+(the `"adam_gpu"` default for `umap_gpu`). tSNE has a GPU three-kernel FFT
+optimiser (`"fft_3k_gpu"` in `tsne_gpu`) that keeps the embedding on the device
+throughout; it needs only `gpu`, not `fft_tsne`.
 - **Multiple ANN backends** via [`ann-search-rs`](https://crates.io/crates/ann-search-rs):
   - *Exhaustive* (`"exhaustive"`) - If you want precise results and have a
     small data set in which the approximate nearest neighbour index building is
@@ -158,7 +165,11 @@ If you want to enable the FFT-accelerated version of tSNE, please use:
 manifolds-rs = { version = "*", features = [ "fft_tsne" ] }
 ```
 
-The `fft_tsne` feature binds to system FFTW, so you need that installed.
+The `fft_tsne` feature pulls in [`fftw`](https://crates.io/crates/fftw), which
+by default builds FFTW from source (a C compiler and `make` are needed) and
+links it statically. FFTW is GPL-2.0-or-later, so a binary you distribute with
+this feature on is covered by the GPL. The GPU three-kernel optimiser
+(`"fft_3k_gpu"`, `gpu` feature) avoids FFTW entirely.
 
 If you want to enable GPU-accelerated kNN search, please use:
 
@@ -197,7 +208,10 @@ a thin Python wrapper now.
 
 ### Python package
 
-Python bindings are now available, see `/python`. A PyPI install is provided.
+Python bindings are available, see `/python` and
+[PyPI](https://pypi.org/project/manifolds-rs/). scikit-learn shaped estimators
+for every algorithm, and scanpy-style `mf.umap(adata)` / `mf.tsne(adata)` that
+write into an `AnnData` the way `sc.tl.umap` / `sc.tl.tsne` do.
 
 ### UMAP Example
 
@@ -298,7 +312,7 @@ let embedding = tsne(
     data.as_ref(),
     None,        // precomputed kNN (None = compute internally)
     &params,
-    "bh",        // approximation: "barnes_hut" | "bh", or "fft" (fft_tsne feature)
+    "bh",        // approximation: "barnes_hut" | "bh", or "fft" | "fft_3k" (fft_tsne feature)
     42,          // seed
     1,           // verbose -> light levels of verbosity
 )
@@ -329,7 +343,7 @@ let embedding = densne(
     data.as_ref(),
     None,        // precomputed kNN (None = compute internally)
     &params,
-    "bh",        // approximation: "barnes_hut" | "bh", or "fft" (fft_tsne feature)
+    "bh",        // approximation: "barnes_hut" | "bh", or "fft" | "fft_3k" (fft_tsne feature)
     42,          // seed
     1,           // verbose -> light levels of verbosity
 )
@@ -420,8 +434,8 @@ let embedding = umap_gpu::<f32, WgpuRuntime>(
 .unwrap();
 ```
 
-GPU t-SNE works analogously, though here only the kNN search is
-GPU-accelerated:
+GPU t-SNE works analogously. With `"bh"` only the kNN search runs on the GPU;
+`"fft_3k_gpu"` moves the optimiser there as well:
 
 ```rust
 use manifolds_rs::prelude::*;
@@ -441,7 +455,7 @@ let embedding = tsne_gpu::<f32, WgpuRuntime>(
     data.as_ref(),
     None,
     &params,
-    "bh",        // "bh" or "fft" (fft requires fft_tsne feature)
+    "fft_3k_gpu", // or "bh"; "fft" and "fft_3k" need the fft_tsne feature
     device,
     42,
     1,           // verbose -> light levels of verbosity
