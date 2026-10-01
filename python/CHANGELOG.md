@@ -3,6 +3,15 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.2.1
+
+Requires `manifolds-rs` 0.5.4.
+
+**Features**
+
+- Takes in the faster k-means for some of the indices (and PHATE) and Accelerate
+  GEMM for MacOS.
+
 ## 0.2.0
 
 Requires `manifolds-rs` 0.5.3.
