@@ -3,6 +3,14 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.5.4
+
+**Features**
+
+- Take in the new `ann-search-rs (0.9.1)` with improved k-means and Accelerate
+  enabled on MacOS giving for some of the indices very decent speed gains on
+  Macs.
+
 ## 0.5.3
 
 **Feature**
