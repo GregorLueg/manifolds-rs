@@ -3,7 +3,7 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
-## Unreleased
+## 0.6.0
 
 **Features**
 
