@@ -3,6 +3,18 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## Unreleased
+
+Requires the unreleased `manifolds-rs` with quick-and-dirty Barnes-Hut.
+
+**Features**
+
+- `TSNE(approx="qd")`, `DensNE(approx="qd")` and `TSNEGpu(approx="qd")`: the
+  quick-and-dirty Barnes-Hut of qdtsne. The tree depth is capped at the new
+  `TsneOptim.max_depth` (default 7) and repulsion is computed once per leaf.
+  On 20k points: 2.8s against 9.2s for `"barnes_hut"`, silhouette 0.783 against
+  0.796; `max_depth=10` gave 5.5s and 0.795.
+
 ## 0.2.1
 
 Requires `manifolds-rs` 0.5.4.

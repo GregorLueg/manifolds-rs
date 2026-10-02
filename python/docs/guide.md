@@ -157,7 +157,7 @@ runs of the same configuration will differ, as they should.
 
 CPU FFT-accelerated t-SNE. It needs FFTW, which is GPL-2.0-or-later and would
 be linked statically, turning the whole wheel GPL. So the CPU estimators take
-Barnes-Hut only. On a GPU, `TSNEGpu(approx="fft_3k_gpu")` gives you
+Barnes-Hut only (plain, or the quick-and-dirty `approx="qd"`). On a GPU, `TSNEGpu(approx="fft_3k_gpu")` gives you
 FFT-interpolated repulsion without FFTW.
 
 Parametric UMAP exists in the crate but is not yet bound.

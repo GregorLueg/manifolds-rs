@@ -255,7 +255,8 @@ def tsne(
         use_rep: ``None`` for ``obsm["X_pca"]``, ``"X"`` for ``adata.X``, or
             any other ``obsm`` key. Must be dense.
         perplexity: Effective neighbourhood size.
-        approx: ``"barnes_hut"``, or ``"fft_3k_gpu"`` with ``device="gpu"``.
+        approx: ``"barnes_hut"``, ``"qd"``, or ``"fft_3k_gpu"`` with
+            ``device="gpu"``.
         key_added: Store under ``obsm[key_added]`` and ``uns[key_added]``
             instead of ``obsm["X_tsne"]`` and ``uns["tsne"]``.
         device: ``"cpu"`` for `manifolds_rs.TSNE`, ``"gpu"`` for

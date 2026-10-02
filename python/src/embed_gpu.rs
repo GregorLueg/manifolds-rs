@@ -163,8 +163,8 @@ pub fn densmap_gpu<'py>(
 /// * `x` - Samples by features, C-contiguous float32.
 /// * `params` - Parameters, as built by the Python layer. See
 ///   [`crate::params::tsne_gpu`].
-/// * `approx` - Repulsive-force approximation. `"barnes_hut"` optimises on
-///   the CPU, `"fft_3k_gpu"` on the device. `"fft"` and `"fft_3k"` need the
+/// * `approx` - Repulsive-force approximation. `"barnes_hut"` and `"qd"`
+///   optimise on the CPU, `"fft_3k_gpu"` on the device. `"fft"` and `"fft_3k"` need the
 ///   `fft_tsne` feature, which the wheel is not built with.
 /// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices.
 /// * `knn_distances` - Optional `(n, k)` float32 distances.
