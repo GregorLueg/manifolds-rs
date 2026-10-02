@@ -606,7 +606,7 @@ where
                 late_exag_factor: None,
                 theta: T::from_f64(0.5).unwrap(),
                 n_interp_points: 3,
-                max_depth: 7,
+                max_depth: TSNE_QD_MAX_DEPTH,
             },
             randomised_init: true,
         }
@@ -4453,7 +4453,7 @@ where
                 late_exag_factor: None,
                 theta: T::from_f64(0.5).unwrap(),
                 n_interp_points: 3,
-                max_depth: 7,
+                max_depth: TSNE_QD_MAX_DEPTH,
             },
             randomised_init: true,
         }
