@@ -606,6 +606,7 @@ where
                 late_exag_factor: None,
                 theta: T::from_f64(0.5).unwrap(),
                 n_interp_points: 3,
+                max_depth: 7,
             },
             randomised_init: true,
         }
@@ -1010,6 +1011,21 @@ where
                 verbose,
             );
         }
+        TsneOpt::BarnesHutQd => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via quick-and-dirty Barnes-Hut t-SNE ({} epochs, max depth {})...",
+                    params.optim_params.n_epochs, params.optim_params.max_depth
+                );
+            }
+            optimise_qd_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dens_state.as_ref(),
+                verbose,
+            );
+        }
         #[cfg(feature = "fft_tsne")]
         TsneOpt::Fft => {
             if verbosity.normal_verbosity() {
@@ -1271,6 +1287,21 @@ where
                 );
             }
             optimise_bh_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dens_state.as_ref(),
+                verbose,
+            );
+        }
+        TsneOpt::BarnesHutQd => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via quick-and-dirty Barnes-Hut t-SNE ({} epochs, max depth {})...",
+                    params.optim_params.n_epochs, params.optim_params.max_depth
+                );
+            }
+            optimise_qd_tsne(
                 &mut embd,
                 &params.optim_params,
                 &graph,
@@ -4422,6 +4453,7 @@ where
                 late_exag_factor: None,
                 theta: T::from_f64(0.5).unwrap(),
                 n_interp_points: 3,
+                max_depth: 7,
             },
             randomised_init: true,
         }
@@ -4727,6 +4759,15 @@ where
             }
             optimise_bh_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
         }
+        TsneOpt::BarnesHutQd => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via quick-and-dirty Barnes-Hut t-SNE ({} epochs, max depth {})...",
+                    params.optim_params.n_epochs, params.optim_params.max_depth
+                );
+            }
+            optimise_qd_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
+        }
         TsneOpt::Fft => {
             if verbosity.normal_verbosity() {
                 println!(
@@ -4886,6 +4927,15 @@ where
                 );
             }
             optimise_bh_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
+        }
+        TsneOpt::BarnesHutQd => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via quick-and-dirty Barnes-Hut t-SNE ({} epochs, max depth {})...",
+                    params.optim_params.n_epochs, params.optim_params.max_depth
+                );
+            }
+            optimise_qd_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
         }
         TsneOpt::Fft | TsneOpt::Fft3Kernel => {
             panic!("FFT-accelerated t-SNE not available. Recompile with 'fft_tsne' feature or use 'barnes_hut' approximation.");

@@ -53,6 +53,9 @@ const TSNE_LR_DIVISOR: f64 = 12.0;
 /// Floor for the default learning rate heuristic.
 const TSNE_LR_FLOOR: f64 = 200.0;
 
+/// Default tree depth cap for the quick-and-dirty Barnes-Hut optimiser.
+pub(crate) const TSNE_QD_MAX_DEPTH: usize = 7;
+
 /// Cap on `n_boxes` per dimension in the FFT grid. FFT cost per epoch is
 /// O(n_boxes^2 log n_boxes); without a cap, n_boxes grows with the embedding
 /// span and per-epoch cost blows up. Box width adapts upward once this cap
@@ -97,6 +100,9 @@ pub struct TsneOptimParams<T> {
     pub theta: T,
     /// Interpolation points per box (typically 3); relevant for FFT path.
     pub n_interp_points: usize,
+    /// Maximum Barnes-Hut tree depth; relevant for the quick-and-dirty
+    /// optimiser (`optimise_qd_tsne()`) only. qdtsne recommends 7 to 10.
+    pub max_depth: usize,
 }
 
 impl<T> TsneOptimParams<T>
@@ -104,6 +110,7 @@ where
     T: Float + FromPrimitive,
 {
     /// Generate a new instance
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         n_epochs: usize,
         lr: Option<T>,
@@ -112,8 +119,10 @@ where
         late_exag_factor: Option<T>,
         theta: T,
         n_interp_points: Option<usize>,
+        max_depth: Option<usize>,
     ) -> Self {
         let n_interp_points = n_interp_points.unwrap_or(3);
+        let max_depth = max_depth.unwrap_or(TSNE_QD_MAX_DEPTH);
 
         Self {
             n_epochs,
@@ -123,6 +132,7 @@ where
             late_exag_factor,
             theta,
             n_interp_points,
+            max_depth,
         }
     }
 
@@ -152,6 +162,7 @@ where
             late_exag_factor: None,
             theta: T::from_f64(0.5).unwrap(),
             n_interp_points: 3,
+            max_depth: TSNE_QD_MAX_DEPTH,
         }
     }
 }
@@ -177,6 +188,10 @@ pub enum TsneOpt {
     /// Device-resident three-kernel FFT version. Only through `tsne_gpu`;
     /// requires `gpu` but not `fft_tsne`.
     Fft3KernelGpu,
+    /// Quick-and-dirty Barnes-Hut (qdtsne): tree depth capped at
+    /// `max_depth` plus the leaf approximation, so repulsion is computed once
+    /// per leaf rather than once per point.
+    BarnesHutQd,
 }
 
 /// Parse the tSNE optimiser to use.
@@ -185,7 +200,7 @@ pub enum TsneOpt {
 ///
 /// * `s` - String defining the optimiser. Accepts `"barnes hut"`,
 ///   `"barnes_hut"`, `"barnes-hut"`, `"bh"`, `"fft"`, `"fft_3k"` /
-///   `"3-kernel"`, or `"fft_3k_gpu"`.
+///   `"3-kernel"`, `"fft_3k_gpu"`, or `"bh_qd"` / `"qd"`.
 ///
 /// ### Returns
 ///
@@ -196,6 +211,7 @@ pub fn parse_tsne_optimiser(s: &str) -> Option<TsneOpt> {
         "fft" => Some(TsneOpt::Fft),
         "fft_3k" | "3-kernel" => Some(TsneOpt::Fft3Kernel),
         "fft_3k_gpu" => Some(TsneOpt::Fft3KernelGpu),
+        "bh_qd" | "qd" => Some(TsneOpt::BarnesHutQd),
         _ => None,
     }
 }
@@ -600,6 +616,54 @@ pub fn optimise_bh_tsne<T>(
 ) where
     T: ManifoldsFloat,
 {
+    optimise_bh_tsne_impl(embd, params, graph, dens, None, verbose);
+}
+
+/// Optimise a 2D embedding using quick-and-dirty Barnes-Hut t-SNE.
+///
+/// Same optimiser as [`optimise_bh_tsne`], but the tree depth is capped at
+/// `params.max_depth` and repulsion uses the qdtsne leaf approximation: one
+/// traversal per leaf from its centre of mass, plus each point's
+/// interaction with the rest of its own leaf.
+///
+/// ### Params
+///
+/// * `embd` - Initial embedding coordinates, shape `[n_samples][2]`
+///   (modified in place).
+/// * `params` - Optimisation hyperparameters; `theta` and `max_depth` control
+///   the approximation.
+/// * `graph` - Sparse high-dimensional affinities in coordinate-list format.
+/// * `dens` - Density-preserving state for den-SNE, or `None` for plain tSNE.
+/// * `verbose` - Verbosity level: `0` silent, `1` normal, `2` detailed.
+///
+/// ### References
+///
+/// Lun, qdtsne (github.com/libscran/qdtsne).
+pub fn optimise_qd_tsne<T>(
+    embd: &mut [Vec<T>],
+    params: &TsneOptimParams<T>,
+    graph: &CoordinateList<T>,
+    dens: Option<&DensState<T>>,
+    verbose: usize,
+) where
+    T: ManifoldsFloat,
+{
+    optimise_bh_tsne_impl(embd, params, graph, dens, Some(params.max_depth), verbose);
+}
+
+/// Shared body of [`optimise_bh_tsne`] and [`optimise_qd_tsne`];
+/// `max_depth = Some(_)` selects the depth-capped tree with the leaf
+/// approximation.
+fn optimise_bh_tsne_impl<T>(
+    embd: &mut [Vec<T>],
+    params: &TsneOptimParams<T>,
+    graph: &CoordinateList<T>,
+    dens: Option<&DensState<T>>,
+    max_depth: Option<usize>,
+    verbose: usize,
+) where
+    T: ManifoldsFloat,
+{
     let verbosity = parse_verbosity_level(verbose);
 
     let n = embd.len();
@@ -622,7 +686,11 @@ pub fn optimise_bh_tsne<T>(
     let mut dens_scratch = dens.map(|_| DensScratch::<T>::new(n));
 
     // one tree across all epochs: rebuild reuses its buffers.
-    let mut bh_tree = BarnesHutTree::empty();
+    let mut bh_tree = match max_depth {
+        Some(d) => BarnesHutTree::with_max_depth(d),
+        None => BarnesHutTree::empty(),
+    };
+    let mut leaf_forces: Vec<(T, T, T)> = Vec::new();
 
     let adj = coo_to_adjacency_list(graph);
 
@@ -651,17 +719,24 @@ pub fn optimise_bh_tsne<T>(
 
         // compute all repulsive forces in one parallel pass, writing into
         // the preallocated rep_forces buffer
-        rep_forces.par_iter_mut().enumerate().for_each_init(
-            || Vec::with_capacity(128),
-            |stack, (i, slot)| {
-                *slot = bh_tree.compute_repulsive_force(
-                    pos[2 * i],
-                    pos[2 * i + 1],
-                    params.theta,
-                    stack,
-                );
-            },
-        );
+        if max_depth.is_some() {
+            bh_tree.compute_leaf_forces(params.theta, &mut leaf_forces);
+            rep_forces.par_iter_mut().enumerate().for_each(|(i, slot)| {
+                *slot = bh_tree.point_force_from_leaf(i, pos[2 * i], pos[2 * i + 1], &leaf_forces);
+            });
+        } else {
+            rep_forces.par_iter_mut().enumerate().for_each_init(
+                || Vec::with_capacity(128),
+                |stack, (i, slot)| {
+                    *slot = bh_tree.compute_repulsive_force(
+                        pos[2 * i],
+                        pos[2 * i + 1],
+                        params.theta,
+                        stack,
+                    );
+                },
+            );
+        }
 
         // global normalisation constant, accumulated in f64 (to avoid weirdness)
         let z_total: f64 = rep_forces

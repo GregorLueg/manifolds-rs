@@ -141,6 +141,12 @@ pub struct BarnesHutTree<T> {
     sorted: Vec<(u64, u32)>,
     /// Squared full cell width per level for the theta test.
     level_width_sq: Vec<T>,
+    /// Deepest level that may split; cells at this depth stay leaves even
+    /// when they hold distinct points. `None` means uncapped.
+    max_depth: Option<u32>,
+    /// Point index to its leaf node. Only filled for capped trees, where a
+    /// leaf can hold several distinct points.
+    leaf_of: Vec<u32>,
 }
 
 impl<T> BarnesHutTree<T>
@@ -155,6 +161,25 @@ where
             ranges: Vec::new(),
             sorted: Vec::new(),
             level_width_sq: Vec::new(),
+            max_depth: None,
+            leaf_of: Vec::new(),
+        }
+    }
+
+    /// Create an empty tree whose depth is capped at `max_depth`, the
+    /// qdtsne approximation: every point is snapped to its cell on a
+    /// `2^max_depth` grid per axis for the purpose of the tree. Use the leaf
+    /// approximation ([`BarnesHutTree::compute_leaf_forces`] and
+    /// [`BarnesHutTree::point_force_from_leaf`]) for the forces; the plain
+    /// traversal does not exclude the query point from a shared leaf.
+    ///
+    /// ### Params
+    ///
+    /// * `max_depth` - Maximum tree depth, clamped to `[1, 32]`
+    pub fn with_max_depth(max_depth: usize) -> Self {
+        Self {
+            max_depth: Some((max_depth as u32).clamp(1, BITS)),
+            ..Self::empty()
         }
     }
 
@@ -195,6 +220,7 @@ where
         self.nodes.clear();
         self.ranges.clear();
         self.sorted.clear();
+        self.leaf_of.clear();
 
         if n == 0 {
             self.level_width_sq.clear();
@@ -269,6 +295,7 @@ where
         );
         self.sorted.par_sort_unstable_by_key(|&(code, _)| code);
 
+        let max_depth = self.max_depth.unwrap_or(BITS);
         let sorted = &self.sorted;
         let nodes = &mut self.nodes;
         let ranges = &mut self.ranges;
@@ -296,6 +323,10 @@ where
             let xor = sorted[start as usize].0 ^ sorted[(end - 1) as usize].0;
             let highest_diff = 63 - xor.leading_zeros();
             let level = (BITS - 1) - highest_diff / 2;
+            if level >= max_depth {
+                node += 1;
+                continue;
+            }
             let shift = 2 * (BITS - 1 - level);
             nodes[node].level = level as u8;
 
@@ -370,6 +401,17 @@ where
             nodes[i].mass = sum_m;
             nodes[i].com_x = sum_x * inv;
             nodes[i].com_y = sum_y * inv;
+        }
+
+        if self.max_depth.is_some() {
+            self.leaf_of.resize(n, 0);
+            for (ni, (node, &(start, end))) in nodes.iter().zip(ranges.iter()).enumerate() {
+                if node.first_child == SENTINEL {
+                    for slot in start..end {
+                        self.leaf_of[sorted[slot as usize].1 as usize] = ni as u32;
+                    }
+                }
+            }
         }
 
         debug_assert_eq!(
@@ -449,6 +491,115 @@ where
             let mult = mass_q * q;
             force_x = force_x + mult * dx;
             force_y = force_y + mult * dy;
+        }
+
+        (force_x, force_y, sum_q)
+    }
+
+    /// Repulsive forces on every leaf's centre of mass (qdtsne leaf
+    /// approximation).
+    ///
+    /// One traversal per leaf instead of per point; the leaf itself is
+    /// skipped and added back per point in
+    /// [`BarnesHutTree::point_force_from_leaf`].
+    ///
+    /// ### Params
+    ///
+    /// * `theta` - Barnes-Hut opening parameter
+    /// * `out` - Output, `(force_x, force_y, sum_q)` per node; only leaf
+    ///   entries are written. Resized to the node count.
+    pub fn compute_leaf_forces(&self, theta: T, out: &mut Vec<(T, T, T)>) {
+        out.resize(self.nodes.len(), (T::zero(), T::zero(), T::zero()));
+
+        let theta_sq = theta * theta;
+        let min_dist_sq = T::from_f64(MIN_DIST_SQ).unwrap();
+
+        out.par_iter_mut()
+            .enumerate()
+            .filter(|(li, _)| self.nodes[*li].first_child == SENTINEL)
+            .for_each_init(
+                || Vec::with_capacity(128),
+                |stack: &mut Vec<u32>, (li, slot)| {
+                    let p_x = self.nodes[li].com_x;
+                    let p_y = self.nodes[li].com_y;
+                    let mut force_x = T::zero();
+                    let mut force_y = T::zero();
+                    let mut sum_q = T::zero();
+
+                    stack.clear();
+                    stack.push(0);
+
+                    while let Some(ni) = stack.pop() {
+                        if ni as usize == li {
+                            continue;
+                        }
+                        let node = &self.nodes[ni as usize];
+
+                        let dx = p_x - node.com_x;
+                        let dy = p_y - node.com_y;
+                        let dist_sq = dx * dx + dy * dy;
+
+                        if node.first_child == SENTINEL {
+                            if dist_sq <= min_dist_sq {
+                                continue;
+                            }
+                        } else if self.level_width_sq[node.level as usize] >= theta_sq * dist_sq {
+                            for child in 0..node.child_count as u32 {
+                                stack.push(node.first_child + child);
+                            }
+                            continue;
+                        }
+
+                        let q = (T::one() + dist_sq).recip();
+                        let mass_q = node.mass * q;
+                        sum_q = sum_q + mass_q;
+                        let mult = mass_q * q;
+                        force_x = force_x + mult * dx;
+                        force_y = force_y + mult * dy;
+                    }
+
+                    *slot = (force_x, force_y, sum_q);
+                },
+            );
+    }
+
+    /// Repulsive force on point `i` from its leaf's precomputed force plus
+    /// the other points in its own leaf (the leaf's centre of mass with `i`
+    /// removed). Only valid on a tree built via
+    /// [`BarnesHutTree::with_max_depth`].
+    ///
+    /// ### Params
+    ///
+    /// * `i` - Point index
+    /// * `p_x` - X coordinate of point `i`
+    /// * `p_y` - Y coordinate of point `i`
+    /// * `leaf_forces` - Output of [`BarnesHutTree::compute_leaf_forces`]
+    ///
+    /// ### Returns
+    ///
+    /// Tuple `(force_x, force_y, sum_q)`, as from
+    /// [`BarnesHutTree::compute_repulsive_force`]
+    #[inline]
+    pub fn point_force_from_leaf(
+        &self,
+        i: usize,
+        p_x: T,
+        p_y: T,
+        leaf_forces: &[(T, T, T)],
+    ) -> (T, T, T) {
+        let li = self.leaf_of[i] as usize;
+        let (mut force_x, mut force_y, mut sum_q) = leaf_forces[li];
+
+        let node = &self.nodes[li];
+        if node.mass > T::one() {
+            let rest = node.mass - T::one();
+            let dx = p_x - (node.com_x * node.mass - p_x) / rest;
+            let dy = p_y - (node.com_y * node.mass - p_y) / rest;
+            let q = (T::one() + dx * dx + dy * dy).recip();
+            let mass_q = rest * q;
+            sum_q = sum_q + mass_q;
+            force_x = force_x + mass_q * q * dx;
+            force_y = force_y + mass_q * q * dy;
         }
 
         (force_x, force_y, sum_q)
