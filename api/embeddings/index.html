@@ -1680,9 +1680,11 @@ seed.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Repulsion approximation. <code>"barnes_hut"</code> only: CPU FFT t-SNE
-needs FFTW, which is GPL and not in the wheel. See <code>TSNEGpu</code> for
-<code>"fft_3k_gpu"</code>.</p>
+                <p>Repulsion approximation. <code>"barnes_hut"</code>, or <code>"qd"</code> for the
+quick-and-dirty Barnes-Hut of qdtsne: tree depth capped at
+<code>TsneOptim.max_depth</code>, repulsion computed once per leaf. Faster,
+slightly coarser. CPU FFT t-SNE needs FFTW, which is GPL and not in
+the wheel. See <code>TSNEGpu</code> for <code>"fft_3k_gpu"</code>.</p>
               </div>
             </td>
             <td>

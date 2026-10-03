@@ -1132,7 +1132,7 @@ runs of the same configuration will differ, as they should.</p>
 <h2 id="what-is-not-in-the-wheel">What is not in the wheel<a class="headerlink" href="#what-is-not-in-the-wheel" title="Permanent link">&para;</a></h2>
 <p>CPU FFT-accelerated t-SNE. It needs FFTW, which is GPL-2.0-or-later and would
 be linked statically, turning the whole wheel GPL. So the CPU estimators take
-Barnes-Hut only. On a GPU, <code>TSNEGpu(approx="fft_3k_gpu")</code> gives you
+Barnes-Hut only (plain, or the quick-and-dirty <code>approx="qd"</code>). On a GPU, <code>TSNEGpu(approx="fft_3k_gpu")</code> gives you
 FFT-interpolated repulsion without FFTW.</p>
 <p>Parametric UMAP exists in the crate but is not yet bound.</p>
 

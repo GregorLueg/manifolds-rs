@@ -944,7 +944,10 @@ needs a symmetric graph. Two-dimensional only.</p>
 <h2 id="cost">Cost<a class="headerlink" href="#cost" title="Permanent link">&para;</a></h2>
 <p>Rough ordering on the same data, dominated by different things:</p>
 <ul>
-<li><code>TSNE</code>, <code>DensNE</code> and <code>ForceAtlas2</code> pay for the Barnes-Hut tree every epoch.</li>
+<li><code>TSNE</code>, <code>DensNE</code> and <code>ForceAtlas2</code> pay for the Barnes-Hut tree every epoch.
+  For the first two, <code>approx="qd"</code> caps the tree depth and computes repulsion
+  once per leaf instead of once per point; on 20k points that halved the
+  optimiser time.</li>
 <li><code>UMAP</code>, <code>DensMAP</code> and <code>PaCMAP</code> pay for the neighbour search and then a cheap
   per-edge update. The parallel Adam optimiser is the default.</li>
 <li><code>PHATE</code> and <code>DiffusionMaps</code> pay for an eigendecomposition. Set <code>n_landmarks</code>
