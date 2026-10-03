@@ -76,7 +76,7 @@ SYMMETRIES: frozenset[str] = frozenset(
 #: variants need the `fft_tsne` feature, which the wheel is built without: it
 #: links FFTW statically, and FFTW is GPL-2.0-or-later.
 TSNE_APPROX: frozenset[str] = frozenset(
-    {"barnes_hut", "barnes-hut", "barnes hut", "bh"}
+    {"barnes_hut", "barnes-hut", "barnes hut", "bh", "bh_qd", "qd"}
 )
 
 #: As `TSNE_APPROX`, plus the device-resident three-kernel FFT optimiser. Only
@@ -242,6 +242,9 @@ class TsneOptim:
             makes it exact and very slow.
         n_interp_points: Interpolation points per box on the FFT path. No effect
             under Barnes-Hut.
+        max_depth: Tree depth cap for ``approx="qd"``. Smaller is faster and
+            coarser; qdtsne recommends 7 to 10. No effect on the other
+            optimisers.
     """
 
     early_exag_iter: int | None = None
@@ -249,6 +252,7 @@ class TsneOptim:
     late_exag_factor: float | None = None
     theta: float | None = None
     n_interp_points: int | None = None
+    max_depth: int | None = None
 
 
 @dataclass(frozen=True)

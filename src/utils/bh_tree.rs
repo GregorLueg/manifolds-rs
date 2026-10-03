@@ -37,6 +37,11 @@ const MIN_DIST_SQ: f64 = 1e-12;
 /// can only be summarised for `theta > 2`, as in Gephi.
 const FA2_SIZE_FACTOR_SQ: f64 = 8.0;
 
+/// Initial capacity of the per-thread traversal stack. A traversal holds at
+/// most `3 * depth + 1` entries, so this covers trees up to depth 42 without
+/// reallocating.
+const TRAVERSAL_STACK_CAPACITY: usize = 128;
+
 /// Spread the low 32 bits of `x` into the even bit positions (one zero gap
 /// between each), the 2D Morton building block.
 ///
@@ -141,6 +146,12 @@ pub struct BarnesHutTree<T> {
     sorted: Vec<(u64, u32)>,
     /// Squared full cell width per level for the theta test.
     level_width_sq: Vec<T>,
+    /// Deepest level that may split; cells at this depth stay leaves even
+    /// when they hold distinct points. `None` means uncapped.
+    max_depth: Option<u32>,
+    /// Point index to its leaf node. Only filled for capped trees, where a
+    /// leaf can hold several distinct points.
+    leaf_of: Vec<u32>,
 }
 
 impl<T> BarnesHutTree<T>
@@ -155,6 +166,29 @@ where
             ranges: Vec::new(),
             sorted: Vec::new(),
             level_width_sq: Vec::new(),
+            max_depth: None,
+            leaf_of: Vec::new(),
+        }
+    }
+
+    /// Create an empty tree whose depth is capped at `max_depth`, the
+    /// qdtsne approximation: every point is snapped to its cell on a
+    /// `2^max_depth` grid per axis for the purpose of the tree. Use the leaf
+    /// approximation ([`BarnesHutTree::compute_leaf_forces`] and
+    /// [`BarnesHutTree::point_force_from_leaf`]) for the forces; the plain
+    /// traversal does not exclude the query point from a shared leaf.
+    ///
+    /// ### Params
+    ///
+    /// * `max_depth` - Maximum tree depth, clamped to `[1, 32]`
+    ///
+    /// ### Returns
+    ///
+    /// An empty depth-capped tree; call [`BarnesHutTree::rebuild`] to fill it.
+    pub fn with_max_depth(max_depth: usize) -> Self {
+        Self {
+            max_depth: Some(max_depth.clamp(1, BITS as usize) as u32),
+            ..Self::empty()
         }
     }
 
@@ -195,6 +229,7 @@ where
         self.nodes.clear();
         self.ranges.clear();
         self.sorted.clear();
+        self.leaf_of.clear();
 
         if n == 0 {
             self.level_width_sq.clear();
@@ -269,6 +304,7 @@ where
         );
         self.sorted.par_sort_unstable_by_key(|&(code, _)| code);
 
+        let max_depth = self.max_depth.unwrap_or(BITS);
         let sorted = &self.sorted;
         let nodes = &mut self.nodes;
         let ranges = &mut self.ranges;
@@ -296,6 +332,10 @@ where
             let xor = sorted[start as usize].0 ^ sorted[(end - 1) as usize].0;
             let highest_diff = 63 - xor.leading_zeros();
             let level = (BITS - 1) - highest_diff / 2;
+            if level >= max_depth {
+                node += 1;
+                continue;
+            }
             let shift = 2 * (BITS - 1 - level);
             nodes[node].level = level as u8;
 
@@ -372,6 +412,19 @@ where
             nodes[i].com_y = sum_y * inv;
         }
 
+        // sequential on purpose: scattered writes keyed by point index, O(n)
+        // against the O(n log n) force pass
+        if self.max_depth.is_some() {
+            self.leaf_of.resize(n, 0);
+            for (ni, (node, &(start, end))) in nodes.iter().zip(ranges.iter()).enumerate() {
+                if node.first_child == SENTINEL {
+                    for slot in start..end {
+                        self.leaf_of[sorted[slot as usize].1 as usize] = ni as u32;
+                    }
+                }
+            }
+        }
+
         debug_assert_eq!(
             nodes
                 .iter()
@@ -408,21 +461,53 @@ where
         theta: T,
         stack: &mut Vec<u32>,
     ) -> (T, T, T) {
+        if self.nodes.is_empty() {
+            return (T::zero(), T::zero(), T::zero());
+        }
+        self.traverse_repulsive(p_x, p_y, theta * theta, SENTINEL, stack)
+    }
+
+    /// Shared tSNE repulsion traversal.
+    ///
+    /// Traverses the arena with an explicit reusable stack. A node is
+    /// summarised by its centre of mass when it is a leaf or passes the theta
+    /// opening criterion; otherwise its children are pushed. Leaves at or
+    /// within `MIN_DIST_SQ` of the query (self, coincident points) are skipped.
+    ///
+    /// ### Params
+    ///
+    /// * `p_x` - X coordinate of the query point
+    /// * `p_y` - Y coordinate of the query point
+    /// * `theta_sq` - Squared Barnes-Hut opening parameter
+    /// * `skip` - Node index to leave out entirely (the query's own leaf in
+    ///   the leaf approximation); `SENTINEL` skips nothing
+    /// * `stack` - Reusable traversal scratch (cleared here, capacity kept)
+    ///
+    /// ### Returns
+    ///
+    /// Tuple `(force_x, force_y, sum_q)`
+    #[inline]
+    fn traverse_repulsive(
+        &self,
+        p_x: T,
+        p_y: T,
+        theta_sq: T,
+        skip: u32,
+        stack: &mut Vec<u32>,
+    ) -> (T, T, T) {
         let mut force_x = T::zero();
         let mut force_y = T::zero();
         let mut sum_q = T::zero();
 
-        if self.nodes.is_empty() {
-            return (force_x, force_y, sum_q);
-        }
-
-        let theta_sq = theta * theta;
         let min_dist_sq = T::from_f64(MIN_DIST_SQ).unwrap();
 
         stack.clear();
         stack.push(0);
 
         while let Some(ni) = stack.pop() {
+            if ni == skip {
+                continue;
+            }
             let node = &self.nodes[ni as usize];
 
             let dx = p_x - node.com_x;
@@ -449,6 +534,84 @@ where
             let mult = mass_q * q;
             force_x = force_x + mult * dx;
             force_y = force_y + mult * dy;
+        }
+
+        (force_x, force_y, sum_q)
+    }
+
+    ////////////////////////
+    // Leaf approximation //
+    ////////////////////////
+
+    /// Repulsive forces on every leaf's centre of mass (qdtsne leaf
+    /// approximation).
+    ///
+    /// One traversal per leaf instead of per point; the leaf itself is
+    /// skipped and added back per point in
+    /// [`BarnesHutTree::point_force_from_leaf`].
+    ///
+    /// ### Params
+    ///
+    /// * `theta` - Barnes-Hut opening parameter
+    /// * `out` - Output, `(force_x, force_y, sum_q)` per node; only leaf
+    ///   entries are written. Resized to the node count.
+    pub fn compute_leaf_forces(&self, theta: T, out: &mut Vec<(T, T, T)>) {
+        out.resize(self.nodes.len(), (T::zero(), T::zero(), T::zero()));
+        let theta_sq = theta * theta;
+
+        out.par_iter_mut()
+            .enumerate()
+            .filter(|(li, _)| self.nodes[*li].first_child == SENTINEL)
+            .for_each_init(
+                || Vec::with_capacity(TRAVERSAL_STACK_CAPACITY),
+                |stack, (li, slot)| {
+                    let leaf = &self.nodes[li];
+                    *slot =
+                        self.traverse_repulsive(leaf.com_x, leaf.com_y, theta_sq, li as u32, stack);
+                },
+            );
+    }
+
+    /// Repulsive force on point `i` from its leaf's precomputed force plus
+    /// the other points in its own leaf (the leaf's centre of mass with `i`
+    /// removed). Only valid on a tree built via
+    /// [`BarnesHutTree::with_max_depth`].
+    ///
+    /// ### Params
+    ///
+    /// * `i` - Point index
+    /// * `p_x` - X coordinate of point `i`
+    /// * `p_y` - Y coordinate of point `i`
+    /// * `leaf_forces` - Output of [`BarnesHutTree::compute_leaf_forces`]
+    ///
+    /// ### Returns
+    ///
+    /// Tuple `(force_x, force_y, sum_q)`, as from
+    /// [`BarnesHutTree::compute_repulsive_force`]
+    #[inline]
+    pub fn point_force_from_leaf(
+        &self,
+        i: usize,
+        p_x: T,
+        p_y: T,
+        leaf_forces: &[(T, T, T)],
+    ) -> (T, T, T) {
+        let li = self.leaf_of[i] as usize;
+        let (mut force_x, mut force_y, mut sum_q) = leaf_forces[li];
+
+        let node = &self.nodes[li];
+        if node.mass > T::one() {
+            let rest = node.mass - T::one();
+            // p - (m com - p) / (m - 1) rewritten as (p - com) m / (m - 1):
+            // no `m com - p` cancellation in f32 for heavy leaves
+            let scale = node.mass / rest;
+            let dx = (p_x - node.com_x) * scale;
+            let dy = (p_y - node.com_y) * scale;
+            let q = (T::one() + dx * dx + dy * dy).recip();
+            let mass_q = rest * q;
+            sum_q = sum_q + mass_q;
+            force_x = force_x + mass_q * q * dx;
+            force_y = force_y + mass_q * q * dy;
         }
 
         (force_x, force_y, sum_q)
@@ -785,6 +948,92 @@ mod tests {
         // lets a point repel its own cell, gives 1.9e-2 on this cloud
         let rel_l2 = (num / den).sqrt();
         assert!(rel_l2 < 5e-3, "relative L2 error {rel_l2:.3e}");
+    }
+
+    /// Helper: per-point forces via the leaf approximation.
+    fn qd_forces(pos: &[f64], max_depth: usize, theta: f64) -> Vec<(f64, f64, f64)> {
+        let mut tree = BarnesHutTree::with_max_depth(max_depth);
+        tree.rebuild(pos, None);
+        let mut leaf_forces = Vec::new();
+        tree.compute_leaf_forces(theta, &mut leaf_forces);
+        (0..pos.len() / 2)
+            .map(|i| tree.point_force_from_leaf(i, pos[2 * i], pos[2 * i + 1], &leaf_forces))
+            .collect()
+    }
+
+    #[test]
+    fn test_qd_uncapped_theta_zero_matches_brute_force() {
+        let pos = lcg_cloud(400, 29);
+        let qd = qd_forces(&pos, 32, 0.0);
+        for (i, &(fx, fy, sq)) in qd.iter().enumerate() {
+            let (bx, by, bq) = brute_force(&pos, i);
+            assert_relative_eq!(fx, bx, epsilon = 1e-9);
+            assert_relative_eq!(fy, by, epsilon = 1e-9);
+            assert_relative_eq!(sq, bq, epsilon = 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_qd_shared_leaves_self_exclusion() {
+        let n = 500;
+        let pos = lcg_cloud(n, 37);
+        let mut tree = BarnesHutTree::with_max_depth(2);
+        tree.rebuild(&pos, None);
+        let mut leaf_forces = Vec::new();
+        tree.compute_leaf_forces(0.0, &mut leaf_forces);
+
+        let leaves: Vec<usize> = (0..tree.nodes.len())
+            .filter(|&li| tree.nodes[li].first_child == SENTINEL)
+            .collect();
+        assert!(leaves.iter().all(|&li| tree.nodes[li].mass > 1.0));
+
+        for i in 0..n {
+            let (px, py) = (pos[2 * i], pos[2 * i + 1]);
+            let got = tree.point_force_from_leaf(i, px, py, &leaf_forces);
+
+            // other leaves as point masses seen from the own leaf's centre
+            let own = &tree.nodes[tree.leaf_of[i] as usize];
+            let (mut fx, mut fy, mut sq) = (0.0, 0.0, 0.0);
+            for &li in &leaves {
+                if li == tree.leaf_of[i] as usize {
+                    continue;
+                }
+                let other = &tree.nodes[li];
+                let dx = own.com_x - other.com_x;
+                let dy = own.com_y - other.com_y;
+                let q = 1.0 / (1.0 + dx * dx + dy * dy);
+                sq += other.mass * q;
+                fx += other.mass * q * q * dx;
+                fy += other.mass * q * q * dy;
+            }
+            // rest of the own leaf, self removed, seen from the point
+            let rest = own.mass - 1.0;
+            let dx = px - (own.com_x * own.mass - px) / rest;
+            let dy = py - (own.com_y * own.mass - py) / rest;
+            let q = 1.0 / (1.0 + dx * dx + dy * dy);
+            sq += rest * q;
+            fx += rest * q * q * dx;
+            fy += rest * q * q * dy;
+
+            assert!(got.0.is_finite() && got.1.is_finite() && got.2.is_finite());
+            assert_relative_eq!(got.0, fx, epsilon = 1e-9);
+            assert_relative_eq!(got.1, fy, epsilon = 1e-9);
+            assert_relative_eq!(got.2, sq, epsilon = 1e-9);
+        }
+    }
+
+    #[test]
+    fn test_qd_single_point_leaves() {
+        let pos = pos_from_tuples(&[(0.0, 0.0), (10.0, 0.0)]);
+        let qd = qd_forces(&pos, 1, 0.5);
+        let (fx0, fy0, sq0) = qd[0];
+        let (fx1, fy1, sq1) = qd[1];
+        assert!(fx0 < 0.0 && fx1 > 0.0);
+        assert_relative_eq!(fx0, -fx1, epsilon = 1e-12);
+        assert_relative_eq!(fy0, 0.0);
+        assert_relative_eq!(fy1, 0.0);
+        assert_relative_eq!(sq0, 1.0 / 101.0, epsilon = 1e-12);
+        assert_relative_eq!(sq1, sq0, epsilon = 1e-12);
     }
 
     #[test]

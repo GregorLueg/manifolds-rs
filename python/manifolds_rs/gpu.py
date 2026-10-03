@@ -248,8 +248,8 @@ class TSNEGpu(BaseEmbedding):
         learning_rate: ``None`` applies the ``max(N / 12, 200)`` heuristic.
         init: ``"pca"``, ``"spectral"`` or ``"random"``.
         ann: ``"nndescent_gpu"``, ``"ivf_gpu"`` or ``"exhaustive_gpu"``.
-        approx: ``"barnes_hut"`` (CPU optimiser) or ``"fft_3k_gpu"`` (GPU
-            optimiser).
+        approx: ``"barnes_hut"`` or ``"qd"`` (CPU optimisers, see `TSNE`), or
+            ``"fft_3k_gpu"`` (GPU optimiser).
         randomised_init: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation.

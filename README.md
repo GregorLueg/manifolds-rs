@@ -18,6 +18,9 @@ implemented in Rust. Contains as for now:
 - **Parametric UMAP** (optional feature)
 - **tSNE**
   - ***Barnes Hut tSNE*** (With a `O(n log n)` complexity).
+  - ***Quick-and-dirty Barnes-Hut tSNE*** after
+  [qdtsne](https://github.com/libscran/qdtsne): tree depth capped, repulsion
+  computed once per leaf instead of once per point. Faster, slightly coarser.
   - ***Fast Fourier Transform-accelerated Interpolation-based t-SNE (Flt-SNE)***
   (optional feature; with a `O(n)` complexity for large datasets).
   - ***Three-kernel FFT t-SNE***: the same interpolation with three kernels
@@ -25,7 +28,8 @@ implemented in Rust. Contains as for now:
   per iteration instead of four each (optional feature).
   - Optional GPU-accelerated kNN search, and a device-resident three-kernel FFT
   optimiser that needs no FFTW.
-- **den-SNE**, the density-preserving variant of tSNE (Barnes-Hut and FFT).
+- **den-SNE**, the density-preserving variant of tSNE (Barnes-Hut,
+  quick-and-dirty Barnes-Hut and FFT).
 - **PHATE**
 - **PaCMAP**
 - **ForceAtlas2**
@@ -68,12 +72,18 @@ version of ADAM for increased optimisation speed.
 - **tSNE algorithm**: Implementation of the Barnes-Hut accelerated version and
 the FFT-accelerated versions (optional): the original four-term expansion and a
 three-kernel variant (`q`, `q^2 dx`, `q^2 dy` against a unit charge) that
-needs fewer transforms per iteration.
+needs fewer transforms per iteration. The quick-and-dirty Barnes-Hut (`"qd"`)
+from [qdtsne](https://github.com/libscran/qdtsne) caps the tree at
+`max_depth` (default 7) and reuses one repulsion traversal for every point in a
+leaf. On 20k points it halved the optimiser time against plain Barnes-Hut for a
+small loss in local structure; `max_depth = 10` sits closer to plain
+Barnes-Hut.
 - **densMAP and den-SNE**: Density-preserving versions of UMAP and tSNE. An
 extra gradient term maximises the correlation between the local radius of a
 point in the original space and in the embedding, so cluster size carries
 meaning. Works with all four UMAP optimisers (SGD, Adam, parallel Adam, GPU
-Adam) and the CPU tSNE optimisers (Barnes-Hut, FFT, three-kernel FFT).
+Adam) and the CPU tSNE optimisers (Barnes-Hut, quick-and-dirty Barnes-Hut,
+FFT, three-kernel FFT).
 - **Parametric UMAP** (optional feature `parametric`): A neural network encoder
 trained on the UMAP objective via [`burn`](https://burn.dev), so new points can
 be embedded without refitting. Models serialise to disk via `bincode`.
@@ -312,7 +322,7 @@ let embedding = tsne(
     data.as_ref(),
     None,        // precomputed kNN (None = compute internally)
     &params,
-    "bh",        // approximation: "barnes_hut" | "bh", or "fft" | "fft_3k" (fft_tsne feature)
+    "bh",        // approximation: "barnes_hut" | "bh", "qd" | "bh_qd", or "fft" | "fft_3k" (fft_tsne feature)
     42,          // seed
     1,           // verbose -> light levels of verbosity
 )
@@ -343,7 +353,7 @@ let embedding = densne(
     data.as_ref(),
     None,        // precomputed kNN (None = compute internally)
     &params,
-    "bh",        // approximation: "barnes_hut" | "bh", or "fft" | "fft_3k" (fft_tsne feature)
+    "bh",        // approximation: "barnes_hut" | "bh", "qd" | "bh_qd", or "fft" | "fft_3k" (fft_tsne feature)
     42,          // seed
     1,           // verbose -> light levels of verbosity
 )

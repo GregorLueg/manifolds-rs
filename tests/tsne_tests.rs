@@ -34,7 +34,6 @@ fn graph_to_adj(graph: &CoordinateList<f64>) -> Vec<Vec<(usize, f64)>> {
 }
 
 /// Helper: minimum inter-centroid distance over mean intra-cluster distance
-#[cfg(feature = "fft_tsne")]
 fn separation(embedding: &[Vec<f64>], labels: &[usize]) -> f64 {
     let mut cc: FxHashMap<usize, (f64, f64, usize)> = FxHashMap::default();
     for (i, &l) in labels.iter().enumerate() {
@@ -1139,5 +1138,114 @@ fn tsne_integration_17_gpu_optimiser_needs_tsne_gpu() {
     assert!(
         matches!(res, Err(ManifoldsError::TsneOptimiserNeedsGpu { .. })),
         "CPU tsne() should refuse fft_3k_gpu"
+    );
+}
+
+/// Test 18: Quick-and-dirty Barnes-Hut t-SNE - optimisation quality
+#[test]
+fn tsne_integration_18_qd_optimisation_quality() {
+    let (data, labels) = create_diagnostic_data(100, 10, 123);
+
+    println!("\n=== t-SNE DIAGNOSTIC 18: Quick-and-dirty BH Optimisation Quality ===");
+
+    let mut params = TsneParams {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(100.0);
+    params.optim_params.n_epochs = 500;
+
+    let embedding = tsne(data.as_ref(), None, &params, "qd", 42, 0).unwrap();
+
+    assert!(embedding[0]
+        .iter()
+        .chain(&embedding[1])
+        .all(|x| x.is_finite()));
+
+    let all_coords: Vec<f64> = embedding.iter().flat_map(|d| d.iter().copied()).collect();
+    let min_c = all_coords.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_c = all_coords.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let range = max_c - min_c;
+    println!("Coordinate span: {:.2}", range);
+    assert!(range < 1000.0, "Embedding exploded! Range = {}", range);
+    assert!(range > 1.0, "Embedding collapsed! Range = {}", range);
+
+    let sep = separation(&embedding, &labels);
+    println!("Separation ratio: {:.2}", sep);
+    assert!(
+        sep > 1.0,
+        "Clusters should be well separated, got ratio {:.2}",
+        sep
+    );
+}
+
+/// Test 19: Quick-and-dirty Barnes-Hut t-SNE reproducibility
+#[test]
+fn tsne_integration_19_qd_reproducibility() {
+    let (data, _) = create_diagnostic_data(100, 10, 42);
+
+    println!("\n=== t-SNE DIAGNOSTIC 19: Quick-and-dirty BH Reproducibility ===");
+
+    let mut params = TsneParams {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 200;
+
+    let embd1 = tsne(data.as_ref(), None, &params, "qd", 123, 0).unwrap();
+    let embd2 = tsne(data.as_ref(), None, &params, "qd", 123, 0).unwrap();
+
+    let mut max_diff: f64 = 0.0;
+    for i in 0..embd1[0].len() {
+        for dim in 0..2 {
+            max_diff = max_diff.max((embd1[dim][i] - embd2[dim][i]).abs());
+        }
+    }
+    println!("Max coordinate difference: {:.10}", max_diff);
+    assert!(
+        max_diff < 1e-6,
+        "Quick-and-dirty t-SNE should be reproducible with same seed, got diff = {}",
+        max_diff
+    );
+}
+
+/// Test 20: Barnes-Hut and quick-and-dirty Barnes-Hut produce comparable
+/// quality
+#[test]
+fn tsne_integration_20_bh_vs_qd_comparison() {
+    let (data, labels) = create_diagnostic_data(100, 10, 42);
+
+    println!("\n=== t-SNE DIAGNOSTIC 20: BH vs Quick-and-dirty BH ===");
+
+    let mut params = TsneParams {
+        perplexity: 20.0,
+        ..Default::default()
+    };
+    params.init_range = Some(1e-4);
+    params.optim_params.lr = Some(200.0);
+    params.optim_params.n_epochs = 300;
+
+    let embd_bh = tsne(data.as_ref(), None, &params, "bh", 42, 0).unwrap();
+    let embd_qd = tsne(data.as_ref(), None, &params, "qd", 42, 0).unwrap();
+
+    let sep_bh = separation(&embd_bh, &labels);
+    let sep_qd = separation(&embd_qd, &labels);
+    println!(
+        "BH separation: {:.2}, quick-and-dirty separation: {:.2}",
+        sep_bh, sep_qd
+    );
+
+    assert!(
+        sep_bh > 1.0 && sep_qd > 1.0,
+        "Both should separate clusters"
+    );
+    let ratio = sep_bh / sep_qd;
+    assert!(
+        ratio > 0.5 && ratio < 2.0,
+        "Both optimisers should produce similar quality, got ratio {:.2}",
+        ratio
     );
 }

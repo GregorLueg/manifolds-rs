@@ -3,6 +3,26 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.6.0
+
+**Features**
+
+- Quick-and-dirty Barnes-Hut tSNE (`"qd"` / `"bh_qd"`) after
+  [qdtsne](https://github.com/libscran/qdtsne): the tree depth is capped at
+  `TsneOptimParams::max_depth` (default 7) and repulsion is computed once per
+  leaf from its centre of mass, plus each point's interaction with the rest of
+  its own leaf. On 20k points the optimiser ran in roughly 40% of the plain
+  Barnes-Hut time. Works for den-SNE and through `tsne_gpu` as well.
+- `BarnesHutTree::with_max_depth()`, `compute_leaf_forces()` and
+  `point_force_from_leaf()` in `utils::bh_tree`.
+- Bump to `ann-search-rs` version `"0.9.3"` with further speed improvements.
+
+**Breaking changes**
+
+- `TsneOptimParams` has a new `max_depth: usize` field and
+  `TsneOptimParams::new()` an extra `max_depth: Option<usize>` argument. Struct
+  literals without `..Default::default()` need the field added.
+
 ## 0.5.4
 
 **Features**

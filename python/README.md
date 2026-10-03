@@ -51,7 +51,7 @@ requirement.
 | --- | --- |
 | `UMAP` | The default choice. Local structure, decent global structure from the spectral init. |
 | `DensMAP` | UMAP with relative density preserved, so a dense region stays dense. |
-| `TSNE` | Local structure above all else. Barnes-Hut, 2-D only. |
+| `TSNE` | Local structure above all else. Barnes-Hut (or the faster quick-and-dirty `approx="qd"`), 2-D only. |
 | `DensNE` | t-SNE with the same density correction. |
 | `PHATE` | Continuous structure. Trajectories and branch points survive this. |
 | `PaCMAP` | Global structure without leaning on a spectral init. Three pair types. |
@@ -130,7 +130,7 @@ has no float64 and the alternative is a failure inside a kernel.
 
 CPU FFT-accelerated t-SNE. It needs FFTW, which is GPL-2.0-or-later and would
 be linked statically, turning the whole wheel GPL. So the CPU estimators take
-Barnes-Hut only. On a GPU, `TSNEGpu(approx="fft_3k_gpu")` gives you
+Barnes-Hut only (plain, or the quick-and-dirty `approx="qd"`). On a GPU, `TSNEGpu(approx="fft_3k_gpu")` gives you
 FFT-interpolated repulsion without FFTW.
 
 Parametric UMAP is in the crate but not yet bound.

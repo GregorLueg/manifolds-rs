@@ -344,6 +344,7 @@ where
     p.late_exag_factor = r.float::<T>("late_exag_factor")?.or(p.late_exag_factor);
     set(&mut p.theta, r.float::<T>("theta")?);
     set(&mut p.n_interp_points, r.get::<usize>("n_interp_points")?);
+    set(&mut p.max_depth, r.get::<usize>("max_depth")?);
     r.finish()
 }
 
