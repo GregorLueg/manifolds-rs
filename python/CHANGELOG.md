@@ -5,7 +5,7 @@ Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 
 ## 0.3.0
 
-Requires the unreleased `manifolds-rs` with quick-and-dirty Barnes-Hut.
+Requires the `manifolds-rs` 0.6.0.
 
 **Features**
 
@@ -14,6 +14,7 @@ Requires the unreleased `manifolds-rs` with quick-and-dirty Barnes-Hut.
   `TsneOptim.max_depth` (default 7) and repulsion is computed once per leaf.
   On 20k points: ca. 3x faster than `"barnes_hut"`, silhouette 0.783 against
   0.796; `max_depth=10` gave 2x faster and 0.795.
+- Some of the kNN searches became faster.
 
 ## 0.2.1
 

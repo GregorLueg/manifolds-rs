@@ -15,6 +15,7 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   Barnes-Hut time. Works for den-SNE and through `tsne_gpu` as well.
 - `BarnesHutTree::with_max_depth()`, `compute_leaf_forces()` and
   `point_force_from_leaf()` in `utils::bh_tree`.
+- Bump to `ann-search-rs` version `"0.9.3"` with further speed improvements.
 
 **Breaking changes**
 
