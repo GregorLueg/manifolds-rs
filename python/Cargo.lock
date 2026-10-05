@@ -61,9 +61,9 @@ checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
 name = "ann-search-rs"
-version = "0.9.3"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09c839711394d8f85edba831ca56166fc491d5013b8d5a293f5a3057f0eea34a"
+checksum = "0abe18588fd9084a8a4fcffc42cda6cc55213650c48ad5d56e95e8ce27c0399b"
 dependencies = [
  "cubecl",
  "cubecl-utils-rs",
