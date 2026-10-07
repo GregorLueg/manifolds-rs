@@ -2,9 +2,9 @@
 
 use burn::{
     data::dataloader::{DataLoaderBuilder, Dataset},
-    optim::{AdamConfig, GradientsParams, Optimizer},
+    optim::{AdamConfig, GradientsParams},
     prelude::*,
-    tensor::{backend::AutodiffBackend, Element},
+    tensor::Element,
 };
 use faer::MatRef;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
@@ -207,10 +207,9 @@ where
 /// ### Returns
 ///
 /// Tensor of the data
-pub fn data_to_tensor<T, B>(data: MatRef<T>, device: &B::Device) -> Tensor<B, 2>
+pub fn data_to_tensor<T>(data: MatRef<T>, device: &Device) -> Tensor<2>
 where
     T: Element + Float + FromPrimitive,
-    B: AutodiffBackend,
 {
     let n_samples = data.nrows();
     let n_features = data.ncols();
@@ -218,7 +217,7 @@ where
         .flat_map(|i| (0..n_features).map(move |j| data[(i, j)]))
         .collect();
 
-    Tensor::<B, 2>::from_data(TensorData::new(data_flat, [n_samples, n_features]), device)
+    Tensor::<2>::from_data(TensorData::new(data_flat, [n_samples, n_features]), device)
 }
 
 /// Transform a graph into a UmapEdgeDataSet
@@ -257,22 +256,23 @@ pub fn graph_to_trainings_data<T>(graph_data: &CoordinateList<T>) -> UmapEdgeDat
 /// ### Returns
 ///
 /// A tuple of `(embedding, trained model)`
-pub fn train_parametric_umap<B, T>(
+pub fn train_parametric_umap<T>(
     data: MatRef<T>,
     graph_data: CoordinateList<T>,
     model_config: &UmapMlpConfig,
     train_params: &TrainParametricParams<T>,
-    device: &B::Device,
+    device: &Device,
     seed: usize,
     verbose: bool,
-) -> (Vec<Vec<T>>, TrainedUmapModel<B, T>)
+) -> (Vec<Vec<T>>, TrainedUmapModel<T>)
 where
     T: Element + Float + FromPrimitive + ToPrimitive,
-    B: AutodiffBackend,
 {
+    // `backward()` needs an autodiff device; a no-op if the caller passed one.
+    let device = &device.clone().autodiff();
     let n_samples = data.nrows();
 
-    let tensor_data: Tensor<B, 2> = data_to_tensor(data, device);
+    let tensor_data: Tensor<2> = data_to_tensor(data, device);
     let edge_dataset = graph_to_trainings_data(&graph_data);
 
     if verbose {
@@ -289,7 +289,7 @@ where
         .num_workers(4)
         .build(edge_dataset);
 
-    let mut model: UmapMlp<B> = model_config.init::<B>(device);
+    let mut model: UmapMlp = model_config.init(device);
     let mut optim = AdamConfig::new().init();
 
     let use_correlation = train_params.corr_weight > T::zero();
@@ -302,6 +302,7 @@ where
         let mut n_batches = 0;
 
         for batch in dataloader.iter() {
+            let batch = batch.expect("in-memory edge dataset yields every batch");
             let src_feats = tensor_data.clone().select(0, batch.src_indices.clone());
             let dst_feats = tensor_data.clone().select(0, batch.dst_indices.clone());
 
@@ -335,7 +336,7 @@ where
 
             // Only sync when we actually need the value
             if should_log {
-                total_loss += loss.clone().into_scalar().elem::<f64>();
+                total_loss += loss.clone().into_scalar::<f64>();
                 n_batches += 1;
             }
         }
@@ -357,7 +358,7 @@ where
 
     // Convert to Vec<Vec<f32>> format [n_components][n_samples]
     let n_components = model_config.output_size;
-    let embedding_data: Vec<T> = embeddings.into_data().to_vec().unwrap();
+    let embedding_data: Vec<T> = embeddings.into_data().try_to_vec().unwrap();
 
     let mut result = vec![vec![T::zero(); n_samples]; n_components];
     for i in 0..n_samples {
@@ -376,19 +377,13 @@ where
 #[cfg(test)]
 mod parametric_train_tests {
     use super::*;
-    use burn::backend::flex::FlexDevice;
-    use burn::backend::Autodiff;
-    use burn::backend::Flex;
     use faer::Mat;
-
-    type TestBackend = Autodiff<Flex<f32>>;
-
     #[test]
     fn test_data_to_tensor_shape() {
         let data = Mat::from_fn(10, 5, |i, j| (i * 5 + j) as f32);
-        let device = FlexDevice;
+        let device = Device::flex();
 
-        let tensor = data_to_tensor::<f32, TestBackend>(data.as_ref(), &device);
+        let tensor = data_to_tensor::<f32>(data.as_ref(), &device);
 
         assert_eq!(tensor.dims()[0], 10);
         assert_eq!(tensor.dims()[1], 5);
@@ -431,8 +426,8 @@ mod parametric_train_tests {
         let dataset = graph_to_trainings_data(&graph);
 
         assert_eq!(dataset.len(), 5);
-        assert_eq!(dataset.get(0), Some((0, 1, 1.0)));
-        assert_eq!(dataset.get(1), Some((0, 2, 1.0)));
-        assert_eq!(dataset.get(2), Some((1, 0, 1.0)));
+        assert_eq!(dataset.get(0).unwrap(), (0, 1, 1.0));
+        assert_eq!(dataset.get(1).unwrap(), (0, 2, 1.0));
+        assert_eq!(dataset.get(2).unwrap(), (1, 0, 1.0));
     }
 }

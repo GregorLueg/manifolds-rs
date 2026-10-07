@@ -7,7 +7,7 @@ use ann_search_rs::{
     extract_nndescent_knn_gpu, query_exhaustive_index_gpu_self, query_ivf_index_gpu_self,
     query_nndescent_index_gpu_self,
 };
-use cubecl::prelude::*;
+use cubecl::Device;
 use faer::{Mat, MatRef};
 use rayon::prelude::*;
 
@@ -281,18 +281,17 @@ where
 /// in [`run_ann_search`]: the Euclidean backends compute squared distances for
 /// speed and the square root is taken before returning.
 #[cfg(feature = "gpu")]
-pub fn run_ann_search_gpu<T, R>(
+pub fn run_ann_search_gpu<T>(
     data: MatRef<T>,
     k: usize,
     ann_type: String,
     params_nn: &NearestNeighbourParamsGpu<T>,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> ManifoldsKnnResults<T>
 where
     T: AnnSearchFloat + CubeclFloat,
-    R: Runtime,
 {
     let verbosity = parse_verbosity_level(verbose);
 
@@ -307,7 +306,7 @@ where
 
     let (knn_indices_raw, knn_dist) = match ann_search {
         AnnSearchGpu::ExhaustiveGpu => {
-            let index = build_exhaustive_index_gpu::<f32, R>(
+            let index = build_exhaustive_index_gpu::<f32>(
                 data_fp32.as_ref(),
                 &params_nn.dist_metric,
                 device,
@@ -316,7 +315,7 @@ where
             query_exhaustive_index_gpu_self(&index, k + 1, true, verbosity.detailed_verbosity())?
         }
         AnnSearchGpu::IvfGpu => {
-            let index = build_ivf_index_gpu::<f32, R>(
+            let index = build_ivf_index_gpu::<f32>(
                 data_fp32.as_ref(),
                 params_nn.n_list,
                 None,
@@ -350,7 +349,7 @@ where
                 params_nn.k
             };
 
-            let mut index = build_nndescent_index_gpu::<f32, R>(
+            let mut index = build_nndescent_index_gpu::<f32>(
                 data_fp32.as_ref(),
                 &params_nn.dist_metric,
                 graph_k,

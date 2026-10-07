@@ -30,14 +30,12 @@ use std::{default::Default, time::Instant};
 use thousands::*;
 
 #[cfg(feature = "parametric")]
-use burn::tensor::{backend::AutodiffBackend, Element};
+use burn::tensor::Element;
 #[cfg(feature = "parametric")]
 use num_traits::ToPrimitive;
 
 #[cfg(feature = "gpu")]
-use ann_search_rs::prelude::CubeclFloat;
-#[cfg(feature = "gpu")]
-use cubecl::prelude::*;
+use cubecl::Device;
 
 use crate::data::graph::*;
 use crate::data::init::*;
@@ -3903,7 +3901,8 @@ where
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
 ///   distances excluding self.
 /// * `umap_params` - Configuration parameters for parametric UMAP
-/// * `device` - Burn backend device for neural network training
+/// * `device` - Burn device for neural network training; switched to autodiff
+///   internally
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -3913,17 +3912,16 @@ where
 /// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
 /// `n_dim` and inner vectors have length `n_samples`. Each outer element
 /// represents one embedding dimension.
-pub fn parametric_umap<T, B>(
+pub fn parametric_umap<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     umap_params: &ParametricUmapParams<T>,
-    device: &B::Device,
+    device: &burn::tensor::Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat + Element,
-    B: AutodiffBackend,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
@@ -3960,7 +3958,7 @@ where
         umap_params.n_dim,
     );
 
-    let (embd, _) = train_parametric_umap::<B, T>(
+    let (embd, _) = train_parametric_umap::<T>(
         data,
         graph,
         &model_params,
@@ -3982,7 +3980,8 @@ where
 ///   ndarray 2-D array (with the `ndarray` feature) or a row-major
 ///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `umap_params` - Configuration parameters for parametric UMAP
-/// * `device` - Burn backend device for neural network training
+/// * `device` - Burn device for neural network training; switched to autodiff
+///   internally
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -4003,16 +4002,15 @@ where
 /// ### Returns
 ///
 /// Returns a tuple of embedding and the `TrainedUmapModel` for further usage.
-pub fn train_parametric_umap_model<T, B>(
+pub fn train_parametric_umap_model<T>(
     data: impl ManifoldsMatrix<T>,
     umap_params: &ParametricUmapParams<T>,
-    device: &B::Device,
+    device: &burn::tensor::Device,
     seed: usize,
     verbose: usize,
-) -> ParametricUmapResults<B, T>
+) -> ParametricUmapResults<T>
 where
     T: ManifoldsFloat + Element,
-    B: AutodiffBackend,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
@@ -4048,7 +4046,7 @@ where
         umap_params.n_dim,
     );
 
-    let (embd, trained_model) = train_parametric_umap::<B, T>(
+    let (embd, trained_model) = train_parametric_umap::<T>(
         data,
         graph,
         &model_params,
@@ -4232,7 +4230,7 @@ where
 /// Tuple of (graph, knn_indices, knn_dist).
 #[cfg(feature = "gpu")]
 #[allow(clippy::too_many_arguments)]
-pub fn construct_umap_graph_gpu<T, R>(
+pub fn construct_umap_graph_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     k: usize,
@@ -4240,13 +4238,12 @@ pub fn construct_umap_graph_gpu<T, R>(
     umap_params: &UmapGraphParams<T>,
     nn_params: &NearestNeighbourParamsGpu<T>,
     n_epochs: usize,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> UmapGraphResults<T>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
@@ -4265,7 +4262,7 @@ where
             }
             let start_knn = Instant::now();
             let result =
-                run_ann_search_gpu::<T, R>(data, k, ann_type, nn_params, device, seed, verbose)?;
+                run_ann_search_gpu::<T>(data, k, ann_type, nn_params, device, seed, verbose)?;
             if verbosity.normal_verbosity() {
                 println!("GPU kNN search done in: {:.2?}.", start_knn.elapsed());
             }
@@ -4325,22 +4322,21 @@ where
 /// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
 /// `n_dim` and inner vectors have length `n_samples`.
 #[cfg(feature = "gpu")]
-pub fn umap_gpu<T, R>(
+pub fn umap_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     umap_params: &UmapParamsGpu<T>,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
     StandardNormal: Distribution<T>,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
-    umap_gpu_inner::<T, R>(
+    umap_gpu_inner::<T>(
         data,
         precomputed_knn,
         umap_params,
@@ -4372,18 +4368,17 @@ where
 ///
 /// Embedding coordinates as `Vec<Vec<T>>`, `[n_dim][n_samples]`.
 #[cfg(feature = "gpu")]
-fn umap_gpu_inner<T, R>(
+fn umap_gpu_inner<T>(
     data: MatRef<T>,
     precomputed_knn: PreComputedKnn<T>,
     umap_params: &UmapParamsGpu<T>,
     dens_params: Option<DensParams<T>>,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
     StandardNormal: Distribution<T>,
 {
     let verbosity = parse_verbosity_level(verbose);
@@ -4418,7 +4413,7 @@ where
         );
     }
 
-    let (graph, knn_indices, knn_dist) = construct_umap_graph_gpu::<T, R>(
+    let (graph, knn_indices, knn_dist) = construct_umap_graph_gpu::<T>(
         data,
         precomputed_knn,
         umap_params.k,
@@ -4536,7 +4531,7 @@ where
             let params_f32 = umap_params.optim_params.cast::<f32>();
             let dens_f32 = dens_state.as_ref().map(|state| state.cast::<f32>());
 
-            optimise_embedding_adam_gpu::<R, f32>(
+            optimise_embedding_adam_gpu::<f32>(
                 &mut embd_f32,
                 &graph_adj_f32,
                 &params_f32,
@@ -4692,22 +4687,21 @@ where
 /// variability through density-preserving data visualization", Nature
 /// Biotechnology
 #[cfg(feature = "gpu")]
-pub fn densmap_gpu<T, R>(
+pub fn densmap_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &DensmapParamsGpu<T>,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
     StandardNormal: Distribution<T>,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
-    umap_gpu_inner::<T, R>(
+    umap_gpu_inner::<T>(
         data,
         precomputed_knn,
         &params.umap_params,
@@ -4876,19 +4870,18 @@ where
 /// Tuple of (symmetric affinity graph, knn_indices, knn_dist)
 #[cfg(feature = "gpu")]
 #[allow(clippy::too_many_arguments)]
-pub fn construct_tsne_graph_gpu<T, R>(
+pub fn construct_tsne_graph_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     perplexity: T,
     ann_type: String,
     nn_params: &NearestNeighbourParamsGpu<T>,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> TsneGraph<T>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
@@ -4929,7 +4922,7 @@ where
 
             let start_knn = Instant::now();
             let result =
-                run_ann_search_gpu::<T, R>(data, k, ann_type, nn_params, device, seed, verbose)?;
+                run_ann_search_gpu::<T>(data, k, ann_type, nn_params, device, seed, verbose)?;
 
             if verbosity.normal_verbosity() {
                 println!("GPU kNN search done in: {:.2?}.", start_knn.elapsed());
@@ -5037,23 +5030,22 @@ where
 ///
 /// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
 #[cfg(all(feature = "gpu", feature = "fft_tsne"))]
-pub fn tsne_gpu<T, R>(
+pub fn tsne_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParamsGpu<T>,
     approx_type: &str,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat + FftwFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu + FftwFloat,
     StandardNormal: Distribution<T>,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
-    tsne_gpu_inner::<T, R>(
+    tsne_gpu_inner::<T>(
         data,
         precomputed_knn,
         params,
@@ -5090,20 +5082,19 @@ where
 /// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
 #[cfg(all(feature = "gpu", feature = "fft_tsne"))]
 #[allow(clippy::too_many_arguments)]
-fn tsne_gpu_inner<T, R>(
+fn tsne_gpu_inner<T>(
     data: MatRef<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParamsGpu<T>,
     approx_type: &str,
     dreams_lambda: Option<T>,
     dreams_reference: Option<Vec<Vec<T>>>,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat + FftwFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu + FftwFloat,
     StandardNormal: Distribution<T>,
 {
     if params.n_dim != 2 {
@@ -5114,7 +5105,7 @@ where
 
     let verbosity = parse_verbosity_level(verbose);
 
-    let (graph, _, _) = construct_tsne_graph_gpu::<T, R>(
+    let (graph, _, _) = construct_tsne_graph_gpu::<T>(
         data,
         precomputed_knn,
         params.perplexity,
@@ -5251,7 +5242,7 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_fft3k_tsne_gpu::<R, T>(
+            optimise_fft3k_tsne_gpu::<T>(
                 &mut embd,
                 &params.optim_params,
                 &graph,
@@ -5316,24 +5307,23 @@ where
 /// Research
 #[cfg(all(feature = "gpu", feature = "fft_tsne"))]
 #[allow(clippy::too_many_arguments)]
-pub fn dreams_gpu<T, R>(
+pub fn dreams_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     reference: Option<Vec<Vec<T>>>,
     params: &DreamsParamsGpu<T>,
     approx_type: &str,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat + FftwFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu + FftwFloat,
     StandardNormal: Distribution<T>,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
-    tsne_gpu_inner::<T, R>(
+    tsne_gpu_inner::<T>(
         data,
         precomputed_knn,
         &params.tsne_params,
@@ -5373,23 +5363,22 @@ where
 ///
 /// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
 #[cfg(all(feature = "gpu", not(feature = "fft_tsne")))]
-pub fn tsne_gpu<T, R>(
+pub fn tsne_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParamsGpu<T>,
     approx_type: &str,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
     StandardNormal: Distribution<T>,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
-    tsne_gpu_inner::<T, R>(
+    tsne_gpu_inner::<T>(
         data,
         precomputed_knn,
         params,
@@ -5426,20 +5415,19 @@ where
 /// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
 #[cfg(all(feature = "gpu", not(feature = "fft_tsne")))]
 #[allow(clippy::too_many_arguments)]
-fn tsne_gpu_inner<T, R>(
+fn tsne_gpu_inner<T>(
     data: MatRef<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParamsGpu<T>,
     approx_type: &str,
     dreams_lambda: Option<T>,
     dreams_reference: Option<Vec<Vec<T>>>,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
     StandardNormal: Distribution<T>,
 {
     if params.n_dim != 2 {
@@ -5450,7 +5438,7 @@ where
 
     let verbosity = parse_verbosity_level(verbose);
 
-    let (graph, _, _) = construct_tsne_graph_gpu::<T, R>(
+    let (graph, _, _) = construct_tsne_graph_gpu::<T>(
         data,
         precomputed_knn,
         params.perplexity,
@@ -5558,7 +5546,7 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_fft3k_tsne_gpu::<R, T>(
+            optimise_fft3k_tsne_gpu::<T>(
                 &mut embd,
                 &params.optim_params,
                 &graph,
@@ -5623,24 +5611,23 @@ where
 /// Research
 #[cfg(all(feature = "gpu", not(feature = "fft_tsne")))]
 #[allow(clippy::too_many_arguments)]
-pub fn dreams_gpu<T, R>(
+pub fn dreams_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     reference: Option<Vec<Vec<T>>>,
     params: &DreamsParamsGpu<T>,
     approx_type: &str,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
     StandardNormal: Distribution<T>,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
-    tsne_gpu_inner::<T, R>(
+    tsne_gpu_inner::<T>(
         data,
         precomputed_knn,
         &params.tsne_params,

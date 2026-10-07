@@ -5,16 +5,15 @@
 //! initialisation stay on the CPU. That is the
 //! crate's split, not a simplification made here.
 //!
-//! The runtime is pinned to `WgpuRuntime`. `R` is a type parameter in the
-//! library so the kernels can be tested against the CPU backend, but a generic
-//! cannot cross into Python: the device type is `R::Device`, and there is
-//! nothing on the Python side to choose it with.
+//! The device is pinned to wgpu: there is nothing on the Python side to choose
+//! a backend with.
 //!
 //! Unlike the CPU paths these are float32 only. WGSL has no `f64`, and the
 //! Python layer casts on the way in rather than letting a float64 array fail
 //! somewhere inside a kernel.
 
-use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+use cubecl::wgpu::WgpuDevice;
+use cubecl::Device;
 use numpy::PyReadonlyArray2;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -22,17 +21,14 @@ use pyo3::types::PyDict;
 use crate::error::ManErr;
 use crate::{convert, dispatch, params, pool};
 
-/// The only runtime the bindings expose.
-pub(crate) type Rt = WgpuRuntime;
-
 /// Fetch the default wgpu device.
 ///
 /// ### Returns
 ///
 /// The adapter wgpu picks for this machine: Metal on macOS, Vulkan or DX12
 /// elsewhere.
-pub(crate) fn default_device() -> WgpuDevice {
-    WgpuDevice::default()
+pub(crate) fn default_device() -> Device {
+    WgpuDevice::default().into()
 }
 
 ////////////
@@ -123,7 +119,7 @@ pub fn umap_gpu<'py>(
         knn_indices,
         knn_distances,
         umap_gpu,
-        |data, n, dim, p, knn, device| manifolds_rs::umap_gpu::<f32, Rt>(
+        |data, n, dim, p, knn, device| manifolds_rs::umap_gpu::<f32>(
             (data, n, dim),
             knn,
             p,
@@ -167,7 +163,7 @@ pub fn densmap_gpu<'py>(
         knn_indices,
         knn_distances,
         densmap_gpu,
-        |data, n, dim, p, knn, device| manifolds_rs::densmap_gpu::<f32, Rt>(
+        |data, n, dim, p, knn, device| manifolds_rs::densmap_gpu::<f32>(
             (data, n, dim),
             knn,
             p,
@@ -216,7 +212,7 @@ pub fn tsne_gpu<'py>(
         knn_indices,
         knn_distances,
         tsne_gpu,
-        |data, n, dim, p, knn, device| manifolds_rs::tsne_gpu::<f32, Rt>(
+        |data, n, dim, p, knn, device| manifolds_rs::tsne_gpu::<f32>(
             (data, n, dim),
             knn,
             p,

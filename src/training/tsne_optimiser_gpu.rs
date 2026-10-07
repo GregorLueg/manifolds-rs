@@ -24,6 +24,7 @@
 #![allow(missing_docs)] // cubecl weirdness
 
 use cubecl::prelude::*;
+use cubecl::Device;
 use cubecl_utils_rs::prelude::*;
 
 use crate::data::graph::coo_to_adjacency_list;
@@ -92,11 +93,7 @@ fn lagrange_basis<F: Float + CubeElement>(t: F, k: u32, #[comptime] ni: u32) -> 
 /// * `u` - Unit index
 /// * `log2_wg` - `log2(wg)`; comptime, `wg` a power of two
 #[cube]
-fn workgroup_sum<F: Float + CubeElement>(
-    sh: &mut SharedMemory<F>,
-    u: u32,
-    #[comptime] log2_wg: u32,
-) {
+fn workgroup_sum<F: Float + CubeElement>(sh: &mut Shared<[F]>, u: u32, #[comptime] log2_wg: u32) {
     sync_cube();
     #[unroll]
     for k in 0..log2_wg {
@@ -117,11 +114,7 @@ fn workgroup_sum<F: Float + CubeElement>(
 /// * `u` - Unit index
 /// * `log2_wg` - `log2(wg)`; comptime, `wg` a power of two
 #[cube]
-fn workgroup_max<F: Float + CubeElement>(
-    sh: &mut SharedMemory<F>,
-    u: u32,
-    #[comptime] log2_wg: u32,
-) {
+fn workgroup_max<F: Float + CubeElement>(sh: &mut Shared<[F]>, u: u32, #[comptime] log2_wg: u32) {
     sync_cube();
     #[unroll]
     for k in 0..log2_wg {
@@ -156,7 +149,7 @@ fn workgroup_max<F: Float + CubeElement>(
 /// * `ni` - Interpolation nodes per box; comptime
 /// * `wg` - Workgroup width; comptime
 #[cube(launch_unchecked)]
-pub fn tsne3k_prep<F: Float + CubeElement>(
+pub fn tsne3k_prep<F: Float + CubeElement + LaunchArg>(
     pos: &Tensor<F>,
     box_id: &mut Tensor<u32>,
     slot: &mut Tensor<u32>,
@@ -215,7 +208,7 @@ pub fn tsne3k_scan(
     len: u32,
     #[comptime] wg: u32,
 ) {
-    let mut sh = SharedMemory::<u32>::new(wg as usize);
+    let mut sh = Shared::<[u32]>::new_slice(wg as usize);
     let u = UNIT_POS_X;
     // spelled out: `div_ceil` is not part of the cubecl expansion
     #[allow(clippy::manual_div_ceil)]
@@ -226,7 +219,7 @@ pub fn tsne3k_scan(
         hi = len;
     }
 
-    let mut acc: u32 = 0u32;
+    let mut acc = 0u32;
     let mut b: u32 = lo;
     while b < hi {
         acc += box_count[b as usize].load();
@@ -236,7 +229,7 @@ pub fn tsne3k_scan(
     sync_cube();
 
     if u == 0u32 {
-        let mut run: u32 = 0u32;
+        let mut run = 0u32;
         for k in 0..wg {
             let v = sh[k as usize];
             sh[k as usize] = run;
@@ -428,7 +421,7 @@ pub fn tsne3k_gather<F: Float + CubeElement>(
     #[comptime] wg: u32,
     #[comptime] log2_wg: u32,
 ) {
-    let mut sh = SharedMemory::<F>::new(wg as usize);
+    let mut sh = Shared::<[F]>::new_slice(wg as usize);
     let cube = CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X;
     let u = UNIT_POS_X;
     let i = cube * wg + u;
@@ -506,7 +499,7 @@ pub fn tsne3k_gather<F: Float + CubeElement>(
 /// * `wg` - Workgroup width; comptime
 /// * `log2_wg` - `log2(wg)`; comptime
 #[cube(launch_unchecked)]
-pub fn tsne3k_update<F: Float + CubeElement>(
+pub fn tsne3k_update<F: Float + CubeElement + LaunchArg>(
     pos_in: &Tensor<F>,
     pos_out: &mut Tensor<F>,
     vel: &mut Tensor<F>,
@@ -534,8 +527,8 @@ pub fn tsne3k_update<F: Float + CubeElement>(
     #[comptime] wg: u32,
     #[comptime] log2_wg: u32,
 ) {
-    let mut sh = SharedMemory::<F>::new(wg as usize);
-    let mut sh2 = SharedMemory::<F>::new(wg as usize);
+    let mut sh = Shared::<[F]>::new_slice(wg as usize);
+    let mut sh2 = Shared::<[F]>::new_slice(wg as usize);
     let cube = CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X;
     let u = UNIT_POS_X;
     let i = cube * wg + u;
@@ -682,7 +675,7 @@ pub fn tsne3k_update<F: Float + CubeElement>(
 /// * `wg` - Workgroup width; comptime
 /// * `log2_wg` - `log2(wg)`; comptime
 #[cube(launch_unchecked)]
-pub fn tsne3k_recentre<F: Float + CubeElement>(
+pub fn tsne3k_recentre<F: Float + CubeElement + LaunchArg>(
     pos: &mut Tensor<F>,
     mean_partial: &Tensor<F>,
     extent_partial: &mut Tensor<F>,
@@ -693,8 +686,8 @@ pub fn tsne3k_recentre<F: Float + CubeElement>(
     #[comptime] wg: u32,
     #[comptime] log2_wg: u32,
 ) {
-    let mut sh = SharedMemory::<F>::new(wg as usize);
-    let mut sh2 = SharedMemory::<F>::new(wg as usize);
+    let mut sh = Shared::<[F]>::new_slice(wg as usize);
+    let mut sh2 = Shared::<[F]>::new_slice(wg as usize);
     let cube = CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X;
     let u = UNIT_POS_X;
     let i = cube * wg + u;
@@ -752,7 +745,7 @@ pub fn tsne3k_recentre<F: Float + CubeElement>(
 /// * `n_fft` - Grid side; comptime
 /// * `wg` - Workgroup width; comptime
 #[cube(launch_unchecked)]
-pub fn tsne3k_kernel_fill<F: Float + CubeElement>(
+pub fn tsne3k_kernel_fill<F: Float + CubeElement + LaunchArg>(
     k_re: &mut Tensor<F>,
     k_im: &mut Tensor<F>,
     m: u32,
@@ -854,7 +847,7 @@ impl GridGeometry {
 //////////////////
 
 /// Buffers whose size depends on the FFT grid.
-struct GridBuffers<R: Runtime, T: ManifoldsFloatGpu> {
+struct GridBuffers<T: ManifoldsFloatGpu> {
     /// Geometry the buffers were built for
     geom: GridGeometry,
     /// Batched FFT plan for the forward charge transform
@@ -864,25 +857,25 @@ struct GridBuffers<R: Runtime, T: ManifoldsFloatGpu> {
     /// Batched FFT plan for the three kernel spectra
     plan_3: Fft2dPlan,
     /// Per-box counters `[nb^2]`
-    box_count: GpuTensor<R, u32>,
+    box_count: GpuTensor<u32>,
     /// Box starts `[nb^2 + 1]`
-    box_start: GpuTensor<R, u32>,
+    box_start: GpuTensor<u32>,
     /// Charge grid, real `[n_fft^2]`
-    g_re: GpuTensor<R, T>,
+    g_re: GpuTensor<T>,
     /// Charge grid, imaginary
-    g_im: GpuTensor<R, T>,
+    g_im: GpuTensor<T>,
     /// Products / convolved grids, real `[2 * n_fft^2]`
-    p_re: GpuTensor<R, T>,
+    p_re: GpuTensor<T>,
     /// Products / convolved grids, imaginary
-    p_im: GpuTensor<R, T>,
+    p_im: GpuTensor<T>,
     /// Kernel spectra, real `[3 * n_fft^2]`
-    k_re: GpuTensor<R, T>,
+    k_re: GpuTensor<T>,
     /// Kernel spectra, imaginary
-    k_im: GpuTensor<R, T>,
+    k_im: GpuTensor<T>,
     /// FFT transpose scratch, real `[3 * n_fft^2]`
-    tmp_re: GpuTensor<R, T>,
+    tmp_re: GpuTensor<T>,
     /// FFT transpose scratch, imaginary
-    tmp_im: GpuTensor<R, T>,
+    tmp_im: GpuTensor<T>,
     /// One cube per `wg` grid elements
     cubes_grid: CubeCount,
     /// One cube per `wg` elements of the three kernels
@@ -914,7 +907,7 @@ fn plan_cubes(
     ))
 }
 
-impl<R: Runtime, T: ManifoldsFloatGpu> GridBuffers<R, T> {
+impl<T: ManifoldsFloatGpu> GridBuffers<T> {
     /// Allocate grid buffers and compute the kernel spectra on the device.
     ///
     /// ### Params
@@ -933,7 +926,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> GridBuffers<R, T> {
         ni: usize,
         wg: u32,
         limits: &GpuLimits,
-        client: &ComputeClient<R>,
+        client: &Client,
     ) -> Result<Self, ManifoldsError> {
         let nf = geom.n_fft;
         let nn = nf * nf;
@@ -963,7 +956,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> GridBuffers<R, T> {
         let m = geom.n_boxes * ni;
         let h = geom.box_width() / ni as f64;
         unsafe {
-            tsne3k_kernel_fill::launch_unchecked::<T, R>(
+            tsne3k_kernel_fill::launch_unchecked::<T>(
                 client,
                 bufs.cubes_kernel.clone(),
                 CubeDim::new_1d(wg),
@@ -990,43 +983,43 @@ impl<R: Runtime, T: ManifoldsFloatGpu> GridBuffers<R, T> {
 }
 
 /// Grid-independent device state.
-struct TsneGpuState<R: Runtime, T: ManifoldsFloatGpu> {
+struct TsneGpuState<T: ManifoldsFloatGpu> {
     /// Positions, current `[2n]`
-    pos_a: GpuTensor<R, T>,
+    pos_a: GpuTensor<T>,
     /// Positions, next `[2n]`
-    pos_b: GpuTensor<R, T>,
+    pos_b: GpuTensor<T>,
     /// Momentum `[2n]`
-    vel: GpuTensor<R, T>,
+    vel: GpuTensor<T>,
     /// Gains `[2n]`
-    gains: GpuTensor<R, T>,
+    gains: GpuTensor<T>,
     /// CSR row pointers `[n + 1]`
-    indptr: GpuTensor<R, u32>,
+    indptr: GpuTensor<u32>,
     /// CSR neighbours `[nnz]`
-    indices: GpuTensor<R, u32>,
+    indices: GpuTensor<u32>,
     /// CSR affinities `[nnz]`
-    values: GpuTensor<R, T>,
+    values: GpuTensor<T>,
     /// Box per point `[n]`
-    box_id: GpuTensor<R, u32>,
+    box_id: GpuTensor<u32>,
     /// Rank inside the box `[n]`
-    slot: GpuTensor<R, u32>,
+    slot: GpuTensor<u32>,
     /// Points grouped by box `[n]`
-    order: GpuTensor<R, u32>,
+    order: GpuTensor<u32>,
     /// X weights `[n * ni]`
-    wx: GpuTensor<R, T>,
+    wx: GpuTensor<T>,
     /// Y weights `[n * ni]`
-    wy: GpuTensor<R, T>,
+    wy: GpuTensor<T>,
     /// Raw repulsion `[2n]`
-    rep: GpuTensor<R, T>,
+    rep: GpuTensor<T>,
     /// Partials of `Z` `[n_cubes]`
-    z_partial: GpuTensor<R, T>,
+    z_partial: GpuTensor<T>,
     /// Partials of the position sums `[2 * n_cubes]`
-    mean_partial: GpuTensor<R, T>,
+    mean_partial: GpuTensor<T>,
     /// Partials of the extent `[n_cubes]`
-    extent_partial: GpuTensor<R, T>,
+    extent_partial: GpuTensor<T>,
     /// Partials of `||Y||^2` `[n_cubes]`
-    norm_partial: GpuTensor<R, T>,
+    norm_partial: GpuTensor<T>,
     /// Centred DREAMS reference `[2n]`, or a two-element stub without DREAMS
-    reference: GpuTensor<R, T>,
+    reference: GpuTensor<T>,
     /// Whether the DREAMS step is compiled in
     dreams: bool,
     /// Number of points
@@ -1043,7 +1036,7 @@ struct TsneGpuState<R: Runtime, T: ManifoldsFloatGpu> {
     n_cubes_pts: usize,
 }
 
-impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
+impl<T: ManifoldsFloatGpu> TsneGpuState<T> {
     /// Upload positions and the affinity graph (as CSR) and allocate the
     /// per-point scratch.
     ///
@@ -1065,7 +1058,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
         dreams: Option<&DreamsState<T>>,
         ni: usize,
         limits: &GpuLimits,
-        client: &ComputeClient<R>,
+        client: &Client,
     ) -> Result<(Self, f64), ManifoldsError> {
         let n = embd.len();
         if graph.n_samples != n {
@@ -1167,7 +1160,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
     ///
     /// * `client` - CubeCL compute client
     /// * `grid` - Grid buffers and spectra
-    fn enqueue_repulsion(&self, client: &ComputeClient<R>, grid: &GridBuffers<R, T>) {
+    fn enqueue_repulsion(&self, client: &Client, grid: &GridBuffers<T>) {
         let g = &grid.geom;
         let nb = g.n_boxes as u32;
         let nf = g.n_fft as u32;
@@ -1176,7 +1169,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
         let dim = CubeDim::new_1d(wg);
 
         unsafe {
-            tsne3k_prep::launch_unchecked::<T, R>(
+            tsne3k_prep::launch_unchecked::<T>(
                 client,
                 self.cubes_pts.clone(),
                 dim,
@@ -1193,7 +1186,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
                 ni,
                 wg,
             );
-            tsne3k_scan::launch_unchecked::<R>(
+            tsne3k_scan::launch_unchecked(
                 client,
                 CubeCount::Static(1, 1, 1),
                 dim,
@@ -1202,7 +1195,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
                 nb * nb,
                 wg,
             );
-            tsne3k_scatter::launch_unchecked::<R>(
+            tsne3k_scatter::launch_unchecked(
                 client,
                 self.cubes_pts.clone(),
                 dim,
@@ -1213,7 +1206,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
                 self.n as u32,
                 wg,
             );
-            tsne3k_splat::launch_unchecked::<T, R>(
+            tsne3k_splat::launch_unchecked::<T>(
                 client,
                 grid.cubes_grid.clone(),
                 dim,
@@ -1240,7 +1233,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
         );
 
         unsafe {
-            tsne3k_hadamard::launch_unchecked::<T, R>(
+            tsne3k_hadamard::launch_unchecked::<T>(
                 client,
                 grid.cubes_grid.clone(),
                 dim,
@@ -1265,7 +1258,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
         );
 
         unsafe {
-            tsne3k_gather::launch_unchecked::<T, R>(
+            tsne3k_gather::launch_unchecked::<T>(
                 client,
                 self.cubes_pts.clone(),
                 dim,
@@ -1293,11 +1286,11 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
     ///
     /// * `client` - CubeCL compute client
     /// * `sched` - Per-epoch scalars
-    fn enqueue_step(&self, client: &ComputeClient<R>, sched: &StepScalars<T>) {
+    fn enqueue_step(&self, client: &Client, sched: &StepScalars<T>) {
         let wg = self.wg;
         let dim = CubeDim::new_1d(wg);
         unsafe {
-            tsne3k_update::launch_unchecked::<T, R>(
+            tsne3k_update::launch_unchecked::<T>(
                 client,
                 self.cubes_pts.clone(),
                 dim,
@@ -1328,7 +1321,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
                 wg,
                 self.log2_wg,
             );
-            tsne3k_recentre::launch_unchecked::<T, R>(
+            tsne3k_recentre::launch_unchecked::<T>(
                 client,
                 self.cubes_pts.clone(),
                 dim,
@@ -1398,16 +1391,15 @@ struct StepScalars<T> {
 /// ### References
 ///
 /// Linderman et al., Nature Methods, 2019 (FIt-SNE).
-pub fn optimise_fft3k_tsne_gpu<R, T>(
+pub fn optimise_fft3k_tsne_gpu<T>(
     embd: &mut [Vec<T>],
     params: &TsneOptimParams<T>,
     graph: &CoordinateList<T>,
     dreams: Option<&DreamsState<T>>,
-    device: R::Device,
+    device: Device,
     verbose: usize,
 ) -> Result<(), ManifoldsError>
 where
-    R: Runtime,
     T: ManifoldsFloatGpu,
 {
     let verbosity = parse_verbosity_level(verbose);
@@ -1421,11 +1413,11 @@ where
     }
     let ni = params.n_interp_points;
 
-    let client = R::client(&device);
+    let client = device.client();
     let limits = GpuLimits::from_client(&client);
     let (mut st, half_span) =
-        TsneGpuState::<R, T>::upload(embd, graph, dreams, ni, &limits, &client)?;
-    let mut grid = GridBuffers::<R, T>::new(
+        TsneGpuState::<T>::upload(embd, graph, dreams, ni, &limits, &client)?;
+    let mut grid = GridBuffers::<T>::new(
         GridGeometry::for_extent(half_span, ni),
         ni,
         st.wg,
@@ -1576,18 +1568,12 @@ mod tests {
     fn test_gpu_repulsion_matches_direct() {
         let n = 2_000;
         let embd = clustered(n, 30.0);
-        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let client = <WgpuRuntime>::client(&WgpuDevice::default());
         let limits = GpuLimits::from_client(&client);
-        let (st, half_span) = TsneGpuState::<WgpuRuntime, f32>::upload(
-            &embd,
-            &empty_graph(n),
-            None,
-            3,
-            &limits,
-            &client,
-        )
-        .unwrap();
-        let grid = GridBuffers::<WgpuRuntime, f32>::new(
+        let (st, half_span) =
+            TsneGpuState::<f32>::upload(&embd, &empty_graph(n), None, 3, &limits, &client)
+                .unwrap();
+        let grid = GridBuffers::<f32>::new(
             GridGeometry::for_extent(half_span, 3),
             3,
             st.wg,
@@ -1638,23 +1624,23 @@ mod tests {
         let dev = WgpuDevice::default;
 
         let mut empty: Vec<Vec<f32>> = vec![];
-        let res = optimise_fft3k_tsne_gpu::<WgpuRuntime, f32>(
+        let res = optimise_fft3k_tsne_gpu::<f32>(
             &mut empty,
             &params,
             &empty_graph(0),
             None,
-            dev(),
+            dev().clone().into(),
             0,
         );
         assert!(matches!(res, Err(ManifoldsError::NoData)));
 
         let mut three_d = vec![vec![0.0f32; 3]; 4];
-        let res = optimise_fft3k_tsne_gpu::<WgpuRuntime, f32>(
+        let res = optimise_fft3k_tsne_gpu::<f32>(
             &mut three_d,
             &params,
             &empty_graph(4),
             None,
-            dev(),
+            dev().clone().into(),
             0,
         );
         assert!(matches!(
@@ -1663,12 +1649,12 @@ mod tests {
         ));
 
         let mut two_d = vec![vec![0.0f32; 2]; 4];
-        let res = optimise_fft3k_tsne_gpu::<WgpuRuntime, f32>(
+        let res = optimise_fft3k_tsne_gpu::<f32>(
             &mut two_d,
             &params,
             &empty_graph(5),
             None,
-            dev(),
+            dev().clone().into(),
             0,
         );
         assert!(matches!(

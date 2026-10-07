@@ -40,13 +40,10 @@ pub fn gpu_available(py: Python<'_>) -> bool {
 /// `true` if a client came back, `false` if the attempt panicked.
 #[cfg(feature = "gpu")]
 fn probe() -> bool {
-    use cubecl::prelude::Runtime;
-
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
     let ok = std::panic::catch_unwind(|| {
-        let device = crate::embed_gpu::default_device();
-        let _ = <crate::embed_gpu::Rt as Runtime>::client(&device);
+        let _ = crate::embed_gpu::default_device().client();
     })
     .is_ok();
     std::panic::set_hook(hook);

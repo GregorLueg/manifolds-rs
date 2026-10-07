@@ -70,10 +70,10 @@ pub fn fft_rows<F: Float + CubeElement>(
     #[comptime] forward: bool,
 ) {
     let half = n / 2;
-    let mut s_re = SharedMemory::<F>::new(n);
-    let mut s_im = SharedMemory::<F>::new(n);
-    let mut tw_re = SharedMemory::<F>::new(half);
-    let mut tw_im = SharedMemory::<F>::new(half);
+    let mut s_re = Shared::<[F]>::new_slice(n);
+    let mut s_im = Shared::<[F]>::new_slice(n);
+    let mut tw_re = Shared::<[F]>::new_slice(half);
+    let mut tw_im = Shared::<[F]>::new_slice(half);
 
     let row = (CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) as usize;
     let local = UNIT_POS_X as usize;
@@ -163,8 +163,8 @@ pub fn transpose_paired<F: Float + CubeElement>(
     let tile = TRANSPOSE_TILE;
     let stride = TRANSPOSE_TILE + 1;
     let rows_step = TRANSPOSE_TILE / TRANSPOSE_ROWS_PER_UNIT;
-    let mut s_re = SharedMemory::<F>::new(TRANSPOSE_TILE * (TRANSPOSE_TILE + 1));
-    let mut s_im = SharedMemory::<F>::new(TRANSPOSE_TILE * (TRANSPOSE_TILE + 1));
+    let mut s_re = Shared::<[F]>::new_slice(TRANSPOSE_TILE * (TRANSPOSE_TILE + 1));
+    let mut s_im = Shared::<[F]>::new_slice(TRANSPOSE_TILE * (TRANSPOSE_TILE + 1));
 
     let off = CUBE_POS_Z as usize * n * n;
     let tr = CUBE_POS_Y as usize;
@@ -268,13 +268,13 @@ impl Fft2dPlan {
     /// * `tmp_re` - Scratch
     /// * `tmp_im` - Scratch
     /// * `forward` - `true` for the forward transform
-    pub fn execute<R: Runtime, F: ManifoldsFloatGpu>(
+    pub fn execute<F: ManifoldsFloatGpu>(
         &self,
-        client: &ComputeClient<R>,
-        re: &GpuTensor<R, F>,
-        im: &GpuTensor<R, F>,
-        tmp_re: &GpuTensor<R, F>,
-        tmp_im: &GpuTensor<R, F>,
+        client: &Client,
+        re: &GpuTensor<F>,
+        im: &GpuTensor<F>,
+        tmp_re: &GpuTensor<F>,
+        tmp_im: &GpuTensor<F>,
         forward: bool,
     ) {
         self.rows(client, re, im, forward);
@@ -291,15 +291,15 @@ impl Fft2dPlan {
     /// * `re` - Real parts, transformed in place
     /// * `im` - Imaginary parts, transformed in place
     /// * `forward` - Transform direction
-    fn rows<R: Runtime, F: ManifoldsFloatGpu>(
+    fn rows<F: ManifoldsFloatGpu>(
         &self,
-        client: &ComputeClient<R>,
-        re: &GpuTensor<R, F>,
-        im: &GpuTensor<R, F>,
+        client: &Client,
+        re: &GpuTensor<F>,
+        im: &GpuTensor<F>,
         forward: bool,
     ) {
         unsafe {
-            fft_rows::launch_unchecked::<F, R>(
+            fft_rows::launch_unchecked::<F>(
                 client,
                 self.cubes_rows.clone(),
                 CubeDim::new_1d((self.n / 2) as u32),
@@ -321,16 +321,16 @@ impl Fft2dPlan {
     /// * `src_im` - Source imaginary parts
     /// * `dst_re` - Destination real parts
     /// * `dst_im` - Destination imaginary parts
-    fn transpose<R: Runtime, F: ManifoldsFloatGpu>(
+    fn transpose<F: ManifoldsFloatGpu>(
         &self,
-        client: &ComputeClient<R>,
-        src_re: &GpuTensor<R, F>,
-        src_im: &GpuTensor<R, F>,
-        dst_re: &GpuTensor<R, F>,
-        dst_im: &GpuTensor<R, F>,
+        client: &Client,
+        src_re: &GpuTensor<F>,
+        src_im: &GpuTensor<F>,
+        dst_re: &GpuTensor<F>,
+        dst_im: &GpuTensor<F>,
     ) {
         unsafe {
-            transpose_paired::launch_unchecked::<F, R>(
+            transpose_paired::launch_unchecked::<F>(
                 client,
                 self.cubes_tiles.clone(),
                 CubeDim::new_2d(
@@ -371,14 +371,14 @@ mod tests {
 
     /// Upload, transform in place, read back.
     fn run(re: &[f32], im: &[f32], n: usize, batch: usize, forward: bool) -> (Vec<f32>, Vec<f32>) {
-        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let client = <WgpuRuntime>::client(&WgpuDevice::default());
         let limits = GpuLimits::from_client(&client);
         let plan = Fft2dPlan::new(n, batch, &limits).unwrap();
         let len = batch * n * n;
-        let g_re = GpuTensor::<WgpuRuntime, f32>::from_slice(re, vec![len], &client).unwrap();
-        let g_im = GpuTensor::<WgpuRuntime, f32>::from_slice(im, vec![len], &client).unwrap();
-        let t_re = GpuTensor::<WgpuRuntime, f32>::empty(vec![len], &client).unwrap();
-        let t_im = GpuTensor::<WgpuRuntime, f32>::empty(vec![len], &client).unwrap();
+        let g_re = GpuTensor::<f32>::from_slice(re, vec![len], &client).unwrap();
+        let g_im = GpuTensor::<f32>::from_slice(im, vec![len], &client).unwrap();
+        let t_re = GpuTensor::<f32>::empty(vec![len], &client).unwrap();
+        let t_im = GpuTensor::<f32>::empty(vec![len], &client).unwrap();
         plan.execute(&client, &g_re, &g_im, &t_re, &t_im, forward);
         (g_re.read(&client).unwrap(), g_im.read(&client).unwrap())
     }
@@ -434,7 +434,7 @@ mod tests {
 
     #[test]
     fn test_fft2d_plan_rejects_unsupported_sizes() {
-        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let client = <WgpuRuntime>::client(&WgpuDevice::default());
         let limits = GpuLimits::from_client(&client);
         for n in [32, 48, 2048] {
             assert!(matches!(

@@ -28,9 +28,9 @@ mod commons;
 
 use std::time::{Duration, Instant};
 
-use cubecl::prelude::ComputeClient;
+use cubecl::prelude::Client;
 use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
-use cubecl::Runtime;
+use cubecl_utils_rs::prelude::Runtime;
 use cubecl_utils_rs::prelude::*;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
@@ -147,7 +147,7 @@ fn assert_did_work(before: &[Vec<f32>], after: &[Vec<f32>]) {
 /// * `client` - CubeCL compute client for the target device
 /// * `n` - Number of nodes
 /// * `n_edges` - Number of unique undirected edges
-fn print_geometry(client: &ComputeClient<WgpuRuntime>, n: usize, n_edges: usize) {
+fn print_geometry(client: &Client, n: usize, n_edges: usize) {
     let limits = GpuLimits::from_client(client);
     let wg = umap_workgroup_size(&limits);
     let (max_x, max_y, _) = limits.max_cube_count;
@@ -185,7 +185,7 @@ fn print_geometry(client: &ComputeClient<WgpuRuntime>, n: usize, n_edges: usize)
 /// * `n_per_cluster` - Points per cluster; `create_diagnostic_data` makes five
 ///   clusters, so `n = 5 * n_per_cluster`
 fn run_bench(label: &str, n_per_cluster: usize) {
-    let device = WgpuDevice::DefaultDevice;
+    let device = WgpuDevice::default();
 
     let start_data = Instant::now();
     let (data, _) = create_diagnostic_data(n_per_cluster, N_FEATURES, 42);
@@ -195,7 +195,7 @@ fn run_bench(label: &str, n_per_cluster: usize) {
     println!("  data generated in {:.2?}", start_data.elapsed());
 
     let start_graph = Instant::now();
-    let (graph, _, _) = construct_umap_graph_gpu::<f32, WgpuRuntime>(
+    let (graph, _, _) = construct_umap_graph_gpu::<f32>(
         data.as_ref(),
         None,
         K,
@@ -222,7 +222,7 @@ fn run_bench(label: &str, n_per_cluster: usize) {
     let csr_time = start_csr.elapsed();
     let n_edges = csr.n_edges;
     println!("  host CSR build: {csr_time:.2?} for {n_edges} edges");
-    print_geometry(&WgpuRuntime::client(&device), n, n_edges);
+    print_geometry(&<WgpuRuntime>::client(&device), n, n_edges);
     drop(csr);
 
     let params = UmapOptimParams::<f32> {
@@ -235,7 +235,7 @@ fn run_bench(label: &str, n_per_cluster: usize) {
     for rep in 0..REPEATS {
         let mut embd = init.clone();
         let start = Instant::now();
-        optimise_embedding_adam_gpu::<WgpuRuntime, f32>(
+        optimise_embedding_adam_gpu::<f32>(
             &mut embd,
             &graph_adj,
             &params,

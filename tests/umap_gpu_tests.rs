@@ -4,7 +4,7 @@
 mod commons;
 use commons::*;
 
-use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+use cubecl::wgpu::WgpuDevice;
 use manifolds_rs::prelude::*;
 use manifolds_rs::*;
 use rustc_hash::FxHashMap;
@@ -19,12 +19,12 @@ fn umap_gpu_integration_01_knn_correctness() {
 
     let device = WgpuDevice::default();
     let nn_params = NearestNeighbourParamsGpu::default();
-    let (knn_indices, knn_dist) = run_ann_search_gpu::<f32, WgpuRuntime>(
+    let (knn_indices, knn_dist) = run_ann_search_gpu::<f32>(
         data.as_ref(),
         k,
         "exhaustive_gpu".to_string(),
         &nn_params,
-        device,
+        device.clone().into(),
         42,
         0,
     )
@@ -69,12 +69,12 @@ fn umap_gpu_integration_02_ann_dispatch() {
 
     for ann_type in ["exhaustive_gpu", "ivf_gpu", "nndescent_gpu"] {
         let device = WgpuDevice::default();
-        let (indices, dist) = run_ann_search_gpu::<f32, WgpuRuntime>(
+        let (indices, dist) = run_ann_search_gpu::<f32>(
             data.as_ref(),
             k,
             ann_type.to_string(),
             &nn_params,
-            device,
+            device.clone().into(),
             42,
             0,
         )
@@ -98,7 +98,7 @@ fn umap_gpu_integration_03_graph_connectivity() {
     let nn_params = NearestNeighbourParamsGpu::default();
     let umap_params = UmapGraphParams::default();
 
-    let (graph, _, _) = construct_umap_graph_gpu::<f32, WgpuRuntime>(
+    let (graph, _, _) = construct_umap_graph_gpu::<f32>(
         data.as_ref(),
         None,
         k,
@@ -106,7 +106,7 @@ fn umap_gpu_integration_03_graph_connectivity() {
         &umap_params,
         &nn_params,
         500,
-        device,
+        device.clone().into(),
         42,
         0,
     )
@@ -171,7 +171,7 @@ fn umap_gpu_integration_04_optimisation_quality() {
     };
 
     let embedding =
-        umap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, device, 42, 0).unwrap();
+        umap_gpu::<f32>(data.as_ref(), None, &params, device.clone().into(), 42, 0).unwrap();
 
     for i in 0..embedding[0].len() {
         assert!(
@@ -241,9 +241,11 @@ fn umap_gpu_integration_05_reproducibility() {
     };
 
     let device1 = WgpuDevice::default();
-    let embd1 = umap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, device1, 42, 0).unwrap();
+    let embd1 =
+        umap_gpu::<f32>(data.as_ref(), None, &params, device1.clone().into(), 42, 0).unwrap();
     let device2 = WgpuDevice::default();
-    let embd2 = umap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, device2, 42, 0).unwrap();
+    let embd2 =
+        umap_gpu::<f32>(data.as_ref(), None, &params, device2.clone().into(), 42, 0).unwrap();
 
     let mut max_diff: f32 = 0.0;
     for i in 0..embd1[0].len() {
@@ -265,12 +267,12 @@ fn umap_gpu_integration_06_precomputed_knn() {
 
     let device = WgpuDevice::default();
     let nn_params = NearestNeighbourParamsGpu::default();
-    let (knn_indices, knn_dist) = run_ann_search_gpu::<f32, WgpuRuntime>(
+    let (knn_indices, knn_dist) = run_ann_search_gpu::<f32>(
         data.as_ref(),
         k,
         "exhaustive_gpu".to_string(),
         &nn_params,
-        device,
+        device.clone().into(),
         42,
         0,
     )
@@ -282,19 +284,26 @@ fn umap_gpu_integration_06_precomputed_knn() {
     };
 
     let device_pre = WgpuDevice::default();
-    let embd_pre = umap_gpu::<f32, WgpuRuntime>(
+    let embd_pre = umap_gpu::<f32>(
         data.as_ref(),
         Some((knn_indices.clone(), knn_dist.clone())),
         &params,
-        device_pre,
+        device_pre.clone().into(),
         42,
         0,
     )
     .unwrap();
 
     let device_int = WgpuDevice::default();
-    let embd_int =
-        umap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, device_int, 42, 0).unwrap();
+    let embd_int = umap_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        device_int.clone().into(),
+        42,
+        0,
+    )
+    .unwrap();
 
     let mut max_diff: f32 = 0.0;
     for i in 0..embd_pre[0].len() {

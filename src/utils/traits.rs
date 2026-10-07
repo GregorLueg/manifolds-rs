@@ -1,6 +1,8 @@
 //! Shared trait implementations for the manifolds-rs crate.
 
 use ann_search_rs::prelude::*;
+#[cfg(feature = "gpu")]
+use cubecl::frontend::LaunchArg;
 use faer_traits::{ComplexField, RealField};
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use std::default::Default;
@@ -59,7 +61,7 @@ impl<T> ManifoldsFloat for T where
 /// Trait for floating-point types in manifolds-rs. Has common shared trait
 /// boundaries. This version also supports GPU-accelerated methods via cubecl.
 #[cfg(feature = "gpu")]
-pub trait ManifoldsFloatGpu: ManifoldsFloat + CubeclFloat {}
+pub trait ManifoldsFloatGpu: ManifoldsFloat + CubeclFloat + LaunchArg<RuntimeArg = Self> {}
 
 #[cfg(feature = "gpu")]
-impl<T> ManifoldsFloatGpu for T where T: ManifoldsFloat + CubeclFloat {}
+impl<T> ManifoldsFloatGpu for T where T: ManifoldsFloat + CubeclFloat + LaunchArg<RuntimeArg = T> {}

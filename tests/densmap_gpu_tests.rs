@@ -4,7 +4,7 @@
 mod commons;
 use commons::*;
 
-use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+use cubecl::wgpu::WgpuDevice;
 use faer::Mat;
 use manifolds_rs::prelude::*;
 use manifolds_rs::*;
@@ -150,9 +150,15 @@ fn densmap_gpu_integration_01_output_is_finite() {
     let mut params = DensmapParamsGpu::<f32>::new_default_2d(None, None, Some(20.0));
     params.umap_params.ann_type = "exhaustive_gpu".to_string();
 
-    let embd =
-        densmap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, WgpuDevice::default(), 42, 0)
-            .unwrap();
+    let embd = densmap_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        WgpuDevice::default().clone().into(),
+        42,
+        0,
+    )
+    .unwrap();
 
     let bad = embd.iter().flatten().filter(|x| !x.is_finite()).count();
 
@@ -183,18 +189,24 @@ fn densmap_gpu_integration_02_zero_lambda_matches_umap() {
         DensParams::new(Some(0.0f32), None, None),
     );
 
-    let plain = umap_gpu::<f32, WgpuRuntime>(
+    let plain = umap_gpu::<f32>(
         data.as_ref(),
         None,
         &umap_params,
-        WgpuDevice::default(),
+        WgpuDevice::default().clone().into(),
         42,
         0,
     )
     .unwrap();
-    let dens =
-        densmap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, WgpuDevice::default(), 42, 0)
-            .unwrap();
+    let dens = densmap_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        WgpuDevice::default().clone().into(),
+        42,
+        0,
+    )
+    .unwrap();
 
     let mut max_diff: f32 = 0.0;
     for i in 0..plain[0].len() {
@@ -230,20 +242,20 @@ fn densmap_gpu_integration_03_preserves_relative_density() {
         DensParams::new(Some(2.0f32), None, None),
     );
 
-    let plain = umap_gpu::<f32, WgpuRuntime>(
+    let plain = umap_gpu::<f32>(
         data.as_ref(),
         None,
         &umap_params,
-        WgpuDevice::default(),
+        WgpuDevice::default().clone().into(),
         42,
         0,
     )
     .unwrap();
-    let dens = densmap_gpu::<f32, WgpuRuntime>(
+    let dens = densmap_gpu::<f32>(
         data.as_ref(),
         None,
         &dens_params,
-        WgpuDevice::default(),
+        WgpuDevice::default().clone().into(),
         42,
         0,
     )
@@ -285,12 +297,24 @@ fn densmap_gpu_integration_04_reproducibility() {
     let mut params = DensmapParamsGpu::<f32>::default();
     params.umap_params.ann_type = "exhaustive_gpu".to_string();
 
-    let embd1 =
-        densmap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, WgpuDevice::default(), 42, 0)
-            .unwrap();
-    let embd2 =
-        densmap_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, WgpuDevice::default(), 42, 0)
-            .unwrap();
+    let embd1 = densmap_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        WgpuDevice::default().clone().into(),
+        42,
+        0,
+    )
+    .unwrap();
+    let embd2 = densmap_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        WgpuDevice::default().clone().into(),
+        42,
+        0,
+    )
+    .unwrap();
 
     let mut max_diff: f32 = 0.0;
     for i in 0..embd1[0].len() {
@@ -320,11 +344,11 @@ fn densmap_gpu_integration_05_agrees_with_cpu() {
     let mut gpu_params = DensmapParamsGpu::<f32>::default();
     gpu_params.umap_params.ann_type = "exhaustive_gpu".to_string();
 
-    let gpu = densmap_gpu::<f32, WgpuRuntime>(
+    let gpu = densmap_gpu::<f32>(
         data.as_ref(),
         None,
         &gpu_params,
-        WgpuDevice::default(),
+        WgpuDevice::default().clone().into(),
         42,
         0,
     )

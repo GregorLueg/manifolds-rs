@@ -36,7 +36,7 @@ manifolds-rs = { path = "..", default-features = false }
 # `cpu` is deliberately absent. CubeCL's software CPU runtime pulls a prebuilt
 # LLVM needing glibc 2.33+, which no manylinux container has, so a wheel
 # carrying it cannot be built for Linux. Nothing here calls it.
-cubecl = { version = "0.10.0", features = ["wgpu"], optional = true }
+cubecl = { version = "0.11.0", features = ["wgpu"], optional = true }
 faer = "0.23.2"
 num-traits = "0.2"
 numpy = "0.29"
@@ -57,3 +57,7 @@ panic = "unwind"
 # useless: these are 500-epoch optimisation loops.
 [profile.dev]
 opt-level = 2
+
+[patch.crates-io]
+cubecl-utils-rs = { path = "/Users/gregorlueg/repos/shared/cubecl-utils-rs" }
+ann-search-rs = { path = "/Users/gregorlueg/repos/shared/ann-search-rs" }

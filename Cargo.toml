@@ -52,16 +52,17 @@ large_scale_diagnostics = []
 ndarray = ["dep:ndarray"]
 
 [dependencies]
-ann-search-rs = { version = "0.10.1" }
+ann-search-rs = { version = "0.11.0" }
 approx = "0.5.1"
 bincode = { version = "2.0.1", features = ["serde"], optional = true }
-burn = { version = "0.21.0", features = [
+burn = { version = "0.22.0", features = [
     "dataset",
     "train",
     "flex",
+    "autodiff",
 ], optional = true }
-cubecl = { version = "0.10.0", optional = true }
-cubecl-utils-rs = { version = "0.1.0", optional = true }
+cubecl = { version = "0.11.0", optional = true }
+cubecl-utils-rs = { version = "0.2.0", optional = true }
 faer = "0.23.2"
 faer-traits = "0.23.2"
 fftw = { version = "0.8.0", optional = true }
@@ -74,3 +75,7 @@ rustc-hash = "2.1.1"
 serde = { version = "1.0.228", optional = true }
 thousands = "0.2.0"
 thiserror = "2.0.18"
+
+[patch.crates-io]
+cubecl-utils-rs = { path = "/Users/gregorlueg/repos/shared/cubecl-utils-rs" }
+ann-search-rs = { path = "/Users/gregorlueg/repos/shared/ann-search-rs" }
