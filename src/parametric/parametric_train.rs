@@ -284,6 +284,7 @@ where
 
     let batcher = UmapBatcher::new(train_params.neg_sample_rate, n_samples, seed as u64);
     let dataloader = DataLoaderBuilder::new(batcher)
+        .set_device(device.clone())
         .batch_size(train_params.batch_size)
         .shuffle(seed as u64)
         .num_workers(4)
