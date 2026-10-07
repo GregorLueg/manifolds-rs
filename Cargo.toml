@@ -68,8 +68,8 @@ burn = { version = "0.22.0", features = [
 ], optional = true }
 cubecl = { version = "0.11.0", optional = true }
 cubecl-utils-rs = { version = "0.2.0", optional = true }
-faer = "0.23.2"
-faer-traits = "0.23.2"
+faer = "0.24.4"
+faer-traits = "0.24.0"
 fftw = { version = "0.8.0", optional = true }
 ndarray = { version = ">=0.16, <0.18", optional = true }
 num-traits = "0.2.19"
@@ -82,4 +82,4 @@ thousands = "0.2.0"
 thiserror = "2.0.18"
 
 [patch.crates-io]
-ann-search-rs = { path = "/Users/gregorlueg/repos/shared/ann-search-rs" }
+ann-search-rs = { path = "/Users/gregorlueg/repos/shared/ann-search-rs/.claude/worktrees/sequential-tickling-beacon" }

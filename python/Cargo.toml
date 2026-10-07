@@ -37,7 +37,7 @@ manifolds-rs = { path = "..", default-features = false }
 # LLVM needing glibc 2.33+, which no manylinux container has, so a wheel
 # carrying it cannot be built for Linux. Nothing here calls it.
 cubecl = { version = "0.11.0", features = ["wgpu"], optional = true }
-faer = "0.23.2"
+faer = "0.24.4"
 num-traits = "0.2"
 numpy = "0.29"
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py310"] }
@@ -59,4 +59,4 @@ panic = "unwind"
 opt-level = 2
 
 [patch.crates-io]
-ann-search-rs = { path = "/Users/gregorlueg/repos/shared/ann-search-rs" }
+ann-search-rs = { path = "/Users/gregorlueg/repos/shared/ann-search-rs/.claude/worktrees/sequential-tickling-beacon" }

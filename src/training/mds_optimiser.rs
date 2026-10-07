@@ -318,7 +318,7 @@ where
            );
     }
 
-    let mut prev_stress = None;
+    let mut prev_stress: Option<T> = None;
 
     for iteration in 0..n_iter {
         let lr_i = eta_max * (-lambda * T::from(iteration).unwrap()).exp();
@@ -368,7 +368,7 @@ where
             y[idx] -= lr_i * gradients[idx];
         }
 
-        let stress = total_err / T::from(contribs.len()).unwrap();
+        let stress: T = total_err / T::from(contribs.len()).unwrap();
 
         if verbosity.normal_verbosity() && iteration % 100 == 0 {
             println!(
