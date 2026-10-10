@@ -3,6 +3,37 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.7.0
+
+**Features**
+
+- DREAMS (Kury, Kobak & Damrich, TMLR 2026): t-SNE regularised towards a
+  global reference embedding, PCA by default or any `[2][n_samples]` layout
+  you hand it (MDS, PHATE, ...). `lambda` slides between plain t-SNE (0) and
+  the reference (1); the default of 0.15 is the paper's. New `dreams()` with
+  `DreamsParams`, working with all four CPU approximations (`"bh"`, `"qd"`,
+  `"fft"`, `"fft_3k"`).
+- The update follows the authors' openTSNE fork rather than Equation 2 of the
+  paper, since the published `lambda` was tuned on the code. On Tasic
+  (n = 23,822, 4 seeds) `lambda = 0.15` matches the reference fork on kNN
+  preservation and CPD. At `lambda >= 0.3` ours stays somewhat more local
+  (kNN 0.274 against 0.222 at 0.5, CPD equal).
+- `dreams_gpu()` with `DreamsParamsGpu`. With `"fft_3k_gpu"` the regulariser
+  runs inside the GPU three-kernel optimiser; f32 on the GPU matches the f64
+  CPU path within seed noise.
+- `pca_scores()` in `data::init` for the unscaled PCA scores, and
+  `DreamsState` / `dreams_setup()` in `utils::dreams` for anyone wiring the
+  regulariser into their own loop.
+
+**Breaking changes**
+
+- `optimise_bh_tsne`, `optimise_qd_tsne`, `optimise_fft_tsne`,
+  `optimise_fft3k_tsne` and `optimise_fft3k_tsne_gpu` take an extra
+  `dreams: Option<&DreamsState<T>>` argument. Pass `None` for plain t-SNE.
+- `ManifoldsError` has three new variants (`DreamsInvalidLambda`,
+  `DreamsReferenceMismatch`, `DreamsDegenerateReference`), so exhaustive
+  matches on it need updating.
+
 ## 0.6.2
 
 **Features**
