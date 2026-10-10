@@ -30,6 +30,7 @@ use crate::data::graph::coo_to_adjacency_list;
 use crate::data::structures::*;
 use crate::prelude::*;
 use crate::training::tsne_optimiser::*;
+use crate::utils::dreams::DreamsState;
 use crate::utils::fft2d_gpu::{Fft2dPlan, FFT2D_MIN_N};
 
 ////////////
@@ -471,7 +472,9 @@ pub fn tsne3k_gather<F: Float + CubeElement>(
 /// Every workgroup first reduces the `Z` partials itself, which saves a
 /// launch. Positions are ping-ponged because the attraction reads neighbours.
 /// Also writes a per-workgroup partial of the new positions for the
-/// recentring.
+/// recentring. With `dreams`, each workgroup also reduces the `||Y||^2`
+/// partials into the DREAMS scale `alpha` and applies the DREAMS step after
+/// the step cap (see `crate::utils::dreams`).
 ///
 /// ### Params
 ///
@@ -485,14 +488,21 @@ pub fn tsne3k_gather<F: Float + CubeElement>(
 /// * `indices` - CSR neighbours `[nnz]`
 /// * `values` - CSR affinities `[nnz]`
 /// * `mean_partial` - Output per-cube position sums `[2 * n_cubes]`
+/// * `reference` - Centred DREAMS reference `[2n]`; read only with `dreams`
+/// * `norm_partial` - Partials of `||Y||^2` for `pos_in` `[n_zp]`; read only
+///   with `dreams`
 /// * `n` - Number of points
-/// * `n_zp` - Number of `Z` partials
+/// * `n_zp` - Number of `Z` partials, also the number of norm partials
 /// * `exag` - Exaggeration factor
 /// * `lr` - Learning rate
 /// * `momentum` - Momentum
 /// * `min_gain` - Gain floor
 /// * `max_step` - Step norm cap
 /// * `z_floor` - `Z` below this is replaced by 1
+/// * `inv_ref_norm` - `1 / ||Y_e||_F`
+/// * `dreams_keep` - `1 - lambda`, the factor on the t-SNE step
+/// * `dreams_coef` - Regulariser step coefficient
+/// * `dreams` - Apply the DREAMS step; comptime
 /// * `wg` - Workgroup width; comptime
 /// * `log2_wg` - `log2(wg)`; comptime
 #[cube(launch_unchecked)]
@@ -507,6 +517,8 @@ pub fn tsne3k_update<F: Float + CubeElement>(
     indices: &Tensor<u32>,
     values: &Tensor<F>,
     mean_partial: &mut Tensor<F>,
+    reference: &Tensor<F>,
+    norm_partial: &Tensor<F>,
     n: u32,
     n_zp: u32,
     exag: F,
@@ -515,6 +527,10 @@ pub fn tsne3k_update<F: Float + CubeElement>(
     min_gain: F,
     max_step: F,
     z_floor: F,
+    inv_ref_norm: F,
+    dreams_keep: F,
+    dreams_coef: F,
+    #[comptime] dreams: bool,
     #[comptime] wg: u32,
     #[comptime] log2_wg: u32,
 ) {
@@ -537,6 +553,20 @@ pub fn tsne3k_update<F: Float + CubeElement>(
     let z_raw = sh[0usize];
     let z = if z_raw > z_floor { z_raw } else { one };
     sync_cube();
+
+    let mut alpha = zero;
+    if dreams {
+        let mut nacc = zero;
+        let mut k = u;
+        while k < n_zp {
+            nacc += norm_partial[k as usize];
+            k += wg;
+        }
+        sh[u as usize] = nacc;
+        workgroup_sum::<F>(&mut sh, u, log2_wg);
+        alpha = F::sqrt(sh[0usize]) * inv_ref_norm;
+        sync_cube();
+    }
 
     let mut new_x = zero;
     let mut new_y = zero;
@@ -613,8 +643,13 @@ pub fn tsne3k_update<F: Float + CubeElement>(
         vel[iy] = uy;
         gains[ix] = g_x;
         gains[iy] = g_y;
-        new_x = px + ux;
-        new_y = py + uy;
+        if dreams {
+            new_x = px + dreams_keep * ux - dreams_coef * (px - alpha * reference[ix]);
+            new_y = py + dreams_keep * uy - dreams_coef * (py - alpha * reference[iy]);
+        } else {
+            new_x = px + ux;
+            new_y = py + uy;
+        }
         pos_out[ix] = new_x;
         pos_out[iy] = new_y;
     }
@@ -629,16 +664,18 @@ pub fn tsne3k_update<F: Float + CubeElement>(
     }
 }
 
-/// Recentre the embedding on the origin and record the extent.
+/// Recentre the embedding on the origin and record the extent and `||Y||^2`.
 ///
 /// Every workgroup reduces the position partials itself, then shifts its own
-/// points and writes the largest absolute coordinate it holds.
+/// points and writes the largest absolute coordinate it holds and the sum of
+/// their squared coordinates (the DREAMS scale for the next epoch).
 ///
 /// ### Params
 ///
 /// * `pos` - Positions `[2n]`, shifted in place
 /// * `mean_partial` - Per-cube position sums `[2 * n_mp]`
 /// * `extent_partial` - Output per-cube max absolute coordinate `[n_cubes]`
+/// * `norm_partial` - Output per-cube sum of `x^2 + y^2` `[n_cubes]`
 /// * `n` - Number of points
 /// * `n_mp` - Number of position partials
 /// * `inv_n` - `1 / n`
@@ -649,6 +686,7 @@ pub fn tsne3k_recentre<F: Float + CubeElement>(
     pos: &mut Tensor<F>,
     mean_partial: &Tensor<F>,
     extent_partial: &mut Tensor<F>,
+    norm_partial: &mut Tensor<F>,
     n: u32,
     n_mp: u32,
     inv_n: F,
@@ -679,17 +717,22 @@ pub fn tsne3k_recentre<F: Float + CubeElement>(
     sync_cube();
 
     let mut ext = zero;
+    let mut sq = zero;
     if i < n {
         let x = pos[(2u32 * i) as usize] - mx;
         let y = pos[(2u32 * i + 1u32) as usize] - my;
         pos[(2u32 * i) as usize] = x;
         pos[(2u32 * i + 1u32) as usize] = y;
         ext = F::max(F::abs(x), F::abs(y));
+        sq = x * x + y * y;
     }
     sh[u as usize] = ext;
+    sh2[u as usize] = sq;
     workgroup_max::<F>(&mut sh, u, log2_wg);
+    workgroup_sum::<F>(&mut sh2, u, log2_wg);
     if u == 0u32 {
         extent_partial[cube as usize] = sh[0usize];
+        norm_partial[cube as usize] = sh2[0usize];
     }
 }
 
@@ -980,6 +1023,12 @@ struct TsneGpuState<R: Runtime, T: ManifoldsFloatGpu> {
     mean_partial: GpuTensor<R, T>,
     /// Partials of the extent `[n_cubes]`
     extent_partial: GpuTensor<R, T>,
+    /// Partials of `||Y||^2` `[n_cubes]`
+    norm_partial: GpuTensor<R, T>,
+    /// Centred DREAMS reference `[2n]`, or a two-element stub without DREAMS
+    reference: GpuTensor<R, T>,
+    /// Whether the DREAMS step is compiled in
+    dreams: bool,
     /// Number of points
     n: usize,
     /// Interpolation nodes per box
@@ -1002,6 +1051,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
     ///
     /// * `embd` - Embedding `[n][2]`
     /// * `graph` - Symmetric t-SNE affinities over the same `n` points
+    /// * `dreams` - DREAMS regulariser state, or `None`
     /// * `ni` - Interpolation nodes per box
     /// * `limits` - Device limits
     /// * `client` - CubeCL compute client
@@ -1012,6 +1062,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
     fn upload(
         embd: &[Vec<T>],
         graph: &CoordinateList<T>,
+        dreams: Option<&DreamsState<T>>,
         ni: usize,
         limits: &GpuLimits,
         client: &ComputeClient<R>,
@@ -1060,6 +1111,24 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
         }
 
         let (cubes_pts, n_cubes_pts) = plan_cubes("tsne3k_points", n, wg, limits)?;
+
+        // the update reads the norm of the incoming positions from the last
+        // recentre; seed it for the first epoch in slot 0
+        let mut norm0 = vec![T::zero(); n_cubes_pts];
+        norm0[0] = T::from_f64(
+            pos_flat
+                .iter()
+                .map(|v| {
+                    let v = v.to_f64().unwrap();
+                    v * v
+                })
+                .sum::<f64>(),
+        )
+        .unwrap();
+        let reference = match dreams {
+            Some(d) => d.reference().to_vec(),
+            None => vec![T::zero(); 2],
+        };
         let st = Self {
             pos_a: GpuTensor::from_slice(&pos_flat, vec![2 * n], client)?,
             pos_b: GpuTensor::empty(vec![2 * n], client)?,
@@ -1077,6 +1146,9 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
             z_partial: GpuTensor::empty(vec![n_cubes_pts], client)?,
             mean_partial: GpuTensor::empty(vec![2 * n_cubes_pts], client)?,
             extent_partial: GpuTensor::empty(vec![n_cubes_pts], client)?,
+            norm_partial: GpuTensor::from_slice(&norm0, vec![n_cubes_pts], client)?,
+            reference: GpuTensor::from_slice(&reference, vec![reference.len()], client)?,
+            dreams: dreams.is_some(),
             n,
             ni,
             wg,
@@ -1239,6 +1311,8 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
                 self.indices.into_tensor_arg(),
                 self.values.into_tensor_arg(),
                 self.mean_partial.into_tensor_arg(),
+                self.reference.into_tensor_arg(),
+                self.norm_partial.into_tensor_arg(),
                 self.n as u32,
                 self.n_cubes_pts as u32,
                 sched.exag,
@@ -1247,6 +1321,10 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
                 sched.min_gain,
                 sched.max_step,
                 sched.z_floor,
+                sched.inv_ref_norm,
+                sched.dreams_keep,
+                sched.dreams_coef,
+                self.dreams,
                 wg,
                 self.log2_wg,
             );
@@ -1257,6 +1335,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
                 self.pos_b.into_tensor_arg(),
                 self.mean_partial.into_tensor_arg(),
                 self.extent_partial.into_tensor_arg(),
+                self.norm_partial.into_tensor_arg(),
                 self.n as u32,
                 self.n_cubes_pts as u32,
                 T::from_f64(1.0 / self.n as f64).unwrap(),
@@ -1281,6 +1360,12 @@ struct StepScalars<T> {
     max_step: T,
     /// `Z` below this is replaced by 1
     z_floor: T,
+    /// `1 / ||Y_e||_F`; unused without DREAMS
+    inv_ref_norm: T,
+    /// `1 - lambda`; unused without DREAMS
+    dreams_keep: T,
+    /// DREAMS regulariser step coefficient; unused without DREAMS
+    dreams_coef: T,
 }
 
 //////////
@@ -1299,6 +1384,8 @@ struct StepScalars<T> {
 /// * `embd` - Initial embedding `[n][2]`, overwritten with the result
 /// * `params` - Optimisation hyperparameters
 /// * `graph` - Symmetric t-SNE affinities
+/// * `dreams` - DREAMS regulariser state, or `None` for plain t-SNE. When
+///   set, active in every epoch, early exaggeration included
 /// * `device` - CubeCL device
 /// * `verbose` - `0` silent, `1` normal, `2` detailed
 ///
@@ -1315,6 +1402,7 @@ pub fn optimise_fft3k_tsne_gpu<R, T>(
     embd: &mut [Vec<T>],
     params: &TsneOptimParams<T>,
     graph: &CoordinateList<T>,
+    dreams: Option<&DreamsState<T>>,
     device: R::Device,
     verbose: usize,
 ) -> Result<(), ManifoldsError>
@@ -1335,7 +1423,8 @@ where
 
     let client = R::client(&device);
     let limits = GpuLimits::from_client(&client);
-    let (mut st, half_span) = TsneGpuState::<R, T>::upload(embd, graph, ni, &limits, &client)?;
+    let (mut st, half_span) =
+        TsneGpuState::<R, T>::upload(embd, graph, dreams, ni, &limits, &client)?;
     let mut grid = GridBuffers::<R, T>::new(
         GridGeometry::for_extent(half_span, ni),
         ni,
@@ -1352,6 +1441,9 @@ where
         min_gain: T::from_f64(TSNE_MIN_GAIN).unwrap(),
         max_step: step_cap_from_lr(lr),
         z_floor: T::from_f64(TSNE_EPS).unwrap(),
+        inv_ref_norm: T::from_f64(dreams.map_or(1.0, |d| 1.0 / d.ref_norm())).unwrap(),
+        dreams_keep: dreams.map_or(T::one(), |d| d.keep()),
+        dreams_coef: T::zero(),
     };
 
     if verbosity.normal_verbosity() {
@@ -1397,6 +1489,9 @@ where
         } else {
             params.get_late_exag_factor()
         };
+        if let Some(d) = dreams {
+            sched.dreams_coef = d.step_coef(sched.exag);
+        }
 
         st.enqueue_repulsion(&client, &grid);
         st.enqueue_step(&client, &sched);
@@ -1483,9 +1578,15 @@ mod tests {
         let embd = clustered(n, 30.0);
         let client = WgpuRuntime::client(&WgpuDevice::default());
         let limits = GpuLimits::from_client(&client);
-        let (st, half_span) =
-            TsneGpuState::<WgpuRuntime, f32>::upload(&embd, &empty_graph(n), 3, &limits, &client)
-                .unwrap();
+        let (st, half_span) = TsneGpuState::<WgpuRuntime, f32>::upload(
+            &embd,
+            &empty_graph(n),
+            None,
+            3,
+            &limits,
+            &client,
+        )
+        .unwrap();
         let grid = GridBuffers::<WgpuRuntime, f32>::new(
             GridGeometry::for_extent(half_span, 3),
             3,
@@ -1541,6 +1642,7 @@ mod tests {
             &mut empty,
             &params,
             &empty_graph(0),
+            None,
             dev(),
             0,
         );
@@ -1551,6 +1653,7 @@ mod tests {
             &mut three_d,
             &params,
             &empty_graph(4),
+            None,
             dev(),
             0,
         );
@@ -1564,6 +1667,7 @@ mod tests {
             &mut two_d,
             &params,
             &empty_graph(5),
+            None,
             dev(),
             0,
         );

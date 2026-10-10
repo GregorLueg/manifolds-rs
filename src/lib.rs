@@ -4965,6 +4965,53 @@ where
     Ok((graph, knn_indices, knn_dist))
 }
 
+/// Parameters for GPU DREAMS. The GPU twin of [`DreamsParams`].
+#[cfg(feature = "gpu")]
+#[derive(Debug, Clone)]
+pub struct DreamsParamsGpu<T> {
+    /// The underlying GPU t-SNE parameters. `initialisation` is ignored:
+    /// DREAMS always starts from its reference embedding.
+    pub tsne_params: TsneParamsGpu<T>,
+    /// Regularisation strength in `[0, 1]`. Defaults to [`DREAMS_LAMBDA`].
+    pub lambda: T,
+}
+
+#[cfg(feature = "gpu")]
+impl<T> Default for DreamsParamsGpu<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            tsne_params: TsneParamsGpu::default(),
+            lambda: T::from_f64(DREAMS_LAMBDA).unwrap(),
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl<T> DreamsParamsGpu<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Full-control constructor.
+    ///
+    /// ### Params
+    ///
+    /// * `tsne_params` - The underlying GPU t-SNE parameters
+    /// * `lambda` - Regularisation strength in `[0, 1]`
+    ///
+    /// ### Returns
+    ///
+    /// The parameter set.
+    pub fn new(tsne_params: TsneParamsGpu<T>, lambda: T) -> Self {
+        Self {
+            tsne_params,
+            lambda,
+        }
+    }
+}
+
 /// Run t-SNE with GPU-accelerated nearest neighbour search (FFT build)
 ///
 /// Identical to `tsne` except the kNN graph is constructed on the GPU.
@@ -5006,6 +5053,59 @@ where
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
+    tsne_gpu_inner::<T, R>(
+        data,
+        precomputed_knn,
+        params,
+        approx_type,
+        None,
+        None,
+        device,
+        seed,
+        verbose,
+    )
+}
+
+/// Shared body of [`tsne_gpu`] and [`dreams_gpu`].
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Optional precomputed kNN, indices and distances
+///   excluding self
+/// * `params` - GPU t-SNE parameters
+/// * `approx_type` - Repulsive-force approximation, as for [`tsne_gpu`]
+/// * `dreams_lambda` - DREAMS regularisation strength, or `None` for no
+///   regulariser. When set, the embedding is initialised from the reference
+///   and `params.initialisation` is ignored
+/// * `dreams_reference` - DREAMS reference embedding `[2][n_samples]`;
+///   `None` uses PCA. Ignored without `dreams_lambda`
+/// * `device` - GPU device to use
+/// * `seed` - Random seed
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+#[cfg(all(feature = "gpu", feature = "fft_tsne"))]
+#[allow(clippy::too_many_arguments)]
+fn tsne_gpu_inner<T, R>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &TsneParamsGpu<T>,
+    approx_type: &str,
+    dreams_lambda: Option<T>,
+    dreams_reference: Option<Vec<Vec<T>>>,
+    device: R::Device,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat + CubeclFloat + FftwFloat,
+    R: Runtime,
+    StandardNormal: Distribution<T>,
+{
     if params.n_dim != 2 {
         return Err(ManifoldsError::IncorrectDim {
             n_dim: params.n_dim,
@@ -5047,7 +5147,24 @@ where
 
     let start_init = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
+    // DREAMS initialises from its own reference, so the regulariser and the
+    // starting layout agree.
+    let (mut embd, dreams_state) = match dreams_lambda {
+        Some(lambda) => {
+            let (embd, state) = dreams_setup(
+                data,
+                dreams_reference,
+                lambda,
+                params.randomised_init,
+                seed as u64,
+            )?;
+            (embd, Some(state))
+        }
+        None => (
+            initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?,
+            None,
+        ),
+    };
 
     if verbosity.normal_verbosity() {
         println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
@@ -5070,7 +5187,14 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, None, None, verbose);
+            optimise_bh_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                None,
+                dreams_state.as_ref(),
+                verbose,
+            );
         }
         TsneOpt::BarnesHutQd => {
             if verbosity.normal_verbosity() {
@@ -5079,7 +5203,14 @@ where
                     params.optim_params.n_epochs, params.optim_params.max_depth
                 );
             }
-            optimise_qd_tsne(&mut embd, &params.optim_params, &graph, None, None, verbose);
+            optimise_qd_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                None,
+                dreams_state.as_ref(),
+                verbose,
+            );
         }
         TsneOpt::Fft => {
             if verbosity.normal_verbosity() {
@@ -5088,7 +5219,14 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_fft_tsne(&mut embd, &params.optim_params, &graph, None, None, verbose)?;
+            optimise_fft_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                None,
+                dreams_state.as_ref(),
+                verbose,
+            )?;
         }
         TsneOpt::Fft3Kernel => {
             if verbosity.normal_verbosity() {
@@ -5097,7 +5235,14 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_fft3k_tsne(&mut embd, &params.optim_params, &graph, None, None, verbose)?;
+            optimise_fft3k_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                None,
+                dreams_state.as_ref(),
+                verbose,
+            )?;
         }
         TsneOpt::Fft3KernelGpu => {
             if verbosity.normal_verbosity() {
@@ -5110,6 +5255,7 @@ where
                 &mut embd,
                 &params.optim_params,
                 &graph,
+                dreams_state.as_ref(),
                 device,
                 verbose,
             )?;
@@ -5130,6 +5276,74 @@ where
     }
 
     Ok(transposed)
+}
+
+/// Run DREAMS with GPU-accelerated nearest neighbour search
+///
+/// Same as [`dreams`], with the kNN graph built on the GPU. Pass
+/// `approx_type = "fft_3k_gpu"` to run the optimiser, regulariser included,
+/// on the GPU as well; the other approximations optimise on the CPU.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Optional precomputed kNN, indices and distances
+///   excluding self
+/// * `reference` - Optional global reference embedding as `[2][n_samples]`.
+///   `None` uses PCA.
+/// * `params` - GPU DREAMS parameters
+/// * `approx_type` - Repulsive-force approximation, as for [`tsne_gpu`]
+/// * `device` - GPU device to use
+/// * `seed` - Random seed
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+///
+/// ### Errors
+///
+/// The DREAMS errors listed for [`dreams`], otherwise the same errors as
+/// [`tsne_gpu`].
+///
+/// ### References
+///
+/// Kury, Kobak & Damrich (2026): "DREAMS: Preserving both Local and Global
+/// Structure in Dimensionality Reduction", Transactions on Machine Learning
+/// Research
+#[cfg(all(feature = "gpu", feature = "fft_tsne"))]
+#[allow(clippy::too_many_arguments)]
+pub fn dreams_gpu<T, R>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    reference: Option<Vec<Vec<T>>>,
+    params: &DreamsParamsGpu<T>,
+    approx_type: &str,
+    device: R::Device,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat + CubeclFloat + FftwFloat,
+    R: Runtime,
+    StandardNormal: Distribution<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    tsne_gpu_inner::<T, R>(
+        data,
+        precomputed_knn,
+        &params.tsne_params,
+        approx_type,
+        Some(params.lambda),
+        reference,
+        device,
+        seed,
+        verbose,
+    )
 }
 
 /// Run t-SNE with GPU-accelerated nearest neighbour search (non-FFT build)
@@ -5175,6 +5389,59 @@ where
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
+    tsne_gpu_inner::<T, R>(
+        data,
+        precomputed_knn,
+        params,
+        approx_type,
+        None,
+        None,
+        device,
+        seed,
+        verbose,
+    )
+}
+
+/// Shared body of [`tsne_gpu`] and [`dreams_gpu`].
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Optional precomputed kNN, indices and distances
+///   excluding self
+/// * `params` - GPU t-SNE parameters
+/// * `approx_type` - Repulsive-force approximation, as for [`tsne_gpu`]
+/// * `dreams_lambda` - DREAMS regularisation strength, or `None` for no
+///   regulariser. When set, the embedding is initialised from the reference
+///   and `params.initialisation` is ignored
+/// * `dreams_reference` - DREAMS reference embedding `[2][n_samples]`;
+///   `None` uses PCA. Ignored without `dreams_lambda`
+/// * `device` - GPU device to use
+/// * `seed` - Random seed
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+#[cfg(all(feature = "gpu", not(feature = "fft_tsne")))]
+#[allow(clippy::too_many_arguments)]
+fn tsne_gpu_inner<T, R>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &TsneParamsGpu<T>,
+    approx_type: &str,
+    dreams_lambda: Option<T>,
+    dreams_reference: Option<Vec<Vec<T>>>,
+    device: R::Device,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat + CubeclFloat,
+    R: Runtime,
+    StandardNormal: Distribution<T>,
+{
     if params.n_dim != 2 {
         return Err(ManifoldsError::IncorrectDim {
             n_dim: params.n_dim,
@@ -5216,7 +5483,24 @@ where
 
     let start_init = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
+    // DREAMS initialises from its own reference, so the regulariser and the
+    // starting layout agree.
+    let (mut embd, dreams_state) = match dreams_lambda {
+        Some(lambda) => {
+            let (embd, state) = dreams_setup(
+                data,
+                dreams_reference,
+                lambda,
+                params.randomised_init,
+                seed as u64,
+            )?;
+            (embd, Some(state))
+        }
+        None => (
+            initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?,
+            None,
+        ),
+    };
 
     if verbosity.normal_verbosity() {
         println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
@@ -5239,7 +5523,14 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, None, None, verbose);
+            optimise_bh_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                None,
+                dreams_state.as_ref(),
+                verbose,
+            );
         }
         TsneOpt::BarnesHutQd => {
             if verbosity.normal_verbosity() {
@@ -5248,7 +5539,14 @@ where
                     params.optim_params.n_epochs, params.optim_params.max_depth
                 );
             }
-            optimise_qd_tsne(&mut embd, &params.optim_params, &graph, None, None, verbose);
+            optimise_qd_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                None,
+                dreams_state.as_ref(),
+                verbose,
+            );
         }
         TsneOpt::Fft | TsneOpt::Fft3Kernel => {
             panic!("FFT-accelerated t-SNE not available. Recompile with 'fft_tsne' feature or use 'barnes_hut' approximation.");
@@ -5264,6 +5562,7 @@ where
                 &mut embd,
                 &params.optim_params,
                 &graph,
+                dreams_state.as_ref(),
                 device,
                 verbose,
             )?;
@@ -5284,4 +5583,72 @@ where
     }
 
     Ok(transposed)
+}
+
+/// Run DREAMS with GPU-accelerated nearest neighbour search
+///
+/// Same as [`dreams`], with the kNN graph built on the GPU. Pass
+/// `approx_type = "fft_3k_gpu"` to run the optimiser, regulariser included,
+/// on the GPU as well; the other approximations optimise on the CPU.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Optional precomputed kNN, indices and distances
+///   excluding self
+/// * `reference` - Optional global reference embedding as `[2][n_samples]`.
+///   `None` uses PCA.
+/// * `params` - GPU DREAMS parameters
+/// * `approx_type` - Repulsive-force approximation, as for [`tsne_gpu`]
+/// * `device` - GPU device to use
+/// * `seed` - Random seed
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+///
+/// ### Errors
+///
+/// The DREAMS errors listed for [`dreams`], otherwise the same errors as
+/// [`tsne_gpu`].
+///
+/// ### References
+///
+/// Kury, Kobak & Damrich (2026): "DREAMS: Preserving both Local and Global
+/// Structure in Dimensionality Reduction", Transactions on Machine Learning
+/// Research
+#[cfg(all(feature = "gpu", not(feature = "fft_tsne")))]
+#[allow(clippy::too_many_arguments)]
+pub fn dreams_gpu<T, R>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    reference: Option<Vec<Vec<T>>>,
+    params: &DreamsParamsGpu<T>,
+    approx_type: &str,
+    device: R::Device,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat + CubeclFloat,
+    R: Runtime,
+    StandardNormal: Distribution<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    tsne_gpu_inner::<T, R>(
+        data,
+        precomputed_knn,
+        &params.tsne_params,
+        approx_type,
+        Some(params.lambda),
+        reference,
+        device,
+        seed,
+        verbose,
+    )
 }

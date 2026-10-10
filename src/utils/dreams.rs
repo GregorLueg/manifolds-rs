@@ -131,14 +131,55 @@ where
             })
             .sum::<f64>()
             .sqrt();
-        let lambda = self.lambda.to_f64().unwrap();
-
         DreamsEpoch {
             alpha: T::from_f64(y_norm / self.ref_norm).unwrap(),
-            keep: T::one() - self.lambda,
-            // lr * 2 / n with lr = n / exag
-            coef: T::from_f64(2.0 * lambda * lambda / exag_factor.to_f64().unwrap()).unwrap(),
+            keep: self.keep(),
+            coef: self.step_coef(exag_factor),
         }
+    }
+
+    /// Factor on the t-SNE update, `1 - lambda`.
+    ///
+    /// ### Returns
+    ///
+    /// `1 - lambda`.
+    pub(crate) fn keep(&self) -> T {
+        T::one() - self.lambda
+    }
+
+    /// Regulariser step coefficient `lr * lambda^2 * 2 / n` with
+    /// `lr = n / exag_factor`, which reduces to `2 lambda^2 / exag_factor`.
+    ///
+    /// ### Params
+    ///
+    /// * `exag_factor` - Exaggeration factor of this epoch
+    ///
+    /// ### Returns
+    ///
+    /// The coefficient on `y - alpha * y_e`.
+    pub(crate) fn step_coef(&self, exag_factor: T) -> T {
+        let lambda = self.lambda.to_f64().unwrap();
+        T::from_f64(2.0 * lambda * lambda / exag_factor.to_f64().unwrap()).unwrap()
+    }
+
+    /// Centred reference embedding, interleaved `[x0, y0, x1, y1, ...]`.
+    ///
+    /// ### Returns
+    ///
+    /// The reference slice of length `2n`.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn reference(&self) -> &[T] {
+        &self.reference
+    }
+
+    /// Frobenius norm of the centred reference.
+    ///
+    /// ### Returns
+    ///
+    /// `||Y_e||_F` in `f64`.
+    #[cfg(feature = "gpu")]
+    pub(crate) fn ref_norm(&self) -> f64 {
+        self.ref_norm
     }
 
     /// Rewrite a point with the DREAMS update.
