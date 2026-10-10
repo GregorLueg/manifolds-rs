@@ -16,15 +16,15 @@
 
 use manifolds_rs::prelude::*;
 use manifolds_rs::{
-    DensmapParams, DensneParams, DiffusionMapsParams, Fa2Params, PacmapParams, PhateParams,
-    TsneParams, UmapParams,
+    DensmapParams, DensneParams, DiffusionMapsParams, DreamsParams, Fa2Params, PacmapParams,
+    PhateParams, TsneParams, UmapParams,
 };
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 #[cfg(feature = "gpu")]
-use manifolds_rs::{DensmapParamsGpu, TsneParamsGpu, UmapParamsGpu};
+use manifolds_rs::{DensmapParamsGpu, DreamsParamsGpu, TsneParamsGpu, UmapParamsGpu};
 
 ///////////////
 // Extractor //
@@ -629,6 +629,28 @@ where
     Ok(p)
 }
 
+/// Build [`DreamsParams`] from a dictionary.
+///
+/// ### Params
+///
+/// * `d` - The full parameter dictionary sent by the Python layer.
+///
+/// ### Returns
+///
+/// A fully specified parameter struct, or the first bad or unknown key.
+pub(crate) fn dreams<T>(d: &Bound<'_, PyDict>) -> PyResult<DreamsParams<T>>
+where
+    T: ManifoldsFloat,
+{
+    let mut r = Reader::new(d, "DreamsParams");
+    let perplexity = r.float::<T>("perplexity")?;
+    let lambda = r.float::<T>("lambda")?;
+    let mut p = DreamsParams::new_default_2d(perplexity, lambda);
+    tsne_into(&mut r, &mut p.tsne_params)?;
+    r.finish()?;
+    Ok(p)
+}
+
 /// Build [`PhateParams`] from a dictionary.
 ///
 /// ### Params
@@ -937,15 +959,59 @@ where
 {
     let mut r = Reader::new(d, "TsneParamsGpu");
     let mut p = TsneParamsGpu::new_default_2d(r.float::<T>("perplexity")?);
+    tsne_gpu_into(&mut r, &mut p)?;
+    r.finish()?;
+    Ok(p)
+}
+
+/// Build [`DreamsParamsGpu`] from a dictionary.
+///
+/// ### Params
+///
+/// * `d` - The full parameter dictionary sent by the Python layer.
+///
+/// ### Returns
+///
+/// A fully specified parameter struct, or the first bad or unknown key.
+#[cfg(feature = "gpu")]
+pub(crate) fn dreams_gpu<T>(d: &Bound<'_, PyDict>) -> PyResult<DreamsParamsGpu<T>>
+where
+    T: ManifoldsFloat,
+{
+    let mut r = Reader::new(d, "DreamsParamsGpu");
+    let mut p = DreamsParamsGpu {
+        tsne_params: TsneParamsGpu::new_default_2d(r.float::<T>("perplexity")?),
+        ..Default::default()
+    };
+    set(&mut p.lambda, r.float::<T>("lambda")?);
+    tsne_gpu_into(&mut r, &mut p.tsne_params)?;
+    r.finish()?;
+    Ok(p)
+}
+
+/// Read the GPU t-SNE fields, shared by `tsne_gpu` and `dreams_gpu`.
+///
+/// ### Params
+///
+/// * `r` - Reader for the enclosing dictionary.
+/// * `p` - Struct holding the crate defaults, overwritten in place.
+///
+/// ### Returns
+///
+/// Nothing, or the first bad key.
+#[cfg(feature = "gpu")]
+fn tsne_gpu_into<T>(r: &mut Reader<'_, '_>, p: &mut TsneParamsGpu<T>) -> PyResult<()>
+where
+    T: ManifoldsFloat,
+{
     set(&mut p.n_dim, r.get::<usize>("n_dim")?);
     set(&mut p.ann_type, r.get::<String>("ann_type")?);
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised_init, r.get::<bool>("randomised_init")?);
-    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn_gpu)?;
-    nested(&mut r, "optim_params", &mut p.optim_params, fill_tsne_optim)?;
-    r.finish()?;
-    Ok(p)
+    nested(r, "nn_params", &mut p.nn_params, fill_nn_gpu)?;
+    nested(r, "optim_params", &mut p.optim_params, fill_tsne_optim)?;
+    Ok(())
 }
 
 /// Read the GPU UMAP fields, shared by `umap_gpu` and `densmap_gpu`.

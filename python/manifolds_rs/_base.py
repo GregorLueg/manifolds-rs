@@ -22,7 +22,7 @@ from typing import Any, ClassVar
 import numpy as np
 from beartype import beartype
 
-from ._validate import check_knn, check_matrix
+from ._validate import check_knn, check_matrix, check_reference
 
 
 class NotFittedError(ValueError, AttributeError):
@@ -59,6 +59,8 @@ class BaseEmbedding:
     # Unfitted state, as class attributes so subclasses need no
     # `super().__init__`.
     _embedding: np.ndarray | None = None
+    #: Set for the duration of one `fit` by `ReferenceEmbedding`.
+    _reference: Any = None
     n_features_in_: int = 0
     n_samples_fit_: int = 0
 
@@ -158,6 +160,10 @@ class BaseEmbedding:
             knn = {"knn_indices": ind, "knn_distances": dist}
 
         extra = {name: getattr(self, name) for name in self._EXTRA}
+        if self._reference is not None:
+            extra["reference"] = check_reference(
+                self._reference, arr.shape[0], arr.dtype
+            )
         self._embedding = type(self)._FN(
             arr,
             self._params(),
@@ -224,3 +230,66 @@ class BaseEmbedding:
     def __repr__(self) -> str:
         args = ", ".join(f"{k}={v!r}" for k, v in sorted(self.get_params().items()))
         return f"{type(self).__name__}({args})"
+
+
+class ReferenceEmbedding(BaseEmbedding):
+    """A `BaseEmbedding` whose `fit` takes a per-sample reference embedding.
+
+    The reference is data-dependent, one row per sample, so it is a `fit`
+    argument rather than a constructor one, as ``y`` and ``sample_weight`` are in
+    scikit-learn.
+    """
+
+    def fit(
+        self,
+        X: Any,
+        y: Any = None,
+        *,
+        reference: Any = None,
+        knn_indices: Any = None,
+        knn_distances: Any = None,
+    ) -> ReferenceEmbedding:
+        """Embed `X`, pulled towards `reference`.
+
+        Args:
+            X: Array-like of shape ``(n_samples, n_features)``. See
+                `BaseEmbedding.fit`.
+            y: Ignored, present for scikit-learn pipeline compatibility.
+            reference: Optional ``(n_samples, 2)`` reference embedding, one row
+                per row of `X`. ``None`` uses PCA of `X`.
+            knn_indices: Optional precomputed neighbour indices. See
+                `BaseEmbedding.fit`.
+            knn_distances: Distances matching `knn_indices`.
+
+        Returns:
+            self.
+
+        Raises:
+            ValueError: If `reference` is not ``(n_samples, 2)`` and finite, or
+                has no spread.
+        """
+        self._reference = reference
+        try:
+            super().fit(X, y, knn_indices=knn_indices, knn_distances=knn_distances)
+        finally:
+            self._reference = None
+        return self
+
+    def fit_transform(
+        self,
+        X: Any,
+        y: Any = None,
+        *,
+        reference: Any = None,
+        knn_indices: Any = None,
+        knn_distances: Any = None,
+    ) -> np.ndarray:
+        """Embed `X` and return the result. See `fit`."""
+        self.fit(
+            X,
+            y,
+            reference=reference,
+            knn_indices=knn_indices,
+            knn_distances=knn_distances,
+        )
+        return self.embedding_

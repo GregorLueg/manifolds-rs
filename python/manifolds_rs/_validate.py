@@ -103,6 +103,33 @@ def check_knn(
 
 
 @beartype
+def check_reference(x: Any, n_samples: int, dtype: np.dtype) -> np.ndarray:
+    """Coerce a reference embedding to match the design matrix.
+
+    Args:
+        x: Array-like of shape ``(n_samples, 2)``.
+        n_samples: Rows the design matrix has.
+        dtype: Element type the embedding will run in.
+
+    Returns:
+        A C-contiguous array of `dtype`.
+
+    Raises:
+        ValueError: If the shape is not ``(n_samples, 2)`` or the values are not
+            finite.
+        TypeError: If the input does not hold numbers.
+    """
+    arr = np.asarray(x)
+    if arr.dtype.kind not in "fiub":
+        raise TypeError(f"reference must hold numbers, got dtype {arr.dtype}")
+    if arr.shape != (n_samples, 2):
+        raise ValueError(f"reference has shape {arr.shape}, expected ({n_samples}, 2)")
+    if not np.isfinite(arr).all():
+        raise ValueError("reference contains NaN or infinite values")
+    return np.ascontiguousarray(arr, dtype=dtype)
+
+
+@beartype
 def check_choice(value: str, allowed: frozenset[str], *, name: str) -> str:
     """Reject a string the core would silently fall back on.
 

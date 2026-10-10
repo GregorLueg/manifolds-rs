@@ -17,7 +17,7 @@ from typing import Any, ClassVar
 from beartype import beartype
 
 from . import _manifolds as _core
-from ._base import BaseEmbedding
+from ._base import BaseEmbedding, ReferenceEmbedding
 from ._params import (
     ANN_CPU,
     FA2_APPROX,
@@ -362,6 +362,81 @@ class DensNE(TSNE):
             **super()._params(),
             "lambda": self.lambda_,
             "dens_params": merge(self.dens_params),
+        }
+
+
+class DREAMS(ReferenceEmbedding):
+    """t-SNE regularised towards a global reference embedding.
+
+    Adds a quadratic pull towards a scaled reference layout (PCA of the data
+    unless `fit` is given one) to every t-SNE epoch. ``lambda_=0`` is plain
+    t-SNE, ``lambda_=1`` recovers the reference; the default keeps t-SNE's local
+    structure and most of the reference's global layout. The optimisation
+    starts from the reference, so `init` is ignored.
+
+    Args:
+        lambda_: Regularisation strength, in ``[0, 1]``.
+        init: Ignored; accepted so the signature matches `TSNE`.
+
+    Everything else is as `TSNE`. The reference is passed to `fit`, see
+    `ReferenceEmbedding.fit`.
+    """
+
+    _FN: ClassVar[Callable[..., Any]] = _core.dreams
+    _EXTRA: ClassVar[tuple[str, ...]] = ("approx",)
+
+    @beartype
+    def __init__(
+        self,
+        n_components: int = 2,
+        perplexity: float = 30.0,
+        metric: str = "euclidean",
+        lambda_: float = 0.15,
+        n_epochs: int = 1000,
+        learning_rate: float | None = None,
+        init: str = "pca",
+        ann: str = "kmknn",
+        approx: str = "barnes_hut",
+        randomised_init: bool = True,
+        init_range: float | None = None,
+        seed: int = 42,
+        verbose: int = 0,
+        nn_params: NeighbourParams | None = None,
+        optim_params: TsneOptim | None = None,
+    ) -> None:
+        self.n_components = n_components
+        self.perplexity = perplexity
+        self.metric = metric
+        self.lambda_ = lambda_
+        self.n_epochs = n_epochs
+        self.learning_rate = learning_rate
+        self.init = init
+        self.ann = ann
+        self.approx = approx
+        self.randomised_init = randomised_init
+        self.init_range = init_range
+        self.seed = seed
+        self.verbose = verbose
+        self.nn_params = nn_params
+        self.optim_params = optim_params
+
+    def _params(self) -> dict[str, Any]:
+        check_choice(self.approx, TSNE_APPROX, name="approx")
+        return {
+            "n_dim": self.n_components,
+            "perplexity": self.perplexity,
+            "lambda": self.lambda_,
+            "initialisation": check_choice(self.init, INITS, name="init"),
+            "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
+            "randomised_init": self.randomised_init,
+            "init_range": self.init_range,
+            "nn_params": merge(
+                self.nn_params,
+                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+            ),
+            "optim_params": merge(
+                self.optim_params, n_epochs=self.n_epochs, lr=self.learning_rate
+            ),
         }
 
 

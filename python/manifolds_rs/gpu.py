@@ -32,7 +32,7 @@ import numpy as np
 from beartype import beartype
 
 from . import _manifolds as _core
-from ._base import BaseEmbedding
+from ._base import BaseEmbedding, ReferenceEmbedding
 from ._params import (
     ANN_GPU,
     INITS,
@@ -300,6 +300,80 @@ class TSNEGpu(BaseEmbedding):
         return {
             "n_dim": self.n_components,
             "perplexity": self.perplexity,
+            "initialisation": check_choice(self.init, INITS, name="init"),
+            "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
+            "randomised_init": self.randomised_init,
+            "init_range": self.init_range,
+            "nn_params": merge(
+                self.nn_params,
+                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+            ),
+            "optim_params": merge(
+                self.optim_params, n_epochs=self.n_epochs, lr=self.learning_rate
+            ),
+        }
+
+
+class DREAMSGpu(ReferenceEmbedding):
+    """DREAMS with a GPU neighbour search and, optionally, a GPU optimiser.
+
+    t-SNE regularised towards a global reference embedding, as `DREAMS`, with
+    the device split of `TSNEGpu`. ``approx="fft_3k_gpu"`` runs the whole
+    optimisation on the device.
+
+    Args:
+        lambda_: Regularisation strength, in ``[0, 1]``.
+        init: Ignored; accepted so the signature matches `TSNEGpu`.
+
+    Everything else is as `TSNEGpu`. The reference is passed to `fit`, see
+    `ReferenceEmbedding.fit`.
+    """
+
+    _FN: ClassVar[Callable[..., Any]] = _core.dreams_gpu
+    _FORCE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
+    _EXTRA: ClassVar[tuple[str, ...]] = ("approx",)
+
+    @beartype
+    def __init__(
+        self,
+        n_components: int = 2,
+        perplexity: float = 30.0,
+        metric: str = "euclidean",
+        lambda_: float = 0.15,
+        n_epochs: int = 1000,
+        learning_rate: float | None = None,
+        init: str = "pca",
+        ann: str = "nndescent_gpu",
+        approx: str = "barnes_hut",
+        randomised_init: bool = True,
+        init_range: float | None = None,
+        seed: int = 42,
+        verbose: int = 0,
+        nn_params: NeighbourParamsGpu | None = None,
+        optim_params: TsneOptim | None = None,
+    ) -> None:
+        self.n_components = n_components
+        self.perplexity = perplexity
+        self.metric = metric
+        self.lambda_ = lambda_
+        self.n_epochs = n_epochs
+        self.learning_rate = learning_rate
+        self.init = init
+        self.ann = ann
+        self.approx = approx
+        self.randomised_init = randomised_init
+        self.init_range = init_range
+        self.seed = seed
+        self.verbose = verbose
+        self.nn_params = nn_params
+        self.optim_params = optim_params
+
+    def _params(self) -> dict[str, Any]:
+        check_choice(self.approx, TSNE_APPROX_GPU, name="approx")
+        return {
+            "n_dim": self.n_components,
+            "perplexity": self.perplexity,
+            "lambda": self.lambda_,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
             "randomised_init": self.randomised_init,

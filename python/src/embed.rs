@@ -13,7 +13,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::dispatch::embed_dispatch;
+use crate::dispatch::{embed_dispatch, embed_dispatch_ref};
 
 /// Uniform manifold approximation and projection.
 ///
@@ -171,6 +171,58 @@ pub fn densne<'py>(
         knn_distances,
         densne,
         |data, n, dim, p, knn| manifolds_rs::densne((data, n, dim), knn, p, approx, seed, verbose)
+    )
+}
+
+/// t-SNE regularised towards a global reference embedding.
+///
+/// ### Params
+///
+/// * `x` - Samples by features, C-contiguous float32 or float64.
+/// * `params` - Parameters, as built by the Python layer. See
+///   [`crate::params::dreams`].
+/// * `approx` - Repulsive-force approximation. See [`tsne`].
+/// * `reference` - Optional `(n, 2)` reference embedding, same dtype as `x`.
+///   `None` uses PCA.
+/// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices.
+/// * `knn_distances` - Optional `(n, k)` distances, same dtype as `x`.
+/// * `seed` - Fixes the PCA initialisation and the optimiser.
+/// * `verbose` - `0` silent, `1` normal, `2` detailed.
+///
+/// ### Returns
+///
+/// The embedding as an `(n_samples, 2)` array of the input's float type.
+#[pyfunction]
+#[pyo3(signature = (x, params, *, approx = "barnes_hut", reference = None, knn_indices = None, knn_distances = None, seed = 42, verbose = 0))]
+#[allow(clippy::too_many_arguments)]
+pub fn dreams<'py>(
+    py: Python<'py>,
+    x: &Bound<'py, PyAny>,
+    params: &Bound<'py, PyDict>,
+    approx: &str,
+    reference: Option<&Bound<'py, PyAny>>,
+    knn_indices: Option<&Bound<'py, PyAny>>,
+    knn_distances: Option<&Bound<'py, PyAny>>,
+    seed: usize,
+    verbose: usize,
+) -> PyResult<Bound<'py, PyAny>> {
+    embed_dispatch_ref!(
+        py,
+        x,
+        params,
+        knn_indices,
+        knn_distances,
+        reference,
+        dreams,
+        |data, n, dim, p, knn, rf| manifolds_rs::dreams(
+            (data, n, dim),
+            knn,
+            rf,
+            p,
+            approx,
+            seed,
+            verbose
+        )
     )
 }
 

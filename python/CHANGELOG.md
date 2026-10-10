@@ -3,6 +3,23 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.4.0
+
+Requires the `manifolds-rs` 0.7.0.
+
+**Features**
+
+- `DREAMS` and `DREAMSGpu` (Kury, Kobak & Damrich, TMLR 2026): t-SNE pulled
+  towards a global reference layout, so you keep the clusters and get a
+  sensible arrangement of them. `lambda_` slides from plain t-SNE (0) to the
+  reference (1), default 0.15 as in the paper. The reference is PCA of the
+  data unless you pass one to `fit(X, reference=...)` as an
+  `(n_samples, 2)` array (MDS, PHATE, whatever you trust globally).
+- `DREAMSGpu(approx="fft_3k_gpu")` runs the regulariser inside the GPU
+  optimiser as well.
+- `init` is accepted for signature parity with `TSNE` but ignored: DREAMS
+  always starts from its reference.
+
 ## 0.3.2
 
 Requires the `manifolds-rs` 0.6.2.

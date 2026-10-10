@@ -115,6 +115,35 @@ where
     Ok((idx, dst))
 }
 
+/// Split an `(n_samples, 2)` reference embedding into the crate's layout.
+///
+/// ### Params
+///
+/// * `reference` - `(n_samples, 2)` coordinates.
+/// * `n_samples` - Rows the design matrix has.
+///
+/// ### Returns
+///
+/// `[2][n_samples]`, one vector per dimension. Errors if the shape is not
+/// `(n_samples, 2)`.
+pub(crate) fn unpack_reference<T>(
+    reference: &PyReadonlyArray2<'_, T>,
+    n_samples: usize,
+) -> PyResult<Vec<Vec<T>>>
+where
+    T: Element + Copy,
+{
+    let (data, n, dim) = flat(reference)?;
+    if (n, dim) != (n_samples, 2) {
+        return Err(PyValueError::new_err(format!(
+            "reference has shape ({n}, {dim}), expected ({n_samples}, 2)"
+        )));
+    }
+    Ok((0..2)
+        .map(|d| data.chunks_exact(2).map(|row| row[d]).collect())
+        .collect())
+}
+
 /////////////
 // Outputs //
 /////////////

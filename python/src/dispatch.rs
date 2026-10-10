@@ -57,7 +57,38 @@ macro_rules! embed_arm {
     }};
 }
 
-pub(crate) use {embed_arm, embed_dispatch};
+/// As [`embed_dispatch`], with an optional `(n, 2)` reference embedding that
+/// `$run` receives as a sixth argument, after `knn`.
+macro_rules! embed_dispatch_ref {
+    ($py:ident, $x:ident, $dict:ident, $ki:ident, $kd:ident, $rf:ident, $build:ident, $run:expr) => {{
+        if let Ok(a) = $x.extract::<::numpy::PyReadonlyArray2<'_, f32>>() {
+            crate::dispatch::embed_arm_ref!($py, a, $dict, $ki, $kd, $rf, f32, $build, $run)
+        } else if let Ok(a) = $x.extract::<::numpy::PyReadonlyArray2<'_, f64>>() {
+            crate::dispatch::embed_arm_ref!($py, a, $dict, $ki, $kd, $rf, f64, $build, $run)
+        } else {
+            Err(::pyo3::exceptions::PyTypeError::new_err(
+                "X must be a 2-D numpy array of dtype float32 or float64",
+            ))
+        }
+    }};
+}
+
+/// One dtype arm of [`embed_dispatch_ref`].
+macro_rules! embed_arm_ref {
+    ($py:ident, $a:ident, $dict:ident, $ki:ident, $kd:ident, $rf:ident, $t:ty, $build:ident, $run:expr) => {{
+        let (data, n, dim) = crate::convert::flat(&$a)?;
+        let params = crate::params::$build::<$t>($dict)?;
+        let knn = crate::dispatch::knn_arm::<$t>($ki, $kd, n)?;
+        let reference = crate::dispatch::reference_arm::<$t>($rf, n)?;
+        let f = $run;
+        let embedding = $py
+            .detach(|| crate::pool::run(|| f(data, n, dim, &params, knn, reference)))
+            .map_err(crate::error::ManErr)?;
+        Ok(crate::convert::pack_embedding($py, embedding)?.into_any())
+    }};
+}
+
+pub(crate) use {embed_arm, embed_arm_ref, embed_dispatch, embed_dispatch_ref};
 
 /////////////
 // Helpers //
@@ -102,4 +133,31 @@ where
             "knn_indices and knn_distances must be given together",
         )),
     }
+}
+
+/// Read the optional reference embedding for one dtype arm.
+///
+/// ### Params
+///
+/// * `reference` - `(n, 2)` coordinates, or `None`.
+/// * `n` - Rows the design matrix has.
+///
+/// ### Returns
+///
+/// The reference in the crate's `[2][n]` layout, or `None` for the PCA default.
+pub(crate) fn reference_arm<T>(
+    reference: Option<&Bound<'_, PyAny>>,
+    n: usize,
+) -> PyResult<Option<Vec<Vec<T>>>>
+where
+    T: numpy::Element + Copy,
+{
+    reference
+        .map(|r| {
+            let r = r.extract::<numpy::PyReadonlyArray2<'_, T>>().map_err(|_| {
+                pyo3::exceptions::PyTypeError::new_err("reference must have the same dtype as X")
+            })?;
+            crate::convert::unpack_reference(&r, n)
+        })
+        .transpose()
 }

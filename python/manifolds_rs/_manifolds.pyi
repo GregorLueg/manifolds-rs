@@ -99,6 +99,17 @@ def densne(
     seed: int = ...,
     verbose: int = ...,
 ) -> np.ndarray: ...
+def dreams(
+    x: np.ndarray,
+    params: dict[str, Any],
+    *,
+    approx: str = ...,
+    reference: np.ndarray | None = ...,
+    knn_indices: np.ndarray | None = ...,
+    knn_distances: np.ndarray | None = ...,
+    seed: int = ...,
+    verbose: int = ...,
+) -> np.ndarray: ...
 def phate(
     x: np.ndarray,
     params: dict[str, Any],
@@ -159,6 +170,17 @@ def tsne_gpu(
     params: dict[str, Any],
     *,
     approx: str = ...,
+    knn_indices: np.ndarray | None = ...,
+    knn_distances: np.ndarray | None = ...,
+    seed: int = ...,
+    verbose: int = ...,
+) -> np.ndarray: ...
+def dreams_gpu(
+    x: np.ndarray,
+    params: dict[str, Any],
+    *,
+    approx: str = ...,
+    reference: np.ndarray | None = ...,
     knn_indices: np.ndarray | None = ...,
     knn_distances: np.ndarray | None = ...,
     seed: int = ...,

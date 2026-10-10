@@ -64,6 +64,28 @@ macro_rules! gpu_body {
     }};
 }
 
+/// As [`gpu_body`], with an optional `(n, 2)` reference embedding that `$run`
+/// receives after `knn`.
+macro_rules! gpu_body_ref {
+    ($py:ident, $x:ident, $dict:ident, $ki:ident, $kd:ident, $rf:ident, $build:ident, $run:expr) => {{
+        let a = $x.extract::<PyReadonlyArray2<'_, f32>>().map_err(|_| {
+            ::pyo3::exceptions::PyTypeError::new_err(
+                "the GPU paths are float32 only, since WGSL has no f64; pass a \
+                     C-contiguous float32 array",
+            )
+        })?;
+        let (data, n, dim) = convert::flat(&a)?;
+        let p = params::$build::<f32>($dict)?;
+        let knn = dispatch::knn_arm::<f32>($ki, $kd, n)?;
+        let reference = dispatch::reference_arm::<f32>($rf, n)?;
+        let f = $run;
+        let embedding = $py
+            .detach(|| pool::run(|| f(data, n, dim, &p, knn, reference, default_device())))
+            .map_err(ManErr)?;
+        Ok(convert::pack_embedding($py, embedding)?.into_any())
+    }};
+}
+
 ///////////////////
 // Entry points  //
 ///////////////////
@@ -197,6 +219,59 @@ pub fn tsne_gpu<'py>(
         |data, n, dim, p, knn, device| manifolds_rs::tsne_gpu::<f32, Rt>(
             (data, n, dim),
             knn,
+            p,
+            approx,
+            device,
+            seed,
+            verbose
+        )
+    )
+}
+
+/// DREAMS with a GPU neighbour search, and a GPU optimiser for `"fft_3k_gpu"`.
+///
+/// ### Params
+///
+/// * `x` - Samples by features, C-contiguous float32.
+/// * `params` - Parameters, as built by the Python layer. See
+///   [`crate::params::dreams_gpu`].
+/// * `approx` - Repulsive-force approximation. See [`tsne_gpu`].
+/// * `reference` - Optional `(n, 2)` float32 reference embedding. `None` uses
+///   PCA.
+/// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices.
+/// * `knn_distances` - Optional `(n, k)` float32 distances.
+/// * `seed` - Fixes the PCA initialisation and the optimiser.
+/// * `verbose` - `0` silent, `1` normal, `2` detailed.
+///
+/// ### Returns
+///
+/// The embedding as an `(n_samples, 2)` float32 array.
+#[pyfunction]
+#[pyo3(signature = (x, params, *, approx = "barnes_hut", reference = None, knn_indices = None, knn_distances = None, seed = 42, verbose = 0))]
+#[allow(clippy::too_many_arguments)]
+pub fn dreams_gpu<'py>(
+    py: Python<'py>,
+    x: &Bound<'py, PyAny>,
+    params: &Bound<'py, PyDict>,
+    approx: &str,
+    reference: Option<&Bound<'py, PyAny>>,
+    knn_indices: Option<&Bound<'py, PyAny>>,
+    knn_distances: Option<&Bound<'py, PyAny>>,
+    seed: usize,
+    verbose: usize,
+) -> PyResult<Bound<'py, PyAny>> {
+    gpu_body_ref!(
+        py,
+        x,
+        params,
+        knn_indices,
+        knn_distances,
+        reference,
+        dreams_gpu,
+        |data, n, dim, p, knn, rf, device| manifolds_rs::dreams_gpu::<f32, Rt>(
+            (data, n, dim),
+            knn,
+            rf,
             p,
             approx,
             device,
