@@ -130,6 +130,27 @@ pub enum ManifoldsError {
     )]
     DegenerateLocalRadii,
 
+    // -- DREAMS --
+    /// Error if the DREAMS regularisation strength is outside `[0, 1]`
+    #[error("DREAMS: lambda = {lambda} is invalid, it must lie in [0, 1]")]
+    DreamsInvalidLambda {
+        /// The provided regularisation strength
+        lambda: f64,
+    },
+    /// Error if the DREAMS reference embedding does not match the data
+    #[error("DREAMS: reference embedding is {n_dim} x {n_ref}, expected 2 x {n_samples}")]
+    DreamsReferenceMismatch {
+        /// Number of samples in the data
+        n_samples: usize,
+        /// Number of dimensions (outer length) of the reference
+        n_dim: usize,
+        /// Number of points in the first reference dimension
+        n_ref: usize,
+    },
+    /// Error if the DREAMS reference embedding has zero norm after centring
+    #[error("DREAMS: the reference embedding has no spread after centring")]
+    DreamsDegenerateReference,
+
     // -- GPU t-SNE --
     /// Error when a GPU-only t-SNE optimiser is requested from a CPU entry
     /// point

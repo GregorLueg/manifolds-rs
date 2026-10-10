@@ -54,6 +54,7 @@ use crate::training::tsne_optimiser::*;
 use crate::training::umap_optimisers::*;
 use crate::utils::density::{DENSMAP_LAMBDA, DENSNE_LAMBDA};
 use crate::utils::diffusions::*;
+use crate::utils::dreams::{dreams_setup, DREAMS_LAMBDA};
 use crate::utils::math::compute_largest_eigenpairs_lanczos;
 use crate::utils::potentials::compute_potential_distances;
 use crate::utils::sparse_ops::matrix_power;
@@ -870,6 +871,8 @@ where
         params,
         approx_type,
         None,
+        None,
+        None,
         seed,
         verbose,
     )
@@ -888,6 +891,11 @@ where
 /// * `params` - t-SNE parameters
 /// * `approx_type` - `"barnes_hut" | "bh"`, `"fft"` or `"fft_3k" | "3-kernel"`
 /// * `dens_params` - Density knobs for den-SNE, or `None` for plain t-SNE
+/// * `dreams_lambda` - DREAMS regularisation strength, or `None` for no
+///   regulariser. When set, the embedding is initialised from the reference
+///   and `params.initialisation` is ignored
+/// * `dreams_reference` - DREAMS reference embedding `[2][n_samples]`;
+///   `None` uses PCA. Ignored without `dreams_lambda`
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -896,12 +904,15 @@ where
 ///
 /// Embedding coordinates as `Vec<Vec<T>>`, `[n_dim][n_samples]`.
 #[cfg(feature = "fft_tsne")]
+#[allow(clippy::too_many_arguments)]
 fn tsne_inner<T>(
     data: MatRef<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParams<T>,
     approx_type: &str,
     dens_params: Option<DensParams<T>>,
+    dreams_lambda: Option<T>,
+    dreams_reference: Option<Vec<Vec<T>>>,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
@@ -978,7 +989,24 @@ where
 
     let start_init = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
+    // DREAMS initialises from its own reference, so the regulariser and the
+    // starting layout agree.
+    let (mut embd, dreams_state) = match dreams_lambda {
+        Some(lambda) => {
+            let (embd, state) = dreams_setup(
+                data,
+                dreams_reference,
+                lambda,
+                params.randomised_init,
+                seed as u64,
+            )?;
+            (embd, Some(state))
+        }
+        None => (
+            initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?,
+            None,
+        ),
+    };
 
     if verbosity.normal_verbosity() {
         println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
@@ -1008,6 +1036,7 @@ where
                 &params.optim_params,
                 &graph,
                 dens_state.as_ref(),
+                dreams_state.as_ref(),
                 verbose,
             );
         }
@@ -1023,6 +1052,7 @@ where
                 &params.optim_params,
                 &graph,
                 dens_state.as_ref(),
+                dreams_state.as_ref(),
                 verbose,
             );
         }
@@ -1039,6 +1069,7 @@ where
                 &params.optim_params,
                 &graph,
                 dens_state.as_ref(),
+                dreams_state.as_ref(),
                 verbose,
             )?;
         }
@@ -1055,6 +1086,7 @@ where
                 &params.optim_params,
                 &graph,
                 dens_state.as_ref(),
+                dreams_state.as_ref(),
                 verbose,
             )?;
         }
@@ -1153,6 +1185,8 @@ where
         params,
         approx_type,
         None,
+        None,
+        None,
         seed,
         verbose,
     )
@@ -1172,6 +1206,11 @@ where
 /// * `approx_type` - `"barnes_hut" | "bh"`; `"fft"` and `"fft_3k"` panic
 ///   without the `fft_tsne` feature
 /// * `dens_params` - Density knobs for den-SNE, or `None` for plain t-SNE
+/// * `dreams_lambda` - DREAMS regularisation strength, or `None` for no
+///   regulariser. When set, the embedding is initialised from the reference
+///   and `params.initialisation` is ignored
+/// * `dreams_reference` - DREAMS reference embedding `[2][n_samples]`;
+///   `None` uses PCA. Ignored without `dreams_lambda`
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -1180,12 +1219,15 @@ where
 ///
 /// Embedding coordinates as `Vec<Vec<T>>`, `[n_dim][n_samples]`.
 #[cfg(not(feature = "fft_tsne"))]
+#[allow(clippy::too_many_arguments)]
 fn tsne_inner<T>(
     data: MatRef<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParams<T>,
     approx_type: &str,
     dens_params: Option<DensParams<T>>,
+    dreams_lambda: Option<T>,
+    dreams_reference: Option<Vec<Vec<T>>>,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
@@ -1261,7 +1303,24 @@ where
 
     let start_init = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
+    // DREAMS initialises from its own reference, so the regulariser and the
+    // starting layout agree.
+    let (mut embd, dreams_state) = match dreams_lambda {
+        Some(lambda) => {
+            let (embd, state) = dreams_setup(
+                data,
+                dreams_reference,
+                lambda,
+                params.randomised_init,
+                seed as u64,
+            )?;
+            (embd, Some(state))
+        }
+        None => (
+            initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?,
+            None,
+        ),
+    };
 
     if verbosity.normal_verbosity() {
         println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
@@ -1291,6 +1350,7 @@ where
                 &params.optim_params,
                 &graph,
                 dens_state.as_ref(),
+                dreams_state.as_ref(),
                 verbose,
             );
         }
@@ -1306,6 +1366,7 @@ where
                 &params.optim_params,
                 &graph,
                 dens_state.as_ref(),
+                dreams_state.as_ref(),
                 verbose,
             );
         }
@@ -1643,6 +1704,8 @@ where
         &params.tsne_params,
         approx_type,
         Some(params.dens_params),
+        None,
+        None,
         seed,
         verbose,
     )
@@ -1723,6 +1786,256 @@ where
         &params.tsne_params,
         approx_type,
         Some(params.dens_params),
+        None,
+        None,
+        seed,
+        verbose,
+    )
+}
+
+////////////
+// DREAMS //
+////////////
+
+/// Parameters for DREAMS, t-SNE regularised towards a global reference
+/// embedding.
+#[derive(Debug, Clone)]
+pub struct DreamsParams<T> {
+    /// The underlying t-SNE parameters. `initialisation` is ignored: DREAMS
+    /// always starts from its reference embedding.
+    pub tsne_params: TsneParams<T>,
+    /// Regularisation strength in `[0, 1]`. `0` is plain t-SNE, `1` the
+    /// reference embedding. Defaults to [`DREAMS_LAMBDA`].
+    pub lambda: T,
+}
+
+impl<T> Default for DreamsParams<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            tsne_params: TsneParams::default(),
+            lambda: T::from_f64(DREAMS_LAMBDA).unwrap(),
+        }
+    }
+}
+
+impl<T> DreamsParams<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Full-control constructor.
+    ///
+    /// ### Params
+    ///
+    /// * `tsne_params` - The underlying t-SNE parameters
+    /// * `lambda` - Regularisation strength in `[0, 1]`
+    ///
+    /// ### Returns
+    ///
+    /// The parameter set.
+    pub fn new(tsne_params: TsneParams<T>, lambda: T) -> Self {
+        Self {
+            tsne_params,
+            lambda,
+        }
+    }
+
+    /// 2D defaults with the two knobs most worth tuning exposed.
+    ///
+    /// ### Params
+    ///
+    /// * `perplexity` - Target perplexity. Defaults to the t-SNE default of 30
+    /// * `lambda` - Regularisation strength. Defaults to [`DREAMS_LAMBDA`].
+    ///   Larger values pull harder towards the reference layout
+    ///
+    /// ### Returns
+    ///
+    /// The parameter set.
+    pub fn new_default_2d(perplexity: Option<T>, lambda: Option<T>) -> Self {
+        Self {
+            tsne_params: TsneParams::new_default_2d(perplexity),
+            lambda: lambda.unwrap_or_else(|| T::from_f64(DREAMS_LAMBDA).unwrap()),
+        }
+    }
+}
+
+/// Run DREAMS, t-SNE regularised towards a global reference embedding
+///
+/// Adds a quadratic pull towards a scaled reference embedding (PCA unless one
+/// is supplied) to every t-SNE epoch. `lambda = 0` is plain t-SNE, `lambda = 1`
+/// recovers the reference; the default 0.15 keeps t-SNE's local structure and
+/// most of PCA's global layout.
+///
+/// ### Algorithm
+///
+/// 1. Construct the high-dimensional affinity graph exactly as t-SNE does
+/// 2. Take the reference `Y_e`: the first two PC scores (component ratio
+///    preserved) or the supplied embedding, centred
+/// 3. Initialise from `Y_e`, scaled so its first dimension has std `1e-4`
+/// 4. Optimise as t-SNE, but every epoch scale the t-SNE update by
+///    `1 - lambda` and add `-lr * lambda^2 * (2/n) * (y - alpha * y_e)`, with
+///    `alpha = ||Y||_F / ||Y_e||_F` and `lr = n / exaggeration` (openTSNE's
+///    automatic rate, independent of the t-SNE learning rate). This is the
+///    reference implementation's update, which differs from Equation 2 of the
+///    paper; see [`crate::utils::dreams`]
+///
+/// `params.tsne_params.initialisation` is ignored. The regulariser is O(n) per
+/// epoch on top of the Barnes-Hut or FFT repulsion.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
+/// * `reference` - Optional global reference embedding as `[2][n_samples]`,
+///   the layout every embedding in this crate returns (e.g. an MDS or PHATE
+///   result). `None` uses PCA.
+/// * `params` - DREAMS parameters
+/// * `approx_type` - Type of approximation to use for repulsive forces.
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, and with the
+///   `fft_tsne` feature `"fft"`, `"fft_3k" | "3-kernel"`
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has length
+/// `n_dim` and the inner vectors length `n_samples`.
+///
+/// ### Errors
+///
+/// [`ManifoldsError::DreamsInvalidLambda`] if `lambda` is outside `[0, 1]`,
+/// [`ManifoldsError::DreamsReferenceMismatch`] if the reference is not
+/// `2 x n_samples`, [`ManifoldsError::DreamsDegenerateReference`] if it
+/// collapses to a point. Otherwise the same errors as [`tsne`].
+///
+/// ### References
+///
+/// Kury, Kobak & Damrich (2026): "DREAMS: Preserving both Local and Global
+/// Structure in Dimensionality Reduction", Transactions on Machine Learning
+/// Research
+#[cfg(feature = "fft_tsne")]
+pub fn dreams<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    reference: Option<Vec<Vec<T>>>,
+    params: &DreamsParams<T>,
+    approx_type: &str,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat + FftwFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    tsne_inner(
+        data,
+        precomputed_knn,
+        &params.tsne_params,
+        approx_type,
+        None,
+        Some(params.lambda),
+        reference,
+        seed,
+        verbose,
+    )
+}
+
+/// Run DREAMS, t-SNE regularised towards a global reference embedding
+///
+/// Adds a quadratic pull towards a scaled reference embedding (PCA unless one
+/// is supplied) to every t-SNE epoch. `lambda = 0` is plain t-SNE, `lambda = 1`
+/// recovers the reference; the default 0.15 keeps t-SNE's local structure and
+/// most of PCA's global layout.
+///
+/// ### Algorithm
+///
+/// 1. Construct the high-dimensional affinity graph exactly as t-SNE does
+/// 2. Take the reference `Y_e`: the first two PC scores (component ratio
+///    preserved) or the supplied embedding, centred
+/// 3. Initialise from `Y_e`, scaled so its first dimension has std `1e-4`
+/// 4. Optimise as t-SNE, but every epoch scale the t-SNE update by
+///    `1 - lambda` and add `-lr * lambda^2 * (2/n) * (y - alpha * y_e)`, with
+///    `alpha = ||Y||_F / ||Y_e||_F` and `lr = n / exaggeration` (openTSNE's
+///    automatic rate, independent of the t-SNE learning rate). This is the
+///    reference implementation's update, which differs from Equation 2 of the
+///    paper; see [`crate::utils::dreams`]
+///
+/// `params.tsne_params.initialisation` is ignored. The regulariser is O(n) per
+/// epoch on top of the Barnes-Hut or FFT repulsion.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
+/// * `reference` - Optional global reference embedding as `[2][n_samples]`,
+///   the layout every embedding in this crate returns (e.g. an MDS or PHATE
+///   result). `None` uses PCA.
+/// * `params` - DREAMS parameters
+/// * `approx_type` - Type of approximation to use for repulsive forces.
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, and with the
+///   `fft_tsne` feature `"fft"`, `"fft_3k" | "3-kernel"`
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has length
+/// `n_dim` and the inner vectors length `n_samples`.
+///
+/// ### Errors
+///
+/// [`ManifoldsError::DreamsInvalidLambda`] if `lambda` is outside `[0, 1]`,
+/// [`ManifoldsError::DreamsReferenceMismatch`] if the reference is not
+/// `2 x n_samples`, [`ManifoldsError::DreamsDegenerateReference`] if it
+/// collapses to a point. Otherwise the same errors as [`tsne`].
+///
+/// ### References
+///
+/// Kury, Kobak & Damrich (2026): "DREAMS: Preserving both Local and Global
+/// Structure in Dimensionality Reduction", Transactions on Machine Learning
+/// Research
+#[cfg(not(feature = "fft_tsne"))]
+pub fn dreams<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    reference: Option<Vec<Vec<T>>>,
+    params: &DreamsParams<T>,
+    approx_type: &str,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    tsne_inner(
+        data,
+        precomputed_knn,
+        &params.tsne_params,
+        approx_type,
+        None,
+        Some(params.lambda),
+        reference,
         seed,
         verbose,
     )
@@ -4757,7 +5070,7 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
+            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, None, None, verbose);
         }
         TsneOpt::BarnesHutQd => {
             if verbosity.normal_verbosity() {
@@ -4766,7 +5079,7 @@ where
                     params.optim_params.n_epochs, params.optim_params.max_depth
                 );
             }
-            optimise_qd_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
+            optimise_qd_tsne(&mut embd, &params.optim_params, &graph, None, None, verbose);
         }
         TsneOpt::Fft => {
             if verbosity.normal_verbosity() {
@@ -4775,7 +5088,7 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_fft_tsne(&mut embd, &params.optim_params, &graph, None, verbose)?;
+            optimise_fft_tsne(&mut embd, &params.optim_params, &graph, None, None, verbose)?;
         }
         TsneOpt::Fft3Kernel => {
             if verbosity.normal_verbosity() {
@@ -4784,7 +5097,7 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_fft3k_tsne(&mut embd, &params.optim_params, &graph, None, verbose)?;
+            optimise_fft3k_tsne(&mut embd, &params.optim_params, &graph, None, None, verbose)?;
         }
         TsneOpt::Fft3KernelGpu => {
             if verbosity.normal_verbosity() {
@@ -4926,7 +5239,7 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
+            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, None, None, verbose);
         }
         TsneOpt::BarnesHutQd => {
             if verbosity.normal_verbosity() {
@@ -4935,7 +5248,7 @@ where
                     params.optim_params.n_epochs, params.optim_params.max_depth
                 );
             }
-            optimise_qd_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
+            optimise_qd_tsne(&mut embd, &params.optim_params, &graph, None, None, verbose);
         }
         TsneOpt::Fft | TsneOpt::Fft3Kernel => {
             panic!("FFT-accelerated t-SNE not available. Recompile with 'fft_tsne' feature or use 'barnes_hut' approximation.");

@@ -11,6 +11,7 @@ use crate::data::structures::*;
 use crate::prelude::*;
 use crate::utils::bh_tree::*;
 use crate::utils::density::*;
+use crate::utils::dreams::*;
 #[cfg(any(feature = "fft_tsne", feature = "gpu"))]
 use crate::utils::math::choose_grid_size;
 
@@ -620,6 +621,8 @@ where
 /// * `dens` - Density-preserving state for den-SNE, or `None` for plain tSNE.
 ///   When set, the density gradient is applied over the final
 ///   `dens.params.frac` of the epochs.
+/// * `dreams` - DREAMS regulariser state, or `None` for plain tSNE. When set,
+///   active in every epoch, early exaggeration included.
 /// * `verbose` - Verbosity level: `0` silent, `1` normal, `2` detailed.
 ///
 /// ### References
@@ -631,11 +634,12 @@ pub fn optimise_bh_tsne<T>(
     params: &TsneOptimParams<T>,
     graph: &CoordinateList<T>,
     dens: Option<&DensState<T>>,
+    dreams: Option<&DreamsState<T>>,
     verbose: usize,
 ) where
     T: ManifoldsFloat,
 {
-    optimise_bh_tsne_impl(embd, params, graph, dens, None, verbose);
+    optimise_bh_tsne_impl(embd, params, graph, dens, dreams, None, verbose);
 }
 
 /// Optimise a 2D embedding using quick-and-dirty Barnes-Hut t-SNE.
@@ -653,6 +657,8 @@ pub fn optimise_bh_tsne<T>(
 ///   the approximation.
 /// * `graph` - Sparse high-dimensional affinities in coordinate-list format.
 /// * `dens` - Density-preserving state for den-SNE, or `None` for plain tSNE.
+/// * `dreams` - DREAMS regulariser state, or `None` for plain tSNE. When set,
+///   active in every epoch, early exaggeration included.
 /// * `verbose` - Verbosity level: `0` silent, `1` normal, `2` detailed.
 ///
 /// ### References
@@ -663,11 +669,20 @@ pub fn optimise_qd_tsne<T>(
     params: &TsneOptimParams<T>,
     graph: &CoordinateList<T>,
     dens: Option<&DensState<T>>,
+    dreams: Option<&DreamsState<T>>,
     verbose: usize,
 ) where
     T: ManifoldsFloat,
 {
-    optimise_bh_tsne_impl(embd, params, graph, dens, Some(params.max_depth), verbose);
+    optimise_bh_tsne_impl(
+        embd,
+        params,
+        graph,
+        dens,
+        dreams,
+        Some(params.max_depth),
+        verbose,
+    );
 }
 
 /// Shared body of [`optimise_bh_tsne`] and [`optimise_qd_tsne`].
@@ -679,6 +694,8 @@ pub fn optimise_qd_tsne<T>(
 /// * `params` - Optimisation hyperparameters.
 /// * `graph` - Sparse high-dimensional affinities in coordinate-list format.
 /// * `dens` - Density-preserving state for den-SNE, or `None` for plain tSNE.
+/// * `dreams` - DREAMS regulariser state, or `None` for plain tSNE. When set,
+///   active in every epoch, early exaggeration included.
 /// * `max_depth` - `None` for the uncapped tree with per-point traversals;
 ///   `Some(d)` for a tree capped at depth `d` with the leaf approximation.
 /// * `verbose` - Verbosity level: `0` silent, `1` normal, `2` detailed.
@@ -687,6 +704,7 @@ fn optimise_bh_tsne_impl<T>(
     params: &TsneOptimParams<T>,
     graph: &CoordinateList<T>,
     dens: Option<&DensState<T>>,
+    dreams: Option<&DreamsState<T>>,
     max_depth: Option<usize>,
     verbose: usize,
 ) where
@@ -790,6 +808,9 @@ fn optimise_bh_tsne_impl<T>(
             }
         };
 
+        // DREAMS scale for this epoch, from the positions before the update.
+        let dreams_ctx = dreams.map(|state| (state, state.epoch_consts(&pos, exag_factor)));
+
         // parameter update + step clip.
         embd.par_iter_mut()
             .zip(update_flat.par_chunks_mut(n_dim))
@@ -832,6 +853,10 @@ fn optimise_bh_tsne_impl<T>(
 
                 let (u0, u1) = u_i.split_at_mut(1);
                 clip_step(point, &mut u0[0], &mut u1[0], px, py, max_step_norm);
+
+                if let Some((state, ep)) = &dreams_ctx {
+                    state.apply_step(i, point, u_i, px, py, ep);
+                }
             });
 
         recentre_embedding(embd);
@@ -988,6 +1013,8 @@ pub(crate) fn fft_grid_geometry(half_span: f64, min_intervals: usize) -> (usize,
 /// * `dens` - Density-preserving state for den-SNE, or `None` for plain tSNE.
 ///   When set, the density gradient is applied over the final
 ///   `dens.params.frac` of the epochs.
+/// * `dreams` - DREAMS regulariser state, or `None` for plain tSNE. When set,
+///   active in every epoch, early exaggeration included.
 /// * `verbose` - Verbosity level: `0` silent, `1` normal, `2` detailed.
 ///
 /// ### Returns
@@ -1005,12 +1032,13 @@ pub fn optimise_fft_tsne<T>(
     params: &TsneOptimParams<T>,
     graph: &CoordinateList<T>,
     dens: Option<&DensState<T>>,
+    dreams: Option<&DreamsState<T>>,
     verbose: usize,
 ) -> Result<(), ManifoldsError>
 where
     T: FftwFloat + ManifoldsFloat,
 {
-    optimise_fft_tsne_impl(embd, params, graph, dens, verbose, false)
+    optimise_fft_tsne_impl(embd, params, graph, dens, dreams, verbose, false)
 }
 
 /// Optimise a 2D embedding using three-kernel FFT-accelerated t-SNE.
@@ -1027,6 +1055,8 @@ where
 /// * `params` - Optimisation hyperparameters.
 /// * `graph` - Sparse high-dimensional affinities in coordinate-list format.
 /// * `dens` - Density-preserving state for den-SNE, or `None` for plain tSNE.
+/// * `dreams` - DREAMS regulariser state, or `None` for plain tSNE. When set,
+///   active in every epoch, early exaggeration included.
 /// * `verbose` - Verbosity level: `0` silent, `1` normal, `2` detailed.
 ///
 /// ### Returns
@@ -1039,12 +1069,13 @@ pub fn optimise_fft3k_tsne<T>(
     params: &TsneOptimParams<T>,
     graph: &CoordinateList<T>,
     dens: Option<&DensState<T>>,
+    dreams: Option<&DreamsState<T>>,
     verbose: usize,
 ) -> Result<(), ManifoldsError>
 where
     T: FftwFloat + ManifoldsFloat,
 {
-    optimise_fft_tsne_impl(embd, params, graph, dens, verbose, true)
+    optimise_fft_tsne_impl(embd, params, graph, dens, dreams, verbose, true)
 }
 
 /// Shared FFT t-SNE optimiser loop.
@@ -1055,6 +1086,8 @@ where
 /// * `params` - Optimisation hyperparameters
 /// * `graph` - Sparse high-dimensional affinities
 /// * `dens` - Density-preserving state, or `None`
+/// * `dreams` - DREAMS regulariser state, or `None` for plain tSNE. When set,
+///   active in every epoch, early exaggeration included.
 /// * `verbose` - Verbosity level
 /// * `three_kernel` - Use the three-kernel repulsion instead of the 4-term
 ///   expansion
@@ -1069,6 +1102,7 @@ fn optimise_fft_tsne_impl<T>(
     params: &TsneOptimParams<T>,
     graph: &CoordinateList<T>,
     dens: Option<&DensState<T>>,
+    dreams: Option<&DreamsState<T>>,
     verbose: usize,
     three_kernel: bool,
 ) -> Result<(), ManifoldsError>
@@ -1274,6 +1308,9 @@ where
             }
         };
 
+        // DREAMS scale for this epoch, from the positions before the update.
+        let dreams_ctx = dreams.map(|state| (state, state.epoch_consts(&pos, exag_factor)));
+
         embd.par_iter_mut()
             .zip(uy.par_iter_mut())
             .zip(gains.par_iter_mut())
@@ -1333,6 +1370,10 @@ where
 
                 let (u0, u1) = u_i.split_at_mut(1);
                 clip_step(point, &mut u0[0], &mut u1[0], x, y, max_step_norm);
+
+                if let Some((state, ep)) = &dreams_ctx {
+                    state.apply_step(i, point, u_i, x, y, ep);
+                }
             });
 
         recentre_embedding(embd);
@@ -1430,7 +1471,7 @@ mod test_tsne_optimiser {
             ..TsneOptimParams::default()
         };
 
-        optimise_bh_tsne(&mut embd, &params, &graph, None, 0);
+        optimise_bh_tsne(&mut embd, &params, &graph, None, None, 0);
 
         for point in &embd {
             for val in point {
@@ -1472,7 +1513,7 @@ mod test_tsne_optimiser {
             ..TsneOptimParams::default()
         };
 
-        optimise_qd_tsne(&mut embd, &params, &graph, None, 0);
+        optimise_qd_tsne(&mut embd, &params, &graph, None, None, 0);
 
         for point in &embd {
             for val in point {
@@ -1512,8 +1553,8 @@ mod test_tsne_optimiser {
             ..TsneOptimParams::default()
         };
 
-        optimise_qd_tsne(&mut embd1, &params, &graph, None, 0);
-        optimise_qd_tsne(&mut embd2, &params, &graph, None, 0);
+        optimise_qd_tsne(&mut embd1, &params, &graph, None, None, 0);
+        optimise_qd_tsne(&mut embd2, &params, &graph, None, None, 0);
 
         for (p1, p2) in embd1.iter().zip(embd2.iter()) {
             assert_relative_eq!(p1[0], p2[0]);
@@ -1537,7 +1578,7 @@ mod test_tsne_optimiser {
             ..TsneOptimParams::default()
         };
 
-        let _ = optimise_fft_tsne(&mut embd, &params, &graph, None, 0);
+        let _ = optimise_fft_tsne(&mut embd, &params, &graph, None, None, 0);
 
         for point in &embd {
             for val in point {
@@ -1570,8 +1611,8 @@ mod test_tsne_optimiser {
             ..TsneOptimParams::default()
         };
 
-        optimise_bh_tsne(&mut embd1, &params, &graph, None, 0);
-        optimise_bh_tsne(&mut embd2, &params, &graph, None, 0);
+        optimise_bh_tsne(&mut embd1, &params, &graph, None, None, 0);
+        optimise_bh_tsne(&mut embd2, &params, &graph, None, None, 0);
 
         for (p1, p2) in embd1.iter().zip(embd2.iter()) {
             assert_relative_eq!(p1[0], p2[0]);
@@ -1629,7 +1670,7 @@ mod test_tsne_optimiser {
             ..TsneOptimParams::default()
         };
 
-        optimise_fft3k_tsne(&mut embd, &params, &graph, None, 0).unwrap();
+        optimise_fft3k_tsne(&mut embd, &params, &graph, None, None, 0).unwrap();
 
         for point in &embd {
             for val in point {
@@ -1663,8 +1704,8 @@ mod test_tsne_optimiser {
             ..TsneOptimParams::default()
         };
 
-        optimise_fft3k_tsne(&mut embd1, &params, &graph, None, 0).unwrap();
-        optimise_fft3k_tsne(&mut embd2, &params, &graph, None, 0).unwrap();
+        optimise_fft3k_tsne(&mut embd1, &params, &graph, None, None, 0).unwrap();
+        optimise_fft3k_tsne(&mut embd2, &params, &graph, None, None, 0).unwrap();
 
         for (p1, p2) in embd1.iter().zip(embd2.iter()) {
             assert_eq!(p1, p2);
@@ -1676,7 +1717,14 @@ mod test_tsne_optimiser {
     fn test_fft3k_tsne_rejects_non_2d() {
         let graph = create_coo_graph(2, &[(0, 1, 1.0)]);
         let mut embd = vec![vec![0.0, 0.0, 0.0], vec![1.0, 0.0, 0.0]];
-        let res = optimise_fft3k_tsne(&mut embd, &TsneOptimParams::default(), &graph, None, 0);
+        let res = optimise_fft3k_tsne(
+            &mut embd,
+            &TsneOptimParams::default(),
+            &graph,
+            None,
+            None,
+            0,
+        );
         assert!(matches!(
             res,
             Err(ManifoldsError::IncorrectDim { n_dim: 3 })

@@ -21,6 +21,7 @@ pub use crate::training::umap_optimisers::{UmapOptimParams, DEFAULT_MIN_DIST, DE
 pub use crate::utils::density::{DensParams, DensState};
 pub use crate::utils::diffusions::PhateDiffusionParams;
 pub use crate::utils::diffusions::{parse_landmark_method, LandmarkMethod, PhateTime};
+pub use crate::utils::dreams::DreamsState;
 pub use crate::utils::input::{ManifoldsMatrix, MatInput};
 pub use crate::utils::math::landmark_von_neumann_entropy;
 pub use crate::utils::potentials::calculate_potential;

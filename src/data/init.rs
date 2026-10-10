@@ -1046,11 +1046,10 @@ where
 // PCA //
 /////////
 
-/// PCA-based embedding initialisation
+/// Unscaled PCA scores (`U * S`) of the centred data.
 ///
-/// Scales PCA scores to have reasonable spread like other init methods.
-/// Now scales to have standard deviation of ~0.0001 then multiplies by 10,
-/// giving coordinates roughly in [-0.003, 0.003] initially.
+/// Component ratios are preserved, which is what a global reference embedding
+/// (DREAMS) needs; [`pca_layout`] rescales each component on top of this.
 ///
 /// ### Params
 ///
@@ -1061,19 +1060,17 @@ where
 ///
 /// ### Returns
 ///
-/// PCA-based embedding coordinates
-pub fn pca_layout<T>(
+/// PC scores as `[n_samples][n_comp]`, centred.
+pub fn pca_scores<T>(
     data: MatRef<T>,
     n_comp: usize,
     randomised: bool,
-    range: Option<T>,
     seed: u64,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
     StandardNormal: Distribution<T>,
 {
-    let target_std = range.unwrap_or(T::from_f64(PCA_RANGE).unwrap());
     let (n_samples, n_features) = (data.nrows(), data.ncols());
 
     // Centre the data
@@ -1099,28 +1096,55 @@ where
         }
     };
 
-    // Project onto first n_comp components: PC scores = U * S
-    let u_truncated = svd_result.u.get(.., ..n_comp);
-    let s_diagonal = faer::Mat::from_fn(n_comp, n_comp, |i, j| {
-        if i == j {
-            svd_result.s[i]
-        } else {
-            T::zero()
-        }
-    });
-    let pca_scores = u_truncated * s_diagonal;
+    // PC scores = U * S
+    Ok((0..n_samples)
+        .map(|i| {
+            (0..n_comp)
+                .map(|c| svd_result.u[(i, c)] * svd_result.s[c])
+                .collect()
+        })
+        .collect())
+}
 
-    // Convert to Vec<Vec<T>> and scale to small std like uwot
-    let mut embedding = vec![vec![T::zero(); n_comp]; n_samples];
+/// PCA-based embedding initialisation
+///
+/// Scales each PC score column independently to a standard deviation of
+/// `range` (default `PCA_RANGE`).
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `n_comp` - Number of principal components
+/// * `randomised` - Whether to use randomised SVD
+/// * `range` - Target standard deviation per component
+/// * `seed` - Random seed
+///
+/// ### Returns
+///
+/// PCA-based embedding coordinates
+pub fn pca_layout<T>(
+    data: MatRef<T>,
+    n_comp: usize,
+    randomised: bool,
+    range: Option<T>,
+    seed: u64,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    StandardNormal: Distribution<T>,
+{
+    let target_std = range.unwrap_or(T::from_f64(PCA_RANGE).unwrap());
+    let mut embedding = pca_scores(data, n_comp, randomised, seed)?;
+    let n_samples = embedding.len();
 
     for comp in 0..n_comp {
-        // Extract component values
-        let col: Vec<T> = (0..n_samples).map(|i| pca_scores[(i, comp)]).collect();
-
         // Compute mean and standard deviation
-        let mean = col.iter().copied().sum::<T>() / T::from(n_samples).unwrap();
-        let variance =
-            col.iter().map(|&x| (x - mean) * (x - mean)).sum::<T>() / T::from(n_samples).unwrap();
+        let mean = embedding.iter().map(|r| r[comp]).sum::<T>() / T::from(n_samples).unwrap();
+        let variance = embedding
+            .iter()
+            .map(|r| (r[comp] - mean) * (r[comp] - mean))
+            .sum::<T>()
+            / T::from(n_samples).unwrap();
         let current_std = variance.sqrt();
 
         // Scale to target std_dev
@@ -1131,8 +1155,8 @@ where
         };
 
         // Apply scaling and centre
-        for i in 0..n_samples {
-            embedding[i][comp] = (pca_scores[(i, comp)] - mean) * scale_factor;
+        for row in embedding.iter_mut() {
+            row[comp] = (row[comp] - mean) * scale_factor;
         }
     }
 
