@@ -40,6 +40,11 @@ parametric = ["burn", "serde", "bincode"]
 fft_tsne = ["fftw"]
 ## Enable GPU-accelerated tSNE and UMAP where the approximate nearest neighbour searches are GPU-accelerated
 gpu = ["ann-search-rs/gpu", "cubecl", "cubecl-utils-rs"]
+## Experimental, Apple Silicon only: UMAP/densMAP Adam and three-kernel FFT
+## tSNE optimisers on MLX via mlx-c. Needs `brew install mlx-c` (or
+## MLX_C_PREFIX pointing at an install). Without the library the build warns
+## and the MLX code is left out; check `MLX_AVAILABLE`. f32 only.
+mlx = ["ann-search-rs/mlx"]
 ## Tests for large scale diagonistics - for development only!
 large_scale_diagnostics = []
 ## Accept `ndarray` 2-D arrays wherever a faer matrix is accepted.

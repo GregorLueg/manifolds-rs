@@ -17,6 +17,8 @@ pub mod prelude;
 pub mod training;
 pub mod utils;
 
+#[cfg(mlx_available)]
+pub mod mlx;
 #[cfg(feature = "parametric")]
 pub mod parametric;
 
@@ -57,6 +59,8 @@ use crate::utils::math::compute_largest_eigenpairs_lanczos;
 use crate::utils::potentials::compute_potential_distances;
 use crate::utils::sparse_ops::matrix_power;
 
+#[cfg(mlx_available)]
+use crate::mlx::umap_optimiser_mlx::*;
 #[cfg(feature = "parametric")]
 use crate::parametric::model::*;
 #[cfg(feature = "parametric")]
@@ -71,6 +75,10 @@ use crate::utils::fft::FftwFloat;
 ///////////////
 // Constants //
 ///////////////
+
+/// Whether the MLX optimisers were compiled in: the `mlx` feature is on and
+/// ann-search-rs found mlx-c at build time.
+pub const MLX_AVAILABLE: bool = cfg!(mlx_available);
 
 /// Version of this crate, as declared in `Cargo.toml`.
 ///
@@ -502,6 +510,8 @@ where
                 UmapOptimiser::Adam => "Adam",
                 UmapOptimiser::Sgd => "SGD",
                 UmapOptimiser::AdamParallel => "Adam (multi-threaded)",
+                #[cfg(mlx_available)]
+                UmapOptimiser::AdamMlx => "Adam (MLX)",
             },
             umap_params.optim_params.n_epochs,
             graph.col_indices.len().separate_with_underscores()
@@ -529,6 +539,17 @@ where
         }
         UmapOptimiser::AdamParallel => {
             optimise_embedding_adam_parallel(
+                &mut embd,
+                &graph_adj,
+                &umap_params.optim_params,
+                dens_state.as_ref(),
+                seed as u64,
+                verbose,
+            )?;
+        }
+        #[cfg(mlx_available)]
+        UmapOptimiser::AdamMlx => {
+            optimise_embedding_adam_mlx(
                 &mut embd,
                 &graph_adj,
                 &umap_params.optim_params,

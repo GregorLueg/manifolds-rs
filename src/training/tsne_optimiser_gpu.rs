@@ -1415,8 +1415,7 @@ where
 
     let client = device.client();
     let limits = GpuLimits::from_client(&client);
-    let (mut st, half_span) =
-        TsneGpuState::<T>::upload(embd, graph, dreams, ni, &limits, &client)?;
+    let (mut st, half_span) = TsneGpuState::<T>::upload(embd, graph, dreams, ni, &limits, &client)?;
     let mut grid = GridBuffers::<T>::new(
         GridGeometry::for_extent(half_span, ni),
         ni,
@@ -1571,8 +1570,7 @@ mod tests {
         let client = <WgpuRuntime>::client(&WgpuDevice::default());
         let limits = GpuLimits::from_client(&client);
         let (st, half_span) =
-            TsneGpuState::<f32>::upload(&embd, &empty_graph(n), None, 3, &limits, &client)
-                .unwrap();
+            TsneGpuState::<f32>::upload(&embd, &empty_graph(n), None, 3, &limits, &client).unwrap();
         let grid = GridBuffers::<f32>::new(
             GridGeometry::for_extent(half_span, 3),
             3,

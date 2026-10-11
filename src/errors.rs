@@ -46,6 +46,17 @@ pub enum ManifoldsError {
     /// Propagate errors from the ann-search-rs crate
     #[error("Error from the ann-search-rs crate: {0}")]
     AnnSearchRsError(#[from] ann_search_rs::errors::AnnSearchErrors),
+    // -- mlx --
+    /// An mlx-c call returned a non-zero code. mlx-c prints the underlying
+    /// message to stderr.
+    #[cfg(mlx_available)]
+    #[error("mlx-c call {op} failed with code {code}")]
+    MlxError {
+        /// Name of the failing mlx-c call
+        op: &'static str,
+        /// Its return code (or offending dtype for a dtype check)
+        code: i32,
+    },
     // -- cubecl-utils-rs --
     /// Propagate device-limit and allocation errors from the cubecl-utils-rs
     /// crate
