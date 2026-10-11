@@ -2600,6 +2600,8 @@ dependencies = [
 [[package]]
 name = "cubecl-utils-rs"
 version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "abc1438e05cc10fa56239de4b50903672e35cd16f7cc9ed4190226f270383215"
 dependencies = [
  "cubecl 0.11.0",
  "cubecl-runtime 0.11.0",
@@ -6653,7 +6655,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9595,7 +9597,7 @@ dependencies = [
  "objc2-metal",
  "objc2-quartz-core",
  "once_cell",
- "ordered-float 5.5.0",
+ "ordered-float 4.6.0",
  "parking_lot",
  "portable-atomic",
  "portable-atomic-util",

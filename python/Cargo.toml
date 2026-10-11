@@ -59,5 +59,4 @@ panic = "unwind"
 opt-level = 2
 
 [patch.crates-io]
-cubecl-utils-rs = { path = "/Users/gregorlueg/repos/shared/cubecl-utils-rs" }
 ann-search-rs = { path = "/Users/gregorlueg/repos/shared/ann-search-rs" }

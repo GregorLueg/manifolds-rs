@@ -77,5 +77,4 @@ thousands = "0.2.0"
 thiserror = "2.0.18"
 
 [patch.crates-io]
-cubecl-utils-rs = { path = "/Users/gregorlueg/repos/shared/cubecl-utils-rs" }
 ann-search-rs = { path = "/Users/gregorlueg/repos/shared/ann-search-rs" }
