@@ -2,11 +2,11 @@
 //! the cubecl version in `training::umap_optimiser_gpu`, so the two agree up to
 //! float rounding.
 //!
-//! MLX kernels write fresh output buffers, never their inputs. That makes the
-//! cubecl three-kernel epoch (gradient, Adam step, schedule advance) safe to
-//! fuse into one: every thread reads the embedding of epoch `t` and writes
-//! epoch `t + 1` into a separate buffer. Each edge cursor is advanced by its
-//! lower-indexed endpoint, so it is written exactly once.
+//! One epoch is three kernels, as on the cubecl path: gradient per node, Adam
+//! step per coordinate, schedule advance per edge. MLX kernels write fresh
+//! output buffers, so fusing all three into one per-node kernel is race-free,
+//! but it measured about 20% slower than the split at 100k and 1M nodes and
+//! was dropped.
 //!
 //! The host stays at most one epoch ahead of the device: it submits epoch
 //! `t` asynchronously, then waits on epoch `t - 1`. Unbounded, it would queue
@@ -22,12 +22,12 @@ use crate::utils::density::{correlation_stats, DENS_EPS};
 // Consts //
 ////////////
 
-/// Threads per threadgroup for both kernels. Matches the cubecl optimiser's
+/// Threads per threadgroup for every kernel. Matches the cubecl optimiser's
 /// preferred workgroup; not tuned on MLX.
 const UMAP_MLX_THREADGROUP: i32 = 256;
 
 /// Number of entries in the per-epoch f32 parameter buffer, see
-/// [`EPOCH_KERNEL_SOURCE`] for the layout.
+/// [`GRAD_SOURCE`] for the layout.
 const N_EPOCH_PARAMS: usize = 13;
 
 /// Epochs between progress lines at normal verbosity.
@@ -55,19 +55,18 @@ inline uint hash_neg(uint seed, uint node, uint epoch, uint edge_local, uint neg
 }
 "#;
 
-/// One full epoch, one thread per node: gradient over the node's CSR slice
-/// (attraction, densMAP term, negatives), the Adam step on its coordinates and
-/// the schedule advance of the edges it owns.
+/// Gradient, one thread per node over its CSR slice: attraction, the densMAP
+/// term and the negatives. Writes the full gradient and whether any edge
+/// fired.
 ///
 /// Template ints: `N_DIM`, `NEG_RATE`, `DENS` (0 or 1, compiles the density
-/// term in or out). `up = [n, epoch, seed]`. `fp = [epoch_f, a, b, 2ab,
-/// 2 gamma b, clip, rep_eps, dist_sq_threshold, lr_alpha, epsc, 1 - beta1,
-/// 1 - beta2, dens_coeff]`.
+/// term in or out). `up = [n, epoch, seed, n_edges]`. `fp = [epoch_f, a, b,
+/// 2ab, 2 gamma b, clip, rep_eps, dist_sq_threshold, lr_alpha, epsc,
+/// 1 - beta1, 1 - beta2, dens_coeff]`, shared by all three epoch kernels.
 ///
-/// Nodes with no firing edge keep their coordinates and moments, as in the
-/// cubecl `has_update` skip. Negatives are gathered before any is consumed so
-/// the random row loads are in flight together.
-const EPOCH_KERNEL_SOURCE: &str = r#"
+/// Negatives are gathered before any is consumed so the random row loads are
+/// in flight together.
+const GRAD_SOURCE: &str = r#"
     uint node = thread_position_in_grid.x;
     uint n = up[0];
     if (node >= n) return;
@@ -82,10 +81,6 @@ const EPOCH_KERNEL_SOURCE: &str = r#"
     float clip_val = fp[5];
     float rep_eps = fp[6];
     float dsq_thr = fp[7];
-    float lr_alpha = fp[8];
-    float epsc = fp[9];
-    float omb1 = fp[10];
-    float omb2 = fp[11];
     float dens_coeff = fp[12];
 
     uint base_self = node * N_DIM;
@@ -109,9 +104,6 @@ const EPOCH_KERNEL_SOURCE: &str = r#"
         uint other = csr_other_node[pos];
         float next = epoch_of_next_sample[e];
         bool fires = next <= epoch_f;
-        if (node < other) {
-            next_out[e] = fires ? next + epochs_per_sample[e] : next;
-        }
         if (!fires) continue;
         active = true;
 
@@ -178,22 +170,49 @@ const EPOCH_KERNEL_SOURCE: &str = r#"
     }
 
     for (int d = 0; d < N_DIM; d++) {
-        uint i = base_self + d;
-        float m_old = m[i];
-        float v_old = v[i];
-        if (active) {
-            float g = grad[d];
-            float m_new = m_old + omb1 * (g - m_old);
-            float v_new = v_old + omb2 * (g * g - v_old);
-            m_out[i] = m_new;
-            v_out[i] = v_new;
-            embd_out[i] = self_pos[d] + lr_alpha * m_new / (sqrt(v_new) + epsc);
-        } else {
-            m_out[i] = m_old;
-            v_out[i] = v_old;
-            embd_out[i] = self_pos[d];
-        }
+        grad_out[base_self + d] = grad[d];
     }
+    has_update[node] = active ? 1u : 0u;
+"#;
+
+/// Adam step, one thread per coordinate. Nodes with no firing edge keep
+/// their coordinates and moments, as in the cubecl `has_update` skip.
+///
+/// Template int: `N_DIM`. `up` and `fp` as in [`GRAD_SOURCE`].
+const ADAM_SOURCE: &str = r#"
+    uint i = thread_position_in_grid.x;
+    uint n = up[0];
+    if (i >= n * N_DIM) return;
+    float lr_alpha = fp[8];
+    float epsc = fp[9];
+    float omb1 = fp[10];
+    float omb2 = fp[11];
+    float m_old = m[i];
+    float v_old = v[i];
+    float e_old = embd[i];
+    if (has_update[i / N_DIM] != 0) {
+        float g = grad[i];
+        float m_new = m_old + omb1 * (g - m_old);
+        float v_new = v_old + omb2 * (g * g - v_old);
+        m_out[i] = m_new;
+        v_out[i] = v_new;
+        embd_out[i] = e_old + lr_alpha * m_new / (sqrt(v_new) + epsc);
+    } else {
+        m_out[i] = m_old;
+        v_out[i] = v_old;
+        embd_out[i] = e_old;
+    }
+"#;
+
+/// Edge schedule advance, one thread per edge: cursors that fired this epoch
+/// move on by one period.
+///
+/// `up` and `fp` as in [`GRAD_SOURCE`].
+const SCHED_SOURCE: &str = r#"
+    uint e = thread_position_in_grid.x;
+    if (e >= up[3]) return;
+    float next = epoch_of_next_sample[e];
+    next_out[e] = next <= fp[0] ? next + epochs_per_sample[e] : next;
 "#;
 
 /// densMAP embedding radii, one thread per node over its full CSR slice.
@@ -232,7 +251,7 @@ const RADII_KERNEL_SOURCE: &str = r#"
 // Device state //
 //////////////////
 
-/// The arrays the fused kernel reads and rewrites every epoch.
+/// The arrays every epoch reads and rewrites.
 struct EpochState {
     /// Embedding `[n * n_dim]`
     embd: Array,
@@ -258,8 +277,8 @@ struct GraphArrays {
     mu: Array,
 }
 
-/// densMAP arrays the fused kernel reads; `[1]` dummies when the density term
-/// is off this epoch, since the `DENS = 0` kernel never touches them.
+/// densMAP arrays the gradient kernel reads; `[1]` dummies when the density
+/// term is off this epoch, since the `DENS = 0` kernel never touches them.
 struct DensArrays {
     /// Embedding log radii `[n]`
     re: Array,
@@ -284,10 +303,27 @@ impl DensArrays {
     }
 }
 
+/// One-dimensional launch over `total` threads.
+///
+/// ### Params
+///
+/// * `total` - Number of threads
+///
+/// ### Returns
+///
+/// `(grid, threadgroup)` for [`MetalKernel::apply`]
+fn launch_1d(total: usize) -> ([i32; 3], [i32; 3]) {
+    ([total as i32, 1, 1], [UMAP_MLX_THREADGROUP, 1, 1])
+}
+
 /// The compiled kernels plus the run constants they are launched with.
 struct Kernels {
-    /// Fused epoch kernel, [`EPOCH_KERNEL_SOURCE`]
-    epoch: MetalKernel,
+    /// [`GRAD_SOURCE`]
+    grad: MetalKernel,
+    /// [`ADAM_SOURCE`]
+    adam: MetalKernel,
+    /// [`SCHED_SOURCE`]
+    sched: MetalKernel,
     /// densMAP radii kernel, [`RADII_KERNEL_SOURCE`]
     radii: MetalKernel,
     /// Number of nodes
@@ -299,7 +335,7 @@ struct Kernels {
 }
 
 impl Kernels {
-    /// Register both kernels. MLX compiles them on first use.
+    /// Register every kernel. MLX compiles each on first use.
     ///
     /// ### Params
     ///
@@ -311,17 +347,14 @@ impl Kernels {
     ///
     /// The kernel set
     fn new(n: usize, n_dim: usize, n_edges: usize) -> Self {
-        let epoch = MetalKernel::new(
-            "manifolds_umap_epoch",
+        let grad = MetalKernel::new(
+            "manifolds_umap_grad",
             &[
                 "embd",
-                "m",
-                "v",
                 "epoch_of_next_sample",
                 "node_edge_offsets",
                 "csr_edge_idx",
                 "csr_other_node",
-                "epochs_per_sample",
                 "mu",
                 "dens_re",
                 "dens_phi_sum",
@@ -329,9 +362,23 @@ impl Kernels {
                 "up",
                 "fp",
             ],
-            &["embd_out", "m_out", "v_out", "next_out"],
+            &["grad_out", "has_update"],
             HASH_HEADER,
-            EPOCH_KERNEL_SOURCE,
+            GRAD_SOURCE,
+        );
+        let adam = MetalKernel::new(
+            "manifolds_umap_adam",
+            &["grad", "has_update", "m", "v", "embd", "up", "fp"],
+            &["embd_out", "m_out", "v_out"],
+            "",
+            ADAM_SOURCE,
+        );
+        let sched = MetalKernel::new(
+            "manifolds_umap_sched",
+            &["epoch_of_next_sample", "epochs_per_sample", "up", "fp"],
+            &["next_out"],
+            "",
+            SCHED_SOURCE,
         );
         let radii = MetalKernel::new(
             "manifolds_umap_dens_radii",
@@ -341,7 +388,9 @@ impl Kernels {
             RADII_KERNEL_SOURCE,
         );
         Self {
-            epoch,
+            grad,
+            adam,
+            sched,
             radii,
             n,
             n_dim,
@@ -355,10 +404,10 @@ impl Kernels {
     ///
     /// `(grid, threadgroup)` for [`MetalKernel::apply`]
     fn node_grid(&self) -> ([i32; 3], [i32; 3]) {
-        ([self.n as i32, 1, 1], [UMAP_MLX_THREADGROUP, 1, 1])
+        launch_1d(self.n)
     }
 
-    /// Queue one fused epoch.
+    /// Queue one epoch: gradient, Adam step, schedule advance.
     ///
     /// ### Params
     ///
@@ -367,8 +416,8 @@ impl Kernels {
     /// * `dens` - Density arrays, or dummies when `dens_on` is false
     /// * `dens_on` - Compile in the density term
     /// * `neg_rate` - Negatives per firing edge
-    /// * `up` - `[n, epoch, seed]`
-    /// * `fp` - Per-epoch f32 parameters, see [`EPOCH_KERNEL_SOURCE`]
+    /// * `up` - `[n, epoch, seed, n_edges]`
+    /// * `fp` - Per-epoch f32 parameters, see [`GRAD_SOURCE`]
     /// * `s` - Stream to run on
     ///
     /// ### Returns
@@ -387,20 +436,18 @@ impl Kernels {
         s: &Stream,
     ) -> Result<EpochState, ManifoldsError> {
         let total = [(self.n * self.n_dim) as i32];
+        let nodes = [self.n as i32];
         let edges = [self.n_edges as i32];
         let (grid, tg) = self.node_grid();
-        let mut out = self
-            .epoch
+        let mut g_out = self
+            .grad
             .apply(
                 &[
                     &st.embd,
-                    &st.m,
-                    &st.v,
                     &st.epoch_of_next_sample,
                     &g.node_edge_offsets,
                     &g.csr_edge_idx,
                     &g.csr_other_node,
-                    &g.epochs_per_sample,
                     &g.mu,
                     &dens.re,
                     &dens.phi_sum,
@@ -414,16 +461,8 @@ impl Kernels {
                         dtype: MLX_FLOAT32,
                     },
                     OutputSpec {
-                        shape: &total,
-                        dtype: MLX_FLOAT32,
-                    },
-                    OutputSpec {
-                        shape: &total,
-                        dtype: MLX_FLOAT32,
-                    },
-                    OutputSpec {
-                        shape: &edges,
-                        dtype: MLX_FLOAT32,
+                        shape: &nodes,
+                        dtype: MLX_UINT32,
                     },
                 ],
                 grid,
@@ -436,12 +475,58 @@ impl Kernels {
                 s,
             )?
             .into_iter();
-        let mut next = || out.next().expect("the epoch kernel has four outputs");
+        let grad = g_out.next().expect("the gradient kernel has two outputs");
+        let has_update = g_out.next().expect("the gradient kernel has two outputs");
+
+        let (grid, tg) = launch_1d(self.n * self.n_dim);
+        let mut a_out = self
+            .adam
+            .apply(
+                &[&grad, &has_update, &st.m, &st.v, &st.embd, up, fp],
+                &[
+                    OutputSpec {
+                        shape: &total,
+                        dtype: MLX_FLOAT32,
+                    },
+                    OutputSpec {
+                        shape: &total,
+                        dtype: MLX_FLOAT32,
+                    },
+                    OutputSpec {
+                        shape: &total,
+                        dtype: MLX_FLOAT32,
+                    },
+                ],
+                grid,
+                tg,
+                &[("N_DIM", self.n_dim as i32)],
+                s,
+            )?
+            .into_iter();
+
+        let (grid, tg) = launch_1d(self.n_edges);
+        let next = self
+            .sched
+            .apply(
+                &[&st.epoch_of_next_sample, &g.epochs_per_sample, up, fp],
+                &[OutputSpec {
+                    shape: &edges,
+                    dtype: MLX_FLOAT32,
+                }],
+                grid,
+                tg,
+                &[],
+                s,
+            )?
+            .pop()
+            .expect("the schedule kernel has one output");
+
+        let mut next_a = || a_out.next().expect("the Adam kernel has three outputs");
         Ok(EpochState {
-            embd: next(),
-            m: next(),
-            v: next(),
-            epoch_of_next_sample: next(),
+            embd: next_a(),
+            m: next_a(),
+            v: next_a(),
+            epoch_of_next_sample: next,
         })
     }
 
@@ -513,7 +598,7 @@ impl Kernels {
 ///
 /// ### Returns
 ///
-/// The density arrays for the fused kernel and `dens_coeff`
+/// The density arrays for the gradient kernel and `dens_coeff`
 fn dens_update(
     k: &Kernels,
     embd: &Array,
@@ -553,8 +638,8 @@ fn dens_update(
 
 /// Run the full UMAP (or densMAP) Adam optimisation on MLX.
 ///
-/// Device-resident throughout: graph and state are uploaded once, one fused
-/// kernel runs per epoch, and the embedding is read back once at the end.
+/// Device-resident throughout: graph and state are uploaded once, three
+/// kernels run per epoch, and the embedding is read back once at the end.
 /// densMAP adds a radii kernel and a host round trip on its active epochs,
 /// as on the cubecl path. Computes in `f32` whatever `T` is.
 ///
@@ -664,7 +749,10 @@ where
         fp[8] = lr_alpha;
         fp[9] = epsc;
         fp[12] = dens_coeff.unwrap_or(0.0);
-        let up = Array::from_u32(&[n as u32, epoch as u32, seed as u32], &[3]);
+        let up = Array::from_u32(
+            &[n as u32, epoch as u32, seed as u32, csr.n_edges as u32],
+            &[4],
+        );
         let fp_arr = Array::from_f32(&fp, &[N_EPOCH_PARAMS as i32]);
 
         let next = k.epoch(
@@ -781,7 +869,7 @@ mod tests {
     /// Density radii and weights, when the density term ran.
     type DensOut = Option<(Vec<f32>, Vec<f32>)>;
 
-    /// One fused MLX epoch from the given host state. Also returns the
+    /// One MLX epoch from the given host state. Also returns the
     /// density radii and weights when `dens` is set.
     fn mlx_epoch(
         csr: &UmapCsrGraph<f32>,
@@ -840,7 +928,7 @@ mod tests {
                 &dens_arrays,
                 coeff.is_some(),
                 params.neg_sample_rate,
-                &Array::from_u32(&[n as u32, epoch as u32, seed], &[3]),
+                &Array::from_u32(&[n as u32, epoch as u32, seed, csr.n_edges as u32], &[4]),
                 &Array::from_f32(&fp, &[N_EPOCH_PARAMS as i32]),
                 &s,
             )
