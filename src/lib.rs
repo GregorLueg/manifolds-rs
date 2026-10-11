@@ -60,6 +60,8 @@ use crate::utils::potentials::compute_potential_distances;
 use crate::utils::sparse_ops::matrix_power;
 
 #[cfg(mlx_available)]
+use crate::mlx::tsne_optimiser_mlx::*;
+#[cfg(mlx_available)]
 use crate::mlx::umap_optimiser_mlx::*;
 #[cfg(feature = "parametric")]
 use crate::parametric::model::*;
@@ -1114,6 +1116,27 @@ where
                 name: approx_type.to_string(),
             });
         }
+        #[cfg(mlx_available)]
+        TsneOpt::Fft3KernelMlx => {
+            if dens_state.is_some() {
+                return Err(ManifoldsError::DensityNotSupported {
+                    name: approx_type.to_string(),
+                });
+            }
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via MLX three-kernel FFT t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne_mlx(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dreams_state.as_ref(),
+                verbose,
+            )?;
+        }
     }
 
     if verbosity.normal_verbosity() {
@@ -1397,6 +1420,27 @@ where
             return Err(ManifoldsError::TsneOptimiserNeedsGpu {
                 name: approx_type.to_string(),
             });
+        }
+        #[cfg(mlx_available)]
+        TsneOpt::Fft3KernelMlx => {
+            if dens_state.is_some() {
+                return Err(ManifoldsError::DensityNotSupported {
+                    name: approx_type.to_string(),
+                });
+            }
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via MLX three-kernel FFT t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne_mlx(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dreams_state.as_ref(),
+                verbose,
+            )?;
         }
     }
 
@@ -5272,6 +5316,22 @@ where
                 verbose,
             )?;
         }
+        #[cfg(mlx_available)]
+        TsneOpt::Fft3KernelMlx => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via MLX three-kernel FFT t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne_mlx(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dreams_state.as_ref(),
+                verbose,
+            )?;
+        }
     }
 
     if verbosity.normal_verbosity() {
@@ -5573,6 +5633,22 @@ where
                 &graph,
                 dreams_state.as_ref(),
                 device,
+                verbose,
+            )?;
+        }
+        #[cfg(mlx_available)]
+        TsneOpt::Fft3KernelMlx => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via MLX three-kernel FFT t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne_mlx(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dreams_state.as_ref(),
                 verbose,
             )?;
         }

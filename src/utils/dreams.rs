@@ -167,7 +167,7 @@ where
     /// ### Returns
     ///
     /// The reference slice of length `2n`.
-    #[cfg(feature = "gpu")]
+    #[cfg(any(feature = "gpu", mlx_available))]
     pub(crate) fn reference(&self) -> &[T] {
         &self.reference
     }
@@ -177,7 +177,7 @@ where
     /// ### Returns
     ///
     /// `||Y_e||_F` in `f64`.
-    #[cfg(feature = "gpu")]
+    #[cfg(any(feature = "gpu", mlx_available))]
     pub(crate) fn ref_norm(&self) -> f64 {
         self.ref_norm
     }

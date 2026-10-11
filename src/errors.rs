@@ -163,6 +163,13 @@ pub enum ManifoldsError {
     DreamsDegenerateReference,
 
     // -- GPU t-SNE --
+    /// Error when the chosen t-SNE optimiser has no density (den-SNE) term
+    #[cfg(mlx_available)]
+    #[error("tSNE optimiser '{name}' does not support the den-SNE density term")]
+    DensityNotSupported {
+        /// Name of the requested optimiser
+        name: String,
+    },
     /// Error when a GPU-only t-SNE optimiser is requested from a CPU entry
     /// point
     #[error("tSNE optimiser '{name}' runs only through tsne_gpu()")]

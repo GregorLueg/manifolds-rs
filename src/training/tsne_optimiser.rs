@@ -12,7 +12,7 @@ use crate::prelude::*;
 use crate::utils::bh_tree::*;
 use crate::utils::density::*;
 use crate::utils::dreams::*;
-#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+#[cfg(any(feature = "fft_tsne", feature = "gpu", mlx_available))]
 use crate::utils::math::choose_grid_size;
 
 #[cfg(feature = "fft_tsne")]
@@ -64,20 +64,20 @@ pub(crate) const TSNE_QD_MAX_DEPTH: usize = 7;
 /// O(n_boxes^2 log n_boxes); without a cap, n_boxes grows with the embedding
 /// span and per-epoch cost blows up. Box width adapts upward once this cap
 /// binds, keeping the grid covering the embedding.
-#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+#[cfg(any(feature = "fft_tsne", feature = "gpu", mlx_available))]
 pub(crate) const TSNE_FFT_MAX_BOXES: usize = 140;
 
 /// Lower bound on the FFT box width (the original fixed value).
-#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+#[cfg(any(feature = "fft_tsne", feature = "gpu", mlx_available))]
 pub(crate) const TSNE_FFT_MIN_BOX_WIDTH: f64 = 1.0;
 
 /// Minimum number of FFT boxes per dimension (FIt-SNE default).
-#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+#[cfg(any(feature = "fft_tsne", feature = "gpu", mlx_available))]
 pub(crate) const TSNE_FFT_MIN_INTERVALS: usize = 50;
 
 /// Headroom added to the grid bounds once the box-cap regime is active, so
 /// the embedding can move between rebuilds.
-#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+#[cfg(any(feature = "fft_tsne", feature = "gpu", mlx_available))]
 pub(crate) const TSNE_FFT_GRID_MARGIN: f64 = 0.3;
 
 ////////////////
@@ -208,6 +208,10 @@ pub enum TsneOpt {
     /// Device-resident three-kernel FFT version. Only through `tsne_gpu`;
     /// requires `gpu` but not `fft_tsne`.
     Fft3KernelGpu,
+    /// Three-kernel FFT version on MLX (Apple Silicon, `mlx` feature). Works
+    /// from both `tsne` and `tsne_gpu`; no den-SNE.
+    #[cfg(mlx_available)]
+    Fft3KernelMlx,
     /// Quick-and-dirty Barnes-Hut (qdtsne): tree depth capped at
     /// `max_depth` plus the leaf approximation, so repulsion is computed once
     /// per leaf rather than once per point.
@@ -220,7 +224,8 @@ pub enum TsneOpt {
 ///
 /// * `s` - String defining the optimiser. Accepts `"barnes hut"`,
 ///   `"barnes_hut"`, `"barnes-hut"`, `"bh"`, `"fft"`, `"fft_3k"` /
-///   `"3-kernel"`, `"fft_3k_gpu"`, or `"bh_qd"` / `"qd"`.
+///   `"3-kernel"`, `"fft_3k_gpu"`, `"fft_3k_mlx"` (MLX builds only), or
+///   `"bh_qd"` / `"qd"`.
 ///
 /// ### Returns
 ///
@@ -231,6 +236,8 @@ pub fn parse_tsne_optimiser(s: &str) -> Option<TsneOpt> {
         "fft" => Some(TsneOpt::Fft),
         "fft_3k" | "3-kernel" => Some(TsneOpt::Fft3Kernel),
         "fft_3k_gpu" => Some(TsneOpt::Fft3KernelGpu),
+        #[cfg(mlx_available)]
+        "fft_3k_mlx" => Some(TsneOpt::Fft3KernelMlx),
         "bh_qd" | "qd" => Some(TsneOpt::BarnesHutQd),
         _ => None,
     }
@@ -979,7 +986,7 @@ where
 ///
 /// `(n_boxes, box_width, grid_half)` where `grid_half` is the half-width of
 /// the square grid in embedding coordinates.
-#[cfg(any(feature = "fft_tsne", feature = "gpu"))]
+#[cfg(any(feature = "fft_tsne", feature = "gpu", mlx_available))]
 pub(crate) fn fft_grid_geometry(half_span: f64, min_intervals: usize) -> (usize, f64, f64) {
     let span = 2.0 * half_span * 1.05;
 

@@ -203,7 +203,7 @@ fn run_bench(label: &str, n_per_cluster: usize) {
         &UmapGraphParams::default(),
         &NearestNeighbourParamsGpu::default(),
         N_EPOCHS,
-        device.clone(),
+        device.clone().into(),
         42,
         0,
     )
@@ -240,7 +240,7 @@ fn run_bench(label: &str, n_per_cluster: usize) {
             &graph_adj,
             &params,
             None,
-            device.clone(),
+            device.clone().into(),
             42,
             0,
         )

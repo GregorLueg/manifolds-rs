@@ -375,6 +375,280 @@ impl Array {
     }
 }
 
+///////////////////////////
+// Array ops (t-SNE MLX) //
+///////////////////////////
+
+/// `mlx_fft_norm`, a C enum. Only the numpy default is used: unscaled
+/// forward, `1 / N` on the inverse.
+const MLX_FFT_NORM_BACKWARD: c_int = 0;
+
+unsafe extern "C" {
+    fn mlx_abs(res: *mut mlx_array, a: mlx_array, s: mlx_stream) -> c_int;
+    fn mlx_square(res: *mut mlx_array, a: mlx_array, s: mlx_stream) -> c_int;
+    fn mlx_multiply(res: *mut mlx_array, a: mlx_array, b: mlx_array, s: mlx_stream) -> c_int;
+    fn mlx_subtract(res: *mut mlx_array, a: mlx_array, b: mlx_array, s: mlx_stream) -> c_int;
+    fn mlx_sum(res: *mut mlx_array, a: mlx_array, keepdims: bool, s: mlx_stream) -> c_int;
+    fn mlx_max(res: *mut mlx_array, a: mlx_array, keepdims: bool, s: mlx_stream) -> c_int;
+    fn mlx_mean_axis(
+        res: *mut mlx_array,
+        a: mlx_array,
+        axis: c_int,
+        keepdims: bool,
+        s: mlx_stream,
+    ) -> c_int;
+    fn mlx_argsort_axis(res: *mut mlx_array, a: mlx_array, axis: c_int, s: mlx_stream) -> c_int;
+    fn mlx_take_axis(
+        res: *mut mlx_array,
+        a: mlx_array,
+        indices: mlx_array,
+        axis: c_int,
+        s: mlx_stream,
+    ) -> c_int;
+    fn mlx_fft_rfft2(
+        res: *mut mlx_array,
+        a: mlx_array,
+        n: *const c_int,
+        n_num: usize,
+        axes: *const c_int,
+        axes_num: usize,
+        norm: c_int,
+        s: mlx_stream,
+    ) -> c_int;
+    fn mlx_fft_irfft2(
+        res: *mut mlx_array,
+        a: mlx_array,
+        n: *const c_int,
+        n_num: usize,
+        axes: *const c_int,
+        axes_num: usize,
+        norm: c_int,
+        s: mlx_stream,
+    ) -> c_int;
+}
+
+/// Run one mlx-c op that writes into a fresh `mlx_array`.
+///
+/// ### Params
+///
+/// * `op` - Name of the call, for the error message
+/// * `f` - Closure making the call against the output slot
+///
+/// ### Returns
+///
+/// The owned result array
+fn op_into(
+    op: &'static str,
+    f: impl FnOnce(*mut mlx_array) -> c_int,
+) -> Result<Array, ManifoldsError> {
+    // SAFETY: `mlx_array_new` returns an empty handle that the op overwrites;
+    // the wrapper owns it from here, so it is freed even when the op fails.
+    let mut out = Array {
+        raw: unsafe { mlx_array_new() },
+    };
+    check(f(&mut out.raw), op)?;
+    Ok(out)
+}
+
+impl Array {
+    /// Elementwise absolute value.
+    ///
+    /// ### Params
+    ///
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The (lazy) result
+    pub fn abs(&self, s: &Stream) -> Result<Array, ManifoldsError> {
+        op_into("mlx_abs", |out| unsafe { mlx_abs(out, self.raw, s.raw) })
+    }
+
+    /// Elementwise square.
+    ///
+    /// ### Params
+    ///
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The (lazy) result
+    pub fn square(&self, s: &Stream) -> Result<Array, ManifoldsError> {
+        op_into("mlx_square", |out| unsafe {
+            mlx_square(out, self.raw, s.raw)
+        })
+    }
+
+    /// Elementwise `self * b`, broadcasting. Complex-aware.
+    ///
+    /// ### Params
+    ///
+    /// * `b` - Right operand
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The (lazy) result
+    pub fn multiply(&self, b: &Array, s: &Stream) -> Result<Array, ManifoldsError> {
+        op_into("mlx_multiply", |out| unsafe {
+            mlx_multiply(out, self.raw, b.raw, s.raw)
+        })
+    }
+
+    /// Elementwise `self - b`, broadcasting.
+    ///
+    /// ### Params
+    ///
+    /// * `b` - Right operand
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The (lazy) result
+    pub fn subtract(&self, b: &Array, s: &Stream) -> Result<Array, ManifoldsError> {
+        op_into("mlx_subtract", |out| unsafe {
+            mlx_subtract(out, self.raw, b.raw, s.raw)
+        })
+    }
+
+    /// Sum over every element, as a scalar.
+    ///
+    /// ### Params
+    ///
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The (lazy) scalar
+    pub fn sum_all(&self, s: &Stream) -> Result<Array, ManifoldsError> {
+        op_into("mlx_sum", |out| unsafe {
+            mlx_sum(out, self.raw, false, s.raw)
+        })
+    }
+
+    /// Maximum over every element, as a scalar.
+    ///
+    /// ### Params
+    ///
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The (lazy) scalar
+    pub fn max_all(&self, s: &Stream) -> Result<Array, ManifoldsError> {
+        op_into("mlx_max", |out| unsafe {
+            mlx_max(out, self.raw, false, s.raw)
+        })
+    }
+
+    /// Mean over one axis, keeping it with length 1 so the result broadcasts
+    /// back against `self`.
+    ///
+    /// ### Params
+    ///
+    /// * `axis` - Axis to reduce
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The (lazy) result
+    pub fn mean_axis_keep(&self, axis: i32, s: &Stream) -> Result<Array, ManifoldsError> {
+        op_into("mlx_mean_axis", |out| unsafe {
+            mlx_mean_axis(out, self.raw, axis, true, s.raw)
+        })
+    }
+
+    /// Indices that sort along one axis, as u32.
+    ///
+    /// ### Params
+    ///
+    /// * `axis` - Axis to sort
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The (lazy) result
+    pub fn argsort_axis(&self, axis: i32, s: &Stream) -> Result<Array, ManifoldsError> {
+        op_into("mlx_argsort_axis", |out| unsafe {
+            mlx_argsort_axis(out, self.raw, axis, s.raw)
+        })
+    }
+
+    /// Gather `self` at `indices` along one axis.
+    ///
+    /// ### Params
+    ///
+    /// * `indices` - Integer indices
+    /// * `axis` - Axis to gather along
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The (lazy) result
+    pub fn take_axis(
+        &self,
+        indices: &Array,
+        axis: i32,
+        s: &Stream,
+    ) -> Result<Array, ManifoldsError> {
+        op_into("mlx_take_axis", |out| unsafe {
+            mlx_take_axis(out, self.raw, indices.raw, axis, s.raw)
+        })
+    }
+
+    /// Real 2D FFT over the last two axes, unscaled.
+    ///
+    /// ### Params
+    ///
+    /// * `n` - Sizes of the last two axes
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The (lazy) half spectrum, complex64, last axis `n[1] / 2 + 1`
+    pub fn rfft2(&self, n: [i32; 2], s: &Stream) -> Result<Array, ManifoldsError> {
+        let axes = [-2 as c_int, -1];
+        op_into("mlx_fft_rfft2", |out| unsafe {
+            mlx_fft_rfft2(
+                out,
+                self.raw,
+                n.as_ptr(),
+                2,
+                axes.as_ptr(),
+                2,
+                MLX_FFT_NORM_BACKWARD,
+                s.raw,
+            )
+        })
+    }
+
+    /// Inverse of [`Array::rfft2`] over the last two axes, scaled by `1 / N`.
+    ///
+    /// ### Params
+    ///
+    /// * `n` - Output sizes of the last two axes
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The (lazy) real result
+    pub fn irfft2(&self, n: [i32; 2], s: &Stream) -> Result<Array, ManifoldsError> {
+        let axes = [-2 as c_int, -1];
+        op_into("mlx_fft_irfft2", |out| unsafe {
+            mlx_fft_irfft2(
+                out,
+                self.raw,
+                n.as_ptr(),
+                2,
+                axes.as_ptr(),
+                2,
+                MLX_FFT_NORM_BACKWARD,
+                s.raw,
+            )
+        })
+    }
+}
+
 //////////////////
 // Metal kernel //
 //////////////////
