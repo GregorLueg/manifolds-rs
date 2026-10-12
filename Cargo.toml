@@ -82,4 +82,4 @@ thousands = "0.2.0"
 thiserror = "2.0.18"
 
 [patch.crates-io]
-ann-search-rs = { path = "/Users/gregorlueg/repos/shared/ann-search-rs/.claude/worktrees/sequential-tickling-beacon" }
+ann-search-rs = { path = "/Users/gregorlueg/repos/shared/ann-search-rs" }

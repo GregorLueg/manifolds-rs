@@ -5,7 +5,10 @@
 //! no readback:
 //!
 //! 1. bucket points by grid box (`u32` atomics, then a scan and a scatter)
-//! 2. splat a unit charge onto the zero-padded grid, one unit per node
+//! 2. splat a unit charge onto the zero-padded grid, one plane per box with
+//!    `plane_sum` where the device has a fixed plane size (2.7 s against
+//!    4.1 s for one unit per node, 1000 epochs at 100k), else one unit per
+//!    node
 //! 3. forward 2D FFT, multiply by the three kernel spectra (`q`, `q^2 dx`,
 //!    `q^2 dy`), inverse 2D FFT with two real outputs packed per complex grid
 //! 4. gather `Z_i` and the repulsive force per point
@@ -331,6 +334,96 @@ pub fn tsne3k_splat<F: Float + CubeElement>(
     }
     g_re[idx as usize] = acc;
     g_im[idx as usize] = F::new(0.0_f32);
+}
+
+/// Zero the parts of the FFT grid the plane splat does not write: the real
+/// part outside the `m x m` corner and the whole imaginary part.
+///
+/// ### Params
+///
+/// * `g_re` - Grid, real `[n_fft^2]`
+/// * `g_im` - Grid, imaginary `[n_fft^2]`
+/// * `m` - Grid nodes per dimension inside the corner
+/// * `n_fft` - Grid side; comptime
+/// * `wg` - Workgroup width; comptime
+#[cube(launch_unchecked)]
+pub fn tsne3k_splat_clear<F: Float + CubeElement>(
+    g_re: &mut Tensor<F>,
+    g_im: &mut Tensor<F>,
+    m: u32,
+    #[comptime] n_fft: u32,
+    #[comptime] wg: u32,
+) {
+    let idx = (CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg + UNIT_POS_X;
+    if idx >= n_fft * n_fft {
+        terminate!();
+    }
+    if idx / n_fft >= m || idx % n_fft >= m {
+        g_re[idx as usize] = F::new(0.0_f32);
+    }
+    g_im[idx as usize] = F::new(0.0_f32);
+}
+
+/// Unit-charge splat, one plane-wide cube per box. Lanes stride over the
+/// box's points, so each point's weights are read once rather than once per
+/// grid node, keep all `ni^2` node sums in registers, and reduce them with
+/// `plane_sum`. Writes the `m x m` corner of the real grid only, see
+/// [`tsne3k_splat_clear`]. The cube must be exactly one plane.
+///
+/// ### Params
+///
+/// * `order` - Point indices grouped by box `[n]`
+/// * `box_start` - Box starts `[nb^2 + 1]`
+/// * `wx` - X weights `[n * ni]`
+/// * `wy` - Y weights `[n * ni]`
+/// * `g_re` - Output grid, real `[n_fft^2]`
+/// * `nb` - Boxes per dimension
+/// * `n_fft` - Grid side; comptime
+/// * `ni` - Interpolation nodes per box; comptime
+#[cube(launch_unchecked)]
+pub fn tsne3k_splat_plane<F: Float + CubeElement>(
+    order: &Tensor<u32>,
+    box_start: &Tensor<u32>,
+    wx: &Tensor<F>,
+    wy: &Tensor<F>,
+    g_re: &mut Tensor<F>,
+    nb: u32,
+    #[comptime] n_fft: u32,
+    #[comptime] ni: u32,
+) {
+    let b = CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X;
+    if b >= nb * nb {
+        terminate!();
+    }
+    let lane = UNIT_POS_X;
+    let mut acc = Array::<F>::new((ni * ni) as usize);
+    #[unroll]
+    for k in 0..ni * ni {
+        acc[k as usize] = F::new(0.0_f32);
+    }
+    let end = box_start[(b + 1u32) as usize];
+    let mut p = box_start[b as usize] + lane;
+    while p < end {
+        let pt = order[p as usize];
+        #[unroll]
+        for iy in 0..ni {
+            let w_y = wy[(pt * ni + iy) as usize];
+            #[unroll]
+            for ix in 0..ni {
+                acc[(iy * ni + ix) as usize] += w_y * wx[(pt * ni + ix) as usize];
+            }
+        }
+        p += PLANE_DIM;
+    }
+    let row0 = (b / nb) * ni;
+    let col0 = (b % nb) * ni;
+    #[unroll]
+    for k in 0..ni * ni {
+        let v = plane_sum(acc[k as usize]);
+        if lane == 0u32 {
+            g_re[((row0 + k / ni) * n_fft + col0 + k % ni) as usize] = v;
+        }
+    }
 }
 
 /// Multiply the charge spectrum by the three kernel spectra, packing the two
@@ -878,6 +971,10 @@ struct GridBuffers<T: ManifoldsFloatGpu> {
     tmp_im: GpuTensor<T>,
     /// One cube per `wg` grid elements
     cubes_grid: CubeCount,
+    /// One plane-wide cube per box and the plane width, when the device has
+    /// a fixed plane size for [`tsne3k_splat_plane`]; `None` falls back to
+    /// [`tsne3k_splat`]
+    splat_plane: Option<(CubeCount, u32)>,
     /// One cube per `wg` elements of the three kernels
     cubes_kernel: CubeCount,
 }
@@ -933,6 +1030,13 @@ impl<T: ManifoldsFloatGpu> GridBuffers<T> {
         let nb2 = geom.n_boxes * geom.n_boxes;
         let (cubes_grid, _) = plan_cubes("tsne3k_splat", nn, wg, limits)?;
         let (cubes_kernel, _) = plan_cubes("tsne3k_kernel_fill", 3 * nn, wg, limits)?;
+        let plane = limits.plane_size_max;
+        let splat_plane = if plane_uniform(plane, limits) {
+            let (cubes, _) = plan_cubes("tsne3k_splat_plane", nb2 * plane as usize, plane, limits)?;
+            Some((cubes, plane))
+        } else {
+            None
+        };
 
         let bufs = Self {
             geom,
@@ -951,6 +1055,7 @@ impl<T: ManifoldsFloatGpu> GridBuffers<T> {
             tmp_im: GpuTensor::empty(vec![3 * nn], client)?,
             cubes_grid,
             cubes_kernel,
+            splat_plane,
         };
 
         let m = geom.n_boxes * ni;
@@ -1206,21 +1311,50 @@ impl<T: ManifoldsFloatGpu> TsneGpuState<T> {
                 self.n as u32,
                 wg,
             );
-            tsne3k_splat::launch_unchecked::<T>(
-                client,
-                grid.cubes_grid.clone(),
-                dim,
-                self.order.into_tensor_arg(),
-                grid.box_start.into_tensor_arg(),
-                self.wx.into_tensor_arg(),
-                self.wy.into_tensor_arg(),
-                grid.g_re.into_tensor_arg(),
-                grid.g_im.into_tensor_arg(),
-                nb,
-                nf,
-                ni,
-                wg,
-            );
+            match &grid.splat_plane {
+                Some((cubes_boxes, plane)) => {
+                    tsne3k_splat_clear::launch_unchecked::<T>(
+                        client,
+                        grid.cubes_grid.clone(),
+                        dim,
+                        grid.g_re.into_tensor_arg(),
+                        grid.g_im.into_tensor_arg(),
+                        nb * ni,
+                        nf,
+                        wg,
+                    );
+                    tsne3k_splat_plane::launch_unchecked::<T>(
+                        client,
+                        cubes_boxes.clone(),
+                        CubeDim::new_1d(*plane),
+                        self.order.into_tensor_arg(),
+                        grid.box_start.into_tensor_arg(),
+                        self.wx.into_tensor_arg(),
+                        self.wy.into_tensor_arg(),
+                        grid.g_re.into_tensor_arg(),
+                        nb,
+                        nf,
+                        ni,
+                    );
+                }
+                None => {
+                    tsne3k_splat::launch_unchecked::<T>(
+                        client,
+                        grid.cubes_grid.clone(),
+                        dim,
+                        self.order.into_tensor_arg(),
+                        grid.box_start.into_tensor_arg(),
+                        self.wx.into_tensor_arg(),
+                        self.wy.into_tensor_arg(),
+                        grid.g_re.into_tensor_arg(),
+                        grid.g_im.into_tensor_arg(),
+                        nb,
+                        nf,
+                        ni,
+                        wg,
+                    );
+                }
+            }
         }
 
         grid.plan_1.execute(
