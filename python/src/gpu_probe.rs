@@ -33,6 +33,17 @@ pub fn gpu_available(py: Python<'_>) -> bool {
     py.detach(probe)
 }
 
+/// Whether the MLX backends are compiled in.
+///
+/// ### Returns
+///
+/// `True` when this build has the `mlx` feature and the core found mlx-c at
+/// build time. Fixed at build time; there is no adapter to probe.
+#[pyfunction]
+pub fn mlx_available() -> bool {
+    manifolds_rs::MLX_AVAILABLE
+}
+
 /// Try to stand up a wgpu client on the default device.
 ///
 /// ### Returns

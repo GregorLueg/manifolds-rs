@@ -8,11 +8,11 @@ Dimensionality reduction for single-cell and computational biology. The
 [Rust crate](https://github.com/GregorLueg/manifolds-rs) does the work; this is
 a scikit-learn shaped layer over it.
 
-Eight algorithms on the CPU, three of them with GPU variants where the neighbour
+Nine algorithms on the CPU, four of them with GPU variants where the neighbour
 search and the optimiser (UMAP's Adam, t-SNE's three-kernel FFT) move to the
-device. Scanpy-style `mf.umap(adata)` and `mf.tsne(adata)` for `AnnData`. No CUDA runtime to install: the
-GPU backend is wgpu, so it runs on Metal, Vulkan or DX12 and ships in the
-ordinary wheel.
+device. Scanpy-style `mf.umap(adata)` and `mf.tsne(adata)` for `AnnData`. No
+CUDA runtime to install: the GPU backend is wgpu, so it runs on Metal, Vulkan or
+DX12 and ships in the ordinary wheel.
 
 **Documentation: <https://gregorlueg.github.io/manifolds-rs/>**
 
@@ -53,11 +53,12 @@ requirement.
 | `DensMAP` | UMAP with relative density preserved, so a dense region stays dense. |
 | `TSNE` | Local structure above all else. Barnes-Hut (or the faster quick-and-dirty `approx="qd"`), 2-D only. |
 | `DensNE` | t-SNE with the same density correction. |
+| `DREAMS` | t-SNE pulled towards a global reference (PCA, or any layout you pass), so the clusters keep a sensible arrangement. |
 | `PHATE` | Continuous structure. Trajectories and branch points survive this. |
 | `PaCMAP` | Global structure without leaning on a spectral init. Three pair types. |
 | `DiffusionMaps` | The spectral embedding PHATE is built on. |
 | `ForceAtlas2` | Gephi's force-directed layout on the kNN graph, as in scanpy's `draw_graph`. 2-D only. |
-| `UMAPGpu`, `DensMAPGpu`, `TSNEGpu` | The same, with the neighbour search on the device. `TSNEGpu(approx="fft_3k_gpu")` runs the optimiser there too. |
+| `UMAPGpu`, `DensMAPGpu`, `TSNEGpu`, `DREAMSGpu` | The same, with the neighbour search on the device. `TSNEGpu(approx="fft_3k_gpu")` runs the optimiser there too. |
 
 ## AnnData
 
@@ -130,7 +131,12 @@ has no float64 and the alternative is a failure inside a kernel.
 
 CPU FFT-accelerated t-SNE. It needs FFTW, which is GPL-2.0-or-later and would
 be linked statically, turning the whole wheel GPL. So the CPU estimators take
-Barnes-Hut only (plain, or the quick-and-dirty `approx="qd"`). On a GPU, `TSNEGpu(approx="fft_3k_gpu")` gives you
-FFT-interpolated repulsion without FFTW.
+Barnes-Hut only (plain, or the quick-and-dirty `approx="qd"`). On a GPU,
+`TSNEGpu(approx="fft_3k_gpu")` gives you FFT-interpolated repulsion without
+FFTW.
+
+The MLX backends for Apple Silicon. They link mlx-c dynamically, so they need a
+source build: `brew install mlx-c`, then `maturin develop --release --features
+mlx`. See the GPU page of the docs.
 
 Parametric UMAP is in the crate but not yet bound.

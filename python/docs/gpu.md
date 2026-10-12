@@ -1,7 +1,7 @@
 # GPU
 
-Three estimators run part of the work on the device: `UMAPGpu`, `DensMAPGpu` and
-`TSNEGpu`. The backend is wgpu, so there is no CUDA runtime to install and the
+Four estimators run part of the work on the device: `UMAPGpu`, `DensMAPGpu`,
+`TSNEGpu` and `DREAMSGpu`. The backend is wgpu, so there is no CUDA runtime to install and the
 same wheel works on Metal, Vulkan and DX12.
 
 ```python
@@ -96,3 +96,40 @@ device, which is occasionally the right split.
 and the GPU estimators are still importable there. That is deliberate: a hosted
 CI runner can prove the GPU wheel compiles and degrades cleanly without having a
 device. It cannot prove the kernels are correct. That needs a runner with a GPU.
+
+## MLX on Apple Silicon
+
+There is a second Apple GPU path, through [MLX](https://github.com/ml-explore/mlx)
+via mlx-c, and it is not in the published wheel. It links mlx-c dynamically, so
+a wheel carrying it fails to import on any Mac without the library. Build it
+yourself:
+
+```sh
+brew install mlx-c
+maturin develop --release --features mlx
+```
+
+```python
+mf.mlx_available()  # True only in an mlx build that found mlx-c
+```
+
+MLX is not a separate set of estimators. The CPU estimators gain a few extra
+names instead:
+
+```python
+mf.UMAP(ann="nndescent_mlx", optimiser="adam_mlx").fit_transform(X)
+mf.DensMAP(optimiser="adam_mlx").fit_transform(X)
+mf.TSNE(ann="nndescent_mlx", approx="fft_3k_mlx").fit_transform(X)
+mf.DREAMS(approx="fft_3k_mlx").fit_transform(X)
+mf.knn_graph(X, k=15, ann="ivf_mlx")
+```
+
+The neighbour backends are `"exhaustive_mlx"`, `"ivf_mlx"` and
+`"nndescent_mlx"`. `TSNEGpu` and `DREAMSGpu` take `approx="fft_3k_mlx"` as well,
+with the search on wgpu and the optimiser on MLX. den-SNE has no MLX path.
+Everything MLX runs in float32, whatever you hand it. In a build without MLX
+these names are refused with a pointer to the build flag.
+
+Is it worth the trouble? For the neighbour search, yes on large data. For the
+optimisers, barely. See the
+[wgpu vs MLX benchmarks](https://github.com/GregorLueg/manifolds-rs/blob/main/docs/benchmarks_mlx.md).

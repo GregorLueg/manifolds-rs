@@ -21,14 +21,21 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from typing import Any
 
+from . import _manifolds
+
 ###########
 # Globals #
 ###########
 
-#: CPU neighbour backends, from `parse_ann_search`.
+#: Whether the MLX names below are accepted: the extension was built with the
+#: `mlx` feature and the core found mlx-c. Fixed at build time.
+_MLX = _manifolds.mlx_available()
+
+#: CPU neighbour backends, from `parse_ann_search`. The `*_mlx` ones run on the
+#: Apple GPU through MLX and only exist in an `mlx` build.
 ANN_CPU: frozenset[str] = frozenset(
     {"exhaustive", "kmknn", "balltree", "annoy", "hnsw", "ivf", "nndescent"}
-)
+) | (frozenset({"exhaustive_mlx", "ivf_mlx", "nndescent_mlx"}) if _MLX else frozenset())
 
 #: GPU neighbour backends, from `parse_ann_search_gpu`. The unsuffixed aliases
 #: are accepted by the core, so they are accepted here.
@@ -51,12 +58,17 @@ METRICS: frozenset[str] = frozenset({"euclidean", "l2", "cosine", "manhattan", "
 #: Embedding initialisations, from `parse_initilisation`.
 INITS: frozenset[str] = frozenset({"spectral", "pca", "random"})
 
-#: UMAP optimisers, from `parse_umap_optimiser`.
-UMAP_OPTIMISERS: frozenset[str] = frozenset({"adam", "sgd", "adam_parallel"})
-
 #: The GPU UMAP optimiser. `"adam_gpu"` keeps the update on the device; the CPU
 #: names still work and pull the embedding back each epoch.
-UMAP_OPTIMISERS_GPU: frozenset[str] = UMAP_OPTIMISERS | {"adam_gpu"}
+UMAP_OPTIMISERS_GPU: frozenset[str] = frozenset(
+    {"adam", "sgd", "adam_parallel", "adam_gpu"}
+)
+
+#: UMAP optimisers, from `parse_umap_optimiser`. `"adam_mlx"` is CPU `umap` only;
+#: `umap_gpu` does not parse it.
+UMAP_OPTIMISERS: frozenset[str] = frozenset({"adam", "sgd", "adam_parallel"}) | (
+    frozenset({"adam_mlx"}) if _MLX else frozenset()
+)
 
 #: PaCMAP optimisers, from `parse_pacmap_optimiser`.
 PACMAP_OPTIMISERS: frozenset[str] = frozenset({"adam", "adam_parallel"})
@@ -75,9 +87,10 @@ SYMMETRIES: frozenset[str] = frozenset(
 #: t-SNE repulsion approximations, from `parse_tsne_optimiser`. The CPU FFT
 #: variants need the `fft_tsne` feature, which the wheel is built without: it
 #: links FFTW statically, and FFTW is GPL-2.0-or-later.
+#: The MLX three-kernel FFT needs no FFTW and is accepted by both entry points.
 TSNE_APPROX: frozenset[str] = frozenset(
     {"barnes_hut", "barnes-hut", "barnes hut", "bh", "bh_qd", "qd"}
-)
+) | (frozenset({"fft_3k_mlx"}) if _MLX else frozenset())
 
 #: As `TSNE_APPROX`, plus the device-resident three-kernel FFT optimiser. Only
 #: `tsne_gpu` accepts it.

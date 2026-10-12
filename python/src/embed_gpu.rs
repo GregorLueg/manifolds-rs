@@ -264,7 +264,7 @@ pub fn dreams_gpu<'py>(
         knn_distances,
         reference,
         dreams_gpu,
-        |data, n, dim, p, knn, rf, device| manifolds_rs::dreams_gpu::<f32, Rt>(
+        |data, n, dim, p, knn, rf, device| manifolds_rs::dreams_gpu::<f32>(
             (data, n, dim),
             knn,
             rf,

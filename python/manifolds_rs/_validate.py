@@ -151,6 +151,12 @@ def check_choice(value: str, allowed: frozenset[str], *, name: str) -> str:
         ValueError: If `value` is not in `allowed`.
     """
     lowered = value.lower()
+    if lowered not in allowed and lowered.endswith("_mlx"):
+        raise ValueError(
+            f"{name} {value!r} needs the MLX backend, which this build lacks: "
+            "`maturin develop --release --features mlx` on Apple Silicon with "
+            "mlx-c installed (`brew install mlx-c`)"
+        )
     if lowered not in allowed:
         raise ValueError(
             f"unknown {name} {value!r}; expected one of: {', '.join(sorted(allowed))}"

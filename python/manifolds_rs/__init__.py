@@ -47,6 +47,7 @@ from ._manifolds import (
     __core_version__,
     __version__,
     gpu_available,
+    mlx_available,
     num_threads,
     set_num_threads,
 )
@@ -102,6 +103,7 @@ __all__ = [
     "datasets",
     "gpu_available",
     "knn_graph",
+    "mlx_available",
     "num_threads",
     "set_num_threads",
     "tsne",
