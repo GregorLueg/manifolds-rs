@@ -80,6 +80,3 @@ rustc-hash = "2.1.1"
 serde = { version = "1.0.228", optional = true }
 thousands = "0.2.0"
 thiserror = "2.0.18"
-
-[patch.crates-io]
-ann-search-rs = { path = "/Users/gregorlueg/repos/shared/ann-search-rs" }
