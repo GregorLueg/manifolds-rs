@@ -275,6 +275,38 @@ const UPDATE_SOURCE: &str = r#"
 
     float new_x = 0.0f;
     float new_y = 0.0f;
+    float px = i < n ? pos[2 * i] : 0.0f;
+    float py = i < n ? pos[2 * i + 1] : 0.0f;
+
+    // attraction, one row at a time per SIMD group: the lanes stride the
+    // row's edges so the CSR reads are coalesced, and lane r keeps row r
+    uint row0 = i - lane;
+    float att_x = 0.0f;
+    float att_y = 0.0f;
+    for (uint r = 0; r < 32; r++) {
+        uint row = row0 + r;
+        if (row >= n) break;
+        float rx = simd_shuffle(px, (ushort)r);
+        float ry = simd_shuffle(py, (ushort)r);
+        float ax = 0.0f;
+        float ay = 0.0f;
+        uint end = indptr[row + 1];
+        for (uint e = indptr[row] + lane; e < end; e += 32) {
+            uint j = indices[e];
+            float dx = rx - pos[2 * j];
+            float dy = ry - pos[2 * j + 1];
+            float f = values[e] / (1.0f + dx * dx + dy * dy);
+            ax += f * dx;
+            ay += f * dy;
+        }
+        ax = simd_sum(ax);
+        ay = simd_sum(ay);
+        if (lane == r) {
+            att_x = ax;
+            att_y = ay;
+        }
+    }
+
     if (i < n) {
         float exag = fp[0];
         float lr = fp[1];
@@ -282,37 +314,8 @@ const UPDATE_SOURCE: &str = r#"
         float min_gain = fp[3];
         float max_step = fp[4];
 
-        float px = pos[2 * i];
-        float py = pos[2 * i + 1];
-        // two independent accumulators keep two neighbour gathers in flight
-        float ax0 = 0.0f, ay0 = 0.0f, ax1 = 0.0f, ay1 = 0.0f;
-        uint e = indptr[i];
-        uint end = indptr[i + 1];
-        for (; e + 1 < end; e += 2) {
-            uint j0 = indices[e];
-            uint j1 = indices[e + 1];
-            float dx0 = px - pos[2 * j0];
-            float dy0 = py - pos[2 * j0 + 1];
-            float dx1 = px - pos[2 * j1];
-            float dy1 = py - pos[2 * j1 + 1];
-            float f0 = values[e] / (1.0f + dx0 * dx0 + dy0 * dy0);
-            float f1 = values[e + 1] / (1.0f + dx1 * dx1 + dy1 * dy1);
-            ax0 += f0 * dx0;
-            ay0 += f0 * dy0;
-            ax1 += f1 * dx1;
-            ay1 += f1 * dy1;
-        }
-        if (e < end) {
-            uint j = indices[e];
-            float dx = px - pos[2 * j];
-            float dy = py - pos[2 * j + 1];
-            float f = values[e] / (1.0f + dx * dx + dy * dy);
-            ax0 += f * dx;
-            ay0 += f * dy;
-        }
-
-        float gx = exag * (ax0 + ax1) - rep[2 * i] / zz;
-        float gy = exag * (ay0 + ay1) - rep[2 * i + 1] / zz;
+        float gx = exag * att_x - rep[2 * i] / zz;
+        float gy = exag * att_y - rep[2 * i + 1] / zz;
         float ux = vel[2 * i];
         float uy = vel[2 * i + 1];
         float g_x = gains[2 * i];

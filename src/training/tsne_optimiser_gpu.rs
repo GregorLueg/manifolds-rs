@@ -589,6 +589,8 @@ pub fn tsne3k_gather<F: Float + CubeElement>(
 /// * `dreams_keep` - `1 - lambda`, the factor on the t-SNE step
 /// * `dreams_coef` - Regulariser step coefficient
 /// * `dreams` - Apply the DREAMS step; comptime
+/// * `plane_rows` - Walk the CSR one row per plane, lanes striding the edges;
+///   needs a single device plane size dividing `wg`; comptime
 /// * `wg` - Workgroup width; comptime
 /// * `log2_wg` - `log2(wg)`; comptime
 #[cube(launch_unchecked)]
@@ -617,6 +619,7 @@ pub fn tsne3k_update<F: Float + CubeElement + LaunchArg>(
     dreams_keep: F,
     dreams_coef: F,
     #[comptime] dreams: bool,
+    #[comptime] plane_rows: bool,
     #[comptime] wg: u32,
     #[comptime] log2_wg: u32,
 ) {
@@ -654,13 +657,49 @@ pub fn tsne3k_update<F: Float + CubeElement + LaunchArg>(
         sync_cube();
     }
 
-    let mut new_x = zero;
-    let mut new_y = zero;
+    let mut px = zero;
+    let mut py = zero;
     if i < n {
-        let px = pos_in[(2u32 * i) as usize];
-        let py = pos_in[(2u32 * i + 1u32) as usize];
+        px = pos_in[(2u32 * i) as usize];
+        py = pos_in[(2u32 * i + 1u32) as usize];
+    }
 
-        // 4-way split accumulators keep several neighbour gathers in flight
+    let mut att_x = zero;
+    let mut att_y = zero;
+    if plane_rows {
+        // one row at a time per plane: the lanes stride the row's edges so
+        // the CSR reads are coalesced, and lane r keeps row r
+        let lane = UNIT_POS_PLANE;
+        let row0 = i - lane;
+        for r in 0..PLANE_DIM {
+            let row = row0 + r;
+            if row >= n {
+                break;
+            }
+            let rx = plane_shuffle(px, r);
+            let ry = plane_shuffle(py, r);
+            let mut ax = zero;
+            let mut ay = zero;
+            let end = indptr[(row + 1u32) as usize];
+            let mut e = indptr[row as usize] + lane;
+            while e < end {
+                let j = indices[e as usize];
+                let dx = rx - pos_in[(2u32 * j) as usize];
+                let dy = ry - pos_in[(2u32 * j + 1u32) as usize];
+                let f = values[e as usize] / (one + dx * dx + dy * dy);
+                ax += f * dx;
+                ay += f * dy;
+                e += PLANE_DIM;
+            }
+            let sx = plane_sum(ax);
+            let sy = plane_sum(ay);
+            if lane == r {
+                att_x = sx;
+                att_y = sy;
+            }
+        }
+    } else if i < n {
+        // two split accumulators keep two neighbour gathers in flight
         let mut ax0 = zero;
         let mut ay0 = zero;
         let mut ax1 = zero;
@@ -691,9 +730,16 @@ pub fn tsne3k_update<F: Float + CubeElement + LaunchArg>(
             ax0 += f * dx;
             ay0 += f * dy;
         }
+        att_x = ax0 + ax1;
+        att_y = ay0 + ay1;
+    }
 
-        let gx = exag * (ax0 + ax1) - rep[(2u32 * i) as usize] / z;
-        let gy = exag * (ay0 + ay1) - rep[(2u32 * i + 1u32) as usize] / z;
+    let mut new_x = zero;
+    let mut new_y = zero;
+    if i < n {
+
+        let gx = exag * att_x - rep[(2u32 * i) as usize] / z;
+        let gy = exag * att_y - rep[(2u32 * i + 1u32) as usize] / z;
 
         let ix = (2u32 * i) as usize;
         let iy = (2u32 * i + 1u32) as usize;
@@ -1135,6 +1181,8 @@ struct TsneGpuState<T: ManifoldsFloatGpu> {
     wg: u32,
     /// `log2(wg)`
     log2_wg: u32,
+    /// Attraction walks the CSR one row per plane, see [`tsne3k_update`]
+    plane_rows: bool,
     /// One cube per `wg` points
     cubes_pts: CubeCount,
     /// Number of cubes in `cubes_pts`
@@ -1251,6 +1299,7 @@ impl<T: ManifoldsFloatGpu> TsneGpuState<T> {
             ni,
             wg,
             log2_wg: wg.trailing_zeros(),
+            plane_rows: plane_partitions(wg, limits).is_some(),
             cubes_pts,
             n_cubes_pts,
         };
@@ -1452,6 +1501,7 @@ impl<T: ManifoldsFloatGpu> TsneGpuState<T> {
                 sched.dreams_keep,
                 sched.dreams_coef,
                 self.dreams,
+                self.plane_rows,
                 wg,
                 self.log2_wg,
             );
