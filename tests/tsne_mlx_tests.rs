@@ -139,16 +139,20 @@ fn tsne_mlx_integration_01_quality() {
     assert!(sep > 1.0);
 }
 
-/// Test 2: Same seed, same embedding
+/// Test 2: Same seed, structurally the same embedding. Not bit-exact: the
+/// atomic box ranks change the splat summation order between runs.
 #[test]
-fn tsne_mlx_integration_02_reproducibility() {
-    let (data, _) = create_diagnostic_data(100, 10, 42);
+fn tsne_mlx_integration_02_reproducibility_structural() {
+    let (data, labels) = create_diagnostic_data(100, 10, 42);
     let data = mat_to_f32(data);
 
-    let params = tsne_params(200.0, 200);
+    let params = tsne_params(200.0, 500);
     let a = tsne(data.as_ref(), None, &params, "fft_3k_mlx", 123, 0).unwrap();
     let b = tsne(data.as_ref(), None, &params, "fft_3k_mlx", 123, 0).unwrap();
-    assert_eq!(a, b, "same seed, different MLX t-SNE embedding");
+    let (sa, sb) = (separation(&a, &labels), separation(&b, &labels));
+    println!("separation run 1 {sa:.2}, run 2 {sb:.2}");
+    assert!(sa > 1.0 && sb > 1.0);
+    assert!((sa - sb).abs() / sa.max(sb) < 0.25);
 }
 
 /// Test 3: DREAMS on MLX pulls the layout towards the reference

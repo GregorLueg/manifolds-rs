@@ -139,6 +139,10 @@ unsafe extern "C" {
         name: *const c_char,
         value: c_int,
     ) -> c_int;
+    fn mlx_fast_metal_kernel_config_set_init_value(
+        cls: mlx_fast_metal_kernel_config,
+        value: f32,
+    ) -> c_int;
 
     fn mlx_default_gpu_stream_new() -> mlx_stream;
     fn mlx_stream_free(stream: mlx_stream) -> c_int;
@@ -384,27 +388,7 @@ impl Array {
 const MLX_FFT_NORM_BACKWARD: c_int = 0;
 
 unsafe extern "C" {
-    fn mlx_abs(res: *mut mlx_array, a: mlx_array, s: mlx_stream) -> c_int;
-    fn mlx_square(res: *mut mlx_array, a: mlx_array, s: mlx_stream) -> c_int;
     fn mlx_multiply(res: *mut mlx_array, a: mlx_array, b: mlx_array, s: mlx_stream) -> c_int;
-    fn mlx_subtract(res: *mut mlx_array, a: mlx_array, b: mlx_array, s: mlx_stream) -> c_int;
-    fn mlx_sum(res: *mut mlx_array, a: mlx_array, keepdims: bool, s: mlx_stream) -> c_int;
-    fn mlx_max(res: *mut mlx_array, a: mlx_array, keepdims: bool, s: mlx_stream) -> c_int;
-    fn mlx_mean_axis(
-        res: *mut mlx_array,
-        a: mlx_array,
-        axis: c_int,
-        keepdims: bool,
-        s: mlx_stream,
-    ) -> c_int;
-    fn mlx_argsort_axis(res: *mut mlx_array, a: mlx_array, axis: c_int, s: mlx_stream) -> c_int;
-    fn mlx_take_axis(
-        res: *mut mlx_array,
-        a: mlx_array,
-        indices: mlx_array,
-        axis: c_int,
-        s: mlx_stream,
-    ) -> c_int;
     fn mlx_fft_rfft2(
         res: *mut mlx_array,
         a: mlx_array,
@@ -451,34 +435,6 @@ fn op_into(
 }
 
 impl Array {
-    /// Elementwise absolute value.
-    ///
-    /// ### Params
-    ///
-    /// * `s` - Stream to run on
-    ///
-    /// ### Returns
-    ///
-    /// The (lazy) result
-    pub fn abs(&self, s: &Stream) -> Result<Array, ManifoldsError> {
-        op_into("mlx_abs", |out| unsafe { mlx_abs(out, self.raw, s.raw) })
-    }
-
-    /// Elementwise square.
-    ///
-    /// ### Params
-    ///
-    /// * `s` - Stream to run on
-    ///
-    /// ### Returns
-    ///
-    /// The (lazy) result
-    pub fn square(&self, s: &Stream) -> Result<Array, ManifoldsError> {
-        op_into("mlx_square", |out| unsafe {
-            mlx_square(out, self.raw, s.raw)
-        })
-    }
-
     /// Elementwise `self * b`, broadcasting. Complex-aware.
     ///
     /// ### Params
@@ -492,107 +448,6 @@ impl Array {
     pub fn multiply(&self, b: &Array, s: &Stream) -> Result<Array, ManifoldsError> {
         op_into("mlx_multiply", |out| unsafe {
             mlx_multiply(out, self.raw, b.raw, s.raw)
-        })
-    }
-
-    /// Elementwise `self - b`, broadcasting.
-    ///
-    /// ### Params
-    ///
-    /// * `b` - Right operand
-    /// * `s` - Stream to run on
-    ///
-    /// ### Returns
-    ///
-    /// The (lazy) result
-    pub fn subtract(&self, b: &Array, s: &Stream) -> Result<Array, ManifoldsError> {
-        op_into("mlx_subtract", |out| unsafe {
-            mlx_subtract(out, self.raw, b.raw, s.raw)
-        })
-    }
-
-    /// Sum over every element, as a scalar.
-    ///
-    /// ### Params
-    ///
-    /// * `s` - Stream to run on
-    ///
-    /// ### Returns
-    ///
-    /// The (lazy) scalar
-    pub fn sum_all(&self, s: &Stream) -> Result<Array, ManifoldsError> {
-        op_into("mlx_sum", |out| unsafe {
-            mlx_sum(out, self.raw, false, s.raw)
-        })
-    }
-
-    /// Maximum over every element, as a scalar.
-    ///
-    /// ### Params
-    ///
-    /// * `s` - Stream to run on
-    ///
-    /// ### Returns
-    ///
-    /// The (lazy) scalar
-    pub fn max_all(&self, s: &Stream) -> Result<Array, ManifoldsError> {
-        op_into("mlx_max", |out| unsafe {
-            mlx_max(out, self.raw, false, s.raw)
-        })
-    }
-
-    /// Mean over one axis, keeping it with length 1 so the result broadcasts
-    /// back against `self`.
-    ///
-    /// ### Params
-    ///
-    /// * `axis` - Axis to reduce
-    /// * `s` - Stream to run on
-    ///
-    /// ### Returns
-    ///
-    /// The (lazy) result
-    pub fn mean_axis_keep(&self, axis: i32, s: &Stream) -> Result<Array, ManifoldsError> {
-        op_into("mlx_mean_axis", |out| unsafe {
-            mlx_mean_axis(out, self.raw, axis, true, s.raw)
-        })
-    }
-
-    /// Indices that sort along one axis, as u32.
-    ///
-    /// ### Params
-    ///
-    /// * `axis` - Axis to sort
-    /// * `s` - Stream to run on
-    ///
-    /// ### Returns
-    ///
-    /// The (lazy) result
-    pub fn argsort_axis(&self, axis: i32, s: &Stream) -> Result<Array, ManifoldsError> {
-        op_into("mlx_argsort_axis", |out| unsafe {
-            mlx_argsort_axis(out, self.raw, axis, s.raw)
-        })
-    }
-
-    /// Gather `self` at `indices` along one axis.
-    ///
-    /// ### Params
-    ///
-    /// * `indices` - Integer indices
-    /// * `axis` - Axis to gather along
-    /// * `s` - Stream to run on
-    ///
-    /// ### Returns
-    ///
-    /// The (lazy) result
-    pub fn take_axis(
-        &self,
-        indices: &Array,
-        axis: i32,
-        s: &Stream,
-    ) -> Result<Array, ManifoldsError> {
-        op_into("mlx_take_axis", |out| unsafe {
-            mlx_take_axis(out, self.raw, indices.raw, axis, s.raw)
         })
     }
 
@@ -693,6 +548,51 @@ impl MetalKernel {
     ///
     /// The kernel handle
     pub fn new(name: &str, inputs: &[&str], outputs: &[&str], header: &str, source: &str) -> Self {
+        Self::build(name, inputs, outputs, header, source, false)
+    }
+
+    /// Register a kernel body with every output typed `device atomic<T>*`.
+    ///
+    /// MLX makes the atomic choice per kernel, not per output, so every output
+    /// is written through `atomic_store_explicit` or an atomic RMW. Launch it
+    /// with [`MetalKernel::apply_zeroed`] so the outputs start at zero.
+    ///
+    /// ### Params
+    ///
+    /// * `name` - Kernel name
+    /// * `inputs` - Input buffer names, in `apply` order
+    /// * `outputs` - Output buffer names, in `apply` order
+    /// * `source` - Metal body; the signature is generated by MLX
+    ///
+    /// ### Returns
+    ///
+    /// The kernel handle
+    pub fn new_atomic(name: &str, inputs: &[&str], outputs: &[&str], source: &str) -> Self {
+        Self::build(name, inputs, outputs, "", source, true)
+    }
+
+    /// Shared body of [`MetalKernel::new`] and [`MetalKernel::new_atomic`].
+    ///
+    /// ### Params
+    ///
+    /// * `name` - Kernel name
+    /// * `inputs` - Input buffer names
+    /// * `outputs` - Output buffer names
+    /// * `header` - Metal source placed before the generated kernel
+    /// * `source` - Metal body
+    /// * `atomic_outputs` - Type every output as `device atomic<T>*`
+    ///
+    /// ### Returns
+    ///
+    /// The kernel handle
+    fn build(
+        name: &str,
+        inputs: &[&str],
+        outputs: &[&str],
+        header: &str,
+        source: &str,
+        atomic_outputs: bool,
+    ) -> Self {
         let cstr = |s: &str| CString::new(s).expect("kernel strings carry no NUL");
         let in_c: Vec<CString> = inputs.iter().map(|s| cstr(s)).collect();
         let out_c: Vec<CString> = outputs.iter().map(|s| cstr(s)).collect();
@@ -710,7 +610,7 @@ impl MetalKernel {
                 source.as_ptr(),
                 header.as_ptr(),
                 true,
-                false,
+                atomic_outputs,
             );
             mlx_vector_string_free(in_v);
             mlx_vector_string_free(out_v);
@@ -741,6 +641,62 @@ impl MetalKernel {
         template_ints: &[(&str, i32)],
         s: &Stream,
     ) -> Result<Vec<Array>, ManifoldsError> {
+        self.launch(inputs, outputs, grid, threadgroup, template_ints, false, s)
+    }
+
+    /// Queue the kernel with every output zero-filled first. Same contract as
+    /// [`MetalKernel::apply`] otherwise.
+    ///
+    /// ### Params
+    ///
+    /// * `inputs` - Input arrays, in the registered order
+    /// * `outputs` - Output specs, in the registered order
+    /// * `grid` - Total threads per axis (`dispatchThreads` semantics)
+    /// * `threadgroup` - Threads per threadgroup per axis
+    /// * `template_ints` - Integer template arguments
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The output arrays, in the registered order
+    pub fn apply_zeroed(
+        &self,
+        inputs: &[&Array],
+        outputs: &[OutputSpec],
+        grid: [i32; 3],
+        threadgroup: [i32; 3],
+        template_ints: &[(&str, i32)],
+        s: &Stream,
+    ) -> Result<Vec<Array>, ManifoldsError> {
+        self.launch(inputs, outputs, grid, threadgroup, template_ints, true, s)
+    }
+
+    /// Shared body of [`MetalKernel::apply`] and [`MetalKernel::apply_zeroed`].
+    ///
+    /// ### Params
+    ///
+    /// * `inputs` - Input arrays
+    /// * `outputs` - Output specs
+    /// * `grid` - Total threads per axis
+    /// * `threadgroup` - Threads per threadgroup per axis
+    /// * `template_ints` - Integer template arguments
+    /// * `zeroed` - Zero-fill the outputs before the kernel runs
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The output arrays, in the registered order
+    #[allow(clippy::too_many_arguments)]
+    fn launch(
+        &self,
+        inputs: &[&Array],
+        outputs: &[OutputSpec],
+        grid: [i32; 3],
+        threadgroup: [i32; 3],
+        template_ints: &[(&str, i32)],
+        zeroed: bool,
+        s: &Stream,
+    ) -> Result<Vec<Array>, ManifoldsError> {
         let raw_in: Vec<mlx_array> = inputs.iter().map(|a| a.raw).collect();
         let names: Vec<CString> = template_ints
             .iter()
@@ -753,6 +709,9 @@ impl MetalKernel {
             let in_v = mlx_vector_array_new_data(raw_in.as_ptr(), raw_in.len());
             let mut out_v = mlx_vector_array_new();
             let mut code = 0;
+            if zeroed {
+                code |= mlx_fast_metal_kernel_config_set_init_value(config, 0.0);
+            }
             for o in outputs {
                 code |= mlx_fast_metal_kernel_config_add_output_arg(
                     config,
