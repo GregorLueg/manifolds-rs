@@ -749,13 +749,16 @@ pub fn tsne3k_update<F: Float + CubeElement + LaunchArg>(
         let mut g_x = gains[ix];
         let mut g_y = gains[iy];
 
-        // Jacobs gains: grow when gradient and update disagree in sign
-        if (gx > zero) != (ux > zero) {
+        // Jacobs gains: grow when gradient and update disagree in sign. Not
+        // written as `bool != bool`, which the MSL backend cannot emit
+        let flip_x = select(gx > zero, ux <= zero, ux > zero);
+        let flip_y = select(gy > zero, uy <= zero, uy > zero);
+        if flip_x {
             g_x += F::new(0.2_f32);
         } else {
             g_x *= F::new(0.8_f32);
         }
-        if (gy > zero) != (uy > zero) {
+        if flip_y {
             g_y += F::new(0.2_f32);
         } else {
             g_y *= F::new(0.8_f32);
