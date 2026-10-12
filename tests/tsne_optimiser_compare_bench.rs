@@ -210,6 +210,12 @@ fn tsne_optimiser_compare_100k() {
 
 #[test]
 #[ignore = "takes a while; run with -- --ignored"]
+fn tsne_optimiser_compare_500k() {
+    run_compare(100_000);
+}
+
+#[test]
+#[ignore = "takes a while; run with -- --ignored"]
 fn tsne_optimiser_compare_1m() {
     run_compare(200_000);
 }

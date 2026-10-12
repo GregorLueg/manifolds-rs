@@ -1,10 +1,14 @@
 #![cfg(all(feature = "gpu", mlx_available, feature = "large_scale_diagnostics"))]
 
-//! Timing harness: the UMAP Adam optimiser on CPU (rayon), wgpu (cubecl) and
-//! MLX, on one shared kNN graph and one shared random initialisation.
+//! Timing harness: the kNN search on wgpu and MLX, then the UMAP Adam optimiser
+//! on CPU (rayon), wgpu (cubecl) and MLX, on one shared kNN graph and one
+//! shared random initialisation.
 //!
-//! Only the optimiser call is timed. Each backend gets `REPEATS` runs; the
-//! first pays shader compilation and buffer-pool first touch.
+//! The kNN stage runs exhaustive and NN-Descent on both devices,
+//! `KNN_REPEATS` times each, and scores NN-Descent recall against the MLX
+//! exhaustive result. The optimiser stage times only the optimiser call, each
+//! backend `REPEATS` times. In both the first run pays shader compilation and
+//! buffer-pool first touch, so the best run is reported.
 //!
 //! ```sh
 //! cargo test --release --features gpu,mlx,large_scale_diagnostics \
@@ -40,8 +44,11 @@ const K: usize = 15;
 /// Epochs per timed run.
 const N_EPOCHS: usize = 500;
 
-/// Timed repeats per backend.
+/// Timed repeats per optimiser backend.
 const REPEATS: usize = 3;
+
+/// Timed repeats per kNN backend. Exhaustive at 1m is minutes per run.
+const KNN_REPEATS: usize = 2;
 
 /////////////
 // Helpers //
@@ -134,7 +141,87 @@ fn time_backend(
     best
 }
 
-/// Build the graph once, then time all three optimisers on it.
+/// Time one kNN backend `KNN_REPEATS` times.
+///
+/// ### Params
+///
+/// * `name` - Backend label
+/// * `run` - Runs the search, returns the neighbour indices
+///
+/// ### Returns
+///
+/// The best time and the indices from the last run.
+fn time_knn(name: &str, run: impl Fn() -> Vec<Vec<usize>>) -> (Duration, Vec<Vec<usize>>) {
+    let mut times = Vec::with_capacity(KNN_REPEATS);
+    let mut last = Vec::new();
+    for _ in 0..KNN_REPEATS {
+        let start = Instant::now();
+        last = run();
+        times.push(start.elapsed());
+    }
+    let best = *times.iter().min().unwrap();
+    println!(
+        "  {name:<16} best {best:>9.2?} | worst {:>9.2?}",
+        times.iter().max().unwrap()
+    );
+    (best, last)
+}
+
+/// Fraction of the reference neighbours a search recovered.
+///
+/// ### Params
+///
+/// * `found` - Neighbour indices under test
+/// * `truth` - Reference neighbour indices
+///
+/// ### Returns
+///
+/// Recall in `[0, 1]`.
+fn recall(found: &[Vec<usize>], truth: &[Vec<usize>]) -> f64 {
+    let hits: usize = found
+        .iter()
+        .zip(truth)
+        .map(|(a, b)| a.iter().filter(|j| b.contains(j)).count())
+        .sum();
+    hits as f64 / (truth.len() * K) as f64
+}
+
+/// Time exhaustive and NN-Descent kNN on wgpu and MLX.
+///
+/// ### Params
+///
+/// * `data` - Input data, samples x features
+/// * `device` - wgpu device
+fn run_knn_compare(data: faer::MatRef<f32>, device: &WgpuDevice) {
+    let nn_cpu = NearestNeighbourParams::<f32>::default();
+    let nn_gpu = NearestNeighbourParamsGpu::<f32>::default();
+    let wgpu = |ann: &str| {
+        run_ann_search_gpu(data, K, ann.into(), &nn_gpu, device.clone().into(), 42, 0)
+            .unwrap()
+            .0
+    };
+    let mlx = |ann: &str| {
+        run_ann_search(data, K, ann.into(), &nn_cpu, 42, 0)
+            .unwrap()
+            .0
+    };
+
+    println!("  -- kNN, k = {K} --");
+    let (ex_wgpu, _) = time_knn("exhaustive wgpu", || wgpu("exhaustive_gpu"));
+    let (ex_mlx, truth) = time_knn("exhaustive mlx", || mlx("exhaustive_mlx"));
+    let (nd_wgpu, nd_wgpu_idx) = time_knn("nndescent wgpu", || wgpu("nndescent_gpu"));
+    let (nd_mlx, nd_mlx_idx) = time_knn("nndescent mlx", || mlx("nndescent_mlx"));
+    println!(
+        "  exhaustive: mlx {:.1}x over wgpu | nndescent: mlx {:.1}x over wgpu, recall wgpu {:.4}, mlx {:.4}",
+        ex_wgpu.as_secs_f64() / ex_mlx.as_secs_f64(),
+        nd_wgpu.as_secs_f64() / nd_mlx.as_secs_f64(),
+        recall(&nd_wgpu_idx, &truth),
+        recall(&nd_mlx_idx, &truth)
+    );
+}
+
+/// Time the kNN stage, then build the graph once and time all three
+/// optimisers on it.
 ///
 /// ### Params
 ///
@@ -144,6 +231,9 @@ fn run_compare(n_per_cluster: usize) {
     let (data, labels) = create_diagnostic_data(n_per_cluster, N_FEATURES, 42);
     let data = mat_to_f32(data);
     let n = data.nrows();
+
+    println!("\n=== n = {n}, d = {N_FEATURES} ===");
+    run_knn_compare(data.as_ref(), &device);
 
     let start = Instant::now();
     let (graph, _, _) = construct_umap_graph_gpu::<f32>(
@@ -161,7 +251,7 @@ fn run_compare(n_per_cluster: usize) {
     .expect("graph construction failed");
     let graph_adj = coo_to_adjacency_list(&graph);
     println!(
-        "\n=== n = {n}, d = {N_FEATURES}, k = {K}, {N_EPOCHS} epochs, {} rayon threads (graph {:.2?}, not timed) ===",
+        "  -- optimiser, k = {K}, {N_EPOCHS} epochs, {} rayon threads (graph {:.2?}, not timed) --",
         rayon::current_num_threads(),
         start.elapsed()
     );
@@ -209,6 +299,12 @@ fn umap_optimiser_compare_10k() {
 #[test]
 fn umap_optimiser_compare_100k() {
     run_compare(20_000);
+}
+
+#[test]
+#[ignore = "takes a while; run with -- --ignored"]
+fn umap_optimiser_compare_500k() {
+    run_compare(100_000);
 }
 
 #[test]
