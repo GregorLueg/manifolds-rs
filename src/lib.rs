@@ -124,10 +124,12 @@ pub struct UmapParams<T> {
     pub n_dim: usize,
     /// Number of neighbours
     pub k: usize,
-    /// Which optimiser to use. Defaults to `"adam_parallel"`.
+    /// Which optimiser to use: `"adam_parallel"` (default), `"adam"`, `"sgd"`,
+    /// or `"adam_mlx"` with the `mlx` feature.
     pub optimiser: String,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     pub ann_type: String,
     /// Which embedding initialisation to use. Defaults to spectral clustering.
     pub initialisation: String,
@@ -180,6 +182,7 @@ where
     /// * `ann_type` - (Approximate) nearest neighbour method. One of
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `initialisation` - Which embedding initialisation to use, e.g.
     ///   `"spectral"`.
     /// * `init_range` - Optional initialisation range.
@@ -595,6 +598,7 @@ pub struct TsneParams<T> {
     pub perplexity: T,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     pub ann_type: String,
     /// Embedding initialisation method: `"pca"`, `"random"`, or `"spectral"`
     pub initialisation: String,
@@ -653,6 +657,7 @@ where
     /// * `ann_type` - (Approximate) nearest neighbour method. One of
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `initialisation` - Embedding initialisation method: `"pca"`,
     ///   `"random"`, or `"spectral"`.
     /// * `init_range` - Optional initialisation range to fix the initial
@@ -852,7 +857,8 @@ where
 ///   distances excluding self.
 /// * `params` - t-SNE parameters controlling algorithm behaviour
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`, `"fft"`, `"fft_3k" | "3-kernel"`
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, `"fft"`,
+///   `"fft_3k" | "3-kernel"`, and with the `mlx` feature `"fft_3k_mlx"`
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -1187,7 +1193,8 @@ where
 ///   distances excluding self.
 /// * `params` - t-SNE parameters controlling algorithm behaviour
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`, `"fft"`, `"fft_3k" | "3-kernel"`
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, and with the `mlx`
+///   feature `"fft_3k_mlx"`. `"fft"` and `"fft_3k"` need `fft_tsne`.
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -1723,7 +1730,8 @@ where
 ///   distances excluding self.
 /// * `params` - den-SNE parameters
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`, `"fft"`, `"fft_3k" | "3-kernel"`
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, `"fft"`,
+///   `"fft_3k" | "3-kernel"`
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -1804,8 +1812,8 @@ where
 ///   distances excluding self.
 /// * `params` - den-SNE parameters
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`. `"fft"` and `"fft_3k"` require the
-///   `fft_tsne` feature
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`. `"fft"` and `"fft_3k"`
+///   require the `fft_tsne` feature
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -1960,8 +1968,9 @@ where
 ///   result). `None` uses PCA.
 /// * `params` - DREAMS parameters
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, and with the
-///   `fft_tsne` feature `"fft"`, `"fft_3k" | "3-kernel"`
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, with the `fft_tsne`
+///   feature `"fft"`, `"fft_3k" | "3-kernel"`, and with the `mlx` feature
+///   `"fft_3k_mlx"`
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -2050,8 +2059,9 @@ where
 ///   result). `None` uses PCA.
 /// * `params` - DREAMS parameters
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, and with the
-///   `fft_tsne` feature `"fft"`, `"fft_3k" | "3-kernel"`
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, with the `fft_tsne`
+///   feature `"fft"`, `"fft_3k" | "3-kernel"`, and with the `mlx` feature
+///   `"fft_3k_mlx"`
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -2115,6 +2125,7 @@ pub struct Fa2Params<T> {
     pub k: usize,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     pub ann_type: String,
     /// Embedding initialisation method: `"spectral"`, `"pca"` or `"random"`
     pub initialisation: String,
@@ -2161,6 +2172,7 @@ where
     /// * `ann_type` - (Approximate) nearest neighbour method. One of
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `initialisation` - Embedding initialisation method: `"spectral"`,
     ///   `"pca"` or `"random"`.
     /// * `init_range` - Optional initialisation range.
@@ -2520,6 +2532,7 @@ pub struct PhateParams<T> {
     pub k: usize,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"`, or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     pub ann_type: String,
     /// Nearest neighbour search parameters to use
     pub ann_params: NearestNeighbourParams<T>,
@@ -2585,6 +2598,7 @@ where
     /// * `ann_type` - (Approximate) nearest neighbour method. One of
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `ann_params` - Nearest neighbour search parameters.
     /// * `diffusion_params` - Diffusion parameters. These cover the alpha
     ///   decay, kernel bandwidth scaling, graph symmetry, landmarks, SVD
@@ -3017,6 +3031,7 @@ pub struct PacmapParams<T> {
     pub n_dim: usize,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     pub ann_type: String,
     /// Which optimiser to use. Options are `"adam"` and `"adam_parallel"`
     pub optimiser_type: String,
@@ -3085,6 +3100,7 @@ where
     /// * `ann_type` - (Approximate) nearest neighbour method. One of
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `optimiser_type` - Which optimiser to use. Options are `"adam"` and
     ///   `"adam_parallel"`.
     /// * `n_near` - Near pairs per point (attractive).
@@ -3878,6 +3894,7 @@ where
     /// * `ann_type` - (Approximate) nearest neighbour method. One of
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `hidden_layers` - Hidden layer sizes for the MLP encoder.
     /// * `nn_params` - Nearest neighbour parameters.
     /// * `umap_graph_params` - UMAP graph generation parameters.
@@ -5084,8 +5101,9 @@ where
 ///   excluding self
 /// * `params` - GPU t-SNE parameters
 /// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"`,
-///   `"fft"`, `"fft_3k" | "3-kernel"`, or `"fft_3k_gpu"` (optimiser on the
-///   GPU as well)
+///   `"bh_qd" | "qd"`, `"fft"`, `"fft_3k" | "3-kernel"`, `"fft_3k_gpu"`
+///   (optimiser on the GPU as well) or, with the `mlx` feature,
+///   `"fft_3k_mlx"` (optimiser on MLX, kNN still on wgpu)
 /// * `device` - GPU device to use
 /// * `seed` - Random seed
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -5433,8 +5451,9 @@ where
 /// * `precomputed_knn` - Optional precomputed kNN, indices and distances
 ///   excluding self
 /// * `params` - GPU t-SNE parameters
-/// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"` or
-///   `"fft_3k_gpu"`
+/// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"`,
+///   `"bh_qd" | "qd"`, `"fft_3k_gpu"` or, with the `mlx` feature,
+///   `"fft_3k_mlx"`
 /// * `device` - GPU device to use
 /// * `seed` - Random seed
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed

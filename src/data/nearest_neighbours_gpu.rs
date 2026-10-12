@@ -8,9 +8,10 @@ use ann_search_rs::{
     query_nndescent_index_gpu_self,
 };
 use cubecl::Device;
-use faer::{Mat, MatRef};
+use faer::MatRef;
 use rayon::prelude::*;
 
+use crate::data::nearest_neighbours::cast_matrix_to_fp32;
 use crate::prelude::*;
 
 ///////////////
@@ -232,24 +233,6 @@ pub fn parse_ann_search_gpu(s: &str) -> Option<AnnSearchGpu> {
         "nndescent_gpu" | "nndescent" => Some(AnnSearchGpu::NNDescentGpu),
         _ => None,
     }
-}
-
-/// Cast matrix to `fp32`
-///
-/// ### Params
-///
-/// * `data` - The MatRef to cast to `fp32`.
-///
-/// ### Returns
-///
-/// `Mat` in f32
-fn cast_matrix_to_fp32<T>(data: MatRef<T>) -> Mat<f32>
-where
-    T: AnnSearchFloat,
-{
-    Mat::<f32>::from_fn(data.nrows(), data.ncols(), |i, j| {
-        data[(i, j)].to_f32().unwrap()
-    })
 }
 
 //////////

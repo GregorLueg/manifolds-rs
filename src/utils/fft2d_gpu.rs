@@ -310,7 +310,15 @@ impl Fft2dPlan {
         let n_tiles = self.n / TRANSPOSE_TILE;
         let used_tiles = rows_nonzero.div_ceil(TRANSPOSE_TILE);
         self.rows(client, src_re, src_im, 0..rows_nonzero, self.n, true);
-        self.transpose(client, src_re, src_im, dst_re, dst_im, 0..used_tiles, 0..n_tiles);
+        self.transpose(
+            client,
+            src_re,
+            src_im,
+            dst_re,
+            dst_im,
+            0..used_tiles,
+            0..n_tiles,
+        );
         self.rows(client, dst_re, dst_im, 0..self.n, rows_nonzero, true);
     }
 
@@ -493,8 +501,8 @@ mod tests {
                 let (mut sr, mut si) = (0.0f64, 0.0f64);
                 for r in 0..n {
                     for c in 0..n {
-                        let a = sign * std::f64::consts::TAU * ((u * r + v * c) % n) as f64
-                            / n as f64;
+                        let a =
+                            sign * std::f64::consts::TAU * ((u * r + v * c) % n) as f64 / n as f64;
                         let (x, y) = (re[r * n + c] as f64, im[r * n + c] as f64);
                         sr += x * a.cos() - y * a.sin();
                         si += x * a.sin() + y * a.cos();
@@ -541,7 +549,11 @@ mod tests {
         let re = lcg_values(n * n, 3);
         let im = lcg_values(n * n, 4);
         let (out_re, out_im) = run(&re, &im, n, 1, Pass::Inverse(rows.clone()));
-        let t = |a: &[f32]| (0..n * n).map(|k| a[(k % n) * n + k / n]).collect::<Vec<_>>();
+        let t = |a: &[f32]| {
+            (0..n * n)
+                .map(|k| a[(k % n) * n + k / n])
+                .collect::<Vec<_>>()
+        };
         let (x_re, x_im) = naive_dft(&t(&re), &t(&im), n, 1.0);
         let (mut max_err, mut max_mag) = (0.0f64, 0.0f64);
         for u in rows {

@@ -368,7 +368,7 @@ pub fn tsne3k_splat_clear<F: Float + CubeElement>(
 /// box's points, so each point's weights are read once rather than once per
 /// grid node, keep all `ni^2` node sums in registers, and reduce them with
 /// `plane_sum`. Writes the `m x m` corner of the real grid only, see
-/// [`tsne3k_splat_clear`]. The cube must be exactly one plane.
+/// [`fn@tsne3k_splat_clear`]. The cube must be exactly one plane.
 ///
 /// ### Params
 ///
@@ -738,7 +738,6 @@ pub fn tsne3k_update<F: Float + CubeElement + LaunchArg>(
     let mut new_x = zero;
     let mut new_y = zero;
     if i < n {
-
         let gx = exag * att_x - rep[(2u32 * i) as usize] / z;
         let gy = exag * att_y - rep[(2u32 * i + 1u32) as usize] / z;
 

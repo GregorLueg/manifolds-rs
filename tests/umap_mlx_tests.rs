@@ -145,3 +145,38 @@ fn umap_mlx_integration_05_densmap_reproducibility() {
     let b = densmap(data.as_ref(), None, &densmap_params_mlx(2.0), 42, 0).unwrap();
     assert_eq!(a, b, "same seed, different MLX densMAP embedding");
 }
+
+/// Test 6: MLX kNN backends agree with the exact CPU search and drop self
+#[test]
+fn umap_mlx_integration_06_knn_recall_vs_exhaustive() {
+    let (data, _) = create_diagnostic_data(400, 16, 42);
+    let k = 15;
+    let params = NearestNeighbourParams::<f64>::default();
+
+    let (exact, _) = run_ann_search(data.as_ref(), k, "exhaustive".into(), &params, 42, 0).unwrap();
+
+    for (ann, min_recall) in [
+        ("exhaustive_mlx", 0.99),
+        ("ivf_mlx", 0.9),
+        ("nndescent_mlx", 0.9),
+    ] {
+        let (idx, dist) = run_ann_search(data.as_ref(), k, ann.into(), &params, 42, 0).unwrap();
+        assert!(idx
+            .iter()
+            .enumerate()
+            .all(|(i, row)| row.len() == k && !row.contains(&i)));
+        assert!(dist.iter().flatten().all(|d| d.is_finite() && *d >= 0.0));
+
+        let hits: usize = idx
+            .iter()
+            .zip(&exact)
+            .map(|(a, b)| a.iter().filter(|j| b.contains(j)).count())
+            .sum();
+        let recall = hits as f64 / (idx.len() * k) as f64;
+        println!("{ann}: recall {recall:.4}");
+        assert!(
+            recall >= min_recall,
+            "{ann} recall {recall:.4} < {min_recall}"
+        );
+    }
+}

@@ -65,8 +65,8 @@ where
 ///
 /// ### Params
 ///
-/// * `x_dist` - Distances in original space [batch_size]
-/// * `z_dist` - Distances in embedding space [batch_size]
+/// * `x_dist` - Distances in original space `[batch_size]`
+/// * `z_dist` - Distances in embedding space `[batch_size]`
 ///
 /// ### Returns
 ///
