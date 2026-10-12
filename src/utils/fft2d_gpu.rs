@@ -1,10 +1,13 @@
 //! Batched complex 2D FFT on the GPU for power-of-two sizes up to
 //! `FFT2D_MAX_N`, used by the device-resident FFT t-SNE optimiser.
 //!
-//! Row / transpose / row / transpose decomposition. Each row is one workgroup
-//! that holds the whole signal in shared memory, with the bit-reversal fused
-//! into the load and a shared twiddle table, so a 2D transform is four
-//! launches. Both directions are unnormalised.
+//! Row / transpose / row decomposition. Each row is one workgroup that holds
+//! the whole signal in shared memory, with the bit-reversal fused into the
+//! load and a shared twiddle table. The forward transform leaves its output
+//! transposed and the inverse takes a transposed input, so a convolution
+//! needs no final transposes as long as the kernel spectrum is transposed
+//! too. Both passes can skip rows known to be zero on the way in or unread
+//! on the way out. Both directions are unnormalised.
 //!
 //! The butterfly and transpose are ported from the `gpu-fft` crate
 //! (Eugene Hauptmann, MIT licence) and its 2D convolution fork.
@@ -14,6 +17,7 @@
 use cubecl::prelude::*;
 use cubecl_utils_rs::prelude::*;
 use std::f32::consts::PI;
+use std::ops::Range;
 
 use crate::prelude::*;
 
@@ -43,28 +47,40 @@ const TRANSPOSE_ROWS_PER_UNIT: usize = 4;
 // Kernels //
 /////////////
 
-/// In-place 1D FFT of every row of a batch of `n x n` complex matrices.
+/// In-place 1D FFT of rows `row0..row0 + rows` of every matrix in a batch of
+/// `n x n` complex matrices.
 ///
 /// One workgroup per row, `n / 2` units, one butterfly pair per unit per
 /// stage. The bit-reversed input order is produced by scattering into shared
-/// memory on the load, which keeps the global reads contiguous.
+/// memory on the load, which keeps the global reads contiguous. Entries at
+/// column `len` and beyond are read as zero.
 ///
 /// ### Params
 ///
 /// * `re` - Real parts, `[batch * n * n]`, rows contiguous
 /// * `im` - Imaginary parts, same layout
+/// * `n_cubes` - `batch * rows`; the grid may hold more cubes than this
+/// * `rows` - Rows transformed per matrix
+/// * `row0` - First row transformed
+/// * `len` - Columns of input that may be nonzero
 /// * `n` - Row length, a power of two; comptime
 /// * `log2n` - `log2(n)`; comptime
 /// * `forward` - `true` for the forward transform (`exp(-i...)`); comptime
 ///
 /// ### Grid mapping
 ///
-/// * `CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X` -> row index across the batch
+/// * `CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X` -> `(matrix, row)` as
+///   `(c / rows, row0 + c % rows)`
 /// * `UNIT_POS_X` -> butterfly pair
 #[cube(launch_unchecked)]
+#[allow(clippy::too_many_arguments)]
 pub fn fft_rows<F: Float + CubeElement>(
     re: &mut Tensor<F>,
     im: &mut Tensor<F>,
+    n_cubes: u32,
+    rows: u32,
+    row0: u32,
+    len: u32,
     #[comptime] n: usize,
     #[comptime] log2n: usize,
     #[comptime] forward: bool,
@@ -75,9 +91,17 @@ pub fn fft_rows<F: Float + CubeElement>(
     let mut tw_re = Shared::<[F]>::new_slice(half);
     let mut tw_im = Shared::<[F]>::new_slice(half);
 
-    let row = (CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) as usize;
+    // c is uniform over the cube, so the whole cube leaves before any sync
+    let c = CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X;
+    if c >= n_cubes {
+        terminate!();
+    }
+    let row = (c / rows) as usize * n + (row0 + c % rows) as usize;
     let local = UNIT_POS_X as usize;
     let base = row * n;
+    let zero = F::new(0.0_f32);
+    let in_a = local < len as usize;
+    let in_b = local + half < len as usize;
 
     let mut br_a = 0usize;
     let mut br_b = 0usize;
@@ -91,10 +115,10 @@ pub fn fft_rows<F: Float + CubeElement>(
         xb >>= 1;
     }
 
-    s_re[br_a] = re[base + local];
-    s_im[br_a] = im[base + local];
-    s_re[br_b] = re[base + local + half];
-    s_im[br_b] = im[base + local + half];
+    s_re[br_a] = select(in_a, re[base + local], zero);
+    s_im[br_a] = select(in_a, im[base + local], zero);
+    s_re[br_b] = select(in_b, re[base + local + half], zero);
+    s_im[br_b] = select(in_b, im[base + local + half], zero);
 
     // T[j] = exp(-2 pi i j / n) for j < n / 2, one entry per unit
     let angle = F::new(-2.0 * PI / n as f32) * F::cast_from(local);
@@ -135,7 +159,9 @@ pub fn fft_rows<F: Float + CubeElement>(
     im[base + local + half] = s_im[local + half];
 }
 
-/// Transpose real and imaginary parts of a batch of `n x n` matrices.
+/// Transpose real and imaginary parts of a block of tiles of a batch of
+/// `n x n` matrices: source tile `(tr0 + y, tc0 + x)` lands at destination
+/// tile `(tc0 + x, tr0 + y)`.
 ///
 /// Tiled through padded shared memory so both the load and the store are
 /// coalesced.
@@ -146,11 +172,14 @@ pub fn fft_rows<F: Float + CubeElement>(
 /// * `in_im` - Input imaginary parts
 /// * `out_re` - Output real parts, transposed
 /// * `out_im` - Output imaginary parts, transposed
+/// * `tr0` - First source tile row
+/// * `tc0` - First source tile column
 /// * `n` - Matrix side, a multiple of 32; comptime
 ///
 /// ### Grid mapping
 ///
-/// * `(CUBE_POS_X, CUBE_POS_Y)` -> tile column and row, `CUBE_POS_Z` -> matrix
+/// * `(CUBE_POS_X, CUBE_POS_Y)` -> source tile column and row past
+///   `(tc0, tr0)`, `CUBE_POS_Z` -> matrix
 /// * `(UNIT_POS_X, UNIT_POS_Y)` -> column and first row inside the tile
 #[cube(launch_unchecked)]
 pub fn transpose_paired<F: Float + CubeElement>(
@@ -158,6 +187,8 @@ pub fn transpose_paired<F: Float + CubeElement>(
     in_im: &Tensor<F>,
     out_re: &mut Tensor<F>,
     out_im: &mut Tensor<F>,
+    tr0: u32,
+    tc0: u32,
     #[comptime] n: usize,
 ) {
     let tile = TRANSPOSE_TILE;
@@ -167,8 +198,8 @@ pub fn transpose_paired<F: Float + CubeElement>(
     let mut s_im = Shared::<[F]>::new_slice(TRANSPOSE_TILE * (TRANSPOSE_TILE + 1));
 
     let off = CUBE_POS_Z as usize * n * n;
-    let tr = CUBE_POS_Y as usize;
-    let tc = CUBE_POS_X as usize;
+    let tr = (CUBE_POS_Y + tr0) as usize;
+    let tc = (CUBE_POS_X + tc0) as usize;
     let tx = UNIT_POS_X as usize;
     let ty = UNIT_POS_Y as usize;
 
@@ -202,10 +233,9 @@ pub struct Fft2dPlan {
     pub n: usize,
     /// Number of matrices transformed per call
     pub batch: usize,
-    /// One cube per row across the batch
-    cubes_rows: CubeCount,
-    /// One cube per `32 x 32` tile per matrix
-    cubes_tiles: CubeCount,
+    /// Device limit on either grid axis; every partial pass launches fewer
+    /// cubes than the full grids checked in [`Fft2dPlan::new`]
+    max_grid_dim: u32,
 }
 
 impl Fft2dPlan {
@@ -241,70 +271,114 @@ impl Fft2dPlan {
         }
 
         let (gx, gy) = grid_2d((batch * n) as u32, limits)?;
-        let cubes_rows = checked_cube_count("fft_rows", gx, gy, 1, limits)?;
+        checked_cube_count("fft_rows", gx, gy, 1, limits)?;
         let tiles = (n / TRANSPOSE_TILE) as u32;
-        let cubes_tiles =
-            checked_cube_count("transpose_paired", tiles, tiles, batch as u32, limits)?;
+        checked_cube_count("transpose_paired", tiles, tiles, batch as u32, limits)?;
 
+        let (mx, my, _) = limits.max_cube_count;
         Ok(Self {
             n,
             batch,
-            cubes_rows,
-            cubes_tiles,
+            max_grid_dim: mx.min(my),
         })
     }
 
-    /// Run the batched 2D FFT in place on `(re, im)`.
+    /// Forward 2D FFT of `src`, written transposed to `dst`.
     ///
-    /// `(tmp_re, tmp_im)` receive the intermediate transpose and are left in
-    /// an unspecified state. All four buffers hold at least `batch * n * n`
-    /// elements.
+    /// Only rows `0..rows_nonzero` of each source matrix may be nonzero; the
+    /// other rows are skipped. `src` is left in an unspecified state. Both
+    /// buffers hold at least `batch * n * n` elements.
     ///
     /// ### Params
     ///
     /// * `client` - CubeCL compute client
-    /// * `re` - Real parts, overwritten with the transform
-    /// * `im` - Imaginary parts, overwritten with the transform
-    /// * `tmp_re` - Scratch
-    /// * `tmp_im` - Scratch
-    /// * `forward` - `true` for the forward transform
-    pub fn execute<F: ManifoldsFloatGpu>(
+    /// * `src_re` - Input real parts, clobbered
+    /// * `src_im` - Input imaginary parts, clobbered
+    /// * `dst_re` - Output real parts, the transpose of the spectrum
+    /// * `dst_im` - Output imaginary parts, same layout
+    /// * `rows_nonzero` - Leading rows of the input that may be nonzero
+    #[allow(clippy::too_many_arguments)]
+    pub fn forward_transposed<F: ManifoldsFloatGpu>(
         &self,
         client: &Client,
-        re: &GpuTensor<F>,
-        im: &GpuTensor<F>,
-        tmp_re: &GpuTensor<F>,
-        tmp_im: &GpuTensor<F>,
-        forward: bool,
+        src_re: &GpuTensor<F>,
+        src_im: &GpuTensor<F>,
+        dst_re: &GpuTensor<F>,
+        dst_im: &GpuTensor<F>,
+        rows_nonzero: usize,
     ) {
-        self.rows(client, re, im, forward);
-        self.transpose(client, re, im, tmp_re, tmp_im);
-        self.rows(client, tmp_re, tmp_im, forward);
-        self.transpose(client, tmp_re, tmp_im, re, im);
+        let n_tiles = self.n / TRANSPOSE_TILE;
+        let used_tiles = rows_nonzero.div_ceil(TRANSPOSE_TILE);
+        self.rows(client, src_re, src_im, 0..rows_nonzero, self.n, true);
+        self.transpose(client, src_re, src_im, dst_re, dst_im, 0..used_tiles, 0..n_tiles);
+        self.rows(client, dst_re, dst_im, 0..self.n, rows_nonzero, true);
     }
 
-    /// Launch the row pass.
+    /// Inverse 2D FFT of the matrix whose transpose is in `src`, written in
+    /// normal layout to `dst`.
+    ///
+    /// Only rows `out_rows` of each output matrix are computed; the rest of
+    /// `dst` is left in an unspecified state, as is `src`. Both buffers hold
+    /// at least `batch * n * n` elements.
+    ///
+    /// ### Params
+    ///
+    /// * `client` - CubeCL compute client
+    /// * `src_re` - Transposed input real parts, clobbered
+    /// * `src_im` - Transposed input imaginary parts, clobbered
+    /// * `dst_re` - Output real parts
+    /// * `dst_im` - Output imaginary parts
+    /// * `out_rows` - Output rows that are read afterwards
+    #[allow(clippy::too_many_arguments)]
+    pub fn inverse_from_transposed<F: ManifoldsFloatGpu>(
+        &self,
+        client: &Client,
+        src_re: &GpuTensor<F>,
+        src_im: &GpuTensor<F>,
+        dst_re: &GpuTensor<F>,
+        dst_im: &GpuTensor<F>,
+        out_rows: Range<usize>,
+    ) {
+        let n_tiles = self.n / TRANSPOSE_TILE;
+        let tiles = out_rows.start / TRANSPOSE_TILE..out_rows.end.div_ceil(TRANSPOSE_TILE);
+        self.rows(client, src_re, src_im, 0..self.n, self.n, false);
+        self.transpose(client, src_re, src_im, dst_re, dst_im, 0..n_tiles, tiles);
+        self.rows(client, dst_re, dst_im, out_rows, self.n, false);
+    }
+
+    /// Launch a row pass over rows `rows` of every matrix.
     ///
     /// ### Params
     ///
     /// * `client` - CubeCL compute client
     /// * `re` - Real parts, transformed in place
     /// * `im` - Imaginary parts, transformed in place
+    /// * `rows` - Rows to transform
+    /// * `len` - Columns of input that may be nonzero
     /// * `forward` - Transform direction
     fn rows<F: ManifoldsFloatGpu>(
         &self,
         client: &Client,
         re: &GpuTensor<F>,
         im: &GpuTensor<F>,
+        rows: Range<usize>,
+        len: usize,
         forward: bool,
     ) {
+        let n_cubes = (self.batch * rows.len()) as u32;
+        let (gx, gy) = grid_2d_limited(n_cubes, self.max_grid_dim)
+            .expect("no larger than the row grid checked in Fft2dPlan::new");
         unsafe {
             fft_rows::launch_unchecked::<F>(
                 client,
-                self.cubes_rows.clone(),
+                CubeCount::Static(gx, gy, 1),
                 CubeDim::new_1d((self.n / 2) as u32),
                 re.into_tensor_arg(),
                 im.into_tensor_arg(),
+                n_cubes,
+                rows.len() as u32,
+                rows.start as u32,
+                len as u32,
                 self.n,
                 self.n.trailing_zeros() as usize,
                 forward,
@@ -312,7 +386,7 @@ impl Fft2dPlan {
         }
     }
 
-    /// Launch the paired transpose `src -> dst`.
+    /// Launch the paired transpose `src -> dst` over a block of source tiles.
     ///
     /// ### Params
     ///
@@ -321,6 +395,9 @@ impl Fft2dPlan {
     /// * `src_im` - Source imaginary parts
     /// * `dst_re` - Destination real parts
     /// * `dst_im` - Destination imaginary parts
+    /// * `tile_rows` - Source tile rows to move
+    /// * `tile_cols` - Source tile columns to move
+    #[allow(clippy::too_many_arguments)]
     fn transpose<F: ManifoldsFloatGpu>(
         &self,
         client: &Client,
@@ -328,11 +405,17 @@ impl Fft2dPlan {
         src_im: &GpuTensor<F>,
         dst_re: &GpuTensor<F>,
         dst_im: &GpuTensor<F>,
+        tile_rows: Range<usize>,
+        tile_cols: Range<usize>,
     ) {
         unsafe {
             transpose_paired::launch_unchecked::<F>(
                 client,
-                self.cubes_tiles.clone(),
+                CubeCount::Static(
+                    tile_cols.len() as u32,
+                    tile_rows.len() as u32,
+                    self.batch as u32,
+                ),
                 CubeDim::new_2d(
                     TRANSPOSE_TILE as u32,
                     (TRANSPOSE_TILE / TRANSPOSE_ROWS_PER_UNIT) as u32,
@@ -341,6 +424,8 @@ impl Fft2dPlan {
                 src_im.into_tensor_arg(),
                 dst_re.into_tensor_arg(),
                 dst_im.into_tensor_arg(),
+                tile_rows.start as u32,
+                tile_cols.start as u32,
                 self.n,
             );
         }
@@ -369,62 +454,118 @@ mod tests {
             .collect()
     }
 
-    /// Upload, transform in place, read back.
-    fn run(re: &[f32], im: &[f32], n: usize, batch: usize, forward: bool) -> (Vec<f32>, Vec<f32>) {
+    /// Which transform [`run`] applies.
+    enum Pass {
+        /// [`Fft2dPlan::forward_transposed`] with this many nonzero rows
+        Forward(usize),
+        /// [`Fft2dPlan::inverse_from_transposed`] for these output rows
+        Inverse(Range<usize>),
+    }
+
+    /// Upload, transform, read back the destination.
+    fn run(re: &[f32], im: &[f32], n: usize, batch: usize, pass: Pass) -> (Vec<f32>, Vec<f32>) {
         let client = <WgpuRuntime>::client(&WgpuDevice::default());
         let limits = GpuLimits::from_client(&client);
         let plan = Fft2dPlan::new(n, batch, &limits).unwrap();
         let len = batch * n * n;
-        let g_re = GpuTensor::<f32>::from_slice(re, vec![len], &client).unwrap();
-        let g_im = GpuTensor::<f32>::from_slice(im, vec![len], &client).unwrap();
-        let t_re = GpuTensor::<f32>::empty(vec![len], &client).unwrap();
-        let t_im = GpuTensor::<f32>::empty(vec![len], &client).unwrap();
-        plan.execute(&client, &g_re, &g_im, &t_re, &t_im, forward);
-        (g_re.read(&client).unwrap(), g_im.read(&client).unwrap())
+        let s_re = GpuTensor::<f32>::from_slice(re, vec![len], &client).unwrap();
+        let s_im = GpuTensor::<f32>::from_slice(im, vec![len], &client).unwrap();
+        let d_re = GpuTensor::<f32>::empty(vec![len], &client).unwrap();
+        let d_im = GpuTensor::<f32>::empty(vec![len], &client).unwrap();
+        match pass {
+            Pass::Forward(rows) => {
+                plan.forward_transposed(&client, &s_re, &s_im, &d_re, &d_im, rows)
+            }
+            Pass::Inverse(rows) => {
+                plan.inverse_from_transposed(&client, &s_re, &s_im, &d_re, &d_im, rows)
+            }
+        }
+        (d_re.read(&client).unwrap(), d_im.read(&client).unwrap())
+    }
+
+    /// Naive 2D DFT of an `n x n` complex matrix in `f64`, `sign` -1 for
+    /// forward and +1 for inverse, unnormalised.
+    fn naive_dft(re: &[f32], im: &[f32], n: usize, sign: f64) -> (Vec<f64>, Vec<f64>) {
+        let mut out_re = vec![0.0f64; n * n];
+        let mut out_im = vec![0.0f64; n * n];
+        for u in 0..n {
+            for v in 0..n {
+                let (mut sr, mut si) = (0.0f64, 0.0f64);
+                for r in 0..n {
+                    for c in 0..n {
+                        let a = sign * std::f64::consts::TAU * ((u * r + v * c) % n) as f64
+                            / n as f64;
+                        let (x, y) = (re[r * n + c] as f64, im[r * n + c] as f64);
+                        sr += x * a.cos() - y * a.sin();
+                        si += x * a.sin() + y * a.cos();
+                    }
+                }
+                out_re[u * n + v] = sr;
+                out_im[u * n + v] = si;
+            }
+        }
+        (out_re, out_im)
     }
 
     #[test]
-    fn test_fft2d_matches_naive_dft() {
-        let n = 64;
-        let re = lcg_values(n * n, 1);
-        let im = lcg_values(n * n, 2);
-        for forward in [true, false] {
-            let (out_re, out_im) = run(&re, &im, n, 1, forward);
-            let sign = if forward { -1.0 } else { 1.0 };
-            let (mut max_err, mut max_mag) = (0.0f64, 0.0f64);
-            for u in 0..n {
-                for v in 0..n {
-                    let (mut sr, mut si) = (0.0f64, 0.0f64);
-                    for r in 0..n {
-                        for c in 0..n {
-                            let a = sign * std::f64::consts::TAU * ((u * r + v * c) % n) as f64
-                                / n as f64;
-                            let (x, y) = (re[r * n + c] as f64, im[r * n + c] as f64);
-                            sr += x * a.cos() - y * a.sin();
-                            si += x * a.sin() + y * a.cos();
-                        }
-                    }
-                    let k = u * n + v;
-                    max_err = max_err
-                        .max((out_re[k] as f64 - sr).abs())
-                        .max((out_im[k] as f64 - si).abs());
-                    max_mag = max_mag.max(sr.abs()).max(si.abs());
-                }
+    fn test_fft2d_forward_transposed_matches_naive_dft() {
+        // rows past `nonzero` are zero and skipped; 40 is not tile-aligned
+        let (n, nonzero) = (64, 40);
+        let mut re = lcg_values(n * n, 1);
+        let mut im = lcg_values(n * n, 2);
+        re[nonzero * n..].fill(0.0);
+        im[nonzero * n..].fill(0.0);
+        let (out_re, out_im) = run(&re, &im, n, 1, Pass::Forward(nonzero));
+        let (x_re, x_im) = naive_dft(&re, &im, n, -1.0);
+        let (mut max_err, mut max_mag) = (0.0f64, 0.0f64);
+        for u in 0..n {
+            for v in 0..n {
+                let (k, kt) = (u * n + v, v * n + u);
+                max_err = max_err
+                    .max((out_re[kt] as f64 - x_re[k]).abs())
+                    .max((out_im[kt] as f64 - x_im[k]).abs());
+                max_mag = max_mag.max(x_re[k].abs()).max(x_im[k].abs());
             }
-            assert!(
-                max_err < 1e-4 * max_mag,
-                "forward = {forward}: max err {max_err:.3e} vs max |X| {max_mag:.3e}"
-            );
         }
+        assert!(
+            max_err < 1e-4 * max_mag,
+            "max err {max_err:.3e} vs max |X| {max_mag:.3e}"
+        );
+    }
+
+    #[test]
+    fn test_fft2d_inverse_from_transposed_matches_naive_dft() {
+        // only the output rows in 20..45 are computed; neither end is
+        // tile-aligned
+        let (n, rows) = (64, 20..45);
+        let re = lcg_values(n * n, 3);
+        let im = lcg_values(n * n, 4);
+        let (out_re, out_im) = run(&re, &im, n, 1, Pass::Inverse(rows.clone()));
+        let t = |a: &[f32]| (0..n * n).map(|k| a[(k % n) * n + k / n]).collect::<Vec<_>>();
+        let (x_re, x_im) = naive_dft(&t(&re), &t(&im), n, 1.0);
+        let (mut max_err, mut max_mag) = (0.0f64, 0.0f64);
+        for u in rows {
+            for v in 0..n {
+                let k = u * n + v;
+                max_err = max_err
+                    .max((out_re[k] as f64 - x_re[k]).abs())
+                    .max((out_im[k] as f64 - x_im[k]).abs());
+                max_mag = max_mag.max(x_re[k].abs()).max(x_im[k].abs());
+            }
+        }
+        assert!(
+            max_err < 1e-4 * max_mag,
+            "max err {max_err:.3e} vs max |X| {max_mag:.3e}"
+        );
     }
 
     #[test]
     fn test_fft2d_batched_roundtrip() {
         let (n, batch) = (128, 3);
-        let re = lcg_values(batch * n * n, 3);
-        let im = lcg_values(batch * n * n, 4);
-        let (f_re, f_im) = run(&re, &im, n, batch, true);
-        let (b_re, b_im) = run(&f_re, &f_im, n, batch, false);
+        let re = lcg_values(batch * n * n, 5);
+        let im = lcg_values(batch * n * n, 6);
+        let (f_re, f_im) = run(&re, &im, n, batch, Pass::Forward(n));
+        let (b_re, b_im) = run(&f_re, &f_im, n, batch, Pass::Inverse(0..n));
         let scale = 1.0 / (n * n) as f32;
         for i in 0..re.len() {
             assert!((b_re[i] * scale - re[i]).abs() < 1e-4, "re[{i}]");

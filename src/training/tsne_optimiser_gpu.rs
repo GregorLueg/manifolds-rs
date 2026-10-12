@@ -430,7 +430,8 @@ pub fn tsne3k_splat_plane<F: Float + CubeElement>(
 /// x-convolution outputs into one complex grid.
 ///
 /// Every product has a real inverse, so `W K_1 + i W K_x` inverts to
-/// `Z + i F_x` and `W K_y` to `F_y`.
+/// `Z + i F_x` and `W K_y` to `F_y`. Elementwise, so it works the same on
+/// the transposed spectra the FFT plan hands over.
 ///
 /// ### Params
 ///
@@ -999,21 +1000,24 @@ struct GridBuffers<T: ManifoldsFloatGpu> {
     box_count: GpuTensor<u32>,
     /// Box starts `[nb^2 + 1]`
     box_start: GpuTensor<u32>,
-    /// Charge grid, real `[n_fft^2]`
+    /// Charge grid, real `[n_fft^2]`; clobbered by the forward transform
     g_re: GpuTensor<T>,
     /// Charge grid, imaginary
     g_im: GpuTensor<T>,
-    /// Products / convolved grids, real `[2 * n_fft^2]`
+    /// Spectrum products, transposed, real `[2 * n_fft^2]`; clobbered by
+    /// the inverse transform
     p_re: GpuTensor<T>,
-    /// Products / convolved grids, imaginary
+    /// Spectrum products, imaginary
     p_im: GpuTensor<T>,
-    /// Kernel spectra, real `[3 * n_fft^2]`
+    /// Kernel spectra, transposed, real `[3 * n_fft^2]`
     k_re: GpuTensor<T>,
     /// Kernel spectra, imaginary
     k_im: GpuTensor<T>,
-    /// FFT transpose scratch, real `[3 * n_fft^2]`
+    /// Transform output, real `[3 * n_fft^2]`: the transposed charge
+    /// spectrum, then the convolved grids, and the spatial kernels during a
+    /// rebuild
     tmp_re: GpuTensor<T>,
-    /// FFT transpose scratch, imaginary
+    /// Transform output, imaginary
     tmp_im: GpuTensor<T>,
     /// One cube per `wg` grid elements
     cubes_grid: CubeCount,
@@ -1111,8 +1115,8 @@ impl<T: ManifoldsFloatGpu> GridBuffers<T> {
                 client,
                 bufs.cubes_kernel.clone(),
                 CubeDim::new_1d(wg),
-                bufs.k_re.into_tensor_arg(),
-                bufs.k_im.into_tensor_arg(),
+                bufs.tmp_re.into_tensor_arg(),
+                bufs.tmp_im.into_tensor_arg(),
                 m as u32,
                 T::from_f64(h).unwrap(),
                 T::from_f64(1.0 / nn as f64).unwrap(),
@@ -1120,13 +1124,13 @@ impl<T: ManifoldsFloatGpu> GridBuffers<T> {
                 wg,
             );
         }
-        bufs.plan_3.execute(
+        bufs.plan_3.forward_transposed(
             client,
-            &bufs.k_re,
-            &bufs.k_im,
             &bufs.tmp_re,
             &bufs.tmp_im,
-            true,
+            &bufs.k_re,
+            &bufs.k_im,
+            nf,
         );
 
         Ok(bufs)
@@ -1406,13 +1410,17 @@ impl<T: ManifoldsFloatGpu> TsneGpuState<T> {
             }
         }
 
-        grid.plan_1.execute(
+        // spectra stay transposed between the two transforms; only the
+        // first m rows of charges are nonzero and only rows m..2m of the
+        // convolution are read
+        let m = g.n_boxes * self.ni;
+        grid.plan_1.forward_transposed(
             client,
             &grid.g_re,
             &grid.g_im,
             &grid.tmp_re,
             &grid.tmp_im,
-            true,
+            m,
         );
 
         unsafe {
@@ -1420,8 +1428,8 @@ impl<T: ManifoldsFloatGpu> TsneGpuState<T> {
                 client,
                 grid.cubes_grid.clone(),
                 dim,
-                grid.g_re.into_tensor_arg(),
-                grid.g_im.into_tensor_arg(),
+                grid.tmp_re.into_tensor_arg(),
+                grid.tmp_im.into_tensor_arg(),
                 grid.k_re.into_tensor_arg(),
                 grid.k_im.into_tensor_arg(),
                 grid.p_re.into_tensor_arg(),
@@ -1431,13 +1439,13 @@ impl<T: ManifoldsFloatGpu> TsneGpuState<T> {
             );
         }
 
-        grid.plan_2.execute(
+        grid.plan_2.inverse_from_transposed(
             client,
             &grid.p_re,
             &grid.p_im,
             &grid.tmp_re,
             &grid.tmp_im,
-            false,
+            m..2 * m,
         );
 
         unsafe {
@@ -1445,8 +1453,8 @@ impl<T: ManifoldsFloatGpu> TsneGpuState<T> {
                 client,
                 self.cubes_pts.clone(),
                 dim,
-                grid.p_re.into_tensor_arg(),
-                grid.p_im.into_tensor_arg(),
+                grid.tmp_re.into_tensor_arg(),
+                grid.tmp_im.into_tensor_arg(),
                 self.box_id.into_tensor_arg(),
                 self.wx.into_tensor_arg(),
                 self.wy.into_tensor_arg(),
