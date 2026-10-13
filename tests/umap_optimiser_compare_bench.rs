@@ -6,10 +6,13 @@
 //!
 //! The `knn_compare_*` tests run exhaustive, IVF and NN-Descent on both
 //! devices at every input dimension in `KNN_DIMS`, `KNN_REPEATS` times each,
-//! and score IVF and NN-Descent recall against the MLX exhaustive result. The
-//! `umap_optimiser_compare_*` tests time only the optimiser call, each backend
-//! `REPEATS` times. In both the first run pays shader compilation and
-//! buffer-pool first touch, so the best run is reported.
+//! and score IVF and NN-Descent recall and distance ratio against the MLX
+//! exhaustive result. The `knn_embedding_quality_*` tests embed from each
+//! graph and score the layouts by label purity and separation, next to a
+//! second exhaustive run as the noise floor. The `umap_optimiser_compare_*`
+//! tests time only the optimiser call, each backend `REPEATS` times. In the
+//! timed tests the first run pays shader compilation and buffer-pool first
+//! touch, so the best run is reported.
 //!
 //! ```sh
 //! cargo test --release --features gpu,mlx,large_scale_diagnostics \
@@ -58,6 +61,9 @@ const REPEATS: usize = 3;
 /// Timed repeats per kNN backend. Exhaustive at 1m is minutes per run.
 const KNN_REPEATS: usize = 2;
 
+/// kNN result: neighbour indices and Euclidean distances, self excluded.
+type Knn = (Vec<Vec<usize>>, Vec<Vec<f32>>);
+
 /////////////
 // Helpers //
 /////////////
@@ -86,13 +92,13 @@ fn random_embedding(n: usize, seed: u64) -> Vec<Vec<f32>> {
 /// ### Params
 ///
 /// * `embd` - Embedding `[n][2]`
-/// * `labels` - Cluster label per node, `0..5`
+/// * `labels` - Cluster label per node, `0..n_clusters`
 ///
 /// ### Returns
 ///
 /// `min_inter / mean_intra`.
 fn separation(embd: &[Vec<f32>], labels: &[usize]) -> f64 {
-    let k = 5;
+    let k = labels.iter().max().map_or(0, |&m| m + 1);
     let mut c = vec![[0.0f64; 3]; k];
     for (p, &l) in embd.iter().zip(labels) {
         c[l][0] += p[0] as f64;
@@ -154,14 +160,14 @@ fn time_backend(
 /// ### Params
 ///
 /// * `name` - Backend label
-/// * `run` - Runs the search, returns the neighbour indices
+/// * `run` - Runs the search, returns the neighbour indices and distances
 ///
 /// ### Returns
 ///
-/// The best time and the indices from the last run.
-fn time_knn(name: &str, run: impl Fn() -> Vec<Vec<usize>>) -> (Duration, Vec<Vec<usize>>) {
+/// The best time and the result of the last run.
+fn time_knn(name: &str, run: impl Fn() -> Knn) -> (Duration, Knn) {
     let mut times = Vec::with_capacity(KNN_REPEATS);
-    let mut last = Vec::new();
+    let mut last = (Vec::new(), Vec::new());
     for _ in 0..KNN_REPEATS {
         let start = Instant::now();
         last = run();
@@ -194,6 +200,65 @@ fn recall(found: &[Vec<usize>], truth: &[Vec<usize>]) -> f64 {
     hits as f64 / (truth.len() * K) as f64
 }
 
+/// Mean and median over points of the ratio of the mean distance to the
+/// neighbours found to the mean distance to the reference neighbours. `1.0`
+/// means the search lost nothing in distance terms, whatever its recall.
+/// Points whose reference distances are all zero are skipped.
+///
+/// ### Params
+///
+/// * `found` - Neighbour distances under test, Euclidean, self excluded
+/// * `truth` - Reference neighbour distances, same form
+///
+/// ### Returns
+///
+/// `(mean, median)` of the per-point ratio.
+fn dist_ratio(found: &[Vec<f32>], truth: &[Vec<f32>]) -> (f64, f64) {
+    let mean = |v: &[f32]| v.iter().map(|&d| d as f64).sum::<f64>() / v.len() as f64;
+    let mut r: Vec<f64> = found
+        .iter()
+        .zip(truth)
+        .filter_map(|(a, b)| {
+            let t = mean(b);
+            (t > 0.0).then(|| mean(a) / t)
+        })
+        .collect();
+    r.sort_unstable_by(f64::total_cmp);
+    let avg = r.iter().sum::<f64>() / r.len() as f64;
+    (avg, r[r.len() / 2])
+}
+
+/// Fraction of each point's `K` nearest neighbours in the embedding that
+/// share its cluster label, averaged over points. Neighbours from the MLX
+/// exhaustive search on the 2D coordinates.
+///
+/// ### Params
+///
+/// * `embd` - Embedding `[n][2]`
+/// * `labels` - Cluster label per node
+///
+/// ### Returns
+///
+/// Label purity in `[0, 1]`.
+fn purity(embd: &[Vec<f32>], labels: &[usize]) -> f64 {
+    let m = faer::Mat::from_fn(embd.len(), 2, |i, j| embd[i][j]);
+    let (idx, _) = run_ann_search(
+        m.as_ref(),
+        K,
+        "exhaustive_mlx".into(),
+        &NearestNeighbourParams::<f32>::default(),
+        42,
+        0,
+    )
+    .unwrap();
+    let same: usize = idx
+        .iter()
+        .enumerate()
+        .map(|(i, nb)| nb.iter().filter(|&&j| labels[j] == labels[i]).count())
+        .sum();
+    same as f64 / (embd.len() * K) as f64
+}
+
 /// Time exhaustive, IVF and NN-Descent kNN on wgpu and MLX.
 ///
 /// ### Params
@@ -204,33 +269,35 @@ fn run_knn_compare(data: faer::MatRef<f32>, device: &WgpuDevice) {
     let nn_cpu = NearestNeighbourParams::<f32>::default();
     let nn_gpu = NearestNeighbourParamsGpu::<f32>::default();
     let wgpu = |ann: &str| {
-        run_ann_search_gpu(data, K, ann.into(), &nn_gpu, device.clone().into(), 42, 0)
-            .unwrap()
-            .0
+        run_ann_search_gpu(data, K, ann.into(), &nn_gpu, device.clone().into(), 42, 0).unwrap()
     };
-    let mlx = |ann: &str| {
-        run_ann_search(data, K, ann.into(), &nn_cpu, 42, 0)
-            .unwrap()
-            .0
-    };
+    let mlx = |ann: &str| run_ann_search(data, K, ann.into(), &nn_cpu, 42, 0).unwrap();
 
     println!("  -- kNN, k = {K} --");
     let (ex_wgpu, _) = time_knn("exhaustive wgpu", || wgpu("exhaustive_gpu"));
     let (ex_mlx, truth) = time_knn("exhaustive mlx", || mlx("exhaustive_mlx"));
-    let (ivf_wgpu, ivf_wgpu_idx) = time_knn("ivf wgpu", || wgpu("ivf_gpu"));
-    let (ivf_mlx, ivf_mlx_idx) = time_knn("ivf mlx", || mlx("ivf_mlx"));
-    let (nd_wgpu, nd_wgpu_idx) = time_knn("nndescent wgpu", || wgpu("nndescent_gpu"));
-    let (nd_mlx, nd_mlx_idx) = time_knn("nndescent mlx", || mlx("nndescent_mlx"));
+    let (ivf_wgpu, ivf_wgpu_res) = time_knn("ivf wgpu", || wgpu("ivf_gpu"));
+    let (ivf_mlx, ivf_mlx_res) = time_knn("ivf mlx", || mlx("ivf_mlx"));
+    let (nd_wgpu, nd_wgpu_res) = time_knn("nndescent wgpu", || wgpu("nndescent_gpu"));
+    let (nd_mlx, nd_mlx_res) = time_knn("nndescent mlx", || mlx("nndescent_mlx"));
     println!(
-        "  exhaustive: mlx {:.1}x over wgpu | ivf: mlx {:.1}x over wgpu, recall wgpu {:.4}, mlx {:.4} | nndescent: mlx {:.1}x over wgpu, recall wgpu {:.4}, mlx {:.4}",
+        "  speed-up of mlx over wgpu: exhaustive {:.1}x | ivf {:.1}x | nndescent {:.1}x",
         ex_wgpu.as_secs_f64() / ex_mlx.as_secs_f64(),
         ivf_wgpu.as_secs_f64() / ivf_mlx.as_secs_f64(),
-        recall(&ivf_wgpu_idx, &truth),
-        recall(&ivf_mlx_idx, &truth),
         nd_wgpu.as_secs_f64() / nd_mlx.as_secs_f64(),
-        recall(&nd_wgpu_idx, &truth),
-        recall(&nd_mlx_idx, &truth)
     );
+    for (name, res) in [
+        ("ivf wgpu", &ivf_wgpu_res),
+        ("ivf mlx", &ivf_mlx_res),
+        ("nndescent wgpu", &nd_wgpu_res),
+        ("nndescent mlx", &nd_mlx_res),
+    ] {
+        let (mean, median) = dist_ratio(&res.1, &truth.1);
+        println!(
+            "  {name:<16} recall {:.4} | dist ratio mean {mean:.4}, median {median:.4}",
+            recall(&res.0, &truth.0)
+        );
+    }
 }
 
 /// Run the kNN comparison at every input dimension in `KNN_DIMS`.
@@ -247,6 +314,69 @@ fn run_knn_sweep(n: usize) {
             data.nrows()
         );
         run_knn_compare(data.as_ref(), &device);
+    }
+}
+
+/// Embed the same data from the exhaustive, IVF and NN-Descent graphs (all
+/// MLX) and score each layout by label purity and separation. A second
+/// exhaustive run with another initialisation and seed gives the noise floor.
+///
+/// ### Params
+///
+/// * `n` - Number of points, split over `KNN_CLUSTERS` clusters
+/// * `d` - Input dimension
+fn run_embedding_quality(n: usize, d: usize) {
+    let device = WgpuDevice::default();
+    let (data, labels) = create_clustered_data_f32(n / KNN_CLUSTERS, KNN_CLUSTERS, d, 42);
+    println!(
+        "\n=== embedding quality, n = {}, d = {d}, {KNN_CLUSTERS} clusters, UMAP Adam on MLX, {N_EPOCHS} epochs ===",
+        data.nrows()
+    );
+    let nn = NearestNeighbourParams::<f32>::default();
+    let knn = |ann: &str| run_ann_search(data.as_ref(), K, ann.into(), &nn, 42, 0).unwrap();
+    let exact = knn("exhaustive_mlx");
+    let params = UmapOptimParams::<f32> {
+        n_epochs: N_EPOCHS,
+        ..Default::default()
+    };
+
+    let runs: [(&str, Knn, u64); 4] = [
+        ("exhaustive", exact.clone(), 7),
+        ("exhaustive seed 2", exact.clone(), 8),
+        ("ivf", knn("ivf_mlx"), 7),
+        ("nndescent", knn("nndescent_mlx"), 7),
+    ];
+    for (name, res, seed) in runs {
+        let r = recall(&res.0, &exact.0);
+        let (mean, median) = dist_ratio(&res.1, &exact.1);
+        let (graph, _, _) = construct_umap_graph_gpu::<f32>(
+            data.as_ref(),
+            Some(res),
+            K,
+            "exhaustive_gpu".to_string(),
+            &UmapGraphParams::default(),
+            &NearestNeighbourParamsGpu::default(),
+            N_EPOCHS,
+            device.clone().into(),
+            42,
+            0,
+        )
+        .expect("graph construction failed");
+        let mut embd = random_embedding(data.nrows(), seed);
+        optimise_embedding_adam_mlx(
+            &mut embd,
+            &coo_to_adjacency_list(&graph),
+            &params,
+            None,
+            seed,
+            0,
+        )
+        .unwrap();
+        println!(
+            "  {name:<18} recall {r:.4} | dist ratio mean {mean:.4}, median {median:.4} | purity {:.4} | separation {:.2}",
+            purity(&embd, &labels),
+            separation(&embd, &labels)
+        );
     }
 }
 
@@ -339,6 +469,17 @@ fn knn_compare_500k() {
 #[ignore = "takes a while; run with -- --ignored"]
 fn knn_compare_1m() {
     run_knn_sweep(1_000_000);
+}
+
+#[test]
+fn knn_embedding_quality_100k() {
+    run_embedding_quality(100_000, 256);
+}
+
+#[test]
+#[ignore = "takes a while; run with -- --ignored"]
+fn knn_embedding_quality_500k() {
+    run_embedding_quality(500_000, 256);
 }
 
 #[test]
