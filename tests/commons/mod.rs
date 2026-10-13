@@ -68,6 +68,54 @@ pub fn mat_to_f32(input: Mat<f64>) -> Mat<f32> {
     Mat::from_fn(input.nrows(), input.ncols(), |i, j| input[(i, j)] as f32)
 }
 
+/// Many clusters at random centres, as `f32`, separated equally well at any
+/// dimension.
+///
+/// Centre coordinates are uniform in `[-3.5, 3.5]` and the noise uniform in
+/// `[-1.5, 1.5]`, both per axis. Distances between centres and between points
+/// of one cluster both grow as `sqrt(n_dim)`, so their ratio (about 2.3) does
+/// not depend on the dimension.
+///
+/// ### Params
+///
+/// * `n_per_cluster` - Points per cluster
+/// * `n_clusters` - Number of clusters
+/// * `n_dim` - Number of dimensions
+/// * `seed` - Seed for the random number generator
+///
+/// ### Returns
+///
+/// Tuple of the data matrix and the labels vector
+#[allow(unused)]
+pub fn create_clustered_data_f32(
+    n_per_cluster: usize,
+    n_clusters: usize,
+    n_dim: usize,
+    seed: u64,
+) -> (Mat<f32>, Vec<usize>) {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let n_total = n_per_cluster * n_clusters;
+
+    let mut data_vec = Vec::with_capacity(n_total * n_dim);
+    let mut labels = Vec::with_capacity(n_total);
+
+    for cluster_id in 0..n_clusters {
+        let centre: Vec<f64> = (0..n_dim)
+            .map(|_| rng.random::<f64>() * 7.0 - 3.5)
+            .collect();
+        for _ in 0..n_per_cluster {
+            for c in &centre {
+                let noise: f64 = rng.random::<f64>() * 3.0 - 1.5;
+                data_vec.push((c + noise) as f32);
+            }
+            labels.push(cluster_id);
+        }
+    }
+
+    let data = Mat::from_fn(n_total, n_dim, |i, j| data_vec[i * n_dim + j]);
+    (data, labels)
+}
+
 /// Clusters with deliberately different spreads, as `f32` for the GPU path.
 #[allow(unused)]
 pub fn variable_density_clusters_f32(
