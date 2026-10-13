@@ -39,7 +39,7 @@ gpu = ["manifolds-rs/gpu", "dep:cubecl"]
 mlx = ["manifolds-rs/mlx"]
 
 [dependencies]
-manifolds-rs = { path = "..", default-features = false }
+manifolds-rs = { path = "..", default-features = false, features = ["fft_tsne"] }
 # `cpu` is deliberately absent. CubeCL's software CPU runtime pulls a prebuilt
 # LLVM needing glibc 2.33+, which no manylinux container has, so a wheel
 # carrying it cannot be built for Linux. Nothing here calls it.

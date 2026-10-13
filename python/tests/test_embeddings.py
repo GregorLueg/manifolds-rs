@@ -132,3 +132,17 @@ def test_non_contiguous_input_is_accepted(X: np.ndarray) -> None:
 def test_integer_input_is_promoted_not_narrowed(X: np.ndarray) -> None:
     counts = np.rint(np.abs(X) * 10).astype(np.int32)
     assert mf.UMAP(n_epochs=20).fit_transform(counts).dtype == np.float64
+
+
+@pytest.mark.parametrize("cls", [mf.TSNE, mf.DensNE, mf.DREAMS])
+@pytest.mark.parametrize("approx", ["fft", "fft_3k"])
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_cpu_fft_tsne_runs(
+    cls: type[BaseEmbedding], approx: str, dtype: type, X: np.ndarray
+) -> None:
+    """The wheel carries `fft_tsne`, so both FFT optimisers reach the core."""
+    x = np.ascontiguousarray(X, dtype=dtype)
+    embedding = fast(cls, approx=approx).fit_transform(x)
+    assert embedding.shape == (X.shape[0], 2)
+    assert embedding.dtype == dtype
+    assert np.isfinite(embedding).all()

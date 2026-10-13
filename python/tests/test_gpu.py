@@ -163,6 +163,17 @@ def test_fft_3k_gpu_separates_clusters(
     assert separation(embedding, labels) > 1.0
 
 
+@pytest.mark.parametrize("name", ["TSNEGpu", "DREAMSGpu"])
+@pytest.mark.parametrize("approx", ["fft", "fft_3k"])
+def test_gpu_knn_with_cpu_fft_optimiser(
+    name: str, approx: str, X32: np.ndarray
+) -> None:
+    """GPU neighbour search feeding the CPU FFT optimisers."""
+    embedding = build(name, approx=approx).fit_transform(X32)
+    assert embedding.shape == (X32.shape[0], 2)
+    assert np.isfinite(embedding).all()
+
+
 def test_fft_3k_gpu_is_refused_on_the_cpu(X: np.ndarray) -> None:
     with pytest.raises(ValueError, match="approx"):
         mf.TSNE(n_epochs=20, approx="fft_3k_gpu").fit_transform(X)

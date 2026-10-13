@@ -84,12 +84,20 @@ SYMMETRIES: frozenset[str] = frozenset(
     {"additive", "add", "multiplicative", "mult", "multiply", "mnn", "none"}
 )
 
-#: t-SNE repulsion approximations, from `parse_tsne_optimiser`. The CPU FFT
-#: variants need the `fft_tsne` feature, which the wheel is built without: it
-#: links FFTW statically, and FFTW is GPL-2.0-or-later.
-#: The MLX three-kernel FFT needs no FFTW and is accepted by both entry points.
+#: t-SNE repulsion approximations, from `parse_tsne_optimiser`. The MLX
+#: three-kernel FFT is accepted by both entry points.
 TSNE_APPROX: frozenset[str] = frozenset(
-    {"barnes_hut", "barnes-hut", "barnes hut", "bh", "bh_qd", "qd"}
+    {
+        "barnes_hut",
+        "barnes-hut",
+        "barnes hut",
+        "bh",
+        "bh_qd",
+        "qd",
+        "fft",
+        "fft_3k",
+        "3-kernel",
+    }
 ) | (frozenset({"fft_3k_mlx"}) if _MLX else frozenset())
 
 #: As `TSNE_APPROX`, plus the device-resident three-kernel FFT optimiser. Only

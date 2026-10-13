@@ -3,8 +3,8 @@
 //! Every entry point has two arms that are token-identical and differ only in
 //! the type inferred for `T`, so each is written once here and expanded twice.
 //! A generic helper function could not do this without restating each entry
-//! point's trait bounds, and those bounds differ (`tsne` wants `FftwFloat` in
-//! an FFT build, the GPU paths want `CubeclFloat`).
+//! point's trait bounds, and those bounds differ (`tsne` wants `FftFloat`, the
+//! GPU paths want `CubeclFloat`).
 //!
 //! Note the nesting in every macro: `py.detach(|| pool::run(|| ...))`, never
 //! the other way round. `Python<'py>` is not `Send`, so a `pool::run` closure

@@ -234,11 +234,13 @@ class TSNE(BaseEmbedding):
             what makes a t-SNE run reproducible in shape rather than only in
             seed.
         ann: Neighbour backend.
-        approx: Repulsion approximation. ``"barnes_hut"``, or ``"qd"`` for the
-            quick-and-dirty Barnes-Hut of qdtsne: tree depth capped at
-            `TsneOptim.max_depth`, repulsion computed once per leaf. Faster,
-            slightly coarser. CPU FFT t-SNE needs FFTW, which is GPL and not in
-            the wheel. See `TSNEGpu` for ``"fft_3k_gpu"``.
+        approx: Repulsion approximation. ``"barnes_hut"``, ``"qd"`` for the
+            quick-and-dirty Barnes-Hut of qdtsne (tree depth capped at
+            `TsneOptim.max_depth`, repulsion computed once per leaf; faster,
+            slightly coarser), or ``"fft"`` / ``"fft_3k"`` for FIt-SNE style
+            FFT-interpolated repulsion with four terms or three kernels. The
+            FFT variants scale best to large N. See `TSNEGpu` for
+            ``"fft_3k_gpu"``.
         randomised_init: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation.
