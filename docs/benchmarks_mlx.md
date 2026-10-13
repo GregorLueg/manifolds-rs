@@ -130,12 +130,7 @@ and the MLX one is never more than 4% ahead of wgpu.
 | 500k | 24.10 s | 6.67 s | 6.89 s | 1.0x |
 | 1m | 48.96 s | 13.71 s | 13.64 s | 1.0x |
 
-Level again. An earlier version of the MLX optimiser fell behind from 500k on
-(25.8 s at 1m). None of its kernels was slow: MLX batched a whole epoch into
-one Metal command buffer, and with the bucketing kernels in the same buffer as
-the gather and the attraction update, the epoch took 1.8x as long at 1m.
-Submitting the bucketing as its own command buffer fixed it, at 1% to 2% cost
-at 100k. Why the shared buffer is slow is not profiled.
+Level again.
 
 ## Verdict
 

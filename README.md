@@ -26,7 +26,7 @@ estimators and scanpy-style `mf.umap(adata)`. Changes live in the
 | [Parametric UMAP](https://arxiv.org/abs/2009.12981) | `parametric_umap`, `train_parametric_umap_model` | `parametric` |
 | t-SNE ([Barnes-Hut](https://arxiv.org/abs/1301.3342), [qd](https://github.com/libscran/qdtsne), [FFT](https://www.nature.com/articles/s41592-018-0308-4)) | `tsne`, `tsne_gpu` | default, `fft_tsne`, `gpu` |
 | [den-SNE](https://www.nature.com/articles/s41587-020-00801-7) | `densne` | default |
-| DREAMS (Kury, Kobak & Damrich, TMLR 2026) | `dreams`, `dreams_gpu` | default, `gpu` |
+| [DREAMS](https://arxiv.org/abs/2508.13747) | `dreams`, `dreams_gpu` | default, `gpu` |
 | [PHATE](https://pmc.ncbi.nlm.nih.gov/articles/PMC7073148/) | `phate` | default |
 | [PaCMAP](https://arxiv.org/abs/2012.04456) | `pacmap` | default |
 | [ForceAtlas2](https://doi.org/10.1371/journal.pone.0098679) | `forceatlas2`, `forceatlas2_from_graph` | default |
