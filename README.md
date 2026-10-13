@@ -115,10 +115,10 @@ Apple Silicon only. The `mlx` feature drives Metal through
 hand-written Metal kernels for the UMAP/densMAP Adam update and the
 three-kernel FFT t-SNE, and the MLX kNN indices from ann-search-rs.
 
-On an M1 Max the MLX kNN search is 1.2x to 1.8x faster than wgpu at equal
-recall. The optimisers are a different story: UMAP's Adam ties with wgpu, and
-the t-SNE optimiser ties at 100k but falls to half of wgpu's speed at 1m. Pick
-per stage; the
+On an M1 Max the MLX kNN search is 1.3x to 3.2x faster than wgpu at equal
+recall, more at higher input dimension, and `"ivf_mlx"` is very fast indeed.
+The optimisers tie: UMAP's Adam and the three-kernel FFT t-SNE run level with
+wgpu from 100k to 1m points. The
 [benchmarks](https://github.com/GregorLueg/manifolds-rs/blob/main/docs/benchmarks_mlx.md)
 have the numbers. `f32` only.
 
@@ -150,7 +150,8 @@ which one you got.
 ## Benchmarks
 
 - [wgpu vs MLX](https://github.com/GregorLueg/manifolds-rs/blob/main/docs/benchmarks_mlx.md):
-  kNN, UMAP and t-SNE optimisers at 100k, 500k and 1m points.
+  kNN at 32 to 256 dimensions with embedding quality, UMAP and t-SNE
+  optimisers, at 100k, 500k and 1m points.
 - kNN backends themselves: see the
   [ann-search-rs benchmarks](https://github.com/GregorLueg/ann-search-rs#benchmarks).
 
