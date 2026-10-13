@@ -140,7 +140,7 @@ where
         )));
     }
     Ok((0..2)
-        .map(|d| data.chunks_exact(2).map(|row| row[d]).collect())
+        .map(|d| data.as_chunks::<2>().0.iter().map(|row| row[d]).collect())
         .collect())
 }
 
