@@ -72,7 +72,7 @@ use crate::training::tsne_optimiser_gpu::*;
 #[cfg(feature = "gpu")]
 use crate::training::umap_optimiser_gpu::*;
 #[cfg(feature = "fft_tsne")]
-use crate::utils::fft::FftwFloat;
+use crate::utils::fft::FftFloat;
 
 ///////////////
 // Constants //
@@ -885,7 +885,7 @@ pub fn tsne<T>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + FftwFloat,
+    T: ManifoldsFloat + FftFloat,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -944,7 +944,7 @@ fn tsne_inner<T>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + FftwFloat,
+    T: ManifoldsFloat + FftFloat,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -1762,7 +1762,7 @@ pub fn densne<T>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + FftwFloat,
+    T: ManifoldsFloat + FftFloat,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -2003,7 +2003,7 @@ pub fn dreams<T>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + FftwFloat,
+    T: ManifoldsFloat + FftFloat,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -5123,7 +5123,7 @@ pub fn tsne_gpu<T>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloatGpu + FftwFloat,
+    T: ManifoldsFloatGpu + FftFloat,
     StandardNormal: Distribution<T>,
 {
     let data_input = data.to_mat_input();
@@ -5177,7 +5177,7 @@ fn tsne_gpu_inner<T>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloatGpu + FftwFloat,
+    T: ManifoldsFloatGpu + FftFloat,
     StandardNormal: Distribution<T>,
 {
     if params.n_dim != 2 {
@@ -5417,7 +5417,7 @@ pub fn dreams_gpu<T>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloatGpu + FftwFloat,
+    T: ManifoldsFloatGpu + FftFloat,
     StandardNormal: Distribution<T>,
 {
     let data_input = data.to_mat_input();
@@ -5439,7 +5439,7 @@ where
 ///
 /// Identical to `tsne` except the kNN graph is constructed on the GPU.
 /// Barnes-Hut optimisation stays on CPU; `"fft_3k_gpu"` runs the optimiser on
-/// the GPU and needs no FFTW. Calling with `approx_type = "fft"` or
+/// the GPU and needs no `fft_tsne`. Calling with `approx_type = "fft"` or
 /// `"fft_3k"` panics; recompile with the `fft_tsne` feature for CPU FFT
 /// support.
 ///

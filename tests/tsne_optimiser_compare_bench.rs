@@ -5,7 +5,7 @@
     feature = "large_scale_diagnostics"
 ))]
 
-//! Timing harness: three-kernel FFT t-SNE on CPU (FFTW + rayon), wgpu
+//! Timing harness: three-kernel FFT t-SNE on CPU (rustfft + rayon), wgpu
 //! (cubecl) and MLX, on one shared affinity graph and one shared random
 //! initialisation.
 //!

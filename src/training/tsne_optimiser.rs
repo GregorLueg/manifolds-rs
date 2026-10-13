@@ -194,8 +194,8 @@ where
 /// Type of optimisation to use for tSNE.
 #[derive(Default)]
 pub enum TsneOpt {
-    /// FFT-accelerated version. Requires the `fft_tsne` feature, which pulls in
-    /// FFTW as a system dependency.
+    /// FFT-accelerated version. Requires the `fft_tsne` feature (pure Rust,
+    /// via rustfft and realfft).
     Fft,
     /// BarnesHut-accelerated version. The default, as it is the only variant
     /// available in every build configuration on every platform.
@@ -1043,7 +1043,7 @@ pub fn optimise_fft_tsne<T>(
     verbose: usize,
 ) -> Result<(), ManifoldsError>
 where
-    T: FftwFloat + ManifoldsFloat,
+    T: FftFloat + ManifoldsFloat,
 {
     optimise_fft_tsne_impl(embd, params, graph, dens, dreams, verbose, false)
 }
@@ -1080,7 +1080,7 @@ pub fn optimise_fft3k_tsne<T>(
     verbose: usize,
 ) -> Result<(), ManifoldsError>
 where
-    T: FftwFloat + ManifoldsFloat,
+    T: FftFloat + ManifoldsFloat,
 {
     optimise_fft_tsne_impl(embd, params, graph, dens, dreams, verbose, true)
 }
@@ -1114,7 +1114,7 @@ fn optimise_fft_tsne_impl<T>(
     three_kernel: bool,
 ) -> Result<(), ManifoldsError>
 where
-    T: FftwFloat + ManifoldsFloat,
+    T: FftFloat + ManifoldsFloat,
 {
     let verbosity = parse_verbosity_level(verbose);
 
