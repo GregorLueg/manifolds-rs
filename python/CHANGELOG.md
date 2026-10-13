@@ -19,6 +19,14 @@ Requires the `manifolds-rs` 0.7.0.
   optimiser as well.
 - `init` is accepted for signature parity with `TSNE` but ignored: DREAMS
   always starts from its reference.
+- Opt-in MLX for Apple Silicon, from a source build only: `brew install mlx-c`,
+  then `maturin develop --release --features mlx`. `mf.mlx_available()` says
+  whether you have it. It adds `optimiser="adam_mlx"` to `UMAP` and
+  `DensMAP`, `approx="fft_3k_mlx"` to `TSNE`, `DREAMS`, `TSNEGpu` and
+  `DREAMSGpu`, and `ann="exhaustive_mlx" | "ivf_mlx" | "nndescent_mlx"` to
+  every CPU estimator and `knn_graph`. A build without it refuses those names
+  and says how to get them. The published wheels do not carry it, since it
+  links mlx-c dynamically.
 
 ## 0.3.2
 

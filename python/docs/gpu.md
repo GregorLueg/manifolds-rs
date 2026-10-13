@@ -130,6 +130,8 @@ with the search on wgpu and the optimiser on MLX. den-SNE has no MLX path.
 Everything MLX runs in float32, whatever you hand it. In a build without MLX
 these names are refused with a pointer to the build flag.
 
-Is it worth the trouble? For the neighbour search, yes on large data. For the
-optimisers, barely. See the
+Is it worth the trouble? On an M1 Max the MLX neighbour search is 1.2x to 1.8x
+faster than wgpu. UMAP's optimiser ties, and the t-SNE one falls to half of
+wgpu's speed at a million points, so keep `TSNEGpu(approx="fft_3k_gpu")` for
+large t-SNE. See the
 [wgpu vs MLX benchmarks](https://github.com/GregorLueg/manifolds-rs/blob/main/docs/benchmarks_mlx.md).

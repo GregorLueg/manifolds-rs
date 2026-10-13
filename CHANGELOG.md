@@ -24,6 +24,27 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 - `pca_scores()` in `data::init` for the unscaled PCA scores, and
   `DreamsState` / `dreams_setup()` in `utils::dreams` for anyone wiring the
   regulariser into their own loop.
+- Experimental `mlx` feature for Apple Silicon, through mlx-c (`brew install
+  mlx-c`). The CPU entry points take MLX names: `"adam_mlx"` for the UMAP and
+  densMAP optimiser, `"fft_3k_mlx"` for `tsne` and `dreams` (and `tsne_gpu` /
+  `dreams_gpu`), and `"exhaustive_mlx"`, `"ivf_mlx"`, `"nndescent_mlx"` for the
+  kNN search in `run_ann_search`. `MLX_AVAILABLE` says whether it was compiled
+  in. `f32` only.
+- How it stacks up against wgpu on an M1 Max, at 100k to 1m points: the MLX kNN
+  search is 1.2x to 1.8x faster, the UMAP optimiser ties, and the t-SNE
+  optimiser ties at 100k but runs at half wgpu's speed at 1m. Details in
+  [`docs/benchmarks_mlx.md`](docs/benchmarks_mlx.md).
+- Faster wgpu three-kernel FFT t-SNE: one plane per box for the splat, the
+  attraction walks the CSR one row per SIMD group, and the 2D FFT works on a
+  transposed spectrum and skips all-zero rows.
+- `cubecl` 0.11, `burn` 0.22, `faer` 0.24, `cubecl-utils-rs` 0.2.0 and
+  `ann-search-rs` 0.11.0.
+
+**Fixes**
+
+- `run_ann_search` drops the query point by index rather than by position.
+  With exact duplicates in the data, the point could rank second and survive as
+  its own neighbour.
 
 **Breaking changes**
 
@@ -31,8 +52,14 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   `optimise_fft3k_tsne` and `optimise_fft3k_tsne_gpu` take an extra
   `dreams: Option<&DreamsState<T>>` argument. Pass `None` for plain t-SNE.
 - `ManifoldsError` has three new variants (`DreamsInvalidLambda`,
-  `DreamsReferenceMismatch`, `DreamsDegenerateReference`), so exhaustive
-  matches on it need updating.
+  `DreamsReferenceMismatch`, `DreamsDegenerateReference`), plus `MlxError` in
+  MLX builds, so exhaustive matches on it need updating.
+- The GPU functions (`umap_gpu`, `densmap_gpu`, `tsne_gpu`, `dreams_gpu`, the
+  `construct_*_graph_gpu` helpers, `run_ann_search_gpu`) lost their
+  `R: Runtime` type parameter and take a `cubecl::Device`:
+  `umap_gpu::<f32>(..., WgpuDevice::default().into(), ...)`.
+- `parametric_umap` and `train_parametric_umap_model` lost their burn backend
+  type parameter and take a `&burn::tensor::Device`, e.g. `Device::flex()`.
 
 ## 0.6.2
 
