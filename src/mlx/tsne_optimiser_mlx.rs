@@ -795,6 +795,10 @@ fn repulsion(
         )?
         .pop()
         .expect("scatter has one output");
+    // Submit the bucketing as its own command buffer. Batched with the gather
+    // and update, an epoch at 1m points took 1.8x as long; a split after the
+    // splat or the FFT works too, one after the gather does not.
+    eval_all(&[&order, &box_start, &box_id, &wx, &wy], true)?;
 
     // splat, convolve, gather
     let nfi = nf as i32;
