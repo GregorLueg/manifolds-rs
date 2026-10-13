@@ -25,7 +25,9 @@ different questions:
 - **Optimisers:** five clusters in 32 dimensions (`create_diagnostic_data`),
   one shared kNN graph and one shared random initialisation per size. UMAP:
   Adam, 500 epochs. t-SNE: three-kernel FFT, 1000 epochs, perplexity 30, CPU
-  column is FFTW plus rayon (`fft_tsne`). Three runs per backend, best reported.
+  column is `fft_tsne` plus rayon, measured while that still ran on FFTW; the
+  rustfft build is within 2% in `f32` on 100-epoch runs. Three runs per
+  backend, best reported.
 
 Separation (smallest centroid distance over mean within-cluster spread) is
 printed for every optimiser run as a check that the backends converge to

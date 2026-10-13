@@ -26,9 +26,8 @@ mf.TSNEGpu(approx="fft_3k_gpu").fit_transform(X)
 
 `"fft_3k_gpu"` is FFT-interpolated repulsion with three kernels (`q`, `q^2 dx`,
 `q^2 dy`) instead of the four-term expansion, with the embedding resident on the
-device between epochs. There is no CPU FFT t-SNE in the wheel (see
-[the guide](guide.md#what-is-not-in-the-wheel)), so this is the only FFT path
-from Python.
+device between epochs. `"fft"` and `"fft_3k"` run the same FFT schemes on the
+CPU after a GPU neighbour search.
 
 Otherwise the win depends on whether the neighbour search was your bottleneck.
 On a few thousand points it will not be, and the transfers will make the GPU

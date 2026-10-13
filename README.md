@@ -59,10 +59,10 @@ Optional features:
   [CubeCL](https://github.com/tracel-ai/cubecl). GPU kNN, GPU Adam for
   UMAP/densMAP and a device-resident three-kernel FFT t-SNE. `f32` only.
 - `mlx`: Apple Silicon only, experimental. MLX kNN and optimisers. See below.
-- `fft_tsne`: CPU FFT t-SNE via [`fftw`](https://crates.io/crates/fftw). Builds
-  FFTW from source and links it statically. FFTW is GPL-2.0-or-later, so a
-  binary you distribute with this on is GPL. `"fft_3k_gpu"` and `"fft_3k_mlx"`
-  need no FFTW.
+- `fft_tsne`: CPU FFT t-SNE (`"fft"`, `"fft_3k"`) via
+  [`rustfft`](https://crates.io/crates/rustfft) and
+  [`realfft`](https://crates.io/crates/realfft). Pure Rust, MIT/Apache, no
+  system libraries.
 - `parametric`: parametric UMAP on [burn](https://burn.dev), models serialise
   via `bincode`.
 - `ndarray`: accept `ndarray` 2-D arrays. Off by default, since it makes

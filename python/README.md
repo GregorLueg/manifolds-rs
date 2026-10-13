@@ -51,7 +51,7 @@ requirement.
 | --- | --- |
 | `UMAP` | The default choice. Local structure, decent global structure from the spectral init. |
 | `DensMAP` | UMAP with relative density preserved, so a dense region stays dense. |
-| `TSNE` | Local structure above all else. Barnes-Hut (or the faster quick-and-dirty `approx="qd"`), 2-D only. |
+| `TSNE` | Local structure above all else. Barnes-Hut, the faster quick-and-dirty `approx="qd"`, or FFT-interpolated `approx="fft"` / `"fft_3k"` for large N. 2-D only. |
 | `DensNE` | t-SNE with the same density correction. |
 | `DREAMS` | t-SNE pulled towards a global reference (PCA, or any layout you pass), so the clusters keep a sensible arrangement. |
 | `PHATE` | Continuous structure. Trajectories and branch points survive this. |
@@ -128,12 +128,6 @@ accident. The GPU estimators are the exception and cast to float32, because WGSL
 has no float64 and the alternative is a failure inside a kernel.
 
 ## What is not in the wheel
-
-CPU FFT-accelerated t-SNE. It needs FFTW, which is GPL-2.0-or-later and would
-be linked statically, turning the whole wheel GPL. So the CPU estimators take
-Barnes-Hut only (plain, or the quick-and-dirty `approx="qd"`). On a GPU,
-`TSNEGpu(approx="fft_3k_gpu")` gives you FFT-interpolated repulsion without
-FFTW.
 
 The MLX backends for Apple Silicon. They link mlx-c dynamically, so they need a
 source build: `brew install mlx-c`, then `maturin develop --release --features

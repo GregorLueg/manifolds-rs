@@ -39,6 +39,12 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   transposed spectrum and skips all-zero rows.
 - `cubecl` 0.11, `burn` 0.22, `faer` 0.24, `cubecl-utils-rs` 0.2.0 and
   `ann-search-rs` 0.11.0.
+- FFTW is gone. `fft_tsne` now runs on `rustfft` and `realfft`: pure Rust,
+  MIT/Apache, no C build and no GPL. `n_fft` is padded up to the next `2^a` or
+  `3 * 2^a`, which rustfft handles far better than the `6 * n_boxes` sizes.
+  Against the old FFTW build on an M1 Max (100 epochs, 50k and 250k points),
+  `f32` is within 4% and `f64` up to 18% slower, worst in the late phase on the
+  largest grid.
 
 **Fixes**
 
@@ -60,6 +66,11 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   `umap_gpu::<f32>(..., WgpuDevice::default().into(), ...)`.
 - `parametric_umap` and `train_parametric_umap_model` lost their burn backend
   type parameter and take a `&burn::tensor::Device`, e.g. `Device::flex()`.
+- `utils::fft::FftwFloat` is now `FftFloat`, a blanket trait over
+  `rustfft::FftNum` floats, and the FFT buffers hold
+  `num_complex::Complex<T>`. `FftLane3k` is gone; both paths share `FftLane`.
+  `FftGrid::n_fft` is no longer `2 * n_interp_points * n_boxes_per_dim` but
+  that rounded up by `fft_len`.
 
 ## 0.6.2
 

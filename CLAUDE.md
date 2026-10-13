@@ -41,7 +41,7 @@ Linux GPU tests need Vulkan (`libvulkan1 mesa-vulkan-drivers libgl1-mesa-dri`) a
 ## Feature flags
 
 - `parametric` — parametric UMAP via `burn` (+ `serde`, `bincode` for model I/O).
-- `fft_tsne` — FFT-accelerated tSNE via `fftw` (system FFTW required).
+- `fft_tsne`: FFT-accelerated tSNE via `rustfft` + `realfft` (pure Rust). `n_fft` is padded to the next `2^a` or `3 * 2^a` (`fft_len` in `utils/fft.rs`).
 - `gpu` — GPU kNN + GPU Adam UMAP via `cubecl` (wgpu/CUDA) and `ann-search-rs/gpu`. GPU code paths run in `f32` only (WGSL has no `f64`). `GpuTensor`, `GpuLimits`, `grid_2d`, `checked_cube_count`, `resolve_workgroup_size` and `CubeclFloat` come from `cubecl-utils-rs`; allocations and grid sizing are fallible and every limit is queried off the device, never assumed.
 - `large_scale_diagnostics` — dev-only, gates `tests/tsne_large_scale_diag.rs`, all of `tests/umap_gpu_bench.rs` (which also needs `gpu`), and the timing benchmarks in `tests/spectral_bench.rs`. Put heavy tests here so CI never compiles them.
 

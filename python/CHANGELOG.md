@@ -27,6 +27,10 @@ Requires the `manifolds-rs` 0.7.0.
   every CPU estimator and `knn_graph`. A build without it refuses those names
   and says how to get them. The published wheels do not carry it, since it
   links mlx-c dynamically.
+- CPU FFT t-SNE is back in the wheel: `approx="fft"` and `approx="fft_3k"` on
+  `TSNE`, `DensNE`, `DREAMS`, `TSNEGpu` and `DREAMSGpu` (GPU neighbour search,
+  CPU optimiser), and on `mf.tsne(adata)`. The core dropped FFTW for pure-Rust
+  `rustfft`, so there is no GPL library left to keep out.
 
 ## 0.3.2
 

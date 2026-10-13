@@ -72,7 +72,8 @@ Rough ordering on the same data, dominated by different things:
 - `TSNE`, `DensNE` and `ForceAtlas2` pay for the Barnes-Hut tree every epoch.
   For the first two, `approx="qd"` caps the tree depth and computes repulsion
   once per leaf instead of once per point; on 20k points that halved the
-  optimiser time.
+  optimiser time. `approx="fft"` and `"fft_3k"` swap the tree for an FFT on
+  an interpolation grid, linear in the number of points.
 - `UMAP`, `DensMAP` and `PaCMAP` pay for the neighbour search and then a cheap
   per-edge update. The parallel Adam optimiser is the default.
 - `PHATE` and `DiffusionMaps` pay for an eigendecomposition. Set `n_landmarks`
