@@ -1,318 +1,275 @@
 //! FFT implementation for the acceleration tSNE form
+//!
+//! Transforms run on rustfft (complex) and realfft (real input/output). The
+//! FFT length is padded up from `2 m` to a length rustfft handles fast, see
+//! [`fft_len`].
 
-use fftw::array::AlignedVec;
-use fftw::plan::{
-    C2CPlan, C2CPlan32, C2CPlan64, C2RPlan, C2RPlan32, C2RPlan64, R2CPlan, R2CPlan32, R2CPlan64,
-};
-use fftw::types::{c32, c64, Flag, Sign};
 use num_traits::{Float, FromPrimitive, Signed, ToPrimitive};
 use rayon::prelude::*;
+use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
+use rustfft::num_complex::Complex;
+use rustfft::{Fft, FftNum, FftPlanner};
 use std::fmt::Debug;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 pub use crate::utils::math::choose_grid_size;
-
-/// FFTW planning rigour. `Flag::MEASURE` plans slower but can execute faster.
-/// Has proven faster.
-const PLAN_FLAG: Flag = Flag::ESTIMATE;
 
 ////////////
 // Traits //
 ////////////
 
-/// Trait defining floating-point types compatible with FFTW operations.
-///
-/// Provides abstractions for f32/f64 with their corresponding complex types,
-/// FFT plans, and operations. Enables generic FFT-based algorithms.
-pub trait FftwFloat:
-    Float + FromPrimitive + ToPrimitive + Send + Sync + Debug + Signed + 'static
+/// Floating-point types the FFT path runs on (`f32`, `f64`).
+pub trait FftFloat:
+    FftNum + Float + FromPrimitive + ToPrimitive + Send + Sync + Debug + Signed + 'static
 {
-    /// Complex number type (c32 for f32, c64 for f64)
-    type Complex: Copy + Send + Sync;
-
-    /// Real-to-complex FFT plan type
-    type R2CPlan: Send;
-
-    /// Complex-to-real FFT plan type
-    type C2RPlan: Send;
-
-    /// Complex-to-complex FFT plan type
-    type C2CPlan: Send;
-
-    /// Construct complex number from real and imaginary parts
-    fn new_complex(re: Self, im: Self) -> Self::Complex;
-
-    /// Zero complex value
-    fn complex_zero() -> Self::Complex;
-
-    /// Extract real component from complex number
-    fn complex_re(c: Self::Complex) -> Self;
-
-    /// Extract imaginary component from complex number
-    fn complex_im(c: Self::Complex) -> Self;
-
-    /// Allocate FFTW-aligned array of real values
-    fn aligned_real(size: usize) -> AlignedVec<Self>;
-
-    /// Allocate FFTW-aligned array of complex values
-    fn aligned_complex(size: usize) -> AlignedVec<Self::Complex>;
-
-    /// Create 2D real-to-complex FFT plan for square array of dimension n
-    fn plan_r2c_2d(n: usize) -> Self::R2CPlan;
-
-    /// Create 2D complex-to-real FFT plan for square array of dimension n
-    fn plan_c2r_2d(n: usize) -> Self::C2RPlan;
-
-    /// Create 1D real-to-complex FFT plan of length n
-    fn plan_r2c_1d(n: usize) -> Self::R2CPlan;
-
-    /// Create 1D complex-to-real FFT plan of length n
-    fn plan_c2r_1d(n: usize) -> Self::C2RPlan;
-
-    /// Create 1D complex-to-complex FFT plan of length n
-    fn plan_c2c_1d(n: usize, sign: Sign) -> Self::C2CPlan;
-
-    /// Execute complex-to-complex FFT transform
-    fn execute_c2c(
-        plan: &mut Self::C2CPlan,
-        input: &mut AlignedVec<Self::Complex>,
-        output: &mut AlignedVec<Self::Complex>,
-    );
-
-    /// Execute real-to-complex FFT transform
-    fn execute_r2c(
-        plan: &mut Self::R2CPlan,
-        input: &mut AlignedVec<Self>,
-        output: &mut AlignedVec<Self::Complex>,
-    );
-
-    /// Execute complex-to-real inverse FFT transform
-    fn execute_c2r(
-        plan: &mut Self::C2RPlan,
-        input: &mut AlignedVec<Self::Complex>,
-        output: &mut AlignedVec<Self>,
-    );
 }
 
-/////////
-// f64 //
-/////////
+impl<T> FftFloat for T where
+    T: FftNum + Float + FromPrimitive + ToPrimitive + Send + Sync + Debug + Signed + 'static
+{
+}
 
-impl FftwFloat for f64 {
-    type Complex = c64;
-    type R2CPlan = R2CPlan64;
-    type C2RPlan = C2RPlan64;
-    type C2CPlan = C2CPlan64;
+/////////////
+// Helpers //
+/////////////
 
-    #[inline]
-    fn new_complex(re: Self, im: Self) -> Self::Complex {
-        c64::new(re, im)
-    }
-    #[inline]
-    fn complex_zero() -> Self::Complex {
-        c64::new(0.0, 0.0)
-    }
-    #[inline]
-    fn complex_re(c: Self::Complex) -> Self {
-        c.re
-    }
-    #[inline]
-    fn complex_im(c: Self::Complex) -> Self {
-        c.im
-    }
-    fn aligned_real(size: usize) -> AlignedVec<Self> {
-        AlignedVec::new(size)
-    }
-    fn aligned_complex(size: usize) -> AlignedVec<Self::Complex> {
-        AlignedVec::new(size)
-    }
-    fn plan_r2c_2d(n: usize) -> Self::R2CPlan {
-        R2CPlan::aligned(&[n, n], PLAN_FLAG).expect("Failed to create R2C plan")
-    }
-    fn plan_c2r_2d(n: usize) -> Self::C2RPlan {
-        C2RPlan::aligned(&[n, n], PLAN_FLAG).expect("Failed to create C2R plan")
-    }
-    fn plan_r2c_1d(n: usize) -> Self::R2CPlan {
-        R2CPlan::aligned(&[n], PLAN_FLAG).expect("Failed to create R2C plan")
-    }
-    fn plan_c2r_1d(n: usize) -> Self::C2RPlan {
-        C2RPlan::aligned(&[n], PLAN_FLAG).expect("Failed to create C2R plan")
-    }
-    fn plan_c2c_1d(n: usize, sign: Sign) -> Self::C2CPlan {
-        C2CPlan::aligned(&[n], sign, PLAN_FLAG).expect("Failed to create C2C plan")
-    }
-    fn execute_c2c(
-        plan: &mut Self::C2CPlan,
-        input: &mut AlignedVec<Self::Complex>,
-        output: &mut AlignedVec<Self::Complex>,
-    ) {
-        plan.c2c(input, output).expect("C2C FFT failed");
-    }
-    fn execute_r2c(
-        plan: &mut Self::R2CPlan,
-        input: &mut AlignedVec<Self>,
-        output: &mut AlignedVec<Self::Complex>,
-    ) {
-        plan.r2c(input, output).expect("R2C FFT failed");
-    }
-    fn execute_c2r(
-        plan: &mut Self::C2RPlan,
-        input: &mut AlignedVec<Self::Complex>,
-        output: &mut AlignedVec<Self>,
-    ) {
-        plan.c2r(input, output).expect("C2R IFFT failed");
+/// FFT length for a grid of `n` nodes per axis after zero padding.
+///
+/// The convolution only needs a length of at least `n`; anything longer is
+/// more zero padding and leaves the kept output window untouched. rustfft is
+/// several times faster on its radix-4 sizes than on lengths with factors of
+/// 5, 7, 11, 13 or 17 that `6 * n_boxes` produces, so round up to the next
+/// `2^a` or `3 * 2^a`.
+///
+/// ### Params
+///
+/// * `n` - Minimum length, `2 * n_interp_points * n_boxes_per_dim`
+///
+/// ### Returns
+///
+/// Smallest `2^a` or `3 * 2^a` that is at least `n`.
+pub fn fft_len(n: usize) -> usize {
+    let p = n.next_power_of_two();
+    let q = 3 * p / 4;
+    if q >= n {
+        q
+    } else {
+        p
     }
 }
 
-/////////
-// f32 //
-/////////
+/// 1D plans for one FFT length.
+///
+/// rustfft and realfft plans are `Send + Sync` and take caller scratch, so
+/// one set is planned per length and shared by every lane.
+#[derive(Clone)]
+pub struct FftPlans<T: FftFloat> {
+    /// Row real-to-complex plan
+    pub r2c: Arc<dyn RealToComplex<T>>,
+    /// Row complex-to-real plan
+    pub c2r: Arc<dyn ComplexToReal<T>>,
+    /// Column forward plan
+    pub fwd: Arc<dyn Fft<T>>,
+    /// Column backward plan, unnormalised like the forward one
+    pub bwd: Arc<dyn Fft<T>>,
+}
 
-impl FftwFloat for f32 {
-    type Complex = c32;
-    type R2CPlan = R2CPlan32;
-    type C2RPlan = C2RPlan32;
-    type C2CPlan = C2CPlan32;
+impl<T: FftFloat> FftPlans<T> {
+    /// Plan all four 1D transforms for a given length.
+    ///
+    /// ### Params
+    ///
+    /// * `n_fft` - Transform length, even
+    ///
+    /// ### Returns
+    ///
+    /// The plans.
+    pub fn new(n_fft: usize) -> Self {
+        let mut real = RealFftPlanner::<T>::new();
+        let mut cplx = FftPlanner::<T>::new();
+        Self {
+            r2c: real.plan_fft_forward(n_fft),
+            c2r: real.plan_fft_inverse(n_fft),
+            fwd: cplx.plan_fft_forward(n_fft),
+            bwd: cplx.plan_fft_inverse(n_fft),
+        }
+    }
 
+    /// Scratch length that covers every plan in the set, with the column
+    /// transforms run out of place.
+    ///
+    /// ### Returns
+    ///
+    /// Number of complex values.
+    fn scratch_len(&self) -> usize {
+        self.r2c
+            .get_scratch_len()
+            .max(self.c2r.get_scratch_len())
+            .max(self.fwd.get_outofplace_scratch_len())
+            .max(self.bwd.get_outofplace_scratch_len())
+    }
+
+    /// Real row to half spectrum. realfft uses `input` as scratch, so it is
+    /// garbage afterwards, zero padding included.
+    ///
+    /// ### Params
+    ///
+    /// * `input` - Real row, length `n_fft`; clobbered
+    /// * `output` - Half spectrum, length `n_fft / 2 + 1`
+    /// * `scratch` - At least [`FftPlans::scratch_len`]
     #[inline]
-    fn new_complex(re: Self, im: Self) -> Self::Complex {
-        c32::new(re, im)
+    fn r2c(&self, input: &mut [T], output: &mut [Complex<T>], scratch: &mut [Complex<T>]) {
+        self.r2c
+            .process_with_scratch(input, output, scratch)
+            .expect("r2c buffer lengths fixed at lane creation");
     }
+
+    /// Half spectrum to real row.
+    ///
+    /// realfft rejects a non-zero imaginary part in the DC and Nyquist bins.
+    /// Both are rounding noise here (the output is real), so they are zeroed
+    /// first. `n_fft` is always even, so the last bin is the Nyquist bin.
+    ///
+    /// ### Params
+    ///
+    /// * `input` - Half spectrum, length `n_fft / 2 + 1`; clobbered
+    /// * `output` - Real row, length `n_fft`
+    /// * `scratch` - At least [`FftPlans::scratch_len`]
     #[inline]
-    fn complex_zero() -> Self::Complex {
-        c32::new(0.0, 0.0)
+    fn c2r(&self, input: &mut [Complex<T>], output: &mut [T], scratch: &mut [Complex<T>]) {
+        let last = input.len() - 1;
+        input[0].im = T::zero();
+        input[last].im = T::zero();
+        self.c2r
+            .process_with_scratch(input, output, scratch)
+            .expect("c2r buffer lengths fixed at lane creation");
     }
-    #[inline]
-    fn complex_re(c: Self::Complex) -> Self {
-        c.re
-    }
-    #[inline]
-    fn complex_im(c: Self::Complex) -> Self {
-        c.im
-    }
-    fn aligned_real(size: usize) -> AlignedVec<Self> {
-        AlignedVec::new(size)
-    }
-    fn aligned_complex(size: usize) -> AlignedVec<Self::Complex> {
-        AlignedVec::new(size)
-    }
-    fn plan_r2c_2d(n: usize) -> Self::R2CPlan {
-        R2CPlan::aligned(&[n, n], PLAN_FLAG).expect("Failed to create R2C plan")
-    }
-    fn plan_c2r_2d(n: usize) -> Self::C2RPlan {
-        C2RPlan::aligned(&[n, n], PLAN_FLAG).expect("Failed to create C2R plan")
-    }
-    fn plan_r2c_1d(n: usize) -> Self::R2CPlan {
-        R2CPlan::aligned(&[n], PLAN_FLAG).expect("Failed to create R2C plan")
-    }
-    fn plan_c2r_1d(n: usize) -> Self::C2RPlan {
-        C2RPlan::aligned(&[n], PLAN_FLAG).expect("Failed to create C2R plan")
-    }
-    fn plan_c2c_1d(n: usize, sign: Sign) -> Self::C2CPlan {
-        C2CPlan::aligned(&[n], sign, PLAN_FLAG).expect("Failed to create C2C plan")
-    }
-    fn execute_c2c(
-        plan: &mut Self::C2CPlan,
-        input: &mut AlignedVec<Self::Complex>,
-        output: &mut AlignedVec<Self::Complex>,
-    ) {
-        plan.c2c(input, output).expect("C2C FFT failed");
-    }
-    fn execute_r2c(
-        plan: &mut Self::R2CPlan,
-        input: &mut AlignedVec<Self>,
-        output: &mut AlignedVec<Self::Complex>,
-    ) {
-        plan.r2c(input, output).expect("R2C FFT failed");
-    }
-    fn execute_c2r(
-        plan: &mut Self::C2RPlan,
-        input: &mut AlignedVec<Self::Complex>,
-        output: &mut AlignedVec<Self>,
-    ) {
-        plan.c2r(input, output).expect("C2R IFFT failed");
-    }
+}
+
+/// 2D real-to-complex transform of a square grid, transposed and scaled.
+///
+/// Rows go through r2c, then each of the `n_fft / 2 + 1` columns through a
+/// forward c2c. Runs once per grid rebuild, parallel over rows then columns.
+///
+/// ### Params
+///
+/// * `real` - Row-major `n_fft x n_fft` real grid
+/// * `n_fft` - Grid side length
+/// * `plans` - Plans for `n_fft`
+/// * `norm` - Factor folded into every output value
+///
+/// ### Returns
+///
+/// Spectrum in column-major `[k][u]` layout, `k < n_fft / 2 + 1`,
+/// `u < n_fft`, multiplied by `norm`.
+fn r2c_2d_transposed<T: FftFloat>(
+    real: &[T],
+    n_fft: usize,
+    plans: &FftPlans<T>,
+    norm: T,
+) -> Vec<Complex<T>> {
+    let n_half = n_fft / 2 + 1;
+    let zero = Complex::new(T::zero(), T::zero());
+    let scratch_len = plans.scratch_len();
+
+    let mut rows = vec![zero; n_fft * n_half];
+    rows.par_chunks_mut(n_half)
+        .zip(real.par_chunks(n_fft))
+        .for_each_init(
+            || (vec![T::zero(); n_fft], vec![zero; scratch_len]),
+            |(buf, scratch), (out, row)| {
+                buf.copy_from_slice(row);
+                plans.r2c(buf, out, scratch);
+            },
+        );
+
+    let mut spec_t = vec![zero; n_half * n_fft];
+    spec_t.par_chunks_mut(n_fft).enumerate().for_each_init(
+        || (vec![zero; n_fft], vec![zero; scratch_len]),
+        |(buf, scratch), (k, col)| {
+            for (u, v) in buf.iter_mut().enumerate() {
+                *v = rows[u * n_half + k];
+            }
+            plans.fwd.process_outofplace_with_scratch(buf, col, scratch);
+            for v in col.iter_mut() {
+                *v = *v * norm;
+            }
+        },
+    );
+    spec_t
 }
 
 //////////////////
 // FftWorkspace //
 //////////////////
 
-/// Per-thread 1D FFTW plans and aligned scratch.
+/// Per-thread buffers and scratch for the 1D FFT passes.
 ///
 /// The 2D convolution is split into 1D row and column passes so it spreads
-/// over every thread rather than one thread per expansion term. FFTW's planner
-/// is not thread-safe, so plans are built up front, one set per thread, and
-/// executed only on the lane's own aligned buffers.
-pub struct FftLane<T: FftwFloat> {
-    /// Real row input, length `n_fft`. The upper half is zero padding, written
-    /// once at creation and never touched again.
-    pub row_in: AlignedVec<T>,
+/// over every thread rather than one thread per expansion term. Plans are
+/// shared; each lane owns the buffers its thread transforms in.
+pub struct FftLane<T: FftFloat> {
+    /// Real row input, length `n_fft`. The tail past the data is zero
+    /// padding, rewritten before every r2c because realfft clobbers it.
+    pub row_in: Vec<T>,
     /// Real row output of the inverse transform, length `n_fft`
-    pub row_out: AlignedVec<T>,
+    pub row_out: Vec<T>,
     /// Half spectrum of one row, length `n_fft / 2 + 1`
-    pub row_spec: AlignedVec<T::Complex>,
+    pub row_spec: Vec<Complex<T>>,
     /// Column buffer, length `n_fft`
-    pub col_a: AlignedVec<T::Complex>,
+    pub col_a: Vec<Complex<T>>,
     /// Column buffer, length `n_fft`
-    pub col_b: AlignedVec<T::Complex>,
-    /// Row real-to-complex plan
-    pub plan_r2c: T::R2CPlan,
-    /// Row complex-to-real plan
-    pub plan_c2r: T::C2RPlan,
-    /// Column forward plan
-    pub plan_fwd: T::C2CPlan,
-    /// Column backward plan
-    pub plan_bwd: T::C2CPlan,
+    pub col_b: Vec<Complex<T>>,
+    /// Column buffer, length `n_fft`; three-kernel path only
+    pub col_c: Vec<Complex<T>>,
+    /// Scratch for every plan in `plans`
+    pub scratch: Vec<Complex<T>>,
+    /// Shared 1D plans
+    pub plans: FftPlans<T>,
 }
 
-impl<T: FftwFloat> FftLane<T> {
-    /// Create one lane's plans and buffers for a given FFT dimension.
+impl<T: FftFloat> FftLane<T> {
+    /// Create one lane's buffers for a given set of plans.
     ///
     /// ### Params
     ///
     /// * `n_fft` - FFT length along each axis
+    /// * `plans` - Plans for `n_fft`
     ///
     /// ### Returns
     ///
-    /// The lane, with `row_in` zeroed.
-    fn new(n_fft: usize) -> Self {
-        let mut row_in = T::aligned_real(n_fft);
-        for v in row_in.iter_mut() {
-            *v = T::zero();
-        }
+    /// The lane, buffers zeroed.
+    fn new(n_fft: usize, plans: &FftPlans<T>) -> Self {
+        let zero = Complex::new(T::zero(), T::zero());
         Self {
-            row_in,
-            row_out: T::aligned_real(n_fft),
-            row_spec: T::aligned_complex(n_fft / 2 + 1),
-            col_a: T::aligned_complex(n_fft),
-            col_b: T::aligned_complex(n_fft),
-            plan_r2c: T::plan_r2c_1d(n_fft),
-            plan_c2r: T::plan_c2r_1d(n_fft),
-            plan_fwd: T::plan_c2c_1d(n_fft, Sign::Forward),
-            plan_bwd: T::plan_c2c_1d(n_fft, Sign::Backward),
+            row_in: vec![T::zero(); n_fft],
+            row_out: vec![T::zero(); n_fft],
+            row_spec: vec![zero; n_fft / 2 + 1],
+            col_a: vec![zero; n_fft],
+            col_b: vec![zero; n_fft],
+            col_c: vec![zero; n_fft],
+            scratch: vec![zero; plans.scratch_len()],
+            plans: plans.clone(),
         }
     }
 }
 
-/// Reusable FFTW plans and buffers for FFT convolution.
+/// Reusable FFT plans and buffers for FFT convolution.
 ///
-/// Creating FFTW plans is expensive (even with `ESTIMATE`), and aligned
-/// memory allocation has non-trivial overhead. This workspace holds both,
-/// allowing them to persist across calls to `n_body_fft_2d` and across
-/// optimisation epochs. Rebuild only when `n_fft` changes, i.e. when the
-/// grid resizes.
-pub struct FftWorkspace<T: FftwFloat> {
+/// Holds the plans, per-thread lanes and scratch so they persist across
+/// calls to `n_body_fft_2d` and across optimisation epochs. Rebuild only when
+/// `n_fft` changes, i.e. when the grid resizes.
+pub struct FftWorkspace<T: FftFloat> {
     /// FFT array dimension this workspace was built for
     pub n_fft: usize,
-    /// One plan/buffer set per rayon thread, built on first use
+    /// One buffer set per rayon thread, built on first use
     pub lanes: Vec<Mutex<FftLane<T>>>,
-    /// Row-transformed spectra, layout `[row][term][k]` over the
-    /// `n_fft / 2` non-zero input rows
-    pub spec_rows: Vec<T::Complex>,
+    /// Row-transformed spectra, layout `[row][term][k]` over the `m`
+    /// non-zero input rows
+    pub spec_rows: Vec<Complex<T>>,
     /// Column-transformed and kernel-multiplied spectra, layout
-    /// `[term][k][row]` over the `n_fft / 2` output rows that are kept
-    pub spec_cols: Vec<T::Complex>,
+    /// `[term][k][row]` over the `m` output rows that are kept
+    pub spec_cols: Vec<Complex<T>>,
     /// Per-point box index and intra-box position, length n_points.
     pub box_data: Vec<((usize, usize), T, T)>,
     /// Per-point Lagrange x-weights, length n_points * n_interp_points.
@@ -331,7 +288,7 @@ pub struct FftWorkspace<T: FftwFloat> {
     pub order: Vec<u32>,
 }
 
-impl<T: FftwFloat> FftWorkspace<T> {
+impl<T: FftFloat> FftWorkspace<T> {
     /// Create workspace for a given FFT dimension.
     ///
     /// Plans and buffers are created lazily on the first `n_body_fft_2d`
@@ -339,8 +296,7 @@ impl<T: FftwFloat> FftWorkspace<T> {
     ///
     /// ### Params
     ///
-    /// * `n_fft` - FFT array dimension (typically `2 * n_interp_points *
-    ///   n_boxes_per_dim`)
+    /// * `n_fft` - FFT array dimension, the grid's `n_fft`
     ///
     /// ### Returns
     ///
@@ -365,7 +321,7 @@ impl<T: FftwFloat> FftWorkspace<T> {
 /// Lock the calling rayon thread's lane.
 ///
 /// Each thread maps to its own lane, so the lock is uncontended; it only
-/// exists to hand out `&mut` plans from a shared slice.
+/// exists to hand out `&mut` buffers from a shared slice.
 ///
 /// ### Params
 ///
@@ -375,7 +331,7 @@ impl<T: FftwFloat> FftWorkspace<T> {
 ///
 /// Guard over this thread's lane.
 #[inline]
-fn lock_lane<T: FftwFloat>(lanes: &[Mutex<FftLane<T>>]) -> MutexGuard<'_, FftLane<T>> {
+fn lock_lane<T: FftFloat>(lanes: &[Mutex<FftLane<T>>]) -> MutexGuard<'_, FftLane<T>> {
     let idx = rayon::current_thread_index().unwrap_or(0) % lanes.len();
     lanes[idx].lock().expect("FFT lane mutex poisoned")
 }
@@ -390,7 +346,7 @@ fn lock_lane<T: FftwFloat>(lanes: &[Mutex<FftLane<T>>]) -> MutexGuard<'_, FftLan
 /// efficient potential field evaluation via convolution. The grid divides
 /// coordinate space into boxes, each containing interpolation nodes for
 /// Lagrange polynomial interpolation.
-pub struct FftGrid<T: FftwFloat> {
+pub struct FftGrid<T: FftFloat> {
     /// Number of boxes per dimension
     pub n_boxes_per_dim: usize,
     /// Number of interpolation nodes per box dimension (typically 3)
@@ -412,12 +368,13 @@ pub struct FftGrid<T: FftwFloat> {
     /// Pre-computed FFT of convolution kernel, column-major: layout
     /// `[k][u]` with `k < n_fft/2 + 1` and `u < n_fft`. Empty for grids from
     /// [`FftGrid::new_geometry`]
-    pub fft_kernel: Vec<T::Complex>,
-    /// FFT array dimension: `2 * n_interp_points * n_boxes_per_dim`
+    pub fft_kernel: Vec<Complex<T>>,
+    /// FFT array dimension: `2 * n_interp_points * n_boxes_per_dim` rounded
+    /// up by [`fft_len`]
     pub n_fft: usize,
 }
 
-impl<T: FftwFloat> FftGrid<T> {
+impl<T: FftFloat> FftGrid<T> {
     /// Create new FFT grid structure.
     ///
     /// Initialises uniform 2D grid covering square domain
@@ -498,7 +455,7 @@ impl<T: FftwFloat> FftGrid<T> {
             global_y_coords[i] = global_y_coords[i - 1] + global_h;
         }
 
-        let n_fft = 2 * n_interp_1d;
+        let n_fft = fft_len(2 * n_interp_1d);
 
         Self {
             n_boxes_per_dim,
@@ -524,22 +481,19 @@ impl<T: FftwFloat> FftGrid<T> {
     ///
     /// * `x_coords` - Grid node x-coordinates
     /// * `y_coords` - Grid node y-coordinates
-    /// * `n_fft` - FFT array dimension (typically `2 * len(x_coords)`)
+    /// * `n_fft` - FFT array dimension, at least `2 * len(x_coords)`
     ///
     /// ### Returns
     ///
     /// Complex-valued FFT of kernel in column-major `[k][u]` layout,
     /// dimensions `(n_fft/2 + 1) x n_fft`, pre-scaled by `1 / n_fft^2` so the
     /// inverse transform needs no separate normalisation
-    fn precompute_kernel(x_coords: &[T], y_coords: &[T], n_fft: usize) -> Vec<T::Complex> {
+    fn precompute_kernel(x_coords: &[T], y_coords: &[T], n_fft: usize) -> Vec<Complex<T>> {
         let n_interp = x_coords.len();
         let x_0 = x_coords[0];
         let y_0 = y_coords[0];
 
-        let mut kernel_real: AlignedVec<T> = T::aligned_real(n_fft * n_fft);
-        for x in kernel_real.iter_mut() {
-            *x = T::zero();
-        }
+        let mut kernel_real = vec![T::zero(); n_fft * n_fft];
 
         for i in 0..n_interp {
             for j in 0..n_interp {
@@ -562,25 +516,10 @@ impl<T: FftwFloat> FftGrid<T> {
             }
         }
 
-        let n_complex = n_fft * (n_fft / 2 + 1);
-        let mut kernel_fft: AlignedVec<T::Complex> = T::aligned_complex(n_complex);
-        let mut plan = T::plan_r2c_2d(n_fft);
-        T::execute_r2c(&mut plan, &mut kernel_real, &mut kernel_fft);
-
-        // transpose to [k][u] so the column pass reads each column
-        // contiguously, and fold in the 1 / n_fft^2 normalisation.
-        let n_half = n_fft / 2 + 1;
+        // [k][u] so the column pass reads each column contiguously, with the
+        // 1 / n_fft^2 normalisation folded in.
         let norm = T::one() / T::from_usize(n_fft * n_fft).unwrap();
-        let mut kernel_t = vec![T::complex_zero(); n_complex];
-        for u in 0..n_fft {
-            for k in 0..n_half {
-                let v = kernel_fft[u * n_half + k];
-                kernel_t[k * n_fft + u] =
-                    T::new_complex(T::complex_re(v) * norm, T::complex_im(v) * norm);
-            }
-        }
-
-        kernel_t
+        r2c_2d_transposed(&kernel_real, n_fft, &FftPlans::new(n_fft), norm)
     }
 
     /// Map point coordinates to containing box indices.
@@ -718,7 +657,7 @@ impl<T: FftwFloat> FftGrid<T> {
 ///   (`spacings[i] - spacings[j]`) for j != i
 /// * `weights` - Output buffer for weights
 #[inline]
-pub fn lagrange_weights<T: FftwFloat>(
+pub fn lagrange_weights<T: FftFloat>(
     y_in_box: T,
     spacings: &[T],
     denominators: &[T],
@@ -738,14 +677,14 @@ pub fn lagrange_weights<T: FftwFloat>(
 
 /// Compute repulsive forces/potentials using FFT acceleration.
 ///
-/// Generic implementation supporting f32/f64 via the `FftwFloat` trait.
-/// Accepts a pre-allocated workspace to avoid per-call FFTW plan creation
-/// and aligned buffer allocation. The caller must also provide the output
-/// buffer, which is overwritten.
+/// Generic implementation supporting f32/f64 via the `FftFloat` trait.
+/// Accepts a pre-allocated workspace to avoid per-call planning and buffer
+/// allocation. The caller must also provide the output buffer, which is
+/// overwritten.
 ///
 /// The three stages are parallel: charge spreading over box rows (points in
 /// different box rows write disjoint grid slabs), the FFT convolution as 1D
-/// row and column passes over per-thread plans, and gathering over points.
+/// row and column passes over per-thread buffers, and gathering over points.
 ///
 /// ### Params
 ///
@@ -754,11 +693,11 @@ pub fn lagrange_weights<T: FftwFloat>(
 /// * `charges` - Charges of the points, shape `[n_points * n_terms]`
 /// * `n_terms` - Number of terms in the expansion
 /// * `grid` - FFT grid (pre-computed kernel and interpolation data)
-/// * `ws` - Reusable FFT workspace (plans and aligned buffers); must have
-///   been created with the same `n_fft` as the grid
+/// * `ws` - Reusable FFT workspace (plans and buffers); must have been
+///   created with the same `n_fft` as the grid
 /// * `potentials_out` - Output buffer, shape `[n_points * n_terms]`; will
 ///   be overwritten with computed potentials
-pub fn n_body_fft_2d<T: FftwFloat>(
+pub fn n_body_fft_2d<T: FftFloat>(
     xs: &[T],
     ys: &[T],
     charges: &[T],
@@ -800,12 +739,15 @@ pub fn n_body_fft_2d<T: FftwFloat>(
     }
     let spec_len = n_interp_1d * n_terms * n_half;
     if ws.spec_rows.len() != spec_len {
-        ws.spec_rows.resize(spec_len, T::complex_zero());
-        ws.spec_cols.resize(spec_len, T::complex_zero());
+        ws.spec_rows
+            .resize(spec_len, Complex::new(T::zero(), T::zero()));
+        ws.spec_cols
+            .resize(spec_len, Complex::new(T::zero(), T::zero()));
     }
     if ws.lanes.is_empty() {
+        let plans = FftPlans::new(n_fft);
         ws.lanes = (0..rayon::current_num_threads().max(1))
-            .map(|_| Mutex::new(FftLane::new(n_fft)))
+            .map(|_| Mutex::new(FftLane::new(n_fft, &plans)))
             .collect();
     }
 
@@ -892,11 +834,12 @@ pub fn n_body_fft_2d<T: FftwFloat>(
     }
 
     // step 2: FFT convolution as three 1D passes. The input is non-zero only
-    // in the top-left n_interp_1d quadrant and only the bottom-right quadrant
-    // of the output is kept, so the row passes touch half the rows and the
-    // pad is never transformed.
+    // in the top-left m x m block and only rows and columns m..2m of the
+    // output are kept, so the row passes touch m rows and the pad is never
+    // transformed.
     let m = n_interp_1d;
     let lanes = &ws.lanes;
+    let c_zero = Complex::new(T::zero(), T::zero());
 
     // step 2a: forward r2c over the non-zero input rows.
     {
@@ -911,7 +854,9 @@ pub fn n_body_fft_2d<T: FftwFloat>(
                     for j in 0..m {
                         lane.row_in[j] = w_coefficients[(r * m + j) * n_terms + term];
                     }
-                    T::execute_r2c(&mut lane.plan_r2c, &mut lane.row_in, &mut lane.row_spec);
+                    lane.row_in[m..].fill(T::zero());
+                    lane.plans
+                        .r2c(&mut lane.row_in, &mut lane.row_spec, &mut lane.scratch);
                     out[term * n_half..(term + 1) * n_half].copy_from_slice(&lane.row_spec);
                 }
             });
@@ -933,19 +878,23 @@ pub fn n_body_fft_2d<T: FftwFloat>(
                 for r in 0..m {
                     lane.col_a[r] = spec_rows[(r * n_terms + term) * n_half + k];
                 }
-                for v in lane.col_a[m..].iter_mut() {
-                    *v = T::complex_zero();
-                }
-                T::execute_c2c(&mut lane.plan_fwd, &mut lane.col_a, &mut lane.col_b);
+                lane.col_a[m..].fill(c_zero);
+                lane.plans.fwd.process_outofplace_with_scratch(
+                    &mut lane.col_a,
+                    &mut lane.col_b,
+                    &mut lane.scratch,
+                );
 
                 let kern = &fft_kernel[k * n_fft..(k + 1) * n_fft];
                 for (v, &kv) in lane.col_b.iter_mut().zip(kern) {
-                    let (a, b) = (T::complex_re(*v), T::complex_im(*v));
-                    let (c, d) = (T::complex_re(kv), T::complex_im(kv));
-                    *v = T::new_complex(a * c - b * d, a * d + b * c);
+                    *v = *v * kv;
                 }
 
-                T::execute_c2c(&mut lane.plan_bwd, &mut lane.col_b, &mut lane.col_a);
+                lane.plans.bwd.process_outofplace_with_scratch(
+                    &mut lane.col_b,
+                    &mut lane.col_a,
+                    &mut lane.scratch,
+                );
                 out.copy_from_slice(&lane.col_a[m..2 * m]);
             });
     }
@@ -965,7 +914,8 @@ pub fn n_body_fft_2d<T: FftwFloat>(
                     for k in 0..n_half {
                         lane.row_spec[k] = spec_cols[base + k * m];
                     }
-                    T::execute_c2r(&mut lane.plan_c2r, &mut lane.row_spec, &mut lane.row_out);
+                    lane.plans
+                        .c2r(&mut lane.row_spec, &mut lane.row_out, &mut lane.scratch);
                     for gx in 0..m {
                         row_out[gx * n_terms + term] = lane.row_out[m + gx];
                     }
@@ -1018,13 +968,13 @@ pub fn n_body_fft_2d<T: FftwFloat>(
 /// Convolving a unit charge grid with these gives `Z_i` and the repulsive
 /// force components directly, so nothing is reconstructed from absolute
 /// coordinates and nothing cancels.
-pub struct FftKernels3k<T: FftwFloat> {
+pub struct FftKernels3k<T: FftFloat> {
     /// Spectra for `[q, q^2 dx, q^2 dy]`, each column-major `[k][u]`,
     /// pre-scaled by `1 / n_fft^2`
-    pub spectra: [Vec<T::Complex>; 3],
+    pub spectra: [Vec<Complex<T>>; 3],
 }
 
-impl<T: FftwFloat> FftKernels3k<T> {
+impl<T: FftFloat> FftKernels3k<T> {
     /// Build the three kernel spectra for a grid.
     ///
     /// ### Params
@@ -1039,8 +989,6 @@ impl<T: FftwFloat> FftKernels3k<T> {
         let yc = &grid.global_y_coords;
         let m = xc.len() as isize;
         let n_fft = grid.n_fft;
-        let n_half = n_fft / 2 + 1;
-        let n_complex = n_fft * n_half;
         let norm = T::one() / T::from_usize(n_fft * n_fft).unwrap();
 
         // signed node offsets for d in -(m - 1)..m, index d + m - 1
@@ -1060,12 +1008,14 @@ impl<T: FftwFloat> FftKernels3k<T> {
 
         // spatial kernels, filled in parallel over rows. Row index carries
         // the y offset, column the x offset.
-        let mut reals: Vec<AlignedVec<T>> = (0..3)
+        // spatial kernels, filled in parallel over rows. Row index carries
+        // the y offset, column the x offset. Rows past the 2m - 1 offsets are
+        // padding up to `n_fft`.
+        let reals: Vec<Vec<T>> = (0..3)
             .map(|t| {
-                let mut real: AlignedVec<T> = T::aligned_real(n_fft * n_fft);
+                let mut real = vec![T::zero(); n_fft * n_fft];
                 real.par_chunks_mut(n_fft).enumerate().for_each(|(r, row)| {
-                    row.fill(T::zero());
-                    if r == 0 {
+                    if r == 0 || r > oy.len() {
                         return;
                     }
                     let q_y = oy[r - 1];
@@ -1082,104 +1032,29 @@ impl<T: FftwFloat> FftKernels3k<T> {
             })
             .collect();
 
-        // FFTW planning is not thread-safe, so plans are made here and only
-        // the executions run in parallel.
-        let mut jobs: Vec<(T::R2CPlan, AlignedVec<T::Complex>)> = (0..3)
-            .map(|_| (T::plan_r2c_2d(n_fft), T::aligned_complex(n_complex)))
-            .collect();
-        jobs.par_iter_mut()
-            .zip(reals.par_iter_mut())
-            .for_each(|((plan, spec), real)| T::execute_r2c(plan, real, spec));
-
-        // transpose to [k][u] and fold in the normalisation, parallel over k
-        let spectra: Vec<Vec<T::Complex>> = jobs
+        // [k][u] with the normalisation folded in
+        let plans = FftPlans::new(n_fft);
+        let spectra: Vec<Vec<Complex<T>>> = reals
             .iter()
-            .map(|(_, spec)| {
-                let mut spec_t = vec![T::complex_zero(); n_complex];
-                spec_t
-                    .par_chunks_mut(n_fft)
-                    .enumerate()
-                    .for_each(|(k, col)| {
-                        for (u, v_out) in col.iter_mut().enumerate() {
-                            let v = spec[u * n_half + k];
-                            *v_out =
-                                T::new_complex(T::complex_re(v) * norm, T::complex_im(v) * norm);
-                        }
-                    });
-                spec_t
-            })
+            .map(|real| r2c_2d_transposed(real, n_fft, &plans, norm))
             .collect();
 
         Self {
-            spectra: spectra.try_into().ok().expect("three spectra"),
-        }
-    }
-}
-
-/// Per-thread 1D plans and scratch for the three-kernel convolution.
-pub struct FftLane3k<T: FftwFloat> {
-    /// Real row input, length `n_fft`; upper half stays zero
-    row_in: AlignedVec<T>,
-    /// Real row output, length `n_fft`
-    row_out: AlignedVec<T>,
-    /// Half spectrum of one row, length `n_fft / 2 + 1`
-    row_spec: AlignedVec<T::Complex>,
-    /// Column buffer, length `n_fft`
-    col_a: AlignedVec<T::Complex>,
-    /// Forward column spectrum, length `n_fft`
-    col_b: AlignedVec<T::Complex>,
-    /// Inverse column output, length `n_fft`
-    col_c: AlignedVec<T::Complex>,
-    /// Row real-to-complex plan
-    plan_r2c: T::R2CPlan,
-    /// Row complex-to-real plan
-    plan_c2r: T::C2RPlan,
-    /// Column forward plan
-    plan_fwd: T::C2CPlan,
-    /// Column backward plan
-    plan_bwd: T::C2CPlan,
-}
-
-impl<T: FftwFloat> FftLane3k<T> {
-    /// Create one lane for a given FFT length.
-    ///
-    /// ### Params
-    ///
-    /// * `n_fft` - FFT length along each axis
-    ///
-    /// ### Returns
-    ///
-    /// The lane, with `row_in` zeroed.
-    fn new(n_fft: usize) -> Self {
-        let mut row_in = T::aligned_real(n_fft);
-        for v in row_in.iter_mut() {
-            *v = T::zero();
-        }
-        Self {
-            row_in,
-            row_out: T::aligned_real(n_fft),
-            row_spec: T::aligned_complex(n_fft / 2 + 1),
-            col_a: T::aligned_complex(n_fft),
-            col_b: T::aligned_complex(n_fft),
-            col_c: T::aligned_complex(n_fft),
-            plan_r2c: T::plan_r2c_1d(n_fft),
-            plan_c2r: T::plan_c2r_1d(n_fft),
-            plan_fwd: T::plan_c2c_1d(n_fft, Sign::Forward),
-            plan_bwd: T::plan_c2c_1d(n_fft, Sign::Backward),
+            spectra: spectra.try_into().expect("three spectra"),
         }
     }
 }
 
 /// Reusable buffers for [`n_body_fft_2d_3k`].
-pub struct FftWorkspace3k<T: FftwFloat> {
+pub struct FftWorkspace3k<T: FftFloat> {
     /// FFT array dimension this workspace was built for
     pub n_fft: usize,
     /// One lane per rayon thread
-    lanes: Vec<Mutex<FftLane3k<T>>>,
+    lanes: Vec<Mutex<FftLane<T>>>,
     /// Row spectra of the charge grid, layout `[row][k]`
-    spec_rows: Vec<T::Complex>,
+    spec_rows: Vec<Complex<T>>,
     /// Kernel-multiplied inverse column spectra, layout `[k][kernel][row]`
-    spec_cols: Vec<T::Complex>,
+    spec_cols: Vec<Complex<T>>,
     /// Per-point box index and intra-box position
     box_data: Vec<((usize, usize), T, T)>,
     /// Per-point Lagrange x-weights
@@ -1196,7 +1071,7 @@ pub struct FftWorkspace3k<T: FftwFloat> {
     order: Vec<u32>,
 }
 
-impl<T: FftwFloat> FftWorkspace3k<T> {
+impl<T: FftFloat> FftWorkspace3k<T> {
     /// Create an empty workspace for a given FFT dimension.
     ///
     /// ### Params
@@ -1223,21 +1098,6 @@ impl<T: FftwFloat> FftWorkspace3k<T> {
     }
 }
 
-/// Lock the calling rayon thread's three-kernel lane.
-///
-/// ### Params
-///
-/// * `lanes` - One lane per rayon thread
-///
-/// ### Returns
-///
-/// Guard over this thread's lane.
-#[inline]
-fn lock_lane_3k<T: FftwFloat>(lanes: &[Mutex<FftLane3k<T>>]) -> MutexGuard<'_, FftLane3k<T>> {
-    let idx = rayon::current_thread_index().unwrap_or(0) % lanes.len();
-    lanes[idx].lock().expect("FFT lane mutex poisoned")
-}
-
 /// Repulsion via three kernels against a unit charge grid.
 ///
 /// Returns, per point, `Z_i = sum_j q_ij` (self term included),
@@ -1253,7 +1113,7 @@ fn lock_lane_3k<T: FftwFloat>(lanes: &[Mutex<FftLane3k<T>>]) -> MutexGuard<'_, F
 /// * `kernels` - Spectra built from the same grid
 /// * `ws` - Workspace built with the grid's `n_fft`
 /// * `out` - Output, length `3 n_points`, `[z, fx, fy]` per point
-pub fn n_body_fft_2d_3k<T: FftwFloat>(
+pub fn n_body_fft_2d_3k<T: FftFloat>(
     xs: &[T],
     ys: &[T],
     grid: &FftGrid<T>,
@@ -1280,12 +1140,15 @@ pub fn n_body_fft_2d_3k<T: FftwFloat>(
     if ws.w.len() != m * m {
         ws.w.resize(m * m, T::zero());
         ws.y_tilde.resize(3 * m * m, T::zero());
-        ws.spec_rows.resize(m * n_half, T::complex_zero());
-        ws.spec_cols.resize(3 * n_half * m, T::complex_zero());
+        ws.spec_rows
+            .resize(m * n_half, Complex::new(T::zero(), T::zero()));
+        ws.spec_cols
+            .resize(3 * n_half * m, Complex::new(T::zero(), T::zero()));
     }
     if ws.lanes.is_empty() {
+        let plans = FftPlans::new(n_fft);
         ws.lanes = (0..rayon::current_num_threads().max(1))
-            .map(|_| Mutex::new(FftLane3k::new(n_fft)))
+            .map(|_| Mutex::new(FftLane::new(n_fft, &plans)))
             .collect();
     }
 
@@ -1365,10 +1228,12 @@ pub fn n_body_fft_2d_3k<T: FftwFloat>(
             .par_chunks_mut(n_half)
             .enumerate()
             .for_each(|(r, out_row)| {
-                let mut guard = lock_lane_3k(lanes);
+                let mut guard = lock_lane(lanes);
                 let lane = &mut *guard;
                 lane.row_in[..m].copy_from_slice(&w[r * m..(r + 1) * m]);
-                T::execute_r2c(&mut lane.plan_r2c, &mut lane.row_in, &mut lane.row_spec);
+                lane.row_in[m..].fill(T::zero());
+                lane.plans
+                    .r2c(&mut lane.row_in, &mut lane.row_spec, &mut lane.scratch);
                 out_row.copy_from_slice(&lane.row_spec);
             });
     }
@@ -1382,26 +1247,30 @@ pub fn n_body_fft_2d_3k<T: FftwFloat>(
             .par_chunks_mut(3 * m)
             .enumerate()
             .for_each(|(k, out_col)| {
-                let mut guard = lock_lane_3k(lanes);
+                let mut guard = lock_lane(lanes);
                 let lane = &mut *guard;
                 for r in 0..m {
                     lane.col_a[r] = spec_rows[r * n_half + k];
                 }
-                for v in lane.col_a[m..].iter_mut() {
-                    *v = T::complex_zero();
-                }
-                T::execute_c2c(&mut lane.plan_fwd, &mut lane.col_a, &mut lane.col_b);
+                lane.col_a[m..].fill(Complex::new(T::zero(), T::zero()));
+                lane.plans.fwd.process_outofplace_with_scratch(
+                    &mut lane.col_a,
+                    &mut lane.col_b,
+                    &mut lane.scratch,
+                );
 
+                // col_a is rewritten per kernel; the out-of-place inverse
+                // clobbers its input, never col_b
                 for t in 0..3 {
                     let kern = &spectra[t][k * n_fft..(k + 1) * n_fft];
-                    for u in 0..n_fft {
-                        let v = lane.col_b[u];
-                        let kv = kern[u];
-                        let (a, b) = (T::complex_re(v), T::complex_im(v));
-                        let (c, d) = (T::complex_re(kv), T::complex_im(kv));
-                        lane.col_a[u] = T::new_complex(a * c - b * d, a * d + b * c);
+                    for ((a, &b), &kv) in lane.col_a.iter_mut().zip(&lane.col_b).zip(kern) {
+                        *a = b * kv;
                     }
-                    T::execute_c2c(&mut lane.plan_bwd, &mut lane.col_a, &mut lane.col_c);
+                    lane.plans.bwd.process_outofplace_with_scratch(
+                        &mut lane.col_a,
+                        &mut lane.col_c,
+                        &mut lane.scratch,
+                    );
                     out_col[t * m..(t + 1) * m].copy_from_slice(&lane.col_c[m..2 * m]);
                 }
             });
@@ -1414,13 +1283,14 @@ pub fn n_body_fft_2d_3k<T: FftwFloat>(
             .par_chunks_mut(3 * m)
             .enumerate()
             .for_each(|(gy, row_out)| {
-                let mut guard = lock_lane_3k(lanes);
+                let mut guard = lock_lane(lanes);
                 let lane = &mut *guard;
                 for t in 0..3 {
                     for k in 0..n_half {
                         lane.row_spec[k] = spec_cols[(k * 3 + t) * m + gy];
                     }
-                    T::execute_c2r(&mut lane.plan_c2r, &mut lane.row_spec, &mut lane.row_out);
+                    lane.plans
+                        .c2r(&mut lane.row_spec, &mut lane.row_out, &mut lane.scratch);
                     for gx in 0..m {
                         row_out[gx * 3 + t] = lane.row_out[m + gx];
                     }

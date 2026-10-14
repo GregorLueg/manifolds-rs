@@ -7,6 +7,8 @@ pub mod pacmap_optimiser;
 pub mod tsne_optimiser;
 #[cfg(feature = "gpu")]
 pub mod tsne_optimiser_gpu;
+#[cfg(any(feature = "gpu", mlx_available))]
+pub mod umap_csr;
 pub mod umap_optimisers;
 
 #[cfg(feature = "gpu")]

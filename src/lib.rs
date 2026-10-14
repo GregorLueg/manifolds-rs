@@ -17,6 +17,8 @@ pub mod prelude;
 pub mod training;
 pub mod utils;
 
+#[cfg(mlx_available)]
+pub mod mlx;
 #[cfg(feature = "parametric")]
 pub mod parametric;
 
@@ -30,14 +32,12 @@ use std::{default::Default, time::Instant};
 use thousands::*;
 
 #[cfg(feature = "parametric")]
-use burn::tensor::{backend::AutodiffBackend, Element};
+use burn::tensor::Element;
 #[cfg(feature = "parametric")]
 use num_traits::ToPrimitive;
 
 #[cfg(feature = "gpu")]
-use ann_search_rs::prelude::CubeclFloat;
-#[cfg(feature = "gpu")]
-use cubecl::prelude::*;
+use cubecl::Device;
 
 use crate::data::graph::*;
 use crate::data::init::*;
@@ -54,10 +54,15 @@ use crate::training::tsne_optimiser::*;
 use crate::training::umap_optimisers::*;
 use crate::utils::density::{DENSMAP_LAMBDA, DENSNE_LAMBDA};
 use crate::utils::diffusions::*;
+use crate::utils::dreams::{dreams_setup, DREAMS_LAMBDA};
 use crate::utils::math::compute_largest_eigenpairs_lanczos;
 use crate::utils::potentials::compute_potential_distances;
 use crate::utils::sparse_ops::matrix_power;
 
+#[cfg(mlx_available)]
+use crate::mlx::tsne_optimiser_mlx::*;
+#[cfg(mlx_available)]
+use crate::mlx::umap_optimiser_mlx::*;
 #[cfg(feature = "parametric")]
 use crate::parametric::model::*;
 #[cfg(feature = "parametric")]
@@ -67,11 +72,15 @@ use crate::training::tsne_optimiser_gpu::*;
 #[cfg(feature = "gpu")]
 use crate::training::umap_optimiser_gpu::*;
 #[cfg(feature = "fft_tsne")]
-use crate::utils::fft::FftwFloat;
+use crate::utils::fft::FftFloat;
 
 ///////////////
 // Constants //
 ///////////////
+
+/// Whether the MLX optimisers were compiled in: the `mlx` feature is on and
+/// ann-search-rs found mlx-c at build time.
+pub const MLX_AVAILABLE: bool = cfg!(mlx_available);
 
 /// Version of this crate, as declared in `Cargo.toml`.
 ///
@@ -115,10 +124,12 @@ pub struct UmapParams<T> {
     pub n_dim: usize,
     /// Number of neighbours
     pub k: usize,
-    /// Which optimiser to use. Defaults to `"adam_parallel"`.
+    /// Which optimiser to use: `"adam_parallel"` (default), `"adam"`, `"sgd"`,
+    /// or `"adam_mlx"` with the `mlx` feature.
     pub optimiser: String,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     pub ann_type: String,
     /// Which embedding initialisation to use. Defaults to spectral clustering.
     pub initialisation: String,
@@ -171,6 +182,7 @@ where
     /// * `ann_type` - (Approximate) nearest neighbour method. One of
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `initialisation` - Which embedding initialisation to use, e.g.
     ///   `"spectral"`.
     /// * `init_range` - Optional initialisation range.
@@ -503,6 +515,8 @@ where
                 UmapOptimiser::Adam => "Adam",
                 UmapOptimiser::Sgd => "SGD",
                 UmapOptimiser::AdamParallel => "Adam (multi-threaded)",
+                #[cfg(mlx_available)]
+                UmapOptimiser::AdamMlx => "Adam (MLX)",
             },
             umap_params.optim_params.n_epochs,
             graph.col_indices.len().separate_with_underscores()
@@ -530,6 +544,17 @@ where
         }
         UmapOptimiser::AdamParallel => {
             optimise_embedding_adam_parallel(
+                &mut embd,
+                &graph_adj,
+                &umap_params.optim_params,
+                dens_state.as_ref(),
+                seed as u64,
+                verbose,
+            )?;
+        }
+        #[cfg(mlx_available)]
+        UmapOptimiser::AdamMlx => {
+            optimise_embedding_adam_mlx(
                 &mut embd,
                 &graph_adj,
                 &umap_params.optim_params,
@@ -573,6 +598,7 @@ pub struct TsneParams<T> {
     pub perplexity: T,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     pub ann_type: String,
     /// Embedding initialisation method: `"pca"`, `"random"`, or `"spectral"`
     pub initialisation: String,
@@ -631,6 +657,7 @@ where
     /// * `ann_type` - (Approximate) nearest neighbour method. One of
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `initialisation` - Embedding initialisation method: `"pca"`,
     ///   `"random"`, or `"spectral"`.
     /// * `init_range` - Optional initialisation range to fix the initial
@@ -830,7 +857,8 @@ where
 ///   distances excluding self.
 /// * `params` - t-SNE parameters controlling algorithm behaviour
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`, `"fft"`, `"fft_3k" | "3-kernel"`
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, `"fft"`,
+///   `"fft_3k" | "3-kernel"`, and with the `mlx` feature `"fft_3k_mlx"`
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -857,7 +885,7 @@ pub fn tsne<T>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + FftwFloat,
+    T: ManifoldsFloat + FftFloat,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -869,6 +897,8 @@ where
         precomputed_knn,
         params,
         approx_type,
+        None,
+        None,
         None,
         seed,
         verbose,
@@ -888,6 +918,11 @@ where
 /// * `params` - t-SNE parameters
 /// * `approx_type` - `"barnes_hut" | "bh"`, `"fft"` or `"fft_3k" | "3-kernel"`
 /// * `dens_params` - Density knobs for den-SNE, or `None` for plain t-SNE
+/// * `dreams_lambda` - DREAMS regularisation strength, or `None` for no
+///   regulariser. When set, the embedding is initialised from the reference
+///   and `params.initialisation` is ignored
+/// * `dreams_reference` - DREAMS reference embedding `[2][n_samples]`;
+///   `None` uses PCA. Ignored without `dreams_lambda`
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -896,17 +931,20 @@ where
 ///
 /// Embedding coordinates as `Vec<Vec<T>>`, `[n_dim][n_samples]`.
 #[cfg(feature = "fft_tsne")]
+#[allow(clippy::too_many_arguments)]
 fn tsne_inner<T>(
     data: MatRef<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParams<T>,
     approx_type: &str,
     dens_params: Option<DensParams<T>>,
+    dreams_lambda: Option<T>,
+    dreams_reference: Option<Vec<Vec<T>>>,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + FftwFloat,
+    T: ManifoldsFloat + FftFloat,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -978,7 +1016,24 @@ where
 
     let start_init = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
+    // DREAMS initialises from its own reference, so the regulariser and the
+    // starting layout agree.
+    let (mut embd, dreams_state) = match dreams_lambda {
+        Some(lambda) => {
+            let (embd, state) = dreams_setup(
+                data,
+                dreams_reference,
+                lambda,
+                params.randomised_init,
+                seed as u64,
+            )?;
+            (embd, Some(state))
+        }
+        None => (
+            initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?,
+            None,
+        ),
+    };
 
     if verbosity.normal_verbosity() {
         println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
@@ -1008,6 +1063,7 @@ where
                 &params.optim_params,
                 &graph,
                 dens_state.as_ref(),
+                dreams_state.as_ref(),
                 verbose,
             );
         }
@@ -1023,6 +1079,7 @@ where
                 &params.optim_params,
                 &graph,
                 dens_state.as_ref(),
+                dreams_state.as_ref(),
                 verbose,
             );
         }
@@ -1039,6 +1096,7 @@ where
                 &params.optim_params,
                 &graph,
                 dens_state.as_ref(),
+                dreams_state.as_ref(),
                 verbose,
             )?;
         }
@@ -1055,6 +1113,7 @@ where
                 &params.optim_params,
                 &graph,
                 dens_state.as_ref(),
+                dreams_state.as_ref(),
                 verbose,
             )?;
         }
@@ -1062,6 +1121,27 @@ where
             return Err(ManifoldsError::TsneOptimiserNeedsGpu {
                 name: approx_type.to_string(),
             });
+        }
+        #[cfg(mlx_available)]
+        TsneOpt::Fft3KernelMlx => {
+            if dens_state.is_some() {
+                return Err(ManifoldsError::DensityNotSupported {
+                    name: approx_type.to_string(),
+                });
+            }
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via MLX three-kernel FFT t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne_mlx(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dreams_state.as_ref(),
+                verbose,
+            )?;
         }
     }
 
@@ -1113,7 +1193,8 @@ where
 ///   distances excluding self.
 /// * `params` - t-SNE parameters controlling algorithm behaviour
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`, `"fft"`, `"fft_3k" | "3-kernel"`
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, and with the `mlx`
+///   feature `"fft_3k_mlx"`. `"fft"` and `"fft_3k"` need `fft_tsne`.
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -1153,6 +1234,8 @@ where
         params,
         approx_type,
         None,
+        None,
+        None,
         seed,
         verbose,
     )
@@ -1172,6 +1255,11 @@ where
 /// * `approx_type` - `"barnes_hut" | "bh"`; `"fft"` and `"fft_3k"` panic
 ///   without the `fft_tsne` feature
 /// * `dens_params` - Density knobs for den-SNE, or `None` for plain t-SNE
+/// * `dreams_lambda` - DREAMS regularisation strength, or `None` for no
+///   regulariser. When set, the embedding is initialised from the reference
+///   and `params.initialisation` is ignored
+/// * `dreams_reference` - DREAMS reference embedding `[2][n_samples]`;
+///   `None` uses PCA. Ignored without `dreams_lambda`
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -1180,12 +1268,15 @@ where
 ///
 /// Embedding coordinates as `Vec<Vec<T>>`, `[n_dim][n_samples]`.
 #[cfg(not(feature = "fft_tsne"))]
+#[allow(clippy::too_many_arguments)]
 fn tsne_inner<T>(
     data: MatRef<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParams<T>,
     approx_type: &str,
     dens_params: Option<DensParams<T>>,
+    dreams_lambda: Option<T>,
+    dreams_reference: Option<Vec<Vec<T>>>,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
@@ -1261,7 +1352,24 @@ where
 
     let start_init = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
+    // DREAMS initialises from its own reference, so the regulariser and the
+    // starting layout agree.
+    let (mut embd, dreams_state) = match dreams_lambda {
+        Some(lambda) => {
+            let (embd, state) = dreams_setup(
+                data,
+                dreams_reference,
+                lambda,
+                params.randomised_init,
+                seed as u64,
+            )?;
+            (embd, Some(state))
+        }
+        None => (
+            initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?,
+            None,
+        ),
+    };
 
     if verbosity.normal_verbosity() {
         println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
@@ -1291,6 +1399,7 @@ where
                 &params.optim_params,
                 &graph,
                 dens_state.as_ref(),
+                dreams_state.as_ref(),
                 verbose,
             );
         }
@@ -1306,6 +1415,7 @@ where
                 &params.optim_params,
                 &graph,
                 dens_state.as_ref(),
+                dreams_state.as_ref(),
                 verbose,
             );
         }
@@ -1317,6 +1427,27 @@ where
             return Err(ManifoldsError::TsneOptimiserNeedsGpu {
                 name: approx_type.to_string(),
             });
+        }
+        #[cfg(mlx_available)]
+        TsneOpt::Fft3KernelMlx => {
+            if dens_state.is_some() {
+                return Err(ManifoldsError::DensityNotSupported {
+                    name: approx_type.to_string(),
+                });
+            }
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via MLX three-kernel FFT t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne_mlx(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dreams_state.as_ref(),
+                verbose,
+            )?;
         }
     }
 
@@ -1599,7 +1730,8 @@ where
 ///   distances excluding self.
 /// * `params` - den-SNE parameters
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`, `"fft"`, `"fft_3k" | "3-kernel"`
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, `"fft"`,
+///   `"fft_3k" | "3-kernel"`
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -1630,7 +1762,7 @@ pub fn densne<T>(
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + FftwFloat,
+    T: ManifoldsFloat + FftFloat,
     HnswIndex<T>: HnswState<T>,
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
@@ -1643,6 +1775,8 @@ where
         &params.tsne_params,
         approx_type,
         Some(params.dens_params),
+        None,
+        None,
         seed,
         verbose,
     )
@@ -1678,8 +1812,8 @@ where
 ///   distances excluding self.
 /// * `params` - den-SNE parameters
 /// * `approx_type` - Type of approximation to use for repulsive forces.
-///   Options: `"barnes_hut" | "bh"`. `"fft"` and `"fft_3k"` require the
-///   `fft_tsne` feature
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`. `"fft"` and `"fft_3k"`
+///   require the `fft_tsne` feature
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -1723,6 +1857,258 @@ where
         &params.tsne_params,
         approx_type,
         Some(params.dens_params),
+        None,
+        None,
+        seed,
+        verbose,
+    )
+}
+
+////////////
+// DREAMS //
+////////////
+
+/// Parameters for DREAMS, t-SNE regularised towards a global reference
+/// embedding.
+#[derive(Debug, Clone)]
+pub struct DreamsParams<T> {
+    /// The underlying t-SNE parameters. `initialisation` is ignored: DREAMS
+    /// always starts from its reference embedding.
+    pub tsne_params: TsneParams<T>,
+    /// Regularisation strength in `[0, 1]`. `0` is plain t-SNE, `1` the
+    /// reference embedding. Defaults to [`DREAMS_LAMBDA`].
+    pub lambda: T,
+}
+
+impl<T> Default for DreamsParams<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            tsne_params: TsneParams::default(),
+            lambda: T::from_f64(DREAMS_LAMBDA).unwrap(),
+        }
+    }
+}
+
+impl<T> DreamsParams<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Full-control constructor.
+    ///
+    /// ### Params
+    ///
+    /// * `tsne_params` - The underlying t-SNE parameters
+    /// * `lambda` - Regularisation strength in `[0, 1]`
+    ///
+    /// ### Returns
+    ///
+    /// The parameter set.
+    pub fn new(tsne_params: TsneParams<T>, lambda: T) -> Self {
+        Self {
+            tsne_params,
+            lambda,
+        }
+    }
+
+    /// 2D defaults with the two knobs most worth tuning exposed.
+    ///
+    /// ### Params
+    ///
+    /// * `perplexity` - Target perplexity. Defaults to the t-SNE default of 30
+    /// * `lambda` - Regularisation strength. Defaults to [`DREAMS_LAMBDA`].
+    ///   Larger values pull harder towards the reference layout
+    ///
+    /// ### Returns
+    ///
+    /// The parameter set.
+    pub fn new_default_2d(perplexity: Option<T>, lambda: Option<T>) -> Self {
+        Self {
+            tsne_params: TsneParams::new_default_2d(perplexity),
+            lambda: lambda.unwrap_or_else(|| T::from_f64(DREAMS_LAMBDA).unwrap()),
+        }
+    }
+}
+
+/// Run DREAMS, t-SNE regularised towards a global reference embedding
+///
+/// Adds a quadratic pull towards a scaled reference embedding (PCA unless one
+/// is supplied) to every t-SNE epoch. `lambda = 0` is plain t-SNE, `lambda = 1`
+/// recovers the reference; the default 0.15 keeps t-SNE's local structure and
+/// most of PCA's global layout.
+///
+/// ### Algorithm
+///
+/// 1. Construct the high-dimensional affinity graph exactly as t-SNE does
+/// 2. Take the reference `Y_e`: the first two PC scores (component ratio
+///    preserved) or the supplied embedding, centred
+/// 3. Initialise from `Y_e`, scaled so its first dimension has std `1e-4`
+/// 4. Optimise as t-SNE, but every epoch scale the t-SNE update by
+///    `1 - lambda` and add `-lr * lambda^2 * (2/n) * (y - alpha * y_e)`, with
+///    `alpha = ||Y||_F / ||Y_e||_F` and `lr = n / exaggeration` (openTSNE's
+///    automatic rate, independent of the t-SNE learning rate). This is the
+///    reference implementation's update, which differs from Equation 2 of the
+///    paper; see [`crate::utils::dreams`]
+///
+/// `params.tsne_params.initialisation` is ignored. The regulariser is O(n) per
+/// epoch on top of the Barnes-Hut or FFT repulsion.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
+/// * `reference` - Optional global reference embedding as `[2][n_samples]`,
+///   the layout every embedding in this crate returns (e.g. an MDS or PHATE
+///   result). `None` uses PCA.
+/// * `params` - DREAMS parameters
+/// * `approx_type` - Type of approximation to use for repulsive forces.
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, with the `fft_tsne`
+///   feature `"fft"`, `"fft_3k" | "3-kernel"`, and with the `mlx` feature
+///   `"fft_3k_mlx"`
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has length
+/// `n_dim` and the inner vectors length `n_samples`.
+///
+/// ### Errors
+///
+/// [`ManifoldsError::DreamsInvalidLambda`] if `lambda` is outside `[0, 1]`,
+/// [`ManifoldsError::DreamsReferenceMismatch`] if the reference is not
+/// `2 x n_samples`, [`ManifoldsError::DreamsDegenerateReference`] if it
+/// collapses to a point. Otherwise the same errors as [`tsne`].
+///
+/// ### References
+///
+/// Kury, Kobak & Damrich (2026): "DREAMS: Preserving both Local and Global
+/// Structure in Dimensionality Reduction", Transactions on Machine Learning
+/// Research
+#[cfg(feature = "fft_tsne")]
+pub fn dreams<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    reference: Option<Vec<Vec<T>>>,
+    params: &DreamsParams<T>,
+    approx_type: &str,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat + FftFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    tsne_inner(
+        data,
+        precomputed_knn,
+        &params.tsne_params,
+        approx_type,
+        None,
+        Some(params.lambda),
+        reference,
+        seed,
+        verbose,
+    )
+}
+
+/// Run DREAMS, t-SNE regularised towards a global reference embedding
+///
+/// Adds a quadratic pull towards a scaled reference embedding (PCA unless one
+/// is supplied) to every t-SNE epoch. `lambda = 0` is plain t-SNE, `lambda = 1`
+/// recovers the reference; the default 0.15 keeps t-SNE's local structure and
+/// most of PCA's global layout.
+///
+/// ### Algorithm
+///
+/// 1. Construct the high-dimensional affinity graph exactly as t-SNE does
+/// 2. Take the reference `Y_e`: the first two PC scores (component ratio
+///    preserved) or the supplied embedding, centred
+/// 3. Initialise from `Y_e`, scaled so its first dimension has std `1e-4`
+/// 4. Optimise as t-SNE, but every epoch scale the t-SNE update by
+///    `1 - lambda` and add `-lr * lambda^2 * (2/n) * (y - alpha * y_e)`, with
+///    `alpha = ||Y||_F / ||Y_e||_F` and `lr = n / exaggeration` (openTSNE's
+///    automatic rate, independent of the t-SNE learning rate). This is the
+///    reference implementation's update, which differs from Equation 2 of the
+///    paper; see [`crate::utils::dreams`]
+///
+/// `params.tsne_params.initialisation` is ignored. The regulariser is O(n) per
+/// epoch on top of the Barnes-Hut or FFT repulsion.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self.
+/// * `reference` - Optional global reference embedding as `[2][n_samples]`,
+///   the layout every embedding in this crate returns (e.g. an MDS or PHATE
+///   result). `None` uses PCA.
+/// * `params` - DREAMS parameters
+/// * `approx_type` - Type of approximation to use for repulsive forces.
+///   Options: `"barnes_hut" | "bh"`, `"bh_qd" | "qd"`, with the `fft_tsne`
+///   feature `"fft"`, `"fft_3k" | "3-kernel"`, and with the `mlx` feature
+///   `"fft_3k_mlx"`
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has length
+/// `n_dim` and the inner vectors length `n_samples`.
+///
+/// ### Errors
+///
+/// [`ManifoldsError::DreamsInvalidLambda`] if `lambda` is outside `[0, 1]`,
+/// [`ManifoldsError::DreamsReferenceMismatch`] if the reference is not
+/// `2 x n_samples`, [`ManifoldsError::DreamsDegenerateReference`] if it
+/// collapses to a point. Otherwise the same errors as [`tsne`].
+///
+/// ### References
+///
+/// Kury, Kobak & Damrich (2026): "DREAMS: Preserving both Local and Global
+/// Structure in Dimensionality Reduction", Transactions on Machine Learning
+/// Research
+#[cfg(not(feature = "fft_tsne"))]
+pub fn dreams<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    reference: Option<Vec<Vec<T>>>,
+    params: &DreamsParams<T>,
+    approx_type: &str,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    tsne_inner(
+        data,
+        precomputed_knn,
+        &params.tsne_params,
+        approx_type,
+        None,
+        Some(params.lambda),
+        reference,
         seed,
         verbose,
     )
@@ -1739,6 +2125,7 @@ pub struct Fa2Params<T> {
     pub k: usize,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     pub ann_type: String,
     /// Embedding initialisation method: `"spectral"`, `"pca"` or `"random"`
     pub initialisation: String,
@@ -1785,6 +2172,7 @@ where
     /// * `ann_type` - (Approximate) nearest neighbour method. One of
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `initialisation` - Embedding initialisation method: `"spectral"`,
     ///   `"pca"` or `"random"`.
     /// * `init_range` - Optional initialisation range.
@@ -2144,6 +2532,7 @@ pub struct PhateParams<T> {
     pub k: usize,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"`, or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     pub ann_type: String,
     /// Nearest neighbour search parameters to use
     pub ann_params: NearestNeighbourParams<T>,
@@ -2209,6 +2598,7 @@ where
     /// * `ann_type` - (Approximate) nearest neighbour method. One of
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `ann_params` - Nearest neighbour search parameters.
     /// * `diffusion_params` - Diffusion parameters. These cover the alpha
     ///   decay, kernel bandwidth scaling, graph symmetry, landmarks, SVD
@@ -2641,6 +3031,7 @@ pub struct PacmapParams<T> {
     pub n_dim: usize,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     pub ann_type: String,
     /// Which optimiser to use. Options are `"adam"` and `"adam_parallel"`
     pub optimiser_type: String,
@@ -2709,6 +3100,7 @@ where
     /// * `ann_type` - (Approximate) nearest neighbour method. One of
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `optimiser_type` - Which optimiser to use. Options are `"adam"` and
     ///   `"adam_parallel"`.
     /// * `n_near` - Near pairs per point (attractive).
@@ -3502,6 +3894,7 @@ where
     /// * `ann_type` - (Approximate) nearest neighbour method. One of
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `hidden_layers` - Hidden layer sizes for the MLP encoder.
     /// * `nn_params` - Nearest neighbour parameters.
     /// * `umap_graph_params` - UMAP graph generation parameters.
@@ -3590,7 +3983,8 @@ where
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
 ///   distances excluding self.
 /// * `umap_params` - Configuration parameters for parametric UMAP
-/// * `device` - Burn backend device for neural network training
+/// * `device` - Burn device for neural network training; switched to autodiff
+///   internally
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -3600,17 +3994,16 @@ where
 /// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
 /// `n_dim` and inner vectors have length `n_samples`. Each outer element
 /// represents one embedding dimension.
-pub fn parametric_umap<T, B>(
+pub fn parametric_umap<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     umap_params: &ParametricUmapParams<T>,
-    device: &B::Device,
+    device: &burn::tensor::Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat + Element,
-    B: AutodiffBackend,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
@@ -3647,7 +4040,7 @@ where
         umap_params.n_dim,
     );
 
-    let (embd, _) = train_parametric_umap::<B, T>(
+    let (embd, _) = train_parametric_umap::<T>(
         data,
         graph,
         &model_params,
@@ -3669,7 +4062,8 @@ where
 ///   ndarray 2-D array (with the `ndarray` feature) or a row-major
 ///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `umap_params` - Configuration parameters for parametric UMAP
-/// * `device` - Burn backend device for neural network training
+/// * `device` - Burn device for neural network training; switched to autodiff
+///   internally
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -3690,16 +4084,15 @@ where
 /// ### Returns
 ///
 /// Returns a tuple of embedding and the `TrainedUmapModel` for further usage.
-pub fn train_parametric_umap_model<T, B>(
+pub fn train_parametric_umap_model<T>(
     data: impl ManifoldsMatrix<T>,
     umap_params: &ParametricUmapParams<T>,
-    device: &B::Device,
+    device: &burn::tensor::Device,
     seed: usize,
     verbose: usize,
-) -> ParametricUmapResults<B, T>
+) -> ParametricUmapResults<T>
 where
     T: ManifoldsFloat + Element,
-    B: AutodiffBackend,
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
@@ -3735,7 +4128,7 @@ where
         umap_params.n_dim,
     );
 
-    let (embd, trained_model) = train_parametric_umap::<B, T>(
+    let (embd, trained_model) = train_parametric_umap::<T>(
         data,
         graph,
         &model_params,
@@ -3919,7 +4312,7 @@ where
 /// Tuple of (graph, knn_indices, knn_dist).
 #[cfg(feature = "gpu")]
 #[allow(clippy::too_many_arguments)]
-pub fn construct_umap_graph_gpu<T, R>(
+pub fn construct_umap_graph_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     k: usize,
@@ -3927,13 +4320,12 @@ pub fn construct_umap_graph_gpu<T, R>(
     umap_params: &UmapGraphParams<T>,
     nn_params: &NearestNeighbourParamsGpu<T>,
     n_epochs: usize,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> UmapGraphResults<T>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
@@ -3952,7 +4344,7 @@ where
             }
             let start_knn = Instant::now();
             let result =
-                run_ann_search_gpu::<T, R>(data, k, ann_type, nn_params, device, seed, verbose)?;
+                run_ann_search_gpu::<T>(data, k, ann_type, nn_params, device, seed, verbose)?;
             if verbosity.normal_verbosity() {
                 println!("GPU kNN search done in: {:.2?}.", start_knn.elapsed());
             }
@@ -4012,22 +4404,21 @@ where
 /// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
 /// `n_dim` and inner vectors have length `n_samples`.
 #[cfg(feature = "gpu")]
-pub fn umap_gpu<T, R>(
+pub fn umap_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     umap_params: &UmapParamsGpu<T>,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
     StandardNormal: Distribution<T>,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
-    umap_gpu_inner::<T, R>(
+    umap_gpu_inner::<T>(
         data,
         precomputed_knn,
         umap_params,
@@ -4059,18 +4450,17 @@ where
 ///
 /// Embedding coordinates as `Vec<Vec<T>>`, `[n_dim][n_samples]`.
 #[cfg(feature = "gpu")]
-fn umap_gpu_inner<T, R>(
+fn umap_gpu_inner<T>(
     data: MatRef<T>,
     precomputed_knn: PreComputedKnn<T>,
     umap_params: &UmapParamsGpu<T>,
     dens_params: Option<DensParams<T>>,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
     StandardNormal: Distribution<T>,
 {
     let verbosity = parse_verbosity_level(verbose);
@@ -4105,7 +4495,7 @@ where
         );
     }
 
-    let (graph, knn_indices, knn_dist) = construct_umap_graph_gpu::<T, R>(
+    let (graph, knn_indices, knn_dist) = construct_umap_graph_gpu::<T>(
         data,
         precomputed_knn,
         umap_params.k,
@@ -4170,6 +4560,8 @@ where
                 UmapOptimiserGpu::Sgd => "SGD",
                 UmapOptimiserGpu::AdamParallel => "Adam (multi-threaded)",
                 UmapOptimiserGpu::AdamGpu => "Adam (GPU-accelerated)",
+                #[cfg(mlx_available)]
+                UmapOptimiserGpu::AdamMlx => "Adam (MLX)",
             },
             umap_params.optim_params.n_epochs,
             graph.col_indices.len().separate_with_underscores()
@@ -4205,6 +4597,17 @@ where
                 verbose,
             )?;
         }
+        #[cfg(mlx_available)]
+        UmapOptimiserGpu::AdamMlx => {
+            optimise_embedding_adam_mlx(
+                &mut embd,
+                &graph_adj,
+                &umap_params.optim_params,
+                dens_state.as_ref(),
+                seed as u64,
+                verbose,
+            )?;
+        }
         UmapOptimiserGpu::AdamGpu => {
             // downcast to f32 for GPU here...
             let mut embd_f32: Vec<Vec<f32>> = embd
@@ -4223,7 +4626,7 @@ where
             let params_f32 = umap_params.optim_params.cast::<f32>();
             let dens_f32 = dens_state.as_ref().map(|state| state.cast::<f32>());
 
-            optimise_embedding_adam_gpu::<R, f32>(
+            optimise_embedding_adam_gpu::<f32>(
                 &mut embd_f32,
                 &graph_adj_f32,
                 &params_f32,
@@ -4379,22 +4782,21 @@ where
 /// variability through density-preserving data visualization", Nature
 /// Biotechnology
 #[cfg(feature = "gpu")]
-pub fn densmap_gpu<T, R>(
+pub fn densmap_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &DensmapParamsGpu<T>,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
     StandardNormal: Distribution<T>,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
-    umap_gpu_inner::<T, R>(
+    umap_gpu_inner::<T>(
         data,
         precomputed_knn,
         &params.umap_params,
@@ -4563,19 +4965,18 @@ where
 /// Tuple of (symmetric affinity graph, knn_indices, knn_dist)
 #[cfg(feature = "gpu")]
 #[allow(clippy::too_many_arguments)]
-pub fn construct_tsne_graph_gpu<T, R>(
+pub fn construct_tsne_graph_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     perplexity: T,
     ann_type: String,
     nn_params: &NearestNeighbourParamsGpu<T>,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> TsneGraph<T>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
@@ -4616,7 +5017,7 @@ where
 
             let start_knn = Instant::now();
             let result =
-                run_ann_search_gpu::<T, R>(data, k, ann_type, nn_params, device, seed, verbose)?;
+                run_ann_search_gpu::<T>(data, k, ann_type, nn_params, device, seed, verbose)?;
 
             if verbosity.normal_verbosity() {
                 println!("GPU kNN search done in: {:.2?}.", start_knn.elapsed());
@@ -4652,6 +5053,53 @@ where
     Ok((graph, knn_indices, knn_dist))
 }
 
+/// Parameters for GPU DREAMS. The GPU twin of [`DreamsParams`].
+#[cfg(feature = "gpu")]
+#[derive(Debug, Clone)]
+pub struct DreamsParamsGpu<T> {
+    /// The underlying GPU t-SNE parameters. `initialisation` is ignored:
+    /// DREAMS always starts from its reference embedding.
+    pub tsne_params: TsneParamsGpu<T>,
+    /// Regularisation strength in `[0, 1]`. Defaults to [`DREAMS_LAMBDA`].
+    pub lambda: T,
+}
+
+#[cfg(feature = "gpu")]
+impl<T> Default for DreamsParamsGpu<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            tsne_params: TsneParamsGpu::default(),
+            lambda: T::from_f64(DREAMS_LAMBDA).unwrap(),
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl<T> DreamsParamsGpu<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Full-control constructor.
+    ///
+    /// ### Params
+    ///
+    /// * `tsne_params` - The underlying GPU t-SNE parameters
+    /// * `lambda` - Regularisation strength in `[0, 1]`
+    ///
+    /// ### Returns
+    ///
+    /// The parameter set.
+    pub fn new(tsne_params: TsneParamsGpu<T>, lambda: T) -> Self {
+        Self {
+            tsne_params,
+            lambda,
+        }
+    }
+}
+
 /// Run t-SNE with GPU-accelerated nearest neighbour search (FFT build)
 ///
 /// Identical to `tsne` except the kNN graph is constructed on the GPU.
@@ -4666,8 +5114,9 @@ where
 ///   excluding self
 /// * `params` - GPU t-SNE parameters
 /// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"`,
-///   `"fft"`, `"fft_3k" | "3-kernel"`, or `"fft_3k_gpu"` (optimiser on the
-///   GPU as well)
+///   `"bh_qd" | "qd"`, `"fft"`, `"fft_3k" | "3-kernel"`, `"fft_3k_gpu"`
+///   (optimiser on the GPU as well) or, with the `mlx` feature,
+///   `"fft_3k_mlx"` (optimiser on MLX, kNN still on wgpu)
 /// * `device` - GPU device to use
 /// * `seed` - Random seed
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -4677,22 +5126,73 @@ where
 ///
 /// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
 #[cfg(all(feature = "gpu", feature = "fft_tsne"))]
-pub fn tsne_gpu<T, R>(
+pub fn tsne_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParamsGpu<T>,
     approx_type: &str,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat + FftwFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu + FftFloat,
     StandardNormal: Distribution<T>,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
+    tsne_gpu_inner::<T>(
+        data,
+        precomputed_knn,
+        params,
+        approx_type,
+        None,
+        None,
+        device,
+        seed,
+        verbose,
+    )
+}
+
+/// Shared body of [`tsne_gpu`] and [`dreams_gpu`].
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Optional precomputed kNN, indices and distances
+///   excluding self
+/// * `params` - GPU t-SNE parameters
+/// * `approx_type` - Repulsive-force approximation, as for [`tsne_gpu`]
+/// * `dreams_lambda` - DREAMS regularisation strength, or `None` for no
+///   regulariser. When set, the embedding is initialised from the reference
+///   and `params.initialisation` is ignored
+/// * `dreams_reference` - DREAMS reference embedding `[2][n_samples]`;
+///   `None` uses PCA. Ignored without `dreams_lambda`
+/// * `device` - GPU device to use
+/// * `seed` - Random seed
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+#[cfg(all(feature = "gpu", feature = "fft_tsne"))]
+#[allow(clippy::too_many_arguments)]
+fn tsne_gpu_inner<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &TsneParamsGpu<T>,
+    approx_type: &str,
+    dreams_lambda: Option<T>,
+    dreams_reference: Option<Vec<Vec<T>>>,
+    device: Device,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloatGpu + FftFloat,
+    StandardNormal: Distribution<T>,
+{
     if params.n_dim != 2 {
         return Err(ManifoldsError::IncorrectDim {
             n_dim: params.n_dim,
@@ -4701,7 +5201,7 @@ where
 
     let verbosity = parse_verbosity_level(verbose);
 
-    let (graph, _, _) = construct_tsne_graph_gpu::<T, R>(
+    let (graph, _, _) = construct_tsne_graph_gpu::<T>(
         data,
         precomputed_knn,
         params.perplexity,
@@ -4734,7 +5234,24 @@ where
 
     let start_init = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
+    // DREAMS initialises from its own reference, so the regulariser and the
+    // starting layout agree.
+    let (mut embd, dreams_state) = match dreams_lambda {
+        Some(lambda) => {
+            let (embd, state) = dreams_setup(
+                data,
+                dreams_reference,
+                lambda,
+                params.randomised_init,
+                seed as u64,
+            )?;
+            (embd, Some(state))
+        }
+        None => (
+            initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?,
+            None,
+        ),
+    };
 
     if verbosity.normal_verbosity() {
         println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
@@ -4757,7 +5274,14 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
+            optimise_bh_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                None,
+                dreams_state.as_ref(),
+                verbose,
+            );
         }
         TsneOpt::BarnesHutQd => {
             if verbosity.normal_verbosity() {
@@ -4766,7 +5290,14 @@ where
                     params.optim_params.n_epochs, params.optim_params.max_depth
                 );
             }
-            optimise_qd_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
+            optimise_qd_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                None,
+                dreams_state.as_ref(),
+                verbose,
+            );
         }
         TsneOpt::Fft => {
             if verbosity.normal_verbosity() {
@@ -4775,7 +5306,14 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_fft_tsne(&mut embd, &params.optim_params, &graph, None, verbose)?;
+            optimise_fft_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                None,
+                dreams_state.as_ref(),
+                verbose,
+            )?;
         }
         TsneOpt::Fft3Kernel => {
             if verbosity.normal_verbosity() {
@@ -4784,7 +5322,14 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_fft3k_tsne(&mut embd, &params.optim_params, &graph, None, verbose)?;
+            optimise_fft3k_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                None,
+                dreams_state.as_ref(),
+                verbose,
+            )?;
         }
         TsneOpt::Fft3KernelGpu => {
             if verbosity.normal_verbosity() {
@@ -4793,11 +5338,28 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_fft3k_tsne_gpu::<R, T>(
+            optimise_fft3k_tsne_gpu::<T>(
                 &mut embd,
                 &params.optim_params,
                 &graph,
+                dreams_state.as_ref(),
                 device,
+                verbose,
+            )?;
+        }
+        #[cfg(mlx_available)]
+        TsneOpt::Fft3KernelMlx => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via MLX three-kernel FFT t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne_mlx(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dreams_state.as_ref(),
                 verbose,
             )?;
         }
@@ -4819,11 +5381,78 @@ where
     Ok(transposed)
 }
 
+/// Run DREAMS with GPU-accelerated nearest neighbour search
+///
+/// Same as [`dreams`], with the kNN graph built on the GPU. Pass
+/// `approx_type = "fft_3k_gpu"` to run the optimiser, regulariser included,
+/// on the GPU as well; the other approximations optimise on the CPU.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Optional precomputed kNN, indices and distances
+///   excluding self
+/// * `reference` - Optional global reference embedding as `[2][n_samples]`.
+///   `None` uses PCA.
+/// * `params` - GPU DREAMS parameters
+/// * `approx_type` - Repulsive-force approximation, as for [`tsne_gpu`]
+/// * `device` - GPU device to use
+/// * `seed` - Random seed
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+///
+/// ### Errors
+///
+/// The DREAMS errors listed for [`dreams`], otherwise the same errors as
+/// [`tsne_gpu`].
+///
+/// ### References
+///
+/// Kury, Kobak & Damrich (2026): "DREAMS: Preserving both Local and Global
+/// Structure in Dimensionality Reduction", Transactions on Machine Learning
+/// Research
+#[cfg(all(feature = "gpu", feature = "fft_tsne"))]
+#[allow(clippy::too_many_arguments)]
+pub fn dreams_gpu<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    reference: Option<Vec<Vec<T>>>,
+    params: &DreamsParamsGpu<T>,
+    approx_type: &str,
+    device: Device,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloatGpu + FftFloat,
+    StandardNormal: Distribution<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    tsne_gpu_inner::<T>(
+        data,
+        precomputed_knn,
+        &params.tsne_params,
+        approx_type,
+        Some(params.lambda),
+        reference,
+        device,
+        seed,
+        verbose,
+    )
+}
+
 /// Run t-SNE with GPU-accelerated nearest neighbour search (non-FFT build)
 ///
 /// Identical to `tsne` except the kNN graph is constructed on the GPU.
 /// Barnes-Hut optimisation stays on CPU; `"fft_3k_gpu"` runs the optimiser on
-/// the GPU and needs no FFTW. Calling with `approx_type = "fft"` or
+/// the GPU and needs no `fft_tsne`. Calling with `approx_type = "fft"` or
 /// `"fft_3k"` panics; recompile with the `fft_tsne` feature for CPU FFT
 /// support.
 ///
@@ -4835,8 +5464,9 @@ where
 /// * `precomputed_knn` - Optional precomputed kNN, indices and distances
 ///   excluding self
 /// * `params` - GPU t-SNE parameters
-/// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"` or
-///   `"fft_3k_gpu"`
+/// * `approx_type` - Repulsive-force approximation: `"barnes_hut" | "bh"`,
+///   `"bh_qd" | "qd"`, `"fft_3k_gpu"` or, with the `mlx` feature,
+///   `"fft_3k_mlx"`
 /// * `device` - GPU device to use
 /// * `seed` - Random seed
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -4846,22 +5476,73 @@ where
 ///
 /// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
 #[cfg(all(feature = "gpu", not(feature = "fft_tsne")))]
-pub fn tsne_gpu<T, R>(
+pub fn tsne_gpu<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
     params: &TsneParamsGpu<T>,
     approx_type: &str,
-    device: R::Device,
+    device: Device,
     seed: usize,
     verbose: usize,
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
-    T: ManifoldsFloat + CubeclFloat,
-    R: Runtime,
+    T: ManifoldsFloatGpu,
     StandardNormal: Distribution<T>,
 {
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
+    tsne_gpu_inner::<T>(
+        data,
+        precomputed_knn,
+        params,
+        approx_type,
+        None,
+        None,
+        device,
+        seed,
+        verbose,
+    )
+}
+
+/// Shared body of [`tsne_gpu`] and [`dreams_gpu`].
+///
+/// ### Params
+///
+/// * `data` - Input data matrix (samples × features)
+/// * `precomputed_knn` - Optional precomputed kNN, indices and distances
+///   excluding self
+/// * `params` - GPU t-SNE parameters
+/// * `approx_type` - Repulsive-force approximation, as for [`tsne_gpu`]
+/// * `dreams_lambda` - DREAMS regularisation strength, or `None` for no
+///   regulariser. When set, the embedding is initialised from the reference
+///   and `params.initialisation` is ignored
+/// * `dreams_reference` - DREAMS reference embedding `[2][n_samples]`;
+///   `None` uses PCA. Ignored without `dreams_lambda`
+/// * `device` - GPU device to use
+/// * `seed` - Random seed
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+#[cfg(all(feature = "gpu", not(feature = "fft_tsne")))]
+#[allow(clippy::too_many_arguments)]
+fn tsne_gpu_inner<T>(
+    data: MatRef<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &TsneParamsGpu<T>,
+    approx_type: &str,
+    dreams_lambda: Option<T>,
+    dreams_reference: Option<Vec<Vec<T>>>,
+    device: Device,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloatGpu,
+    StandardNormal: Distribution<T>,
+{
     if params.n_dim != 2 {
         return Err(ManifoldsError::IncorrectDim {
             n_dim: params.n_dim,
@@ -4870,7 +5551,7 @@ where
 
     let verbosity = parse_verbosity_level(verbose);
 
-    let (graph, _, _) = construct_tsne_graph_gpu::<T, R>(
+    let (graph, _, _) = construct_tsne_graph_gpu::<T>(
         data,
         precomputed_knn,
         params.perplexity,
@@ -4903,7 +5584,24 @@ where
 
     let start_init = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?;
+    // DREAMS initialises from its own reference, so the regulariser and the
+    // starting layout agree.
+    let (mut embd, dreams_state) = match dreams_lambda {
+        Some(lambda) => {
+            let (embd, state) = dreams_setup(
+                data,
+                dreams_reference,
+                lambda,
+                params.randomised_init,
+                seed as u64,
+            )?;
+            (embd, Some(state))
+        }
+        None => (
+            initialise_embedding(&init_type, params.n_dim, seed as u64, &graph, data)?,
+            None,
+        ),
+    };
 
     if verbosity.normal_verbosity() {
         println!("Initialised embedding in: {:.2?}.", start_init.elapsed());
@@ -4926,7 +5624,14 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_bh_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
+            optimise_bh_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                None,
+                dreams_state.as_ref(),
+                verbose,
+            );
         }
         TsneOpt::BarnesHutQd => {
             if verbosity.normal_verbosity() {
@@ -4935,7 +5640,14 @@ where
                     params.optim_params.n_epochs, params.optim_params.max_depth
                 );
             }
-            optimise_qd_tsne(&mut embd, &params.optim_params, &graph, None, verbose);
+            optimise_qd_tsne(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                None,
+                dreams_state.as_ref(),
+                verbose,
+            );
         }
         TsneOpt::Fft | TsneOpt::Fft3Kernel => {
             panic!("FFT-accelerated t-SNE not available. Recompile with 'fft_tsne' feature or use 'barnes_hut' approximation.");
@@ -4947,11 +5659,28 @@ where
                     params.optim_params.n_epochs
                 );
             }
-            optimise_fft3k_tsne_gpu::<R, T>(
+            optimise_fft3k_tsne_gpu::<T>(
                 &mut embd,
                 &params.optim_params,
                 &graph,
+                dreams_state.as_ref(),
                 device,
+                verbose,
+            )?;
+        }
+        #[cfg(mlx_available)]
+        TsneOpt::Fft3KernelMlx => {
+            if verbosity.normal_verbosity() {
+                println!(
+                    "Optimising via MLX three-kernel FFT t-SNE ({} epochs)...",
+                    params.optim_params.n_epochs
+                );
+            }
+            optimise_fft3k_tsne_mlx(
+                &mut embd,
+                &params.optim_params,
+                &graph,
+                dreams_state.as_ref(),
                 verbose,
             )?;
         }
@@ -4971,4 +5700,71 @@ where
     }
 
     Ok(transposed)
+}
+
+/// Run DREAMS with GPU-accelerated nearest neighbour search
+///
+/// Same as [`dreams`], with the kNN graph built on the GPU. Pass
+/// `approx_type = "fft_3k_gpu"` to run the optimiser, regulariser included,
+/// on the GPU as well; the other approximations optimise on the CPU.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Optional precomputed kNN, indices and distances
+///   excluding self
+/// * `reference` - Optional global reference embedding as `[2][n_samples]`.
+///   `None` uses PCA.
+/// * `params` - GPU DREAMS parameters
+/// * `approx_type` - Repulsive-force approximation, as for [`tsne_gpu`]
+/// * `device` - GPU device to use
+/// * `seed` - Random seed
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+///
+/// ### Errors
+///
+/// The DREAMS errors listed for [`dreams`], otherwise the same errors as
+/// [`tsne_gpu`].
+///
+/// ### References
+///
+/// Kury, Kobak & Damrich (2026): "DREAMS: Preserving both Local and Global
+/// Structure in Dimensionality Reduction", Transactions on Machine Learning
+/// Research
+#[cfg(all(feature = "gpu", not(feature = "fft_tsne")))]
+#[allow(clippy::too_many_arguments)]
+pub fn dreams_gpu<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    reference: Option<Vec<Vec<T>>>,
+    params: &DreamsParamsGpu<T>,
+    approx_type: &str,
+    device: Device,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloatGpu,
+    StandardNormal: Distribution<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    tsne_gpu_inner::<T>(
+        data,
+        precomputed_knn,
+        &params.tsne_params,
+        approx_type,
+        Some(params.lambda),
+        reference,
+        device,
+        seed,
+        verbose,
+    )
 }

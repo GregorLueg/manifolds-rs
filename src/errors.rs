@@ -46,6 +46,17 @@ pub enum ManifoldsError {
     /// Propagate errors from the ann-search-rs crate
     #[error("Error from the ann-search-rs crate: {0}")]
     AnnSearchRsError(#[from] ann_search_rs::errors::AnnSearchErrors),
+    // -- mlx --
+    /// An mlx-c call returned a non-zero code. mlx-c prints the underlying
+    /// message to stderr.
+    #[cfg(mlx_available)]
+    #[error("mlx-c call {op} failed with code {code}")]
+    MlxError {
+        /// Name of the failing mlx-c call
+        op: &'static str,
+        /// Its return code (or offending dtype for a dtype check)
+        code: i32,
+    },
     // -- cubecl-utils-rs --
     /// Propagate device-limit and allocation errors from the cubecl-utils-rs
     /// crate
@@ -130,7 +141,35 @@ pub enum ManifoldsError {
     )]
     DegenerateLocalRadii,
 
+    // -- DREAMS --
+    /// Error if the DREAMS regularisation strength is outside `[0, 1]`
+    #[error("DREAMS: lambda = {lambda} is invalid, it must lie in [0, 1]")]
+    DreamsInvalidLambda {
+        /// The provided regularisation strength
+        lambda: f64,
+    },
+    /// Error if the DREAMS reference embedding does not match the data
+    #[error("DREAMS: reference embedding is {n_dim} x {n_ref}, expected 2 x {n_samples}")]
+    DreamsReferenceMismatch {
+        /// Number of samples in the data
+        n_samples: usize,
+        /// Number of dimensions (outer length) of the reference
+        n_dim: usize,
+        /// Number of points in the first reference dimension
+        n_ref: usize,
+    },
+    /// Error if the DREAMS reference embedding has zero norm after centring
+    #[error("DREAMS: the reference embedding has no spread after centring")]
+    DreamsDegenerateReference,
+
     // -- GPU t-SNE --
+    /// Error when the chosen t-SNE optimiser has no density (den-SNE) term
+    #[cfg(mlx_available)]
+    #[error("tSNE optimiser '{name}' does not support the den-SNE density term")]
+    DensityNotSupported {
+        /// Name of the requested optimiser
+        name: String,
+    },
     /// Error when a GPU-only t-SNE optimiser is requested from a CPU entry
     /// point
     #[error("tSNE optimiser '{name}' runs only through tsne_gpu()")]

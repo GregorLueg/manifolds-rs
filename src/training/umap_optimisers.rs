@@ -276,6 +276,9 @@ pub enum UmapOptimiser {
     Adam,
     /// Stochastic gradient descent
     Sgd,
+    /// Adam on the GPU via MLX (Apple Silicon, `mlx` feature)
+    #[cfg(mlx_available)]
+    AdamMlx,
 }
 
 /// Parse the UMAP Optimiser to use
@@ -283,7 +286,7 @@ pub enum UmapOptimiser {
 /// ### Params
 ///
 /// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`
-///   or `"sgd"`.
+///   or `"sgd"`, plus `"adam_mlx"` when the MLX backend is compiled in.
 ///
 /// ### Return
 ///
@@ -293,6 +296,8 @@ pub fn parse_umap_optimiser(s: &str) -> Option<UmapOptimiser> {
         "adam" => Some(UmapOptimiser::Adam),
         "sgd" => Some(UmapOptimiser::Sgd),
         "adam_parallel" => Some(UmapOptimiser::AdamParallel),
+        #[cfg(mlx_available)]
+        "adam_mlx" => Some(UmapOptimiser::AdamMlx),
         _ => None,
     }
 }

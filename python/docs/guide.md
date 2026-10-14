@@ -155,9 +155,7 @@ runs of the same configuration will differ, as they should.
 
 ## What is not in the wheel
 
-CPU FFT-accelerated t-SNE. It needs FFTW, which is GPL-2.0-or-later and would
-be linked statically, turning the whole wheel GPL. So the CPU estimators take
-Barnes-Hut only (plain, or the quick-and-dirty `approx="qd"`). On a GPU, `TSNEGpu(approx="fft_3k_gpu")` gives you
-FFT-interpolated repulsion without FFTW.
+The MLX backends. They link mlx-c dynamically, so they only come with a source
+build on Apple Silicon; see [GPU](gpu.md#mlx-on-apple-silicon).
 
 Parametric UMAP exists in the crate but is not yet bound.

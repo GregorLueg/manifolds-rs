@@ -3,6 +3,75 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.7.0
+
+**Features**
+
+- DREAMS (Kury, Kobak & Damrich, TMLR 2026): t-SNE regularised towards a
+  global reference embedding, PCA by default or any `[2][n_samples]` layout
+  you hand it (MDS, PHATE, ...). `lambda` slides between plain t-SNE (0) and
+  the reference (1); the default of 0.15 is the paper's. New `dreams()` with
+  `DreamsParams`, working with all four CPU approximations (`"bh"`, `"qd"`,
+  `"fft"`, `"fft_3k"`).
+- The update follows the authors' openTSNE fork rather than Equation 2 of the
+  paper, since the published `lambda` was tuned on the code. On Tasic
+  (n = 23,822, 4 seeds) `lambda = 0.15` matches the reference fork on kNN
+  preservation and CPD. At `lambda >= 0.3` ours stays somewhat more local
+  (kNN 0.274 against 0.222 at 0.5, CPD equal).
+- `dreams_gpu()` with `DreamsParamsGpu`. With `"fft_3k_gpu"` the regulariser
+  runs inside the GPU three-kernel optimiser; f32 on the GPU matches the f64
+  CPU path within seed noise.
+- `pca_scores()` in `data::init` for the unscaled PCA scores, and
+  `DreamsState` / `dreams_setup()` in `utils::dreams` for anyone wiring the
+  regulariser into their own loop.
+- Experimental `mlx` feature for Apple Silicon, through mlx-c (`brew install
+  mlx-c`). The CPU entry points take MLX names: `"adam_mlx"` for the UMAP and
+  densMAP optimiser, `"fft_3k_mlx"` for `tsne` and `dreams` (and `tsne_gpu` /
+  `dreams_gpu`), and `"exhaustive_mlx"`, `"ivf_mlx"`, `"nndescent_mlx"` for the
+  kNN search in `run_ann_search`. `MLX_AVAILABLE` says whether it was compiled
+  in. `f32` only.
+- How it stacks up against wgpu on an M1 Max, at 100k to 1m points: the MLX kNN
+  search is 1.2x to 1.8x faster, the UMAP optimiser ties, and the t-SNE
+  optimiser ties at 100k but runs at half wgpu's speed at 1m. Details in
+  [`docs/benchmarks_mlx.md`](docs/benchmarks_mlx.md).
+- Faster wgpu three-kernel FFT t-SNE: one plane per box for the splat, the
+  attraction walks the CSR one row per SIMD group, and the 2D FFT works on a
+  transposed spectrum and skips all-zero rows.
+- `cubecl` 0.11, `burn` 0.22, `faer` 0.24, `cubecl-utils-rs` 0.2.0 and
+  `ann-search-rs` 0.11.0.
+- FFTW is gone. `fft_tsne` now runs on `rustfft` and `realfft`: pure Rust,
+  MIT/Apache, no C build and no GPL. `n_fft` is padded up to the next `2^a` or
+  `3 * 2^a`, which rustfft handles far better than the `6 * n_boxes` sizes.
+  Against the old FFTW build on an M1 Max (100 epochs, 50k and 250k points),
+  `f32` is within 4% and `f64` up to 18% slower, worst in the late phase on the
+  largest grid.
+
+**Fixes**
+
+- `run_ann_search` drops the query point by index rather than by position.
+  With exact duplicates in the data, the point could rank second and survive as
+  its own neighbour.
+
+**Breaking changes**
+
+- `optimise_bh_tsne`, `optimise_qd_tsne`, `optimise_fft_tsne`,
+  `optimise_fft3k_tsne` and `optimise_fft3k_tsne_gpu` take an extra
+  `dreams: Option<&DreamsState<T>>` argument. Pass `None` for plain t-SNE.
+- `ManifoldsError` has three new variants (`DreamsInvalidLambda`,
+  `DreamsReferenceMismatch`, `DreamsDegenerateReference`), plus `MlxError` in
+  MLX builds, so exhaustive matches on it need updating.
+- The GPU functions (`umap_gpu`, `densmap_gpu`, `tsne_gpu`, `dreams_gpu`, the
+  `construct_*_graph_gpu` helpers, `run_ann_search_gpu`) lost their
+  `R: Runtime` type parameter and take a `cubecl::Device`:
+  `umap_gpu::<f32>(..., WgpuDevice::default().into(), ...)`.
+- `parametric_umap` and `train_parametric_umap_model` lost their burn backend
+  type parameter and take a `&burn::tensor::Device`, e.g. `Device::flex()`.
+- `utils::fft::FftwFloat` is now `FftFloat`, a blanket trait over
+  `rustfft::FftNum` floats, and the FFT buffers hold
+  `num_complex::Complex<T>`. `FftLane3k` is gone; both paths share `FftLane`.
+  `FftGrid::n_fft` is no longer `2 * n_interp_points * n_boxes_per_dim` but
+  that rounded up by `fft_len`.
+
 ## 0.6.2
 
 **Features**

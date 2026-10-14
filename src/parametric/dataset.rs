@@ -1,7 +1,7 @@
 //! Dataset generation prior to training of the parametric UMAP
 
 use burn::{
-    data::dataset::Dataset,
+    data::dataset::{Dataset, DatasetError},
     prelude::*,
     tensor::{Element, Int},
 };
@@ -24,37 +24,36 @@ use num_traits::{Float, FromPrimitive};
 /// ### Returns
 ///
 /// Binary cross-entropy loss between predicted and target probabilities
-pub fn umap_loss<B, T>(
-    src_embed: Tensor<B, 2>,
-    dst_embed: Tensor<B, 2>,
-    targets: Tensor<B, 1>,
+pub fn umap_loss<T>(
+    src_embed: Tensor<2>,
+    dst_embed: Tensor<2>,
+    targets: Tensor<1>,
     a: T,
     b: T,
-) -> Tensor<B, 1>
+) -> Tensor<1>
 where
-    B: Backend,
     T: Float + FromPrimitive + Element,
 {
     // compute squared distances
-    let diff: Tensor<B, 2> = src_embed - dst_embed;
+    let diff: Tensor<2> = src_embed - dst_embed;
     // use ::<1> turbofish syntax <- important!
-    let dist_sq: Tensor<B, 1> = diff.clone().powf_scalar(2.0).sum_dim(1).squeeze_dims(&[1]);
+    let dist_sq: Tensor<1> = diff.clone().powf_scalar(2.0).sum_dim(1).squeeze_dims(&[1]);
 
     let epsilon = T::from_f32(1e-6).unwrap();
     let dist_sq_safe = dist_sq + Tensor::from_floats([epsilon], &diff.device());
 
     // UMAP probability: 1 / (1 + a * dist^(2b))
-    let a_tensor: Tensor<B, 1> = Tensor::from_floats([a], &diff.device());
-    let power: Tensor<B, 1> = dist_sq_safe.powf_scalar(b);
-    let qs: Tensor<B, 1> = (Tensor::ones_like(&power) + a_tensor * power).powf_scalar(-1.0);
+    let a_tensor: Tensor<1> = Tensor::from_floats([a], &diff.device());
+    let power: Tensor<1> = dist_sq_safe.powf_scalar(b);
+    let qs: Tensor<1> = (Tensor::ones_like(&power) + a_tensor * power).powf_scalar(-1.0);
 
     // binary cross-entropy: -[t*log(q) + (1-t)*log(1-q)]
     let eps = 1e-7;
-    let qs_clamp: Tensor<B, 1> = qs.clamp(eps, 1.0 - eps);
-    let log_qs: Tensor<B, 1> = qs_clamp.clone().log();
-    let log_one_minus_qs: Tensor<B, 1> = (Tensor::ones_like(&qs_clamp) - qs_clamp).log();
+    let qs_clamp: Tensor<1> = qs.clamp(eps, 1.0 - eps);
+    let log_qs: Tensor<1> = qs_clamp.clone().log();
+    let log_one_minus_qs: Tensor<1> = (Tensor::ones_like(&qs_clamp) - qs_clamp).log();
 
-    let bce: Tensor<B, 1> =
+    let bce: Tensor<1> =
         -(targets.clone() * log_qs + (Tensor::ones_like(&targets) - targets) * log_one_minus_qs);
 
     bce.mean()
@@ -66,13 +65,13 @@ where
 ///
 /// ### Params
 ///
-/// * `x_dist` - Distances in original space [batch_size]
-/// * `z_dist` - Distances in embedding space [batch_size]
+/// * `x_dist` - Distances in original space `[batch_size]`
+/// * `z_dist` - Distances in embedding space `[batch_size]`
 ///
 /// ### Returns
 ///
 /// Negative correlation (to minimise during training)
-pub fn correlation_loss<B: Backend>(x_dist: Tensor<B, 1>, z_dist: Tensor<B, 1>) -> Tensor<B, 1> {
+pub fn correlation_loss(x_dist: Tensor<1>, z_dist: Tensor<1>) -> Tensor<1> {
     let epsilon = 1e-8; // Small constant to prevent division by zero
 
     let x_mean = x_dist.clone().mean();
@@ -116,18 +115,17 @@ pub fn correlation_loss<B: Backend>(x_dist: Tensor<B, 1>, z_dist: Tensor<B, 1>) 
 ///
 /// Combined loss: UMAP BCE loss + correlation_weight * correlation_loss
 #[allow(clippy::too_many_arguments)]
-pub fn umap_loss_with_correlation<B, T>(
-    src_embed: Tensor<B, 2>,
-    dst_embed: Tensor<B, 2>,
-    src_orig: Tensor<B, 2>, // original high-dim data
-    dst_orig: Tensor<B, 2>,
-    targets: Tensor<B, 1>,
+pub fn umap_loss_with_correlation<T>(
+    src_embed: Tensor<2>,
+    dst_embed: Tensor<2>,
+    src_orig: Tensor<2>, // original high-dim data
+    dst_orig: Tensor<2>,
+    targets: Tensor<1>,
     a: T,
     b: T,
     correlation_weight: T,
-) -> Tensor<B, 1>
+) -> Tensor<1>
 where
-    B: Backend,
     T: Float + FromPrimitive + Element,
 {
     let eps = 1e-8;
@@ -153,13 +151,13 @@ where
 
 /// Batch for UMAP edge training
 #[derive(Clone, Debug)]
-pub struct UmapBatch<B: Backend> {
+pub struct UmapBatch {
     /// Source node tensor
-    pub src_indices: Tensor<B, 1, Int>,
+    pub src_indices: Tensor<1, Int>,
     /// Target node tensor
-    pub dst_indices: Tensor<B, 1, Int>,
+    pub dst_indices: Tensor<1, Int>,
     /// Type of edge: `1.0` for positive edge, `0.0` for negative edge
-    pub targets: Tensor<B, 1>,
+    pub targets: Tensor<1>,
 }
 
 /// UmapEdgeDataset
@@ -177,9 +175,10 @@ impl Dataset<(usize, usize, f32)> for UmapEdgeDataset {
     ///
     /// ### Returns
     ///
-    /// Tuple of `(src, dst, target)`
-    fn get(&self, index: usize) -> Option<(usize, usize, f32)> {
-        self.edges.get(index).copied()
+    /// Tuple of `(src, dst, target)`. Panics when `index` is out of bounds, as
+    /// burn's `Dataset` contract requires.
+    fn get(&self, index: usize) -> Result<(usize, usize, f32), DatasetError> {
+        Ok(self.edges[index])
     }
 
     /// Get the total data set size
@@ -199,18 +198,13 @@ impl Dataset<(usize, usize, f32)> for UmapEdgeDataset {
 #[cfg(test)]
 mod dataset_tests {
     use super::*;
-    use burn::backend::flex::FlexDevice;
-    use burn::backend::Flex;
-
-    type TestBackend = Flex<f32>;
-
     #[test]
     fn test_umap_loss_shape() {
-        let device = FlexDevice;
+        let device = Device::flex();
 
-        let src = Tensor::<TestBackend, 2>::from_floats([[0.0, 0.0], [1.0, 1.0]], &device);
-        let dst = Tensor::<TestBackend, 2>::from_floats([[0.1, 0.1], [1.1, 1.1]], &device);
-        let targets = Tensor::<TestBackend, 1>::from_floats([1.0, 0.0], &device);
+        let src = Tensor::<2>::from_floats([[0.0, 0.0], [1.0, 1.0]], &device);
+        let dst = Tensor::<2>::from_floats([[0.1, 0.1], [1.1, 1.1]], &device);
+        let targets = Tensor::<1>::from_floats([1.0, 0.0], &device);
 
         let loss = umap_loss(src, dst, targets, 1.5f32, 0.9f32);
 
@@ -220,22 +214,22 @@ mod dataset_tests {
 
     #[test]
     fn test_umap_loss_is_finite() {
-        let device = FlexDevice;
+        let device = Device::flex();
 
-        let src = Tensor::<TestBackend, 2>::random(
+        let src = Tensor::<2>::random(
             [10, 5],
             burn::tensor::Distribution::Uniform(-1.0, 1.0),
             &device,
         );
-        let dst = Tensor::<TestBackend, 2>::random(
+        let dst = Tensor::<2>::random(
             [10, 5],
             burn::tensor::Distribution::Uniform(-1.0, 1.0),
             &device,
         );
-        let targets = Tensor::<TestBackend, 1>::from_floats([1.0; 10], &device);
+        let targets = Tensor::<1>::from_floats([1.0; 10], &device);
 
         let loss = umap_loss(src, dst, targets, 1.5f32, 0.9f32);
-        let loss_val: f32 = loss.into_scalar().elem();
+        let loss_val: f32 = loss.into_scalar::<f32>();
 
         assert!(loss_val.is_finite(), "Loss should be finite");
         assert!(loss_val >= 0.0, "Loss should be non-negative");
@@ -243,14 +237,14 @@ mod dataset_tests {
 
     #[test]
     fn test_umap_loss_identical_embeddings() {
-        let device = FlexDevice;
+        let device = Device::flex();
 
-        let src = Tensor::<TestBackend, 2>::from_floats([[1.0, 2.0]], &device);
-        let dst = Tensor::<TestBackend, 2>::from_floats([[1.0, 2.0]], &device);
-        let targets = Tensor::<TestBackend, 1>::from_floats([1.0], &device);
+        let src = Tensor::<2>::from_floats([[1.0, 2.0]], &device);
+        let dst = Tensor::<2>::from_floats([[1.0, 2.0]], &device);
+        let targets = Tensor::<1>::from_floats([1.0], &device);
 
         let loss = umap_loss(src, dst, targets, 1.5f32, 0.9f32);
-        let loss_val: f32 = loss.into_scalar().elem();
+        let loss_val: f32 = loss.into_scalar::<f32>();
 
         // Identical points with target=1.0 should have low loss
         assert!(
@@ -261,14 +255,14 @@ mod dataset_tests {
 
     #[test]
     fn test_umap_loss_distant_embeddings() {
-        let device = FlexDevice;
+        let device = Device::flex();
 
-        let src = Tensor::<TestBackend, 2>::from_floats([[0.0, 0.0]], &device);
-        let dst = Tensor::<TestBackend, 2>::from_floats([[10.0, 10.0]], &device);
-        let targets = Tensor::<TestBackend, 1>::from_floats([0.0], &device);
+        let src = Tensor::<2>::from_floats([[0.0, 0.0]], &device);
+        let dst = Tensor::<2>::from_floats([[10.0, 10.0]], &device);
+        let targets = Tensor::<1>::from_floats([0.0], &device);
 
         let loss = umap_loss(src, dst, targets, 1.5f32, 0.9f32);
-        let loss_val: f32 = loss.into_scalar().elem();
+        let loss_val: f32 = loss.into_scalar::<f32>();
 
         // Distant points with target=0.0 should have low loss
         assert!(
@@ -279,10 +273,10 @@ mod dataset_tests {
 
     #[test]
     fn test_correlation_loss_shape() {
-        let device = FlexDevice;
+        let device = Device::flex();
 
-        let x_dist = Tensor::<TestBackend, 1>::from_floats([1.0, 2.0, 3.0], &device);
-        let z_dist = Tensor::<TestBackend, 1>::from_floats([1.1, 2.1, 3.1], &device);
+        let x_dist = Tensor::<1>::from_floats([1.0, 2.0, 3.0], &device);
+        let z_dist = Tensor::<1>::from_floats([1.1, 2.1, 3.1], &device);
 
         let loss = correlation_loss(x_dist, z_dist);
 
@@ -292,13 +286,13 @@ mod dataset_tests {
 
     #[test]
     fn test_correlation_loss_perfect_correlation() {
-        let device = FlexDevice;
+        let device = Device::flex();
 
-        let x_dist = Tensor::<TestBackend, 1>::from_floats([1.0, 2.0, 3.0, 4.0], &device);
-        let z_dist = Tensor::<TestBackend, 1>::from_floats([2.0, 4.0, 6.0, 8.0], &device);
+        let x_dist = Tensor::<1>::from_floats([1.0, 2.0, 3.0, 4.0], &device);
+        let z_dist = Tensor::<1>::from_floats([2.0, 4.0, 6.0, 8.0], &device);
 
         let loss = correlation_loss(x_dist, z_dist);
-        let loss_val: f32 = loss.into_scalar().elem();
+        let loss_val: f32 = loss.into_scalar::<f32>();
 
         // Perfect correlation should give loss close to -1.0
         assert!(
@@ -310,13 +304,13 @@ mod dataset_tests {
 
     #[test]
     fn test_correlation_loss_no_correlation() {
-        let device = FlexDevice;
+        let device = Device::flex();
 
-        let x_dist = Tensor::<TestBackend, 1>::from_floats([1.0, 2.0, 3.0, 4.0], &device);
-        let z_dist = Tensor::<TestBackend, 1>::from_floats([4.0, 3.0, 2.0, 1.0], &device);
+        let x_dist = Tensor::<1>::from_floats([1.0, 2.0, 3.0, 4.0], &device);
+        let z_dist = Tensor::<1>::from_floats([4.0, 3.0, 2.0, 1.0], &device);
 
         let loss = correlation_loss(x_dist, z_dist);
-        let loss_val: f32 = loss.into_scalar().elem();
+        let loss_val: f32 = loss.into_scalar::<f32>();
 
         // Negative correlation should give positive loss
         assert!(
@@ -328,15 +322,13 @@ mod dataset_tests {
 
     #[test]
     fn test_umap_loss_with_correlation_shape() {
-        let device = FlexDevice;
+        let device = Device::flex();
 
-        let src_embed = Tensor::<TestBackend, 2>::from_floats([[0.0, 0.0], [1.0, 1.0]], &device);
-        let dst_embed = Tensor::<TestBackend, 2>::from_floats([[0.1, 0.1], [1.1, 1.1]], &device);
-        let src_orig =
-            Tensor::<TestBackend, 2>::from_floats([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], &device);
-        let dst_orig =
-            Tensor::<TestBackend, 2>::from_floats([[0.1, 0.1, 0.1], [1.1, 1.1, 1.1]], &device);
-        let targets = Tensor::<TestBackend, 1>::from_floats([1.0, 0.0], &device);
+        let src_embed = Tensor::<2>::from_floats([[0.0, 0.0], [1.0, 1.0]], &device);
+        let dst_embed = Tensor::<2>::from_floats([[0.1, 0.1], [1.1, 1.1]], &device);
+        let src_orig = Tensor::<2>::from_floats([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], &device);
+        let dst_orig = Tensor::<2>::from_floats([[0.1, 0.1, 0.1], [1.1, 1.1, 1.1]], &device);
+        let targets = Tensor::<1>::from_floats([1.0, 0.0], &device);
 
         let loss = umap_loss_with_correlation(
             src_embed, dst_embed, src_orig, dst_orig, targets, 1.5f32, 0.9f32, 0.1f32,
@@ -348,34 +340,34 @@ mod dataset_tests {
 
     #[test]
     fn test_umap_loss_with_correlation_is_finite() {
-        let device = FlexDevice;
+        let device = Device::flex();
 
-        let src_embed = Tensor::<TestBackend, 2>::random(
+        let src_embed = Tensor::<2>::random(
             [10, 2],
             burn::tensor::Distribution::Uniform(-1.0, 1.0),
             &device,
         );
-        let dst_embed = Tensor::<TestBackend, 2>::random(
+        let dst_embed = Tensor::<2>::random(
             [10, 2],
             burn::tensor::Distribution::Uniform(-1.0, 1.0),
             &device,
         );
-        let src_orig = Tensor::<TestBackend, 2>::random(
+        let src_orig = Tensor::<2>::random(
             [10, 5],
             burn::tensor::Distribution::Uniform(-1.0, 1.0),
             &device,
         );
-        let dst_orig = Tensor::<TestBackend, 2>::random(
+        let dst_orig = Tensor::<2>::random(
             [10, 5],
             burn::tensor::Distribution::Uniform(-1.0, 1.0),
             &device,
         );
-        let targets = Tensor::<TestBackend, 1>::from_floats([1.0; 10], &device);
+        let targets = Tensor::<1>::from_floats([1.0; 10], &device);
 
         let loss = umap_loss_with_correlation(
             src_embed, dst_embed, src_orig, dst_orig, targets, 1.5f32, 0.9f32, 0.5f32,
         );
-        let loss_val: f32 = loss.into_scalar().elem();
+        let loss_val: f32 = loss.into_scalar::<f32>();
 
         assert!(loss_val.is_finite(), "Loss should be finite");
         assert!(loss_val >= 0.0, "Loss should be non-negative");
@@ -386,10 +378,18 @@ mod dataset_tests {
         let edges = vec![(0, 1, 1.0), (2, 3, 0.5), (4, 5, 1.0)];
         let dataset = UmapEdgeDataset { edges };
 
-        assert_eq!(dataset.get(0), Some((0, 1, 1.0)));
-        assert_eq!(dataset.get(1), Some((2, 3, 0.5)));
-        assert_eq!(dataset.get(2), Some((4, 5, 1.0)));
-        assert_eq!(dataset.get(3), None);
+        assert_eq!(dataset.get(0).unwrap(), (0, 1, 1.0));
+        assert_eq!(dataset.get(1).unwrap(), (2, 3, 0.5));
+        assert_eq!(dataset.get(2).unwrap(), (4, 5, 1.0));
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_umap_edge_dataset_get_out_of_bounds_panics() {
+        let dataset = UmapEdgeDataset {
+            edges: vec![(0, 1, 1.0)],
+        };
+        let _ = dataset.get(1);
     }
 
     #[test]
@@ -405,6 +405,5 @@ mod dataset_tests {
         let dataset = UmapEdgeDataset { edges: vec![] };
 
         assert_eq!(dataset.len(), 0);
-        assert_eq!(dataset.get(0), None);
     }
 }

@@ -5,7 +5,7 @@
 # core version it vendored as `__core_version__` instead, which is the question
 # lockstep was actually answering.
 name = "manifolds-py"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
 authors = ["Gregor Lueg <gregorlueg@me.com>"]
 license = "MIT"
@@ -31,13 +31,20 @@ default = ["gpu"]
 ## add Python requirements and never change the compiled artefact.
 gpu = ["manifolds-rs/gpu", "dep:cubecl"]
 
+## Off by default, Apple Silicon only: the MLX kNN backends and optimisers.
+## Links mlx-c dynamically, so the result only imports on a Mac with
+## `brew install mlx-c`; that is why no published wheel carries it. Without the
+## library the core warns at build time and leaves MLX out; `mlx_available()`
+## then reports `False`.
+mlx = ["manifolds-rs/mlx"]
+
 [dependencies]
-manifolds-rs = { path = "..", default-features = false }
+manifolds-rs = { path = "..", default-features = false, features = ["fft_tsne"] }
 # `cpu` is deliberately absent. CubeCL's software CPU runtime pulls a prebuilt
 # LLVM needing glibc 2.33+, which no manylinux container has, so a wheel
 # carrying it cannot be built for Linux. Nothing here calls it.
-cubecl = { version = "0.10.0", features = ["wgpu"], optional = true }
-faer = "0.23.2"
+cubecl = { version = "0.11.0", features = ["wgpu"], optional = true }
+faer = "0.24.4"
 num-traits = "0.2"
 numpy = "0.29"
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py310"] }

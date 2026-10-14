@@ -4,7 +4,7 @@
 mod commons;
 use commons::*;
 
-use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+use cubecl::wgpu::WgpuDevice;
 use manifolds_rs::prelude::*;
 use manifolds_rs::*;
 use num_traits::{Float, FromPrimitive};
@@ -83,12 +83,12 @@ fn tsne_gpu_integration_01_knn_correctness() {
 
     let device = WgpuDevice::default();
     let nn_params = NearestNeighbourParamsGpu::default();
-    let (knn_indices, knn_dist) = run_ann_search_gpu::<f32, WgpuRuntime>(
+    let (knn_indices, knn_dist) = run_ann_search_gpu::<f32>(
         data.as_ref(),
         k,
         "exhaustive_gpu".to_string(),
         &nn_params,
-        device,
+        device.clone().into(),
         42,
         0,
     )
@@ -144,13 +144,13 @@ fn tsne_gpu_integration_02_graph_construction() {
 
     let device = WgpuDevice::default();
     let nn_params = NearestNeighbourParamsGpu::default();
-    let (graph, _, _) = construct_tsne_graph_gpu::<f32, WgpuRuntime>(
+    let (graph, _, _) = construct_tsne_graph_gpu::<f32>(
         data.as_ref(),
         None,
         30.0,
         "exhaustive_gpu".to_string(),
         &nn_params,
-        device,
+        device.clone().into(),
         42,
         0,
     )
@@ -198,8 +198,16 @@ fn tsne_gpu_integration_03_bh_quality() {
     params.optim_params.lr = Some(200.0);
     params.optim_params.n_epochs = 500;
 
-    let embedding =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device, 42, 0).unwrap();
+    let embedding = tsne_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        "bh",
+        device.clone().into(),
+        42,
+        0,
+    )
+    .unwrap();
 
     assert!(embedding[0].iter().all(|x| x.is_finite()));
     assert!(embedding[1].iter().all(|x| x.is_finite()));
@@ -225,11 +233,27 @@ fn tsne_gpu_integration_04_reproducibility_structural() {
     params.optim_params.n_epochs = 200;
 
     let device1 = WgpuDevice::default();
-    let e1 =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device1, 42, 0).unwrap();
+    let e1 = tsne_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        "bh",
+        device1.clone().into(),
+        42,
+        0,
+    )
+    .unwrap();
     let device2 = WgpuDevice::default();
-    let e2 =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device2, 42, 0).unwrap();
+    let e2 = tsne_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        "bh",
+        device2.clone().into(),
+        42,
+        0,
+    )
+    .unwrap();
 
     // GPU ops aren't bit-reproducible across runs; test structural consistency.
     let sep1 = compute_separation(&e1, &labels);
@@ -259,12 +283,12 @@ fn tsne_gpu_integration_05_precomputed_knn() {
 
     let device = WgpuDevice::default();
     let nn_params = NearestNeighbourParamsGpu::default();
-    let (knn_indices, knn_dist) = run_ann_search_gpu::<f32, WgpuRuntime>(
+    let (knn_indices, knn_dist) = run_ann_search_gpu::<f32>(
         data.as_ref(),
         k,
         "exhaustive_gpu".to_string(),
         &nn_params,
-        device,
+        device.clone().into(),
         42,
         0,
     )
@@ -280,20 +304,28 @@ fn tsne_gpu_integration_05_precomputed_knn() {
     params.optim_params.n_epochs = 300;
 
     let device_pre = WgpuDevice::default();
-    let e_pre = tsne_gpu::<f32, WgpuRuntime>(
+    let e_pre = tsne_gpu::<f32>(
         data.as_ref(),
         Some((knn_indices, knn_dist)),
         &params,
         "bh",
-        device_pre,
+        device_pre.clone().into(),
         42,
         0,
     )
     .unwrap();
 
     let device_int = WgpuDevice::default();
-    let e_int = tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device_int, 42, 0)
-        .unwrap();
+    let e_int = tsne_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        "bh",
+        device_int.clone().into(),
+        42,
+        0,
+    )
+    .unwrap();
 
     // Compare structural quality, not exact coords.
     let sep_pre = compute_separation(&e_pre, &labels);
@@ -328,8 +360,16 @@ fn tsne_gpu_integration_06_fft_quality() {
     params.optim_params.lr = Some(100.0);
     params.optim_params.n_epochs = 500;
 
-    let embedding =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device, 42, 0).unwrap();
+    let embedding = tsne_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        "fft",
+        device.clone().into(),
+        42,
+        0,
+    )
+    .unwrap();
 
     assert!(embedding[0].iter().all(|x| x.is_finite()));
     assert!(embedding[1].iter().all(|x| x.is_finite()));
@@ -356,11 +396,27 @@ fn tsne_gpu_integration_07_fft_reproducibility_structural() {
     params.optim_params.n_epochs = 200;
 
     let device1 = WgpuDevice::default();
-    let e1 =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device1, 123, 0).unwrap();
+    let e1 = tsne_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        "fft",
+        device1.clone().into(),
+        123,
+        0,
+    )
+    .unwrap();
     let device2 = WgpuDevice::default();
-    let e2 =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device2, 123, 0).unwrap();
+    let e2 = tsne_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        "fft",
+        device2.clone().into(),
+        123,
+        0,
+    )
+    .unwrap();
 
     let sep1 = compute_separation(&e1, &labels);
     let sep2 = compute_separation(&e2, &labels);
@@ -391,12 +447,27 @@ fn tsne_gpu_integration_08_bh_vs_fft() {
     params.optim_params.n_epochs = 300;
 
     let device_bh = WgpuDevice::default();
-    let e_bh =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "bh", device_bh, 42, 0).unwrap();
+    let e_bh = tsne_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        "bh",
+        device_bh.clone().into(),
+        42,
+        0,
+    )
+    .unwrap();
     let device_fft = WgpuDevice::default();
-    let e_fft =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft", device_fft, 42, 0)
-            .unwrap();
+    let e_fft = tsne_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        "fft",
+        device_fft.clone().into(),
+        42,
+        0,
+    )
+    .unwrap();
 
     let sep_bh = compute_separation(&e_bh, &labels);
     let sep_fft = compute_separation(&e_fft, &labels);
@@ -428,9 +499,16 @@ fn tsne_gpu_integration_09_fft3k_gpu_quality() {
     params.optim_params.lr = Some(100.0);
     params.optim_params.n_epochs = 500;
 
-    let embedding =
-        tsne_gpu::<f32, WgpuRuntime>(data.as_ref(), None, &params, "fft_3k_gpu", device, 42, 0)
-            .unwrap();
+    let embedding = tsne_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        "fft_3k_gpu",
+        device.clone().into(),
+        42,
+        0,
+    )
+    .unwrap();
 
     assert!(embedding[0].iter().all(|x| x.is_finite()));
     assert!(embedding[1].iter().all(|x| x.is_finite()));
@@ -457,22 +535,22 @@ fn tsne_gpu_integration_10_fft3k_gpu_reproducibility_structural() {
 
     // summation order inside a grid box follows atomic bucketing, so runs are
     // not bit-identical; test structural consistency.
-    let e1 = tsne_gpu::<f32, WgpuRuntime>(
+    let e1 = tsne_gpu::<f32>(
         data.as_ref(),
         None,
         &params,
         "fft_3k_gpu",
-        WgpuDevice::default(),
+        WgpuDevice::default().clone().into(),
         123,
         0,
     )
     .unwrap();
-    let e2 = tsne_gpu::<f32, WgpuRuntime>(
+    let e2 = tsne_gpu::<f32>(
         data.as_ref(),
         None,
         &params,
         "fft_3k_gpu",
-        WgpuDevice::default(),
+        WgpuDevice::default().clone().into(),
         123,
         0,
     )
@@ -508,22 +586,22 @@ fn tsne_gpu_integration_11_bh_vs_fft3k_gpu() {
     params.optim_params.lr = Some(200.0);
     params.optim_params.n_epochs = 300;
 
-    let e_bh = tsne_gpu::<f32, WgpuRuntime>(
+    let e_bh = tsne_gpu::<f32>(
         data.as_ref(),
         None,
         &params,
         "bh",
-        WgpuDevice::default(),
+        WgpuDevice::default().clone().into(),
         42,
         0,
     )
     .unwrap();
-    let e_3k = tsne_gpu::<f32, WgpuRuntime>(
+    let e_3k = tsne_gpu::<f32>(
         data.as_ref(),
         None,
         &params,
         "fft_3k_gpu",
-        WgpuDevice::default(),
+        WgpuDevice::default().clone().into(),
         42,
         0,
     )

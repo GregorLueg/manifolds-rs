@@ -7,9 +7,12 @@
 #![allow(missing_docs)] // cubecl weirdness
 
 use cubecl::prelude::*;
+use cubecl::Device;
 use cubecl_utils_rs::prelude::*;
 
 use crate::prelude::*;
+pub use crate::training::umap_csr::UmapCsrGraph;
+use crate::training::umap_csr::*;
 use crate::training::umap_optimisers::UmapOptimParams;
 use crate::utils::density::{correlation_stats, DENS_EPS};
 
@@ -29,6 +32,9 @@ pub enum UmapOptimiserGpu {
     Adam,
     /// Stochastic gradient descent
     Sgd,
+    /// Adam on MLX (Apple Silicon); the kNN graph stays on wgpu
+    #[cfg(mlx_available)]
+    AdamMlx,
 }
 
 /// Parse the UMAP Optimiser to use
@@ -36,7 +42,8 @@ pub enum UmapOptimiserGpu {
 /// ### Params
 ///
 /// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`
-///   `"sgd"` or `"adam_gpu"` (default).
+///   `"sgd"` or `"adam_gpu"` (default), plus `"adam_mlx"` when the MLX
+///   backend is compiled in.
 ///
 /// ### Return
 ///
@@ -47,6 +54,8 @@ pub fn parse_umap_optimiser_gpu(s: &str) -> Option<UmapOptimiserGpu> {
         "adam" => Some(UmapOptimiserGpu::Adam),
         "sgd" => Some(UmapOptimiserGpu::Sgd),
         "adam_parallel" => Some(UmapOptimiserGpu::AdamParallel),
+        #[cfg(mlx_available)]
+        "adam_mlx" => Some(UmapOptimiserGpu::AdamMlx),
         _ => None,
     }
 }
@@ -54,20 +63,6 @@ pub fn parse_umap_optimiser_gpu(s: &str) -> Option<UmapOptimiserGpu> {
 ////////////
 // Consts //
 ////////////
-
-/// Symmetric clamp on the per-negative-sample repulsive gradient coefficient.
-/// Prevents blow-up when a negative sample lands arbitrarily close to the
-/// source point.
-const GRAD_CLIP_VAL: f64 = 4.0;
-
-/// Additive epsilon on the repulsive `dist_sq` to keep the denominator finite
-/// when a negative sample coincides with the source point.
-const GRAD_REP_EPS: f64 = 0.001;
-
-/// Attractive gradients are skipped when the pairwise `dist_sq` falls below
-/// this threshold, avoiding a division by zero when two endpoints have
-/// collapsed onto each other.
-const GRAD_DIST_SQ_THRESHOLD: f64 = 1e-8;
 
 /// Preferred workgroup size for every kernel in this module, before device
 /// clamping by [`umap_workgroup_size`].
@@ -80,134 +75,6 @@ const GRAD_DIST_SQ_THRESHOLD: f64 = 1e-8;
 // Picked from local benchmarking only: 256 beat both the 32 `ann-search-rs`
 // exports and the wider 512/1024. Treat as indicative, not measured broadly.
 const UMAP_WORKGROUP_SIZE: u32 = 256;
-
-///////////////////
-// Host-side CSR //
-///////////////////
-
-/// Host-side CSR representation of the symmetrised UMAP graph, ready to be
-/// uploaded to the GPU. Each undirected edge `(i, j, w)` with `i < j` appears
-/// twice in the CSR arrays: once under node `i` and once under node `j`. Only
-/// the smaller-indexed side of an edge schedules negative samples, matching
-/// the CPU code.
-pub struct UmapCsrGraph<T> {
-    /// Number of nodes.
-    pub n: usize,
-    /// Number of unique undirected edges.
-    pub n_edges: usize,
-    /// CSR row pointers `[n + 1]`.
-    pub node_edge_offsets: Vec<u32>,
-    /// Edge index per `(node, edge)` entry `[2 * n_edges]`.
-    pub csr_edge_idx: Vec<u32>,
-    /// Other endpoint per `(node, edge)` entry `[2 * n_edges]`.
-    pub csr_other_node: Vec<u32>,
-    /// Sampling period per edge `[n_edges]`. `max_weight / w` for
-    /// non-zero-weight edges; a large sentinel value for zero-weight edges so
-    /// that they effectively never tick.
-    pub epochs_per_sample: Vec<T>,
-    /// Graph weight per edge `[n_edges]`. Only densMAP needs it, to undo the
-    /// bias from visiting edges at a rate proportional to their weight.
-    pub mu: Vec<T>,
-}
-
-impl<T> UmapCsrGraph<T>
-where
-    T: ManifoldsFloat,
-{
-    /// Build a CSR layout from an adjacency-list graph.
-    ///
-    /// The `i < j` filter deduplicates entries when the input graph is
-    /// symmetric, and silently drops self-loops.
-    ///
-    /// ### Params
-    ///
-    /// * `graph` - Adjacency list `graph[i] = [(j, w), ...]`. Weights `w` are
-    ///   assumed non-negative.
-    ///
-    /// ### Returns
-    ///
-    /// A CSR representation on success. `ManifoldsError::NoData` if the graph
-    /// has no nodes; `ManifoldsError::NoGraphEdges` if no edges survive the
-    /// `i < j` filter.
-    pub fn from_graph(graph: &[Vec<(usize, T)>]) -> Result<Self, ManifoldsError> {
-        let n = graph.len();
-        if n == 0 {
-            return Err(ManifoldsError::NoData);
-        }
-
-        let mut edges: Vec<(usize, usize, T)> = Vec::new();
-        let mut degree = vec![0u32; n];
-
-        for (i, neighbours) in graph.iter().enumerate() {
-            for &(j, w) in neighbours {
-                if i < j {
-                    edges.push((i, j, w));
-                    degree[i] += 1;
-                    degree[j] += 1;
-                }
-            }
-        }
-
-        if edges.is_empty() {
-            return Err(ManifoldsError::NoGraphEdges);
-        }
-
-        let n_edges = edges.len();
-
-        let mut node_edge_offsets = vec![0u32; n + 1];
-        for i in 0..n {
-            node_edge_offsets[i + 1] = node_edge_offsets[i] + degree[i];
-        }
-
-        let mut csr_edge_idx = vec![0u32; 2 * n_edges];
-        let mut csr_other_node = vec![0u32; 2 * n_edges];
-
-        let mut cursor = node_edge_offsets.clone();
-        for (edge_idx, &(i, j, _)) in edges.iter().enumerate() {
-            let pos_i = cursor[i] as usize;
-            csr_edge_idx[pos_i] = edge_idx as u32;
-            csr_other_node[pos_i] = j as u32;
-            cursor[i] += 1;
-
-            let pos_j = cursor[j] as usize;
-            csr_edge_idx[pos_j] = edge_idx as u32;
-            csr_other_node[pos_j] = i as u32;
-            cursor[j] += 1;
-        }
-
-        let zero = T::zero();
-        let one = T::one();
-        let large_epoch = T::from(1e8).unwrap();
-        let max_weight = edges
-            .iter()
-            .map(|(_, _, w)| *w)
-            .fold(zero, |acc, w| if w > acc { w } else { acc });
-
-        let epochs_per_sample: Vec<T> = edges
-            .iter()
-            .map(|(_, _, w)| {
-                let norm = *w / max_weight;
-                if norm > zero {
-                    one / norm
-                } else {
-                    large_epoch
-                }
-            })
-            .collect();
-
-        let mu: Vec<T> = edges.iter().map(|(_, _, w)| *w).collect();
-
-        Ok(Self {
-            n,
-            n_edges,
-            node_edge_offsets,
-            csr_edge_idx,
-            csr_other_node,
-            epochs_per_sample,
-            mu,
-        })
-    }
-}
 
 /////////////////////
 // Device geometry //
@@ -275,37 +142,36 @@ fn plan_grids(
 
 /// All GPU-resident state for the UMAP optimiser. Built once via
 /// [`UmapGpuState::upload`], mutated in place by the per-epoch kernels.
-pub struct UmapGpuState<R, T>
+pub struct UmapGpuState<T>
 where
-    R: Runtime,
     T: ManifoldsFloatGpu,
 {
     /// Current embedding `[n, n_dim]`, updated every epoch by the Adam step.
-    pub embd: GpuTensor<R, T>,
+    pub embd: GpuTensor<T>,
     /// First Adam moment `[n, n_dim]`, updated every epoch.
-    pub m: GpuTensor<R, T>,
+    pub m: GpuTensor<T>,
     /// Second Adam moment `[n, n_dim]`, updated every epoch.
-    pub v: GpuTensor<R, T>,
+    pub v: GpuTensor<T>,
     /// Per-node gradient scratch `[n, n_dim]`, overwritten every epoch.
-    pub node_grad: GpuTensor<R, T>,
+    pub node_grad: GpuTensor<T>,
 
     /// CSR row pointers `[n + 1]`, uploaded once.
-    pub node_edge_offsets: GpuTensor<R, u32>,
+    pub node_edge_offsets: GpuTensor<u32>,
     /// CSR edge indices `[2 * n_edges]`, uploaded once.
-    pub csr_edge_idx: GpuTensor<R, u32>,
+    pub csr_edge_idx: GpuTensor<u32>,
     /// CSR other endpoints `[2 * n_edges]`, uploaded once.
-    pub csr_other_node: GpuTensor<R, u32>,
+    pub csr_other_node: GpuTensor<u32>,
 
     /// Sampling period per edge `[n_edges]`, uploaded once.
-    pub epochs_per_sample: GpuTensor<R, T>,
+    pub epochs_per_sample: GpuTensor<T>,
     /// Edge sampling cursor `[n_edges]`, advanced every epoch for edges that
     /// tick.
-    pub epoch_of_next_sample: GpuTensor<R, T>,
+    pub epoch_of_next_sample: GpuTensor<T>,
 
     /// Per-node flag `[n]`, `1` if any edge fired this epoch, else `0`.
     /// Overwritten by `umap_grad_accum`; read by `umap_adam_update` to skip
     /// nodes with no active edges.
-    pub has_update: GpuTensor<R, u32>,
+    pub has_update: GpuTensor<u32>,
 
     /// Number of nodes.
     pub n: usize,
@@ -327,29 +193,28 @@ where
     pub cubes_edge: CubeCount,
     /// Per-node partial `sum_d grad[node, d]^2` `[n]`, written by
     /// `umap_grad_norm_sq` and reduced on the host for progress logging.
-    pub grad_norm_partial: GpuTensor<R, T>,
+    pub grad_norm_partial: GpuTensor<T>,
 
     /// Whether the densMAP buffers below are real (`[n]`) or `[1]` dummies.
     /// The gradient kernel takes this as a comptime flag, so plain UMAP is
     /// compiled without any density code at all.
     pub dens_enabled: bool,
     /// Z-scored original log local radii `[n]`, uploaded once.
-    pub dens_r: GpuTensor<R, T>,
+    pub dens_r: GpuTensor<T>,
     /// Embedding log local radii `[n]`, rewritten by `umap_dens_radii` every
     /// density epoch.
-    pub dens_re: GpuTensor<R, T>,
+    pub dens_re: GpuTensor<T>,
     /// `sum_j phi_ij` per node `[n]`, rewritten alongside `dens_re`.
-    pub dens_phi_sum: GpuTensor<R, T>,
+    pub dens_phi_sum: GpuTensor<T>,
     /// Per-node correlation sensitivity `[n]`, rewritten by
     /// `umap_dens_weights` once the host has the epoch statistics.
-    pub dens_weight: GpuTensor<R, T>,
+    pub dens_weight: GpuTensor<T>,
     /// Graph weight per edge `[n_edges]`, uploaded once.
-    pub mu: GpuTensor<R, T>,
+    pub mu: GpuTensor<T>,
 }
 
-impl<R, T> UmapGpuState<R, T>
+impl<T> UmapGpuState<T>
 where
-    R: Runtime,
     T: ManifoldsFloatGpu,
 {
     /// Build device state from CPU inputs. All buffers are uploaded; no
@@ -376,7 +241,7 @@ where
         csr: &UmapCsrGraph<T>,
         params: &UmapOptimParams<T>,
         dens: Option<&DensState<T>>,
-        client: &ComputeClient<R>,
+        client: &Client,
     ) -> Result<Self, ManifoldsError> {
         let n = embd.len();
         if n == 0 {
@@ -486,7 +351,7 @@ where
 /// * `(CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X` -> node
 #[cube(launch_unchecked)]
 #[allow(clippy::too_many_arguments)]
-pub fn umap_dens_radii<F: Float + CubeElement>(
+pub fn umap_dens_radii<F: Float + CubeElement + LaunchArg>(
     embd: &Tensor<F>,
     node_edge_offsets: &Tensor<u32>,
     csr_other_node: &Tensor<u32>,
@@ -566,7 +431,7 @@ pub fn umap_dens_radii<F: Float + CubeElement>(
 ///
 /// * `(CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X` -> node
 #[cube(launch_unchecked)]
-pub fn umap_dens_weights<F: Float + CubeElement>(
+pub fn umap_dens_weights<F: Float + CubeElement + LaunchArg>(
     dens_r: &Tensor<F>,
     dens_re: &Tensor<F>,
     dens_weight: &mut Tensor<F>,
@@ -681,7 +546,7 @@ fn gpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: 
 /// * `(CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg_size + UNIT_POS_X` -> node
 #[cube(launch_unchecked)]
 #[allow(clippy::too_many_arguments)]
-pub fn umap_grad_accum<F: Float + CubeElement>(
+pub fn umap_grad_accum<F: Float + CubeElement + LaunchArg>(
     embd: &Tensor<F>,
     node_edge_offsets: &Tensor<u32>,
     csr_edge_idx: &Tensor<u32>,
@@ -733,8 +598,8 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
 
     let two = F::new(2.0_f32);
 
-    let mut edge_local: u32 = 0u32;
-    let mut active: u32 = 0u32;
+    let mut edge_local = 0u32;
+    let mut active = 0u32;
     let mut pos = start;
     while pos < end {
         let edge_idx = csr_edge_idx[pos as usize];
@@ -885,7 +750,7 @@ pub fn umap_grad_accum<F: Float + CubeElement>(
 /// * `ABSOLUTE_POS_X` -> flat `(node, dim)` index into the `[n * n_dim]`
 ///   buffers
 #[cube(launch_unchecked)]
-pub fn umap_adam_update<F: Float + CubeElement>(
+pub fn umap_adam_update<F: Float + CubeElement + LaunchArg>(
     node_grad: &Tensor<F>,
     has_update: &Tensor<u32>,
     m: &mut Tensor<F>,
@@ -938,7 +803,7 @@ pub fn umap_adam_update<F: Float + CubeElement>(
 ///
 /// * `ABSOLUTE_POS_X` -> edge index
 #[cube(launch_unchecked)]
-pub fn umap_edge_schedule_update<F: Float + CubeElement>(
+pub fn umap_edge_schedule_update<F: Float + CubeElement + LaunchArg>(
     epochs_per_sample: &Tensor<F>,
     epoch_of_next_sample: &mut Tensor<F>,
     n_edges: u32,
@@ -1013,15 +878,14 @@ pub fn umap_grad_norm_sq<F: Float + CubeElement>(
 ///   term is live this epoch, `None` otherwise. Passing `None` selects the
 ///   comptime arm with no density code, which is also the only valid choice
 ///   when the density buffers are `[1]` dummies
-pub fn launch_grad_accum<R, T>(
-    client: &ComputeClient<R>,
-    state: &UmapGpuState<R, T>,
+pub fn launch_grad_accum<T>(
+    client: &Client,
+    state: &UmapGpuState<T>,
     params: &UmapOptimParams<T>,
     epoch: usize,
     seed: u32,
     dens_coeff: Option<T>,
 ) where
-    R: Runtime,
     T: ManifoldsFloatGpu,
 {
     let two = T::from(2.0).unwrap();
@@ -1031,7 +895,7 @@ pub fn launch_grad_accum<R, T>(
     let dens_coeff = dens_coeff.unwrap_or_else(T::zero);
 
     unsafe {
-        umap_grad_accum::launch_unchecked::<T, R>(
+        umap_grad_accum::launch_unchecked::<T>(
             client,
             state.cubes_node.clone(),
             CubeDim::new_1d(wg),
@@ -1086,20 +950,19 @@ pub fn launch_grad_accum<R, T>(
 ///
 /// `dens_coeff`, ready to hand to [`launch_grad_accum`]. Propagates any
 /// readback error from `GpuTensor::read`.
-pub fn launch_dens_update<R, T>(
-    client: &ComputeClient<R>,
-    state: &UmapGpuState<R, T>,
+pub fn launch_dens_update<T>(
+    client: &Client,
+    state: &UmapGpuState<T>,
     params: &UmapOptimParams<T>,
     dens: &DensState<T>,
 ) -> Result<T, ManifoldsError>
 where
-    R: Runtime,
     T: ManifoldsFloatGpu,
 {
     let wg = state.wg_size;
 
     unsafe {
-        umap_dens_radii::launch_unchecked::<T, R>(
+        umap_dens_radii::launch_unchecked::<T>(
             client,
             state.cubes_node.clone(),
             CubeDim::new_1d(wg),
@@ -1123,7 +986,7 @@ where
     let (re_mean, re_std, cov) = correlation_stats(&re, &dens.r, dens.params.var_shift);
 
     unsafe {
-        umap_dens_weights::launch_unchecked::<T, R>(
+        umap_dens_weights::launch_unchecked::<T>(
             client,
             state.cubes_node.clone(),
             CubeDim::new_1d(wg),
@@ -1152,30 +1015,21 @@ where
 /// * `state` - Device-resident optimiser state
 /// * `params` - Adam and UMAP hyperparameters
 /// * `epoch` - Current epoch index (0-based)
-pub fn launch_adam_update<R, T>(
-    client: &ComputeClient<R>,
-    state: &UmapGpuState<R, T>,
+pub fn launch_adam_update<T>(
+    client: &Client,
+    state: &UmapGpuState<T>,
     params: &UmapOptimParams<T>,
     epoch: usize,
 ) where
-    R: Runtime,
     T: ManifoldsFloatGpu,
 {
     let one = T::one();
     let n_total = (state.n * state.n_dim) as u32;
     let wg = state.wg_size;
-
-    let lr_alpha = params.lr * (one - T::from(epoch).unwrap() / T::from(state.n_epochs).unwrap());
-
-    let t = T::from(epoch + 1).unwrap();
-    let beta1t = num_traits::Float::powf(params.beta1, t);
-    let beta2t = num_traits::Float::powf(params.beta2, t);
-    let sqrt_b2t1 = num_traits::Float::sqrt(one - beta2t);
-    let ad_scale = sqrt_b2t1 / (one - beta1t);
-    let epsc = sqrt_b2t1 * params.eps;
+    let (lr_alpha, epsc) = adam_epoch_scalars(params, epoch);
 
     unsafe {
-        umap_adam_update::launch_unchecked::<T, R>(
+        umap_adam_update::launch_unchecked::<T>(
             client,
             state.cubes_elem.clone(),
             CubeDim::new_1d(wg),
@@ -1186,7 +1040,7 @@ pub fn launch_adam_update<R, T>(
             state.embd.into_tensor_arg(),
             n_total,
             state.n_dim as u32,
-            lr_alpha * ad_scale,
+            lr_alpha,
             epsc,
             one - params.beta1,
             one - params.beta2,
@@ -1202,18 +1056,14 @@ pub fn launch_adam_update<R, T>(
 /// * `client` - CubeCL compute client
 /// * `state` - Device-resident optimiser state
 /// * `epoch` - Current epoch index (0-based)
-pub fn launch_edge_schedule_update<R, T>(
-    client: &ComputeClient<R>,
-    state: &UmapGpuState<R, T>,
-    epoch: usize,
-) where
-    R: Runtime,
+pub fn launch_edge_schedule_update<T>(client: &Client, state: &UmapGpuState<T>, epoch: usize)
+where
     T: ManifoldsFloatGpu,
 {
     let wg = state.wg_size;
 
     unsafe {
-        umap_edge_schedule_update::launch_unchecked::<T, R>(
+        umap_edge_schedule_update::launch_unchecked::<T>(
             client,
             state.cubes_edge.clone(),
             CubeDim::new_1d(wg),
@@ -1242,18 +1092,14 @@ pub fn launch_edge_schedule_update<R, T>(
 ///
 /// Global gradient norm `sqrt(sum_{node, d} node_grad[node, d]^2)` on
 /// success. Propagates any readback error from `GpuTensor::read`.
-pub fn launch_grad_norm<R, T>(
-    client: &ComputeClient<R>,
-    state: &UmapGpuState<R, T>,
-) -> Result<T, ManifoldsError>
+pub fn launch_grad_norm<T>(client: &Client, state: &UmapGpuState<T>) -> Result<T, ManifoldsError>
 where
-    R: Runtime,
     T: ManifoldsFloatGpu,
 {
     let wg = state.wg_size;
 
     unsafe {
-        umap_grad_norm_sq::launch_unchecked::<T, R>(
+        umap_grad_norm_sq::launch_unchecked::<T>(
             client,
             state.cubes_node.clone(),
             CubeDim::new_1d(wg),
@@ -1299,17 +1145,16 @@ where
 /// `Ok(())` on success; the optimised embedding is written back into `embd`
 /// in place. `ManifoldsError::NoData` if `embd` is empty;
 /// `ManifoldsError::NoGraphEdges` if the CSR graph has no surviving edges.
-pub fn optimise_embedding_adam_gpu<R, T>(
+pub fn optimise_embedding_adam_gpu<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
     params: &UmapOptimParams<T>,
     dens: Option<&DensState<T>>,
-    device: R::Device,
+    device: Device,
     seed: u64,
     verbose: usize,
 ) -> Result<(), ManifoldsError>
 where
-    R: Runtime,
     T: ManifoldsFloatGpu,
 {
     let n = embd.len();
@@ -1320,8 +1165,8 @@ where
     let verbosity = parse_verbosity_level(verbose);
 
     let csr = UmapCsrGraph::from_graph(graph)?;
-    let client = R::client(&device);
-    let state = UmapGpuState::<R, T>::upload(embd, &csr, params, dens, &client)?;
+    let client = device.client();
+    let state = UmapGpuState::<T>::upload(embd, &csr, params, dens, &client)?;
 
     // seed fits in u32; upper bits of a u64 seed are unused.
     let seed_u32 = seed as u32;
@@ -1366,264 +1211,6 @@ where
     }
 
     Ok(())
-}
-
-/////////////////////////////
-// CPU equivalence testers //
-/////////////////////////////
-
-/// Splitmix-style host-side hash matching `gpu_hash_neg` bit-for-bit. Kept in
-/// sync manually so the CPU reference reproduces the same negative samples.
-#[cfg(test)]
-#[inline]
-fn cpu_hash_neg(seed: u32, node: u32, epoch: u32, edge_local: u32, neg: u32, n: u32) -> u32 {
-    let mut h = seed
-        ^ node.wrapping_mul(0x9E3779B1)
-        ^ epoch.wrapping_mul(0x85EBCA77)
-        ^ edge_local.wrapping_mul(0xC2B2AE3D)
-        ^ neg.wrapping_mul(0x27D4EB2F);
-    h ^= h >> 16;
-    h = h.wrapping_mul(0x7FEB352D);
-    h ^= h >> 15;
-    h = h.wrapping_mul(0x846CA68B);
-    h ^= h >> 16;
-    h % n
-}
-
-/// Host-side mirror of the densMAP state the gradient kernel reads.
-#[cfg(test)]
-struct CpuDensRef<T> {
-    /// Embedding log radii `[n]`, from `cpu_dens_radii`.
-    re: Vec<T>,
-    /// Per-node kernel sums `[n]`, from `cpu_dens_radii`.
-    phi_sum: Vec<T>,
-    /// Per-node correlation sensitivities `[n]`.
-    weight: Vec<T>,
-    /// `lambda * mu_tot / (re_std * (n - 1))`.
-    coeff: T,
-}
-
-/// Host-side reference implementation of `umap_dens_radii`. Same iteration
-/// order as the kernel.
-#[cfg(test)]
-fn cpu_dens_radii<T>(
-    embd_flat: &[T],
-    csr: &UmapCsrGraph<T>,
-    n_dim: usize,
-    params: &UmapOptimParams<T>,
-) -> (Vec<T>, Vec<T>)
-where
-    T: ManifoldsFloat,
-{
-    let n = csr.n;
-    let mut re = vec![T::zero(); n];
-    let mut phi_sum = vec![T::zero(); n];
-    let dens_eps = T::from(DENS_EPS).unwrap();
-
-    for node in 0..n {
-        let base_self = node * n_dim;
-        let start = csr.node_edge_offsets[node] as usize;
-        let end = csr.node_edge_offsets[node + 1] as usize;
-
-        let mut sum_sq = T::zero();
-        let mut sum_phi = T::zero();
-
-        for pos in start..end {
-            let other = csr.csr_other_node[pos] as usize;
-            let base_other = other * n_dim;
-
-            let mut dist_sq = T::zero();
-            for d in 0..n_dim {
-                let diff = embd_flat[base_self + d] - embd_flat[base_other + d];
-                dist_sq += diff * diff;
-            }
-
-            let dist_sq_b = dist_sq.powf(params.b);
-            let phi = T::one() / (T::one() + params.a * dist_sq_b);
-
-            sum_sq += phi * dist_sq;
-            sum_phi += phi;
-        }
-
-        re[node] = (dens_eps + sum_sq / sum_phi.max(T::epsilon())).ln();
-        phi_sum[node] = sum_phi;
-    }
-
-    (re, phi_sum)
-}
-
-/// Host-side reference implementation of `umap_grad_accum`. Same iteration
-/// order as the kernel so attractive-only runs match bit-for-bit; runs with
-/// negatives are FP-tolerant because `powf` and FMAs may compile differently
-/// on the GPU.
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-fn cpu_grad_accum<T>(
-    embd_flat: &[T],
-    csr: &UmapCsrGraph<T>,
-    epoch_of_next_sample: &[T],
-    n_dim: usize,
-    epoch: usize,
-    seed: u32,
-    neg_sample_rate: usize,
-    params: &UmapOptimParams<T>,
-    dens: Option<&CpuDensRef<T>>,
-) -> Vec<T>
-where
-    T: ManifoldsFloat,
-{
-    let n = csr.n;
-    let mut grad = vec![T::zero(); n * n_dim];
-
-    let two = T::from(2.0).unwrap();
-    let one = T::one();
-    let zero = T::zero();
-    let dist_sq_threshold = T::from(GRAD_DIST_SQ_THRESHOLD).unwrap();
-    let rep_eps = T::from(GRAD_REP_EPS).unwrap();
-    let clip_val = T::from(GRAD_CLIP_VAL).unwrap();
-    let two_a_b = two * params.a * params.b;
-    let two_gamma_b = two * params.gamma * params.b;
-    let epoch_t = T::from(epoch).unwrap();
-
-    for node in 0..n {
-        let base_self = node * n_dim;
-        let start = csr.node_edge_offsets[node] as usize;
-        let end = csr.node_edge_offsets[node + 1] as usize;
-
-        let mut edge_local: u32 = 0;
-        for pos in start..end {
-            let edge_idx = csr.csr_edge_idx[pos] as usize;
-            if epoch_of_next_sample[edge_idx] > epoch_t {
-                edge_local += 1;
-                continue;
-            }
-
-            let other = csr.csr_other_node[pos] as usize;
-            let base_other = other * n_dim;
-
-            let mut dist_sq = zero;
-            for d in 0..n_dim {
-                let diff = embd_flat[base_self + d] - embd_flat[base_other + d];
-                dist_sq += diff * diff;
-            }
-
-            if dist_sq >= dist_sq_threshold {
-                let dist_sq_b = dist_sq.powf(params.b);
-                let denom = one + params.a * dist_sq_b;
-                let grad_coeff = two_a_b * dist_sq_b / (dist_sq * denom);
-
-                for d in 0..n_dim {
-                    let delta = embd_flat[base_other + d] - embd_flat[base_self + d];
-                    grad[base_self + d] += two * grad_coeff * delta;
-                }
-
-                if let Some(dens) = dens {
-                    let phi = one / denom;
-                    let dphi_term = params.a * params.b * dist_sq_b / dist_sq * phi;
-                    let common = one - params.b * (one - phi);
-
-                    let dr_self =
-                        (phi / dens.phi_sum[node]) * (common / dens.re[node].exp() + dphi_term);
-                    let dr_other =
-                        (phi / dens.phi_sum[other]) * (common / dens.re[other].exp() + dphi_term);
-
-                    let cor = dens.coeff
-                        * (dens.weight[node] * dr_self + dens.weight[other] * dr_other)
-                        / csr.mu[edge_idx];
-                    let two_cor = two * cor;
-
-                    for d in 0..n_dim {
-                        let delta = embd_flat[base_self + d] - embd_flat[base_other + d];
-                        let g = (two_cor * delta).max(-clip_val).min(clip_val);
-                        grad[base_self + d] += two * g;
-                    }
-                }
-            }
-
-            for neg in 0..neg_sample_rate as u32 {
-                let k = cpu_hash_neg(seed, node as u32, epoch as u32, edge_local, neg, n as u32)
-                    as usize;
-                if k == node {
-                    continue;
-                }
-                let base_k = k * n_dim;
-
-                let mut dist_sq_k = zero;
-                for d in 0..n_dim {
-                    let diff = embd_flat[base_self + d] - embd_flat[base_k + d];
-                    dist_sq_k += diff * diff;
-                }
-
-                let dist_sq_safe = dist_sq_k + rep_eps;
-                let dist_sq_b = dist_sq_safe.powf(params.b);
-                let denom = dist_sq_safe * (one + params.a * dist_sq_b);
-                let mut grad_coeff = two_gamma_b / denom;
-                if grad_coeff > clip_val {
-                    grad_coeff = clip_val;
-                }
-                if grad_coeff < -clip_val {
-                    grad_coeff = -clip_val;
-                }
-
-                for d in 0..n_dim {
-                    let delta = embd_flat[base_self + d] - embd_flat[base_k + d];
-                    grad[base_self + d] += grad_coeff * delta;
-                }
-            }
-
-            edge_local += 1;
-        }
-    }
-
-    grad
-}
-
-/// Host-side reference implementation of `umap_adam_update` for one epoch.
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-fn cpu_adam_update<T>(
-    node_grad: &[T],
-    has_update: &[u32],
-    m: &mut [T],
-    v: &mut [T],
-    embd: &mut [T],
-    n: usize,
-    n_dim: usize,
-    params: &UmapOptimParams<T>,
-    epoch: usize,
-    n_epochs: usize,
-) where
-    T: ManifoldsFloat,
-{
-    let one = T::one();
-    let lr_alpha = params.lr * (one - T::from(epoch).unwrap() / T::from(n_epochs).unwrap());
-    let t = T::from(epoch + 1).unwrap();
-    let beta1t = params.beta1.powf(t);
-    let beta2t = params.beta2.powf(t);
-    let sqrt_b2t1 = (one - beta2t).sqrt();
-    let ad_scale = sqrt_b2t1 / (one - beta1t);
-    let epsc = sqrt_b2t1 * params.eps;
-    let one_minus_beta1 = one - params.beta1;
-    let one_minus_beta2 = one - params.beta2;
-    let fused = lr_alpha * ad_scale;
-
-    for node in 0..n {
-        if has_update[node] == 0 {
-            continue;
-        }
-        for d in 0..n_dim {
-            let i = node * n_dim + d;
-            let g = node_grad[i];
-
-            let m_new = m[i] + one_minus_beta1 * (g - m[i]);
-            m[i] = m_new;
-
-            let v_new = v[i] + one_minus_beta2 * (g * g - v[i]);
-            v[i] = v_new;
-
-            embd[i] += fused * m_new / (v_new.sqrt() + epsc);
-        }
-    }
 }
 
 ///////////
@@ -1673,23 +1260,22 @@ mod tests {
     fn build_state(
         device: &WgpuDevice,
     ) -> (
-        ComputeClient<WgpuRuntime>,
+        Client,
         UmapCsrGraph<f32>,
         UmapOptimParams<f32>,
-        UmapGpuState<WgpuRuntime, f32>,
+        UmapGpuState<f32>,
     ) {
-        let client = WgpuRuntime::client(device);
+        let client = <WgpuRuntime>::client(device);
         let (embd, graph, params) = triangle_setup();
         let csr = UmapCsrGraph::from_graph(&graph).unwrap();
-        let state =
-            UmapGpuState::<WgpuRuntime, f32>::upload(&embd, &csr, &params, None, &client).unwrap();
+        let state = UmapGpuState::<f32>::upload(&embd, &csr, &params, None, &client).unwrap();
         (client, csr, params, state)
     }
 
     fn try_device() -> Option<WgpuDevice> {
-        let device = WgpuDevice::DefaultDevice;
+        let device = WgpuDevice::default();
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            WgpuRuntime::client(&device);
+            <WgpuRuntime>::client(&device);
         }))
         .ok()
         .map(|_| device)
@@ -1842,7 +1428,7 @@ mod tests {
     #[test]
     fn test_upload_3d_embedding() {
         let Some(device) = try_device() else { return };
-        let client = WgpuRuntime::client(&device);
+        let client = <WgpuRuntime>::client(&device);
         let embd = vec![
             vec![0.0_f32, 1.0, 2.0],
             vec![3.0, 4.0, 5.0],
@@ -1851,8 +1437,7 @@ mod tests {
         let (_, graph, mut params) = triangle_setup();
         params.n_epochs = 5;
         let csr = UmapCsrGraph::from_graph(&graph).unwrap();
-        let state =
-            UmapGpuState::<WgpuRuntime, f32>::upload(&embd, &csr, &params, None, &client).unwrap();
+        let state = UmapGpuState::<f32>::upload(&embd, &csr, &params, None, &client).unwrap();
 
         assert_eq!(state.n_dim, 3);
         let got = state.embd.clone().read(&client).unwrap();
@@ -1869,10 +1454,9 @@ mod tests {
         epoch: usize,
         seed: u32,
     ) -> (Vec<f32>, UmapCsrGraph<f32>, Vec<f32>) {
-        let client = WgpuRuntime::client(device);
+        let client = <WgpuRuntime>::client(device);
         let csr = UmapCsrGraph::from_graph(graph).unwrap();
-        let state =
-            UmapGpuState::<WgpuRuntime, f32>::upload(embd, &csr, params, None, &client).unwrap();
+        let state = UmapGpuState::<f32>::upload(embd, &csr, params, None, &client).unwrap();
 
         launch_grad_accum(&client, &state, params, epoch, seed, None);
 
@@ -1902,14 +1486,13 @@ mod tests {
     #[test]
     fn test_dens_radii_matches_cpu() {
         let Some(device) = try_device() else { return };
-        let client = WgpuRuntime::client(&device);
+        let client = <WgpuRuntime>::client(&device);
         let (embd, graph, params) = triangle_setup();
 
         let csr = UmapCsrGraph::from_graph(&graph).unwrap();
         let dens = dens_setup(embd.len());
         let state =
-            UmapGpuState::<WgpuRuntime, f32>::upload(&embd, &csr, &params, Some(&dens), &client)
-                .unwrap();
+            UmapGpuState::<f32>::upload(&embd, &csr, &params, Some(&dens), &client).unwrap();
 
         launch_dens_update(&client, &state, &params, &dens).unwrap();
 
@@ -1928,15 +1511,14 @@ mod tests {
     #[test]
     fn test_grad_with_density_matches_cpu() {
         let Some(device) = try_device() else { return };
-        let client = WgpuRuntime::client(&device);
+        let client = <WgpuRuntime>::client(&device);
         let (embd, graph, mut params) = triangle_setup();
         params.neg_sample_rate = 0;
 
         let csr = UmapCsrGraph::from_graph(&graph).unwrap();
         let dens = dens_setup(embd.len());
         let state =
-            UmapGpuState::<WgpuRuntime, f32>::upload(&embd, &csr, &params, Some(&dens), &client)
-                .unwrap();
+            UmapGpuState::<f32>::upload(&embd, &csr, &params, Some(&dens), &client).unwrap();
 
         let epoch = 5;
         let coeff = launch_dens_update(&client, &state, &params, &dens).unwrap();
@@ -2120,7 +1702,7 @@ mod tests {
         params: &UmapOptimParams<f32>,
         epoch: usize,
     ) -> (Vec<f32>, Vec<f32>, Vec<f32>) {
-        let client = WgpuRuntime::client(device);
+        let client = <WgpuRuntime>::client(device);
 
         // Adam kernel never touches CSR or schedule state, so those buffers
         // are just placeholders sized so nothing indexes out of bounds.
@@ -2132,7 +1714,7 @@ mod tests {
         let (cubes_node, cubes_elem, cubes_edge) =
             plan_grids(n, n_dim, 0, wg_size, &limits).unwrap();
 
-        let state = UmapGpuState::<WgpuRuntime, f32> {
+        let state = UmapGpuState::<f32> {
             embd: GpuTensor::from_slice(embd, vec![n, n_dim], &client).unwrap(),
             m: GpuTensor::from_slice(m, vec![n, n_dim], &client).unwrap(),
             v: GpuTensor::from_slice(v, vec![n, n_dim], &client).unwrap(),
@@ -2408,12 +1990,12 @@ mod tests {
         let mut params = UmapOptimParams::<f32>::default_2d();
         params.n_epochs = 200;
 
-        optimise_embedding_adam_gpu::<WgpuRuntime, f32>(
+        optimise_embedding_adam_gpu::<f32>(
             &mut embd,
             &graph,
             &params,
             None,
-            WgpuDevice::DefaultDevice,
+            WgpuDevice::default().clone().into(),
             42,
             0,
         )
@@ -2453,12 +2035,12 @@ mod tests {
         let Some(_device) = try_device() else { return };
 
         let (mut embd, graph, params) = triangle_setup();
-        optimise_embedding_adam_gpu::<WgpuRuntime, f32>(
+        optimise_embedding_adam_gpu::<f32>(
             &mut embd,
             &graph,
             &params,
             None,
-            WgpuDevice::DefaultDevice,
+            WgpuDevice::default().clone().into(),
             42,
             0,
         )
@@ -2480,22 +2062,22 @@ mod tests {
         let (mut embd1, graph, params) = triangle_setup();
         let mut embd2 = embd1.clone();
 
-        optimise_embedding_adam_gpu::<WgpuRuntime, f32>(
+        optimise_embedding_adam_gpu::<f32>(
             &mut embd1,
             &graph,
             &params,
             None,
-            WgpuDevice::DefaultDevice,
+            WgpuDevice::default().clone().into(),
             42,
             0,
         )
         .unwrap();
-        optimise_embedding_adam_gpu::<WgpuRuntime, f32>(
+        optimise_embedding_adam_gpu::<f32>(
             &mut embd2,
             &graph,
             &params,
             None,
-            WgpuDevice::DefaultDevice,
+            WgpuDevice::default().clone().into(),
             42,
             0,
         )

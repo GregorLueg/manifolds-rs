@@ -5,7 +5,10 @@
 //! no readback:
 //!
 //! 1. bucket points by grid box (`u32` atomics, then a scan and a scatter)
-//! 2. splat a unit charge onto the zero-padded grid, one unit per node
+//! 2. splat a unit charge onto the zero-padded grid, one plane per box with
+//!    `plane_sum` where the device has a fixed plane size (2.7 s against
+//!    4.1 s for one unit per node, 1000 epochs at 100k), else one unit per
+//!    node
 //! 3. forward 2D FFT, multiply by the three kernel spectra (`q`, `q^2 dx`,
 //!    `q^2 dy`), inverse 2D FFT with two real outputs packed per complex grid
 //! 4. gather `Z_i` and the repulsive force per point
@@ -24,12 +27,14 @@
 #![allow(missing_docs)] // cubecl weirdness
 
 use cubecl::prelude::*;
+use cubecl::Device;
 use cubecl_utils_rs::prelude::*;
 
 use crate::data::graph::coo_to_adjacency_list;
 use crate::data::structures::*;
 use crate::prelude::*;
 use crate::training::tsne_optimiser::*;
+use crate::utils::dreams::DreamsState;
 use crate::utils::fft2d_gpu::{Fft2dPlan, FFT2D_MIN_N};
 
 ////////////
@@ -91,11 +96,7 @@ fn lagrange_basis<F: Float + CubeElement>(t: F, k: u32, #[comptime] ni: u32) -> 
 /// * `u` - Unit index
 /// * `log2_wg` - `log2(wg)`; comptime, `wg` a power of two
 #[cube]
-fn workgroup_sum<F: Float + CubeElement>(
-    sh: &mut SharedMemory<F>,
-    u: u32,
-    #[comptime] log2_wg: u32,
-) {
+fn workgroup_sum<F: Float + CubeElement>(sh: &mut Shared<[F]>, u: u32, #[comptime] log2_wg: u32) {
     sync_cube();
     #[unroll]
     for k in 0..log2_wg {
@@ -116,11 +117,7 @@ fn workgroup_sum<F: Float + CubeElement>(
 /// * `u` - Unit index
 /// * `log2_wg` - `log2(wg)`; comptime, `wg` a power of two
 #[cube]
-fn workgroup_max<F: Float + CubeElement>(
-    sh: &mut SharedMemory<F>,
-    u: u32,
-    #[comptime] log2_wg: u32,
-) {
+fn workgroup_max<F: Float + CubeElement>(sh: &mut Shared<[F]>, u: u32, #[comptime] log2_wg: u32) {
     sync_cube();
     #[unroll]
     for k in 0..log2_wg {
@@ -155,7 +152,7 @@ fn workgroup_max<F: Float + CubeElement>(
 /// * `ni` - Interpolation nodes per box; comptime
 /// * `wg` - Workgroup width; comptime
 #[cube(launch_unchecked)]
-pub fn tsne3k_prep<F: Float + CubeElement>(
+pub fn tsne3k_prep<F: Float + CubeElement + LaunchArg>(
     pos: &Tensor<F>,
     box_id: &mut Tensor<u32>,
     slot: &mut Tensor<u32>,
@@ -214,7 +211,7 @@ pub fn tsne3k_scan(
     len: u32,
     #[comptime] wg: u32,
 ) {
-    let mut sh = SharedMemory::<u32>::new(wg as usize);
+    let mut sh = Shared::<[u32]>::new_slice(wg as usize);
     let u = UNIT_POS_X;
     // spelled out: `div_ceil` is not part of the cubecl expansion
     #[allow(clippy::manual_div_ceil)]
@@ -225,7 +222,7 @@ pub fn tsne3k_scan(
         hi = len;
     }
 
-    let mut acc: u32 = 0u32;
+    let mut acc = 0u32;
     let mut b: u32 = lo;
     while b < hi {
         acc += box_count[b as usize].load();
@@ -235,7 +232,7 @@ pub fn tsne3k_scan(
     sync_cube();
 
     if u == 0u32 {
-        let mut run: u32 = 0u32;
+        let mut run = 0u32;
         for k in 0..wg {
             let v = sh[k as usize];
             sh[k as usize] = run;
@@ -339,11 +336,102 @@ pub fn tsne3k_splat<F: Float + CubeElement>(
     g_im[idx as usize] = F::new(0.0_f32);
 }
 
+/// Zero the parts of the FFT grid the plane splat does not write: the real
+/// part outside the `m x m` corner and the whole imaginary part.
+///
+/// ### Params
+///
+/// * `g_re` - Grid, real `[n_fft^2]`
+/// * `g_im` - Grid, imaginary `[n_fft^2]`
+/// * `m` - Grid nodes per dimension inside the corner
+/// * `n_fft` - Grid side; comptime
+/// * `wg` - Workgroup width; comptime
+#[cube(launch_unchecked)]
+pub fn tsne3k_splat_clear<F: Float + CubeElement>(
+    g_re: &mut Tensor<F>,
+    g_im: &mut Tensor<F>,
+    m: u32,
+    #[comptime] n_fft: u32,
+    #[comptime] wg: u32,
+) {
+    let idx = (CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X) * wg + UNIT_POS_X;
+    if idx >= n_fft * n_fft {
+        terminate!();
+    }
+    if idx / n_fft >= m || idx % n_fft >= m {
+        g_re[idx as usize] = F::new(0.0_f32);
+    }
+    g_im[idx as usize] = F::new(0.0_f32);
+}
+
+/// Unit-charge splat, one plane-wide cube per box. Lanes stride over the
+/// box's points, so each point's weights are read once rather than once per
+/// grid node, keep all `ni^2` node sums in registers, and reduce them with
+/// `plane_sum`. Writes the `m x m` corner of the real grid only, see
+/// [`fn@tsne3k_splat_clear`]. The cube must be exactly one plane.
+///
+/// ### Params
+///
+/// * `order` - Point indices grouped by box `[n]`
+/// * `box_start` - Box starts `[nb^2 + 1]`
+/// * `wx` - X weights `[n * ni]`
+/// * `wy` - Y weights `[n * ni]`
+/// * `g_re` - Output grid, real `[n_fft^2]`
+/// * `nb` - Boxes per dimension
+/// * `n_fft` - Grid side; comptime
+/// * `ni` - Interpolation nodes per box; comptime
+#[cube(launch_unchecked)]
+pub fn tsne3k_splat_plane<F: Float + CubeElement>(
+    order: &Tensor<u32>,
+    box_start: &Tensor<u32>,
+    wx: &Tensor<F>,
+    wy: &Tensor<F>,
+    g_re: &mut Tensor<F>,
+    nb: u32,
+    #[comptime] n_fft: u32,
+    #[comptime] ni: u32,
+) {
+    let b = CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X;
+    if b >= nb * nb {
+        terminate!();
+    }
+    let lane = UNIT_POS_X;
+    let mut acc = Array::<F>::new((ni * ni) as usize);
+    #[unroll]
+    for k in 0..ni * ni {
+        acc[k as usize] = F::new(0.0_f32);
+    }
+    let end = box_start[(b + 1u32) as usize];
+    let mut p = box_start[b as usize] + lane;
+    while p < end {
+        let pt = order[p as usize];
+        #[unroll]
+        for iy in 0..ni {
+            let w_y = wy[(pt * ni + iy) as usize];
+            #[unroll]
+            for ix in 0..ni {
+                acc[(iy * ni + ix) as usize] += w_y * wx[(pt * ni + ix) as usize];
+            }
+        }
+        p += PLANE_DIM;
+    }
+    let row0 = (b / nb) * ni;
+    let col0 = (b % nb) * ni;
+    #[unroll]
+    for k in 0..ni * ni {
+        let v = plane_sum(acc[k as usize]);
+        if lane == 0u32 {
+            g_re[((row0 + k / ni) * n_fft + col0 + k % ni) as usize] = v;
+        }
+    }
+}
+
 /// Multiply the charge spectrum by the three kernel spectra, packing the two
 /// x-convolution outputs into one complex grid.
 ///
 /// Every product has a real inverse, so `W K_1 + i W K_x` inverts to
-/// `Z + i F_x` and `W K_y` to `F_y`.
+/// `Z + i F_x` and `W K_y` to `F_y`. Elementwise, so it works the same on
+/// the transposed spectra the FFT plan hands over.
 ///
 /// ### Params
 ///
@@ -427,7 +515,7 @@ pub fn tsne3k_gather<F: Float + CubeElement>(
     #[comptime] wg: u32,
     #[comptime] log2_wg: u32,
 ) {
-    let mut sh = SharedMemory::<F>::new(wg as usize);
+    let mut sh = Shared::<[F]>::new_slice(wg as usize);
     let cube = CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X;
     let u = UNIT_POS_X;
     let i = cube * wg + u;
@@ -471,7 +559,9 @@ pub fn tsne3k_gather<F: Float + CubeElement>(
 /// Every workgroup first reduces the `Z` partials itself, which saves a
 /// launch. Positions are ping-ponged because the attraction reads neighbours.
 /// Also writes a per-workgroup partial of the new positions for the
-/// recentring.
+/// recentring. With `dreams`, each workgroup also reduces the `||Y||^2`
+/// partials into the DREAMS scale `alpha` and applies the DREAMS step after
+/// the step cap (see `crate::utils::dreams`).
 ///
 /// ### Params
 ///
@@ -485,18 +575,27 @@ pub fn tsne3k_gather<F: Float + CubeElement>(
 /// * `indices` - CSR neighbours `[nnz]`
 /// * `values` - CSR affinities `[nnz]`
 /// * `mean_partial` - Output per-cube position sums `[2 * n_cubes]`
+/// * `reference` - Centred DREAMS reference `[2n]`; read only with `dreams`
+/// * `norm_partial` - Partials of `||Y||^2` for `pos_in` `[n_zp]`; read only
+///   with `dreams`
 /// * `n` - Number of points
-/// * `n_zp` - Number of `Z` partials
+/// * `n_zp` - Number of `Z` partials, also the number of norm partials
 /// * `exag` - Exaggeration factor
 /// * `lr` - Learning rate
 /// * `momentum` - Momentum
 /// * `min_gain` - Gain floor
 /// * `max_step` - Step norm cap
 /// * `z_floor` - `Z` below this is replaced by 1
+/// * `inv_ref_norm` - `1 / ||Y_e||_F`
+/// * `dreams_keep` - `1 - lambda`, the factor on the t-SNE step
+/// * `dreams_coef` - Regulariser step coefficient
+/// * `dreams` - Apply the DREAMS step; comptime
+/// * `plane_rows` - Walk the CSR one row per plane, lanes striding the edges;
+///   needs a single device plane size dividing `wg`; comptime
 /// * `wg` - Workgroup width; comptime
 /// * `log2_wg` - `log2(wg)`; comptime
 #[cube(launch_unchecked)]
-pub fn tsne3k_update<F: Float + CubeElement>(
+pub fn tsne3k_update<F: Float + CubeElement + LaunchArg>(
     pos_in: &Tensor<F>,
     pos_out: &mut Tensor<F>,
     vel: &mut Tensor<F>,
@@ -507,6 +606,8 @@ pub fn tsne3k_update<F: Float + CubeElement>(
     indices: &Tensor<u32>,
     values: &Tensor<F>,
     mean_partial: &mut Tensor<F>,
+    reference: &Tensor<F>,
+    norm_partial: &Tensor<F>,
     n: u32,
     n_zp: u32,
     exag: F,
@@ -515,11 +616,16 @@ pub fn tsne3k_update<F: Float + CubeElement>(
     min_gain: F,
     max_step: F,
     z_floor: F,
+    inv_ref_norm: F,
+    dreams_keep: F,
+    dreams_coef: F,
+    #[comptime] dreams: bool,
+    #[comptime] plane_rows: bool,
     #[comptime] wg: u32,
     #[comptime] log2_wg: u32,
 ) {
-    let mut sh = SharedMemory::<F>::new(wg as usize);
-    let mut sh2 = SharedMemory::<F>::new(wg as usize);
+    let mut sh = Shared::<[F]>::new_slice(wg as usize);
+    let mut sh2 = Shared::<[F]>::new_slice(wg as usize);
     let cube = CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X;
     let u = UNIT_POS_X;
     let i = cube * wg + u;
@@ -538,13 +644,63 @@ pub fn tsne3k_update<F: Float + CubeElement>(
     let z = if z_raw > z_floor { z_raw } else { one };
     sync_cube();
 
-    let mut new_x = zero;
-    let mut new_y = zero;
-    if i < n {
-        let px = pos_in[(2u32 * i) as usize];
-        let py = pos_in[(2u32 * i + 1u32) as usize];
+    let mut alpha = zero;
+    if dreams {
+        let mut nacc = zero;
+        let mut k = u;
+        while k < n_zp {
+            nacc += norm_partial[k as usize];
+            k += wg;
+        }
+        sh[u as usize] = nacc;
+        workgroup_sum::<F>(&mut sh, u, log2_wg);
+        alpha = F::sqrt(sh[0usize]) * inv_ref_norm;
+        sync_cube();
+    }
 
-        // 4-way split accumulators keep several neighbour gathers in flight
+    let mut px = zero;
+    let mut py = zero;
+    if i < n {
+        px = pos_in[(2u32 * i) as usize];
+        py = pos_in[(2u32 * i + 1u32) as usize];
+    }
+
+    let mut att_x = zero;
+    let mut att_y = zero;
+    if plane_rows {
+        // one row at a time per plane: the lanes stride the row's edges so
+        // the CSR reads are coalesced, and lane r keeps row r
+        let lane = UNIT_POS_PLANE;
+        let row0 = i - lane;
+        for r in 0..PLANE_DIM {
+            let row = row0 + r;
+            if row >= n {
+                break;
+            }
+            let rx = plane_shuffle(px, r);
+            let ry = plane_shuffle(py, r);
+            let mut ax = zero;
+            let mut ay = zero;
+            let end = indptr[(row + 1u32) as usize];
+            let mut e = indptr[row as usize] + lane;
+            while e < end {
+                let j = indices[e as usize];
+                let dx = rx - pos_in[(2u32 * j) as usize];
+                let dy = ry - pos_in[(2u32 * j + 1u32) as usize];
+                let f = values[e as usize] / (one + dx * dx + dy * dy);
+                ax += f * dx;
+                ay += f * dy;
+                e += PLANE_DIM;
+            }
+            let sx = plane_sum(ax);
+            let sy = plane_sum(ay);
+            if lane == r {
+                att_x = sx;
+                att_y = sy;
+            }
+        }
+    } else if i < n {
+        // two split accumulators keep two neighbour gathers in flight
         let mut ax0 = zero;
         let mut ay0 = zero;
         let mut ax1 = zero;
@@ -575,9 +731,15 @@ pub fn tsne3k_update<F: Float + CubeElement>(
             ax0 += f * dx;
             ay0 += f * dy;
         }
+        att_x = ax0 + ax1;
+        att_y = ay0 + ay1;
+    }
 
-        let gx = exag * (ax0 + ax1) - rep[(2u32 * i) as usize] / z;
-        let gy = exag * (ay0 + ay1) - rep[(2u32 * i + 1u32) as usize] / z;
+    let mut new_x = zero;
+    let mut new_y = zero;
+    if i < n {
+        let gx = exag * att_x - rep[(2u32 * i) as usize] / z;
+        let gy = exag * att_y - rep[(2u32 * i + 1u32) as usize] / z;
 
         let ix = (2u32 * i) as usize;
         let iy = (2u32 * i + 1u32) as usize;
@@ -586,13 +748,16 @@ pub fn tsne3k_update<F: Float + CubeElement>(
         let mut g_x = gains[ix];
         let mut g_y = gains[iy];
 
-        // Jacobs gains: grow when gradient and update disagree in sign
-        if (gx > zero) != (ux > zero) {
+        // Jacobs gains: grow when gradient and update disagree in sign. Not
+        // written as `bool != bool`, which the MSL backend cannot emit
+        let flip_x = select(gx > zero, ux <= zero, ux > zero);
+        let flip_y = select(gy > zero, uy <= zero, uy > zero);
+        if flip_x {
             g_x += F::new(0.2_f32);
         } else {
             g_x *= F::new(0.8_f32);
         }
-        if (gy > zero) != (uy > zero) {
+        if flip_y {
             g_y += F::new(0.2_f32);
         } else {
             g_y *= F::new(0.8_f32);
@@ -613,8 +778,13 @@ pub fn tsne3k_update<F: Float + CubeElement>(
         vel[iy] = uy;
         gains[ix] = g_x;
         gains[iy] = g_y;
-        new_x = px + ux;
-        new_y = py + uy;
+        if dreams {
+            new_x = px + dreams_keep * ux - dreams_coef * (px - alpha * reference[ix]);
+            new_y = py + dreams_keep * uy - dreams_coef * (py - alpha * reference[iy]);
+        } else {
+            new_x = px + ux;
+            new_y = py + uy;
+        }
         pos_out[ix] = new_x;
         pos_out[iy] = new_y;
     }
@@ -629,34 +799,37 @@ pub fn tsne3k_update<F: Float + CubeElement>(
     }
 }
 
-/// Recentre the embedding on the origin and record the extent.
+/// Recentre the embedding on the origin and record the extent and `||Y||^2`.
 ///
 /// Every workgroup reduces the position partials itself, then shifts its own
-/// points and writes the largest absolute coordinate it holds.
+/// points and writes the largest absolute coordinate it holds and the sum of
+/// their squared coordinates (the DREAMS scale for the next epoch).
 ///
 /// ### Params
 ///
 /// * `pos` - Positions `[2n]`, shifted in place
 /// * `mean_partial` - Per-cube position sums `[2 * n_mp]`
 /// * `extent_partial` - Output per-cube max absolute coordinate `[n_cubes]`
+/// * `norm_partial` - Output per-cube sum of `x^2 + y^2` `[n_cubes]`
 /// * `n` - Number of points
 /// * `n_mp` - Number of position partials
 /// * `inv_n` - `1 / n`
 /// * `wg` - Workgroup width; comptime
 /// * `log2_wg` - `log2(wg)`; comptime
 #[cube(launch_unchecked)]
-pub fn tsne3k_recentre<F: Float + CubeElement>(
+pub fn tsne3k_recentre<F: Float + CubeElement + LaunchArg>(
     pos: &mut Tensor<F>,
     mean_partial: &Tensor<F>,
     extent_partial: &mut Tensor<F>,
+    norm_partial: &mut Tensor<F>,
     n: u32,
     n_mp: u32,
     inv_n: F,
     #[comptime] wg: u32,
     #[comptime] log2_wg: u32,
 ) {
-    let mut sh = SharedMemory::<F>::new(wg as usize);
-    let mut sh2 = SharedMemory::<F>::new(wg as usize);
+    let mut sh = Shared::<[F]>::new_slice(wg as usize);
+    let mut sh2 = Shared::<[F]>::new_slice(wg as usize);
     let cube = CUBE_POS_Y * CUBE_COUNT_X + CUBE_POS_X;
     let u = UNIT_POS_X;
     let i = cube * wg + u;
@@ -679,17 +852,22 @@ pub fn tsne3k_recentre<F: Float + CubeElement>(
     sync_cube();
 
     let mut ext = zero;
+    let mut sq = zero;
     if i < n {
         let x = pos[(2u32 * i) as usize] - mx;
         let y = pos[(2u32 * i + 1u32) as usize] - my;
         pos[(2u32 * i) as usize] = x;
         pos[(2u32 * i + 1u32) as usize] = y;
         ext = F::max(F::abs(x), F::abs(y));
+        sq = x * x + y * y;
     }
     sh[u as usize] = ext;
+    sh2[u as usize] = sq;
     workgroup_max::<F>(&mut sh, u, log2_wg);
+    workgroup_sum::<F>(&mut sh2, u, log2_wg);
     if u == 0u32 {
         extent_partial[cube as usize] = sh[0usize];
+        norm_partial[cube as usize] = sh2[0usize];
     }
 }
 
@@ -709,7 +887,7 @@ pub fn tsne3k_recentre<F: Float + CubeElement>(
 /// * `n_fft` - Grid side; comptime
 /// * `wg` - Workgroup width; comptime
 #[cube(launch_unchecked)]
-pub fn tsne3k_kernel_fill<F: Float + CubeElement>(
+pub fn tsne3k_kernel_fill<F: Float + CubeElement + LaunchArg>(
     k_re: &mut Tensor<F>,
     k_im: &mut Tensor<F>,
     m: u32,
@@ -811,7 +989,7 @@ impl GridGeometry {
 //////////////////
 
 /// Buffers whose size depends on the FFT grid.
-struct GridBuffers<R: Runtime, T: ManifoldsFloatGpu> {
+struct GridBuffers<T: ManifoldsFloatGpu> {
     /// Geometry the buffers were built for
     geom: GridGeometry,
     /// Batched FFT plan for the forward charge transform
@@ -821,27 +999,34 @@ struct GridBuffers<R: Runtime, T: ManifoldsFloatGpu> {
     /// Batched FFT plan for the three kernel spectra
     plan_3: Fft2dPlan,
     /// Per-box counters `[nb^2]`
-    box_count: GpuTensor<R, u32>,
+    box_count: GpuTensor<u32>,
     /// Box starts `[nb^2 + 1]`
-    box_start: GpuTensor<R, u32>,
-    /// Charge grid, real `[n_fft^2]`
-    g_re: GpuTensor<R, T>,
+    box_start: GpuTensor<u32>,
+    /// Charge grid, real `[n_fft^2]`; clobbered by the forward transform
+    g_re: GpuTensor<T>,
     /// Charge grid, imaginary
-    g_im: GpuTensor<R, T>,
-    /// Products / convolved grids, real `[2 * n_fft^2]`
-    p_re: GpuTensor<R, T>,
-    /// Products / convolved grids, imaginary
-    p_im: GpuTensor<R, T>,
-    /// Kernel spectra, real `[3 * n_fft^2]`
-    k_re: GpuTensor<R, T>,
+    g_im: GpuTensor<T>,
+    /// Spectrum products, transposed, real `[2 * n_fft^2]`; clobbered by
+    /// the inverse transform
+    p_re: GpuTensor<T>,
+    /// Spectrum products, imaginary
+    p_im: GpuTensor<T>,
+    /// Kernel spectra, transposed, real `[3 * n_fft^2]`
+    k_re: GpuTensor<T>,
     /// Kernel spectra, imaginary
-    k_im: GpuTensor<R, T>,
-    /// FFT transpose scratch, real `[3 * n_fft^2]`
-    tmp_re: GpuTensor<R, T>,
-    /// FFT transpose scratch, imaginary
-    tmp_im: GpuTensor<R, T>,
+    k_im: GpuTensor<T>,
+    /// Transform output, real `[3 * n_fft^2]`: the transposed charge
+    /// spectrum, then the convolved grids, and the spatial kernels during a
+    /// rebuild
+    tmp_re: GpuTensor<T>,
+    /// Transform output, imaginary
+    tmp_im: GpuTensor<T>,
     /// One cube per `wg` grid elements
     cubes_grid: CubeCount,
+    /// One plane-wide cube per box and the plane width, when the device has
+    /// a fixed plane size for [`tsne3k_splat_plane`]; `None` falls back to
+    /// [`tsne3k_splat`]
+    splat_plane: Option<(CubeCount, u32)>,
     /// One cube per `wg` elements of the three kernels
     cubes_kernel: CubeCount,
 }
@@ -871,7 +1056,7 @@ fn plan_cubes(
     ))
 }
 
-impl<R: Runtime, T: ManifoldsFloatGpu> GridBuffers<R, T> {
+impl<T: ManifoldsFloatGpu> GridBuffers<T> {
     /// Allocate grid buffers and compute the kernel spectra on the device.
     ///
     /// ### Params
@@ -890,13 +1075,20 @@ impl<R: Runtime, T: ManifoldsFloatGpu> GridBuffers<R, T> {
         ni: usize,
         wg: u32,
         limits: &GpuLimits,
-        client: &ComputeClient<R>,
+        client: &Client,
     ) -> Result<Self, ManifoldsError> {
         let nf = geom.n_fft;
         let nn = nf * nf;
         let nb2 = geom.n_boxes * geom.n_boxes;
         let (cubes_grid, _) = plan_cubes("tsne3k_splat", nn, wg, limits)?;
         let (cubes_kernel, _) = plan_cubes("tsne3k_kernel_fill", 3 * nn, wg, limits)?;
+        let plane = limits.plane_size_max;
+        let splat_plane = if plane_uniform(plane, limits) {
+            let (cubes, _) = plan_cubes("tsne3k_splat_plane", nb2 * plane as usize, plane, limits)?;
+            Some((cubes, plane))
+        } else {
+            None
+        };
 
         let bufs = Self {
             geom,
@@ -915,17 +1107,18 @@ impl<R: Runtime, T: ManifoldsFloatGpu> GridBuffers<R, T> {
             tmp_im: GpuTensor::empty(vec![3 * nn], client)?,
             cubes_grid,
             cubes_kernel,
+            splat_plane,
         };
 
         let m = geom.n_boxes * ni;
         let h = geom.box_width() / ni as f64;
         unsafe {
-            tsne3k_kernel_fill::launch_unchecked::<T, R>(
+            tsne3k_kernel_fill::launch_unchecked::<T>(
                 client,
                 bufs.cubes_kernel.clone(),
                 CubeDim::new_1d(wg),
-                bufs.k_re.into_tensor_arg(),
-                bufs.k_im.into_tensor_arg(),
+                bufs.tmp_re.into_tensor_arg(),
+                bufs.tmp_im.into_tensor_arg(),
                 m as u32,
                 T::from_f64(h).unwrap(),
                 T::from_f64(1.0 / nn as f64).unwrap(),
@@ -933,13 +1126,13 @@ impl<R: Runtime, T: ManifoldsFloatGpu> GridBuffers<R, T> {
                 wg,
             );
         }
-        bufs.plan_3.execute(
+        bufs.plan_3.forward_transposed(
             client,
-            &bufs.k_re,
-            &bufs.k_im,
             &bufs.tmp_re,
             &bufs.tmp_im,
-            true,
+            &bufs.k_re,
+            &bufs.k_im,
+            nf,
         );
 
         Ok(bufs)
@@ -947,39 +1140,45 @@ impl<R: Runtime, T: ManifoldsFloatGpu> GridBuffers<R, T> {
 }
 
 /// Grid-independent device state.
-struct TsneGpuState<R: Runtime, T: ManifoldsFloatGpu> {
+struct TsneGpuState<T: ManifoldsFloatGpu> {
     /// Positions, current `[2n]`
-    pos_a: GpuTensor<R, T>,
+    pos_a: GpuTensor<T>,
     /// Positions, next `[2n]`
-    pos_b: GpuTensor<R, T>,
+    pos_b: GpuTensor<T>,
     /// Momentum `[2n]`
-    vel: GpuTensor<R, T>,
+    vel: GpuTensor<T>,
     /// Gains `[2n]`
-    gains: GpuTensor<R, T>,
+    gains: GpuTensor<T>,
     /// CSR row pointers `[n + 1]`
-    indptr: GpuTensor<R, u32>,
+    indptr: GpuTensor<u32>,
     /// CSR neighbours `[nnz]`
-    indices: GpuTensor<R, u32>,
+    indices: GpuTensor<u32>,
     /// CSR affinities `[nnz]`
-    values: GpuTensor<R, T>,
+    values: GpuTensor<T>,
     /// Box per point `[n]`
-    box_id: GpuTensor<R, u32>,
+    box_id: GpuTensor<u32>,
     /// Rank inside the box `[n]`
-    slot: GpuTensor<R, u32>,
+    slot: GpuTensor<u32>,
     /// Points grouped by box `[n]`
-    order: GpuTensor<R, u32>,
+    order: GpuTensor<u32>,
     /// X weights `[n * ni]`
-    wx: GpuTensor<R, T>,
+    wx: GpuTensor<T>,
     /// Y weights `[n * ni]`
-    wy: GpuTensor<R, T>,
+    wy: GpuTensor<T>,
     /// Raw repulsion `[2n]`
-    rep: GpuTensor<R, T>,
+    rep: GpuTensor<T>,
     /// Partials of `Z` `[n_cubes]`
-    z_partial: GpuTensor<R, T>,
+    z_partial: GpuTensor<T>,
     /// Partials of the position sums `[2 * n_cubes]`
-    mean_partial: GpuTensor<R, T>,
+    mean_partial: GpuTensor<T>,
     /// Partials of the extent `[n_cubes]`
-    extent_partial: GpuTensor<R, T>,
+    extent_partial: GpuTensor<T>,
+    /// Partials of `||Y||^2` `[n_cubes]`
+    norm_partial: GpuTensor<T>,
+    /// Centred DREAMS reference `[2n]`, or a two-element stub without DREAMS
+    reference: GpuTensor<T>,
+    /// Whether the DREAMS step is compiled in
+    dreams: bool,
     /// Number of points
     n: usize,
     /// Interpolation nodes per box
@@ -988,13 +1187,15 @@ struct TsneGpuState<R: Runtime, T: ManifoldsFloatGpu> {
     wg: u32,
     /// `log2(wg)`
     log2_wg: u32,
+    /// Attraction walks the CSR one row per plane, see [`tsne3k_update`]
+    plane_rows: bool,
     /// One cube per `wg` points
     cubes_pts: CubeCount,
     /// Number of cubes in `cubes_pts`
     n_cubes_pts: usize,
 }
 
-impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
+impl<T: ManifoldsFloatGpu> TsneGpuState<T> {
     /// Upload positions and the affinity graph (as CSR) and allocate the
     /// per-point scratch.
     ///
@@ -1002,6 +1203,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
     ///
     /// * `embd` - Embedding `[n][2]`
     /// * `graph` - Symmetric t-SNE affinities over the same `n` points
+    /// * `dreams` - DREAMS regulariser state, or `None`
     /// * `ni` - Interpolation nodes per box
     /// * `limits` - Device limits
     /// * `client` - CubeCL compute client
@@ -1012,9 +1214,10 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
     fn upload(
         embd: &[Vec<T>],
         graph: &CoordinateList<T>,
+        dreams: Option<&DreamsState<T>>,
         ni: usize,
         limits: &GpuLimits,
-        client: &ComputeClient<R>,
+        client: &Client,
     ) -> Result<(Self, f64), ManifoldsError> {
         let n = embd.len();
         if graph.n_samples != n {
@@ -1060,6 +1263,24 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
         }
 
         let (cubes_pts, n_cubes_pts) = plan_cubes("tsne3k_points", n, wg, limits)?;
+
+        // the update reads the norm of the incoming positions from the last
+        // recentre; seed it for the first epoch in slot 0
+        let mut norm0 = vec![T::zero(); n_cubes_pts];
+        norm0[0] = T::from_f64(
+            pos_flat
+                .iter()
+                .map(|v| {
+                    let v = v.to_f64().unwrap();
+                    v * v
+                })
+                .sum::<f64>(),
+        )
+        .unwrap();
+        let reference = match dreams {
+            Some(d) => d.reference().to_vec(),
+            None => vec![T::zero(); 2],
+        };
         let st = Self {
             pos_a: GpuTensor::from_slice(&pos_flat, vec![2 * n], client)?,
             pos_b: GpuTensor::empty(vec![2 * n], client)?,
@@ -1077,10 +1298,14 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
             z_partial: GpuTensor::empty(vec![n_cubes_pts], client)?,
             mean_partial: GpuTensor::empty(vec![2 * n_cubes_pts], client)?,
             extent_partial: GpuTensor::empty(vec![n_cubes_pts], client)?,
+            norm_partial: GpuTensor::from_slice(&norm0, vec![n_cubes_pts], client)?,
+            reference: GpuTensor::from_slice(&reference, vec![reference.len()], client)?,
+            dreams: dreams.is_some(),
             n,
             ni,
             wg,
             log2_wg: wg.trailing_zeros(),
+            plane_rows: plane_partitions(wg, limits).is_some(),
             cubes_pts,
             n_cubes_pts,
         };
@@ -1095,7 +1320,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
     ///
     /// * `client` - CubeCL compute client
     /// * `grid` - Grid buffers and spectra
-    fn enqueue_repulsion(&self, client: &ComputeClient<R>, grid: &GridBuffers<R, T>) {
+    fn enqueue_repulsion(&self, client: &Client, grid: &GridBuffers<T>) {
         let g = &grid.geom;
         let nb = g.n_boxes as u32;
         let nf = g.n_fft as u32;
@@ -1104,7 +1329,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
         let dim = CubeDim::new_1d(wg);
 
         unsafe {
-            tsne3k_prep::launch_unchecked::<T, R>(
+            tsne3k_prep::launch_unchecked::<T>(
                 client,
                 self.cubes_pts.clone(),
                 dim,
@@ -1121,7 +1346,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
                 ni,
                 wg,
             );
-            tsne3k_scan::launch_unchecked::<R>(
+            tsne3k_scan::launch_unchecked(
                 client,
                 CubeCount::Static(1, 1, 1),
                 dim,
@@ -1130,7 +1355,7 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
                 nb * nb,
                 wg,
             );
-            tsne3k_scatter::launch_unchecked::<R>(
+            tsne3k_scatter::launch_unchecked(
                 client,
                 self.cubes_pts.clone(),
                 dim,
@@ -1141,39 +1366,72 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
                 self.n as u32,
                 wg,
             );
-            tsne3k_splat::launch_unchecked::<T, R>(
-                client,
-                grid.cubes_grid.clone(),
-                dim,
-                self.order.into_tensor_arg(),
-                grid.box_start.into_tensor_arg(),
-                self.wx.into_tensor_arg(),
-                self.wy.into_tensor_arg(),
-                grid.g_re.into_tensor_arg(),
-                grid.g_im.into_tensor_arg(),
-                nb,
-                nf,
-                ni,
-                wg,
-            );
+            match &grid.splat_plane {
+                Some((cubes_boxes, plane)) => {
+                    tsne3k_splat_clear::launch_unchecked::<T>(
+                        client,
+                        grid.cubes_grid.clone(),
+                        dim,
+                        grid.g_re.into_tensor_arg(),
+                        grid.g_im.into_tensor_arg(),
+                        nb * ni,
+                        nf,
+                        wg,
+                    );
+                    tsne3k_splat_plane::launch_unchecked::<T>(
+                        client,
+                        cubes_boxes.clone(),
+                        CubeDim::new_1d(*plane),
+                        self.order.into_tensor_arg(),
+                        grid.box_start.into_tensor_arg(),
+                        self.wx.into_tensor_arg(),
+                        self.wy.into_tensor_arg(),
+                        grid.g_re.into_tensor_arg(),
+                        nb,
+                        nf,
+                        ni,
+                    );
+                }
+                None => {
+                    tsne3k_splat::launch_unchecked::<T>(
+                        client,
+                        grid.cubes_grid.clone(),
+                        dim,
+                        self.order.into_tensor_arg(),
+                        grid.box_start.into_tensor_arg(),
+                        self.wx.into_tensor_arg(),
+                        self.wy.into_tensor_arg(),
+                        grid.g_re.into_tensor_arg(),
+                        grid.g_im.into_tensor_arg(),
+                        nb,
+                        nf,
+                        ni,
+                        wg,
+                    );
+                }
+            }
         }
 
-        grid.plan_1.execute(
+        // spectra stay transposed between the two transforms; only the
+        // first m rows of charges are nonzero and only rows m..2m of the
+        // convolution are read
+        let m = g.n_boxes * self.ni;
+        grid.plan_1.forward_transposed(
             client,
             &grid.g_re,
             &grid.g_im,
             &grid.tmp_re,
             &grid.tmp_im,
-            true,
+            m,
         );
 
         unsafe {
-            tsne3k_hadamard::launch_unchecked::<T, R>(
+            tsne3k_hadamard::launch_unchecked::<T>(
                 client,
                 grid.cubes_grid.clone(),
                 dim,
-                grid.g_re.into_tensor_arg(),
-                grid.g_im.into_tensor_arg(),
+                grid.tmp_re.into_tensor_arg(),
+                grid.tmp_im.into_tensor_arg(),
                 grid.k_re.into_tensor_arg(),
                 grid.k_im.into_tensor_arg(),
                 grid.p_re.into_tensor_arg(),
@@ -1183,22 +1441,22 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
             );
         }
 
-        grid.plan_2.execute(
+        grid.plan_2.inverse_from_transposed(
             client,
             &grid.p_re,
             &grid.p_im,
             &grid.tmp_re,
             &grid.tmp_im,
-            false,
+            m..2 * m,
         );
 
         unsafe {
-            tsne3k_gather::launch_unchecked::<T, R>(
+            tsne3k_gather::launch_unchecked::<T>(
                 client,
                 self.cubes_pts.clone(),
                 dim,
-                grid.p_re.into_tensor_arg(),
-                grid.p_im.into_tensor_arg(),
+                grid.tmp_re.into_tensor_arg(),
+                grid.tmp_im.into_tensor_arg(),
                 self.box_id.into_tensor_arg(),
                 self.wx.into_tensor_arg(),
                 self.wy.into_tensor_arg(),
@@ -1221,11 +1479,11 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
     ///
     /// * `client` - CubeCL compute client
     /// * `sched` - Per-epoch scalars
-    fn enqueue_step(&self, client: &ComputeClient<R>, sched: &StepScalars<T>) {
+    fn enqueue_step(&self, client: &Client, sched: &StepScalars<T>) {
         let wg = self.wg;
         let dim = CubeDim::new_1d(wg);
         unsafe {
-            tsne3k_update::launch_unchecked::<T, R>(
+            tsne3k_update::launch_unchecked::<T>(
                 client,
                 self.cubes_pts.clone(),
                 dim,
@@ -1239,6 +1497,8 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
                 self.indices.into_tensor_arg(),
                 self.values.into_tensor_arg(),
                 self.mean_partial.into_tensor_arg(),
+                self.reference.into_tensor_arg(),
+                self.norm_partial.into_tensor_arg(),
                 self.n as u32,
                 self.n_cubes_pts as u32,
                 sched.exag,
@@ -1247,16 +1507,22 @@ impl<R: Runtime, T: ManifoldsFloatGpu> TsneGpuState<R, T> {
                 sched.min_gain,
                 sched.max_step,
                 sched.z_floor,
+                sched.inv_ref_norm,
+                sched.dreams_keep,
+                sched.dreams_coef,
+                self.dreams,
+                self.plane_rows,
                 wg,
                 self.log2_wg,
             );
-            tsne3k_recentre::launch_unchecked::<T, R>(
+            tsne3k_recentre::launch_unchecked::<T>(
                 client,
                 self.cubes_pts.clone(),
                 dim,
                 self.pos_b.into_tensor_arg(),
                 self.mean_partial.into_tensor_arg(),
                 self.extent_partial.into_tensor_arg(),
+                self.norm_partial.into_tensor_arg(),
                 self.n as u32,
                 self.n_cubes_pts as u32,
                 T::from_f64(1.0 / self.n as f64).unwrap(),
@@ -1281,6 +1547,12 @@ struct StepScalars<T> {
     max_step: T,
     /// `Z` below this is replaced by 1
     z_floor: T,
+    /// `1 / ||Y_e||_F`; unused without DREAMS
+    inv_ref_norm: T,
+    /// `1 - lambda`; unused without DREAMS
+    dreams_keep: T,
+    /// DREAMS regulariser step coefficient; unused without DREAMS
+    dreams_coef: T,
 }
 
 //////////
@@ -1299,6 +1571,8 @@ struct StepScalars<T> {
 /// * `embd` - Initial embedding `[n][2]`, overwritten with the result
 /// * `params` - Optimisation hyperparameters
 /// * `graph` - Symmetric t-SNE affinities
+/// * `dreams` - DREAMS regulariser state, or `None` for plain t-SNE. When
+///   set, active in every epoch, early exaggeration included
 /// * `device` - CubeCL device
 /// * `verbose` - `0` silent, `1` normal, `2` detailed
 ///
@@ -1311,15 +1585,15 @@ struct StepScalars<T> {
 /// ### References
 ///
 /// Linderman et al., Nature Methods, 2019 (FIt-SNE).
-pub fn optimise_fft3k_tsne_gpu<R, T>(
+pub fn optimise_fft3k_tsne_gpu<T>(
     embd: &mut [Vec<T>],
     params: &TsneOptimParams<T>,
     graph: &CoordinateList<T>,
-    device: R::Device,
+    dreams: Option<&DreamsState<T>>,
+    device: Device,
     verbose: usize,
 ) -> Result<(), ManifoldsError>
 where
-    R: Runtime,
     T: ManifoldsFloatGpu,
 {
     let verbosity = parse_verbosity_level(verbose);
@@ -1333,10 +1607,10 @@ where
     }
     let ni = params.n_interp_points;
 
-    let client = R::client(&device);
+    let client = device.client();
     let limits = GpuLimits::from_client(&client);
-    let (mut st, half_span) = TsneGpuState::<R, T>::upload(embd, graph, ni, &limits, &client)?;
-    let mut grid = GridBuffers::<R, T>::new(
+    let (mut st, half_span) = TsneGpuState::<T>::upload(embd, graph, dreams, ni, &limits, &client)?;
+    let mut grid = GridBuffers::<T>::new(
         GridGeometry::for_extent(half_span, ni),
         ni,
         st.wg,
@@ -1352,6 +1626,9 @@ where
         min_gain: T::from_f64(TSNE_MIN_GAIN).unwrap(),
         max_step: step_cap_from_lr(lr),
         z_floor: T::from_f64(TSNE_EPS).unwrap(),
+        inv_ref_norm: T::from_f64(dreams.map_or(1.0, |d| 1.0 / d.ref_norm())).unwrap(),
+        dreams_keep: dreams.map_or(T::one(), |d| d.keep()),
+        dreams_coef: T::zero(),
     };
 
     if verbosity.normal_verbosity() {
@@ -1397,6 +1674,9 @@ where
         } else {
             params.get_late_exag_factor()
         };
+        if let Some(d) = dreams {
+            sched.dreams_coef = d.step_coef(sched.exag);
+        }
 
         st.enqueue_repulsion(&client, &grid);
         st.enqueue_step(&client, &sched);
@@ -1481,12 +1761,11 @@ mod tests {
     fn test_gpu_repulsion_matches_direct() {
         let n = 2_000;
         let embd = clustered(n, 30.0);
-        let client = WgpuRuntime::client(&WgpuDevice::default());
+        let client = <WgpuRuntime>::client(&WgpuDevice::default());
         let limits = GpuLimits::from_client(&client);
         let (st, half_span) =
-            TsneGpuState::<WgpuRuntime, f32>::upload(&embd, &empty_graph(n), 3, &limits, &client)
-                .unwrap();
-        let grid = GridBuffers::<WgpuRuntime, f32>::new(
+            TsneGpuState::<f32>::upload(&embd, &empty_graph(n), None, 3, &limits, &client).unwrap();
+        let grid = GridBuffers::<f32>::new(
             GridGeometry::for_extent(half_span, 3),
             3,
             st.wg,
@@ -1537,21 +1816,23 @@ mod tests {
         let dev = WgpuDevice::default;
 
         let mut empty: Vec<Vec<f32>> = vec![];
-        let res = optimise_fft3k_tsne_gpu::<WgpuRuntime, f32>(
+        let res = optimise_fft3k_tsne_gpu::<f32>(
             &mut empty,
             &params,
             &empty_graph(0),
-            dev(),
+            None,
+            dev().clone().into(),
             0,
         );
         assert!(matches!(res, Err(ManifoldsError::NoData)));
 
         let mut three_d = vec![vec![0.0f32; 3]; 4];
-        let res = optimise_fft3k_tsne_gpu::<WgpuRuntime, f32>(
+        let res = optimise_fft3k_tsne_gpu::<f32>(
             &mut three_d,
             &params,
             &empty_graph(4),
-            dev(),
+            None,
+            dev().clone().into(),
             0,
         );
         assert!(matches!(
@@ -1560,11 +1841,12 @@ mod tests {
         ));
 
         let mut two_d = vec![vec![0.0f32; 2]; 4];
-        let res = optimise_fft3k_tsne_gpu::<WgpuRuntime, f32>(
+        let res = optimise_fft3k_tsne_gpu::<f32>(
             &mut two_d,
             &params,
             &empty_graph(5),
-            dev(),
+            None,
+            dev().clone().into(),
             0,
         );
         assert!(matches!(

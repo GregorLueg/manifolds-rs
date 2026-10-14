@@ -2,11 +2,8 @@
 #![allow(clippy::needless_range_loop)]
 
 mod commons;
+use burn::tensor::Device;
 use commons::*;
-
-use burn::backend::flex::{Flex, FlexDevice};
-use burn::backend::Autodiff;
-use burn::prelude::Backend;
 use faer::Mat;
 use rustc_hash::FxHashMap;
 
@@ -14,8 +11,6 @@ use manifolds_rs::prelude::*;
 use manifolds_rs::*;
 
 // Define the TestBackend type
-type TestBackend = Autodiff<Flex<f32>>;
-
 fn fast_test_params_custom(
     n_dim: Option<usize>,
     n_neighbours: Option<usize>,
@@ -59,15 +54,14 @@ fn fast_test_params() -> ParametricUmapParams<f32> {
 fn parametric_01_comprehensive_quality() {
     let (data, labels) = create_diagnostic_data(20, 10, 42);
     let data = mat_to_f32(data);
-    let device = FlexDevice;
+    let device = Device::flex();
 
     println!("\n=== PARAMETRIC TEST 1: Comprehensive Quality ===");
     println!("Data: {} samples, {} features", data.nrows(), data.ncols());
     println!("Training: 10 epochs, 32 hidden units, batch size 50");
 
     let params = fast_test_params();
-    let embedding =
-        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
+    let embedding = parametric_umap::<f32>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
 
     // Basic shape checks
     assert_eq!(embedding.len(), 2, "Should have 2 dimensions");
@@ -242,7 +236,7 @@ fn parametric_01_comprehensive_quality() {
 fn parametric_02_different_dimensions() {
     let (data, _) = create_diagnostic_data(15, 10, 42);
     let data = mat_to_f32(data);
-    let device = FlexDevice;
+    let device = Device::flex();
 
     println!("\n=== PARAMETRIC TEST 2: Different Output Dimensions ===");
 
@@ -251,8 +245,7 @@ fn parametric_02_different_dimensions() {
 
         let params = fast_test_params_custom(Some(n_dim), None, None, None, vec![32], None);
         let embedding =
-            parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0)
-                .unwrap();
+            parametric_umap::<f32>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
 
         assert_eq!(embedding.len(), n_dim, "Should have {} dimensions", n_dim);
 
@@ -276,7 +269,7 @@ fn parametric_02_different_dimensions() {
 fn parametric_03_different_architectures() {
     let (data, _) = create_diagnostic_data(15, 10, 42);
     let data = mat_to_f32(data);
-    let device = FlexDevice;
+    let device = Device::flex();
 
     println!("\n=== PARAMETRIC TEST 3: Different Network Architectures ===");
 
@@ -288,8 +281,7 @@ fn parametric_03_different_architectures() {
         let params = fast_test_params_custom(None, None, None, None, hidden_layers.clone(), None);
 
         let embedding =
-            parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0)
-                .unwrap();
+            parametric_umap::<f32>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
 
         assert_eq!(embedding.len(), 2);
         assert_eq!(embedding[0].len(), 75);
@@ -312,13 +304,12 @@ fn parametric_03_different_architectures() {
 fn parametric_04_correlation_loss() {
     let (data, _) = create_diagnostic_data(15, 10, 42);
     let data = mat_to_f32(data);
-    let device = FlexDevice;
+    let device = Device::flex();
 
     println!("\n=== PARAMETRIC TEST 4: Correlation Loss ===");
 
     let params = fast_test_params_custom(None, None, None, None, vec![32], Some(0.5));
-    let embedding =
-        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
+    let embedding = parametric_umap::<f32>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
 
     assert_eq!(embedding.len(), 2);
     assert_eq!(embedding[0].len(), 75);
@@ -339,7 +330,7 @@ fn parametric_04_correlation_loss() {
 fn parametric_05_min_dist_spread() {
     let (data, _) = create_diagnostic_data(15, 10, 42);
     let data = mat_to_f32(data);
-    let device = FlexDevice;
+    let device = Device::flex();
 
     println!("\n=== PARAMETRIC TEST 5: min_dist and spread ===");
 
@@ -352,8 +343,7 @@ fn parametric_05_min_dist_spread() {
             fast_test_params_custom(None, None, Some(min_dist), Some(spread), vec![32], None);
 
         let embedding =
-            parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0)
-                .unwrap();
+            parametric_umap::<f32>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
 
         let has_non_finite = embedding[0]
             .iter()
@@ -372,15 +362,14 @@ fn parametric_05_min_dist_spread() {
 #[test]
 fn parametric_06_small_dataset() {
     let data = Mat::from_fn(10, 5, |i, j| (i as f32 + j as f32) * 0.1);
-    let device = FlexDevice;
+    let device = Device::flex();
 
     println!("\n=== PARAMETRIC TEST 6: Small Dataset ===");
     println!("Data: {} samples, {} features", data.nrows(), data.ncols());
 
     let params = fast_test_params_custom(None, Some(5), None, None, vec![32], None);
 
-    let embedding =
-        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
+    let embedding = parametric_umap::<f32>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
 
     assert_eq!(embedding.len(), 2);
     assert_eq!(embedding[0].len(), 10);
@@ -398,7 +387,7 @@ fn parametric_06_small_dataset() {
 fn parametric_07_precomputed_knn() {
     let (data, labels) = create_diagnostic_data(15, 10, 42);
     let data = mat_to_f32(data);
-    let device = FlexDevice;
+    let device = Device::flex();
 
     println!("\n=== PARAMETRIC TEST 7: Precomputed kNN ===");
 
@@ -414,11 +403,11 @@ fn parametric_07_precomputed_knn() {
         knn_indices[0].len()
     );
 
-    Flex::<f32>::seed(&device, 42);
+    device.seed(42);
     let params = fast_test_params();
 
     // Run with precomputed kNN
-    let embedding_precomputed = parametric_umap::<f32, TestBackend>(
+    let embedding_precomputed = parametric_umap::<f32>(
         data.as_ref(),
         Some((knn_indices.clone(), knn_dist.clone())),
         &params,
@@ -428,11 +417,11 @@ fn parametric_07_precomputed_knn() {
     )
     .unwrap();
 
-    Flex::<f32>::seed(&device, 42);
+    device.seed(42);
 
     // Run without precomputed kNN (internal computation)
     let embedding_internal =
-        parametric_umap::<f32, TestBackend>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
+        parametric_umap::<f32>(data.as_ref(), None, &params, &device, 42, 0).unwrap();
 
     // Neural network training is inherently stochastic - verify structural similarity
     println!("\nVerifying structural similarity...");

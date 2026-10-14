@@ -5,16 +5,15 @@
 //! initialisation stay on the CPU. That is the
 //! crate's split, not a simplification made here.
 //!
-//! The runtime is pinned to `WgpuRuntime`. `R` is a type parameter in the
-//! library so the kernels can be tested against the CPU backend, but a generic
-//! cannot cross into Python: the device type is `R::Device`, and there is
-//! nothing on the Python side to choose it with.
+//! The device is pinned to wgpu: there is nothing on the Python side to choose
+//! a backend with.
 //!
 //! Unlike the CPU paths these are float32 only. WGSL has no `f64`, and the
 //! Python layer casts on the way in rather than letting a float64 array fail
 //! somewhere inside a kernel.
 
-use cubecl::wgpu::{WgpuDevice, WgpuRuntime};
+use cubecl::wgpu::WgpuDevice;
+use cubecl::Device;
 use numpy::PyReadonlyArray2;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -22,17 +21,14 @@ use pyo3::types::PyDict;
 use crate::error::ManErr;
 use crate::{convert, dispatch, params, pool};
 
-/// The only runtime the bindings expose.
-pub(crate) type Rt = WgpuRuntime;
-
 /// Fetch the default wgpu device.
 ///
 /// ### Returns
 ///
 /// The adapter wgpu picks for this machine: Metal on macOS, Vulkan or DX12
 /// elsewhere.
-pub(crate) fn default_device() -> WgpuDevice {
-    WgpuDevice::default()
+pub(crate) fn default_device() -> Device {
+    WgpuDevice::default().into()
 }
 
 ////////////
@@ -59,6 +55,28 @@ macro_rules! gpu_body {
         let f = $run;
         let embedding = $py
             .detach(|| pool::run(|| f(data, n, dim, &p, knn, default_device())))
+            .map_err(ManErr)?;
+        Ok(convert::pack_embedding($py, embedding)?.into_any())
+    }};
+}
+
+/// As [`gpu_body`], with an optional `(n, 2)` reference embedding that `$run`
+/// receives after `knn`.
+macro_rules! gpu_body_ref {
+    ($py:ident, $x:ident, $dict:ident, $ki:ident, $kd:ident, $rf:ident, $build:ident, $run:expr) => {{
+        let a = $x.extract::<PyReadonlyArray2<'_, f32>>().map_err(|_| {
+            ::pyo3::exceptions::PyTypeError::new_err(
+                "the GPU paths are float32 only, since WGSL has no f64; pass a \
+                     C-contiguous float32 array",
+            )
+        })?;
+        let (data, n, dim) = convert::flat(&a)?;
+        let p = params::$build::<f32>($dict)?;
+        let knn = dispatch::knn_arm::<f32>($ki, $kd, n)?;
+        let reference = dispatch::reference_arm::<f32>($rf, n)?;
+        let f = $run;
+        let embedding = $py
+            .detach(|| pool::run(|| f(data, n, dim, &p, knn, reference, default_device())))
             .map_err(ManErr)?;
         Ok(convert::pack_embedding($py, embedding)?.into_any())
     }};
@@ -101,7 +119,7 @@ pub fn umap_gpu<'py>(
         knn_indices,
         knn_distances,
         umap_gpu,
-        |data, n, dim, p, knn, device| manifolds_rs::umap_gpu::<f32, Rt>(
+        |data, n, dim, p, knn, device| manifolds_rs::umap_gpu::<f32>(
             (data, n, dim),
             knn,
             p,
@@ -145,7 +163,7 @@ pub fn densmap_gpu<'py>(
         knn_indices,
         knn_distances,
         densmap_gpu,
-        |data, n, dim, p, knn, device| manifolds_rs::densmap_gpu::<f32, Rt>(
+        |data, n, dim, p, knn, device| manifolds_rs::densmap_gpu::<f32>(
             (data, n, dim),
             knn,
             p,
@@ -163,9 +181,8 @@ pub fn densmap_gpu<'py>(
 /// * `x` - Samples by features, C-contiguous float32.
 /// * `params` - Parameters, as built by the Python layer. See
 ///   [`crate::params::tsne_gpu`].
-/// * `approx` - Repulsive-force approximation. `"barnes_hut"` and `"qd"`
-///   optimise on the CPU, `"fft_3k_gpu"` on the device. `"fft"` and `"fft_3k"` need the
-///   `fft_tsne` feature, which the wheel is not built with.
+/// * `approx` - Repulsive-force approximation. `"barnes_hut"`, `"qd"`,
+///   `"fft"` and `"fft_3k"` optimise on the CPU, `"fft_3k_gpu"` on the device.
 /// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices.
 /// * `knn_distances` - Optional `(n, k)` float32 distances.
 /// * `seed` - Fixes the initialisation.
@@ -194,9 +211,62 @@ pub fn tsne_gpu<'py>(
         knn_indices,
         knn_distances,
         tsne_gpu,
-        |data, n, dim, p, knn, device| manifolds_rs::tsne_gpu::<f32, Rt>(
+        |data, n, dim, p, knn, device| manifolds_rs::tsne_gpu::<f32>(
             (data, n, dim),
             knn,
+            p,
+            approx,
+            device,
+            seed,
+            verbose
+        )
+    )
+}
+
+/// DREAMS with a GPU neighbour search, and a GPU optimiser for `"fft_3k_gpu"`.
+///
+/// ### Params
+///
+/// * `x` - Samples by features, C-contiguous float32.
+/// * `params` - Parameters, as built by the Python layer. See
+///   [`crate::params::dreams_gpu`].
+/// * `approx` - Repulsive-force approximation. See [`tsne_gpu`].
+/// * `reference` - Optional `(n, 2)` float32 reference embedding. `None` uses
+///   PCA.
+/// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices.
+/// * `knn_distances` - Optional `(n, k)` float32 distances.
+/// * `seed` - Fixes the PCA initialisation and the optimiser.
+/// * `verbose` - `0` silent, `1` normal, `2` detailed.
+///
+/// ### Returns
+///
+/// The embedding as an `(n_samples, 2)` float32 array.
+#[pyfunction]
+#[pyo3(signature = (x, params, *, approx = "barnes_hut", reference = None, knn_indices = None, knn_distances = None, seed = 42, verbose = 0))]
+#[allow(clippy::too_many_arguments)]
+pub fn dreams_gpu<'py>(
+    py: Python<'py>,
+    x: &Bound<'py, PyAny>,
+    params: &Bound<'py, PyDict>,
+    approx: &str,
+    reference: Option<&Bound<'py, PyAny>>,
+    knn_indices: Option<&Bound<'py, PyAny>>,
+    knn_distances: Option<&Bound<'py, PyAny>>,
+    seed: usize,
+    verbose: usize,
+) -> PyResult<Bound<'py, PyAny>> {
+    gpu_body_ref!(
+        py,
+        x,
+        params,
+        knn_indices,
+        knn_distances,
+        reference,
+        dreams_gpu,
+        |data, n, dim, p, knn, rf, device| manifolds_rs::dreams_gpu::<f32>(
+            (data, n, dim),
+            knn,
+            rf,
             p,
             approx,
             device,

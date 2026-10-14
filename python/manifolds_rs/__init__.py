@@ -47,6 +47,7 @@ from ._manifolds import (
     __core_version__,
     __version__,
     gpu_available,
+    mlx_available,
     num_threads,
     set_num_threads,
 )
@@ -62,6 +63,7 @@ from ._params import (
     UmapOptim,
 )
 from .embeddings import (
+    DREAMS,
     PHATE,
     TSNE,
     UMAP,
@@ -74,6 +76,7 @@ from .embeddings import (
 from .neighbours import knn_graph
 
 __all__ = [
+    "DREAMS",
     "PHATE",
     "TSNE",
     "UMAP",
@@ -100,6 +103,7 @@ __all__ = [
     "datasets",
     "gpu_available",
     "knn_graph",
+    "mlx_available",
     "num_threads",
     "set_num_threads",
     "tsne",
@@ -130,6 +134,6 @@ def __getattr__(name: str) -> object:
 # so `mf.UMAPGpu` works, and `manifolds_rs.gpu` stays importable either way for
 # anyone who wants the ImportError to say why.
 if hasattr(_manifolds, "umap_gpu"):  # pragma: no cover - build-dependent
-    from .gpu import DensMAPGpu, TSNEGpu, UMAPGpu
+    from .gpu import DensMAPGpu, DREAMSGpu, TSNEGpu, UMAPGpu
 
-    __all__ += ["DensMAPGpu", "TSNEGpu", "UMAPGpu"]
+    __all__ += ["DREAMSGpu", "DensMAPGpu", "TSNEGpu", "UMAPGpu"]
