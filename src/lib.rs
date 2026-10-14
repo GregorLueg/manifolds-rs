@@ -4560,6 +4560,8 @@ where
                 UmapOptimiserGpu::Sgd => "SGD",
                 UmapOptimiserGpu::AdamParallel => "Adam (multi-threaded)",
                 UmapOptimiserGpu::AdamGpu => "Adam (GPU-accelerated)",
+                #[cfg(mlx_available)]
+                UmapOptimiserGpu::AdamMlx => "Adam (MLX)",
             },
             umap_params.optim_params.n_epochs,
             graph.col_indices.len().separate_with_underscores()
@@ -4587,6 +4589,17 @@ where
         }
         UmapOptimiserGpu::AdamParallel => {
             optimise_embedding_adam_parallel(
+                &mut embd,
+                &graph_adj,
+                &umap_params.optim_params,
+                dens_state.as_ref(),
+                seed as u64,
+                verbose,
+            )?;
+        }
+        #[cfg(mlx_available)]
+        UmapOptimiserGpu::AdamMlx => {
+            optimise_embedding_adam_mlx(
                 &mut embd,
                 &graph_adj,
                 &umap_params.optim_params,

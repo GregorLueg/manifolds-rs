@@ -32,6 +32,9 @@ pub enum UmapOptimiserGpu {
     Adam,
     /// Stochastic gradient descent
     Sgd,
+    /// Adam on MLX (Apple Silicon); the kNN graph stays on wgpu
+    #[cfg(mlx_available)]
+    AdamMlx,
 }
 
 /// Parse the UMAP Optimiser to use
@@ -39,7 +42,8 @@ pub enum UmapOptimiserGpu {
 /// ### Params
 ///
 /// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`
-///   `"sgd"` or `"adam_gpu"` (default).
+///   `"sgd"` or `"adam_gpu"` (default), plus `"adam_mlx"` when the MLX
+///   backend is compiled in.
 ///
 /// ### Return
 ///
@@ -50,6 +54,8 @@ pub fn parse_umap_optimiser_gpu(s: &str) -> Option<UmapOptimiserGpu> {
         "adam" => Some(UmapOptimiserGpu::Adam),
         "sgd" => Some(UmapOptimiserGpu::Sgd),
         "adam_parallel" => Some(UmapOptimiserGpu::AdamParallel),
+        #[cfg(mlx_available)]
+        "adam_mlx" => Some(UmapOptimiserGpu::AdamMlx),
         _ => None,
     }
 }

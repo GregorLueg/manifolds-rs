@@ -7,6 +7,12 @@ use ann_search_rs::{
     extract_nndescent_knn_gpu, query_exhaustive_index_gpu_self, query_ivf_index_gpu_self,
     query_nndescent_index_gpu_self,
 };
+#[cfg(mlx_available)]
+use ann_search_rs::{
+    build_exhaustive_index_mlx, build_ivf_index_mlx, build_knn_graph_mlx,
+    build_nndescent_index_mlx, query_exhaustive_index_mlx_self, query_ivf_index_mlx_self,
+    query_nndescent_index_mlx_self,
+};
 use cubecl::Device;
 use faer::MatRef;
 use rayon::prelude::*;
@@ -40,6 +46,15 @@ pub enum AnnSearchGpu {
     IvfGpu,
     /// Exhaustive
     ExhaustiveGpu,
+    /// NNDescent on MLX (Apple Silicon)
+    #[cfg(mlx_available)]
+    NNDescentMlx,
+    /// IVF on MLX (Apple Silicon)
+    #[cfg(mlx_available)]
+    IvfMlx,
+    /// Exhaustive on MLX (Apple Silicon)
+    #[cfg(mlx_available)]
+    ExhaustiveMlx,
 }
 
 /// Parameters for the nearest neighbour search
@@ -221,7 +236,8 @@ where
 /// ### Params
 ///
 /// * `s` - String identifying the GPU ANN search. One of `"exhaustive_gpu"`,
-///   `"ivf_gpu"` or `"nndescent_gpu"`.
+///   `"ivf_gpu"` or `"nndescent_gpu"`. With the MLX backend compiled in also
+///   `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
 ///
 /// ### Returns
 ///
@@ -231,6 +247,12 @@ pub fn parse_ann_search_gpu(s: &str) -> Option<AnnSearchGpu> {
         "exhaustive_gpu" | "exhaustive" => Some(AnnSearchGpu::ExhaustiveGpu),
         "ivf_gpu" | "ivf" => Some(AnnSearchGpu::IvfGpu),
         "nndescent_gpu" | "nndescent" => Some(AnnSearchGpu::NNDescentGpu),
+        #[cfg(mlx_available)]
+        "exhaustive_mlx" => Some(AnnSearchGpu::ExhaustiveMlx),
+        #[cfg(mlx_available)]
+        "ivf_mlx" => Some(AnnSearchGpu::IvfMlx),
+        #[cfg(mlx_available)]
+        "nndescent_mlx" => Some(AnnSearchGpu::NNDescentMlx),
         _ => None,
     }
 }
@@ -369,6 +391,81 @@ where
                 );
 
                 query_nndescent_index_gpu_self(&mut index, k + 1, Some(query_params), true)?
+            }
+        }
+        #[cfg(mlx_available)]
+        AnnSearchGpu::ExhaustiveMlx => {
+            let index = build_exhaustive_index_mlx(data_fp32.as_ref(), &params_nn.dist_metric)?;
+
+            query_exhaustive_index_mlx_self(&index, k + 1, true, verbosity.detailed_verbosity())?
+        }
+        #[cfg(mlx_available)]
+        AnnSearchGpu::IvfMlx => {
+            let index = build_ivf_index_mlx(
+                data_fp32.as_ref(),
+                params_nn.n_list,
+                None,
+                &params_nn.dist_metric,
+                seed,
+                verbosity.detailed_verbosity(),
+            )?;
+
+            query_ivf_index_mlx_self(
+                &index,
+                k + 1,
+                params_nn.n_probes,
+                None,
+                true,
+                verbosity.normal_verbosity(),
+            )?
+        }
+        #[cfg(mlx_available)]
+        AnnSearchGpu::NNDescentMlx => {
+            // Same degree rule as the wgpu arm: extraction needs the graph to
+            // cover the request.
+            let graph_k = if params_nn.extract_knn {
+                Some(
+                    params_nn
+                        .k
+                        .unwrap_or(NNDESCENT_GPU_DEFAULT_DEGREE)
+                        .max(k + 1),
+                )
+            } else {
+                params_nn.k
+            };
+
+            if params_nn.extract_knn {
+                // The raw graph build skips the CAGRA pruning the index needs
+                // for beam search, which extraction never runs.
+                let graph = build_knn_graph_mlx(
+                    data_fp32.as_ref(),
+                    &params_nn.dist_metric,
+                    graph_k,
+                    params_nn.k_build,
+                    None,
+                    params_nn.n_tree,
+                    Some(params_fp32.delta),
+                    params_fp32.rho,
+                    None,
+                    seed,
+                    verbosity.detailed_verbosity(),
+                )?;
+                graph.extract_knn(Some(k + 1), true, true)
+            } else {
+                let index = build_nndescent_index_mlx(
+                    data_fp32.as_ref(),
+                    &params_nn.dist_metric,
+                    graph_k,
+                    params_nn.k_build,
+                    None,
+                    params_nn.n_tree,
+                    Some(params_fp32.delta),
+                    params_fp32.rho,
+                    None,
+                    seed,
+                    verbosity.detailed_verbosity(),
+                )?;
+                query_nndescent_index_mlx_self(&index, k + 1, None, true)?
             }
         }
     };
