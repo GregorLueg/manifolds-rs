@@ -468,6 +468,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#mlx-on-apple-silicon" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MLX on Apple Silicon
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -877,6 +888,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#mlx-on-apple-silicon" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MLX on Apple Silicon
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -903,8 +925,8 @@
 
 
 <h1 id="gpu">GPU<a class="headerlink" href="#gpu" title="Permanent link">&para;</a></h1>
-<p>Three estimators run part of the work on the device: <code>UMAPGpu</code>, <code>DensMAPGpu</code> and
-<code>TSNEGpu</code>. The backend is wgpu, so there is no CUDA runtime to install and the
+<p>Four estimators run part of the work on the device: <code>UMAPGpu</code>, <code>DensMAPGpu</code>,
+<code>TSNEGpu</code> and <code>DREAMSGpu</code>. The backend is wgpu, so there is no CUDA runtime to install and the
 same wheel works on Metal, Vulkan and DX12.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">manifolds_rs</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">mf</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
@@ -921,9 +943,8 @@ on <code>approx</code>: with <code>"barnes_hut"</code> the repulsion stays on th
 </code></pre></div>
 <p><code>"fft_3k_gpu"</code> is FFT-interpolated repulsion with three kernels (<code>q</code>, <code>q^2 dx</code>,
 <code>q^2 dy</code>) instead of the four-term expansion, with the embedding resident on the
-device between epochs. There is no CPU FFT t-SNE in the wheel (see
-<a href="../guide/#what-is-not-in-the-wheel">the guide</a>), so this is the only FFT path
-from Python.</p>
+device between epochs. <code>"fft"</code> and <code>"fft_3k"</code> run the same FFT schemes on the
+CPU after a GPU neighbour search.</p>
 <p>Otherwise the win depends on whether the neighbour search was your bottleneck.
 On a few thousand points it will not be, and the transfers will make the GPU
 path slower than the CPU one. Past a few hundred thousand it usually is. Measure
@@ -972,6 +993,34 @@ device, which is occasionally the right split.</p>
 and the GPU estimators are still importable there. That is deliberate: a hosted
 CI runner can prove the GPU wheel compiles and degrades cleanly without having a
 device. It cannot prove the kernels are correct. That needs a runner with a GPU.</p>
+<h2 id="mlx-on-apple-silicon">MLX on Apple Silicon<a class="headerlink" href="#mlx-on-apple-silicon" title="Permanent link">&para;</a></h2>
+<p>There is a second Apple GPU path, through <a href="https://github.com/ml-explore/mlx">MLX</a>
+via mlx-c, and it is not in the published wheel. It links mlx-c dynamically, so
+a wheel carrying it fails to import on any Mac without the library. Build it
+yourself:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>brew<span class="w"> </span>install<span class="w"> </span>mlx-c
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>maturin<span class="w"> </span>develop<span class="w"> </span>--release<span class="w"> </span>--features<span class="w"> </span>mlx
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">mf</span><span class="o">.</span><span class="n">mlx_available</span><span class="p">()</span>  <span class="c1"># True only in an mlx build that found mlx-c</span>
+</code></pre></div>
+<p>MLX is not a separate set of estimators. The CPU estimators gain a few extra
+names instead:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">mf</span><span class="o">.</span><span class="n">UMAP</span><span class="p">(</span><span class="n">ann</span><span class="o">=</span><span class="s2">"nndescent_mlx"</span><span class="p">,</span> <span class="n">optimiser</span><span class="o">=</span><span class="s2">"adam_mlx"</span><span class="p">)</span><span class="o">.</span><span class="n">fit_transform</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">mf</span><span class="o">.</span><span class="n">DensMAP</span><span class="p">(</span><span class="n">optimiser</span><span class="o">=</span><span class="s2">"adam_mlx"</span><span class="p">)</span><span class="o">.</span><span class="n">fit_transform</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">mf</span><span class="o">.</span><span class="n">TSNE</span><span class="p">(</span><span class="n">ann</span><span class="o">=</span><span class="s2">"nndescent_mlx"</span><span class="p">,</span> <span class="n">approx</span><span class="o">=</span><span class="s2">"fft_3k_mlx"</span><span class="p">)</span><span class="o">.</span><span class="n">fit_transform</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">mf</span><span class="o">.</span><span class="n">DREAMS</span><span class="p">(</span><span class="n">approx</span><span class="o">=</span><span class="s2">"fft_3k_mlx"</span><span class="p">)</span><span class="o">.</span><span class="n">fit_transform</span><span class="p">(</span><span class="n">X</span><span class="p">)</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="n">mf</span><span class="o">.</span><span class="n">knn_graph</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">15</span><span class="p">,</span> <span class="n">ann</span><span class="o">=</span><span class="s2">"ivf_mlx"</span><span class="p">)</span>
+</code></pre></div>
+<p>The neighbour backends are <code>"exhaustive_mlx"</code>, <code>"ivf_mlx"</code> and
+<code>"nndescent_mlx"</code>. <code>TSNEGpu</code> and <code>DREAMSGpu</code> take <code>approx="fft_3k_mlx"</code> as well,
+with the search on wgpu and the optimiser on MLX. den-SNE has no MLX path.
+Everything MLX runs in float32, whatever you hand it. In a build without MLX
+these names are refused with a pointer to the build flag.</p>
+<p>Is it worth the trouble? On an M1 Max the MLX neighbour search is 1.2x to 1.8x
+faster than wgpu. UMAP's optimiser ties, and the t-SNE one falls to half of
+wgpu's speed at a million points, so keep <code>TSNEGpu(approx="fft_3k_gpu")</code> for
+large t-SNE. See the
+<a href="https://github.com/GregorLueg/manifolds-rs/blob/main/docs/benchmarks_mlx.md">wgpu vs MLX benchmarks</a>.</p>
 
 
 
