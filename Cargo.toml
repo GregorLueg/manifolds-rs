@@ -1,6 +1,6 @@
 [package]
 name = "manifolds-rs"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2021"
 authors = ["Gregor Lueg <gregorlueg@me.com>"]
 license = "MIT"
@@ -60,11 +60,14 @@ ndarray = ["dep:ndarray"]
 ann-search-rs = { version = "0.11.0" }
 approx = "0.5.1"
 bincode = { version = "2.0.1", features = ["serde"], optional = true }
-burn = { version = "0.22.0", features = [
-    "dataset",
-    "train",
+burn = { version = "0.22.0", default-features = false, features = [
+    "std",
     "flex",
     "autodiff",
+    "optim",
+    "dataset",
+    "simd",
+    "rayon",
 ], optional = true }
 cubecl = { version = "0.11.0", optional = true }
 cubecl-utils-rs = { version = "0.2.0", optional = true }

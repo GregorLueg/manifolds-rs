@@ -3,6 +3,17 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.7.1
+
+**Fixes**
+
+- `parametric` pulls in less of burn. burn now builds with
+  `default-features = false` and only the features parametric UMAP uses
+  (`std`, `flex`, `autodiff`, `optim`, `dataset`, `simd`, `rayon`). `train` is
+  gone, and with it `burn-train`, ratatui, crossterm, sysinfo and
+  nvml-wrapper. Same API, same burn-flex backend. If you relied on this crate
+  to switch on burn's `train` for you, enable it on your own `burn` dependency.
+
 ## 0.7.0
 
 **Features**
