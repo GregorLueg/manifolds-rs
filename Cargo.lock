@@ -4046,7 +4046,7 @@ dependencies = [
 
 [[package]]
 name = "manifolds-rs"
-version = "0.7.1"
+version = "0.7.2"
 dependencies = [
  "ann-search-rs",
  "approx",
@@ -4056,7 +4056,7 @@ dependencies = [
  "cubecl-utils-rs",
  "faer",
  "faer-traits",
- "ndarray 0.17.2",
+ "ndarray 0.16.1",
  "num-traits",
  "rand 0.9.5",
  "rand_distr 0.5.1",

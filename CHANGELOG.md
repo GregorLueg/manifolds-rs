@@ -3,6 +3,14 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.7.2
+
+**Performance**
+
+- Reduced memory allocations during filtering of the kNN graphs (removal of
+  self) and reduced memory during kNN symmetrisation affecting basically
+  all methods.
+
 ## 0.7.1
 
 **Fixes**

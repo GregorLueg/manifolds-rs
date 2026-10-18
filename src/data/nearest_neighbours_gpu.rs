@@ -483,15 +483,22 @@ where
         .zip(knn_dist.into_par_iter())
         .enumerate()
         .map(|(i, (idx, dist))| {
-            idx.into_iter()
-                .zip(dist)
-                .filter(|(j, _)| *j != i)
-                .take(k)
-                .map(|(j, d)| {
-                    let d = if rooted { d.sqrt() } else { d };
-                    (j, T::from(d).unwrap())
-                })
-                .unzip()
+            // sized up front: a filtered iterator has no size hint and would
+            // grow each row to the next power of two
+            let mut out_idx = Vec::with_capacity(k);
+            let mut out_dist = Vec::with_capacity(k);
+            for (j, d) in idx.into_iter().zip(dist) {
+                if j == i {
+                    continue;
+                }
+                if out_idx.len() == k {
+                    break;
+                }
+                let d = if rooted { d.sqrt() } else { d };
+                out_idx.push(j);
+                out_dist.push(T::from(d).unwrap());
+            }
+            (out_idx, out_dist)
         })
         .unzip();
 
