@@ -547,17 +547,20 @@ where
     let knn_dist = knn_dist.unwrap();
 
     // Remove self by index rather than position: the f32 device backends can
-    // rank an exact duplicate ahead of the point itself.
+    // rank an exact duplicate ahead of the point itself. In place: rebuilding
+    // the rows through an iterator loses the size hint and over-allocates.
     let (knn_indices, mut knn_dist): (Vec<Vec<usize>>, Vec<Vec<T>>) = knn_indices
         .into_par_iter()
         .zip(knn_dist.into_par_iter())
         .enumerate()
-        .map(|(i, (idx, dist))| {
-            idx.into_iter()
-                .zip(dist)
-                .filter(|(j, _)| *j != i)
-                .take(k)
-                .unzip()
+        .map(|(i, (mut idx, mut dist))| {
+            if let Some(p) = idx.iter().position(|&j| j == i) {
+                idx.remove(p);
+                dist.remove(p);
+            }
+            idx.truncate(k);
+            dist.truncate(k);
+            (idx, dist)
         })
         .unzip();
 
