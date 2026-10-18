@@ -374,9 +374,13 @@ where
 /// result is reproducible run to run and downstream CSR conversion can skip its
 /// sort.
 ///
+/// Each intermediate is freed as soon as the next stage no longer needs it, so
+/// at most two edge-sized buffers are alive alongside the merged rows.
+///
 /// ### Params
 ///
-/// * `graph` - Input graph in COO format, in any order
+/// * `graph` - Input graph in COO format, in any order. Its buffers are
+///   consumed; only `n_samples` survives.
 /// * `min_weight` - Combined weights at or below this are dropped
 /// * `combine` - Applied to `(w_ij, w_ji)`; a missing direction passes zero
 ///
@@ -384,7 +388,11 @@ where
 ///
 /// Symmetrised graph in COO format, grouped by row and sorted by column within
 /// each row.
-fn symmetrise_csr<T, F>(graph: &CoordinateList<T>, min_weight: T, combine: F) -> CoordinateList<T>
+fn symmetrise_csr<T, F>(
+    graph: &mut CoordinateList<T>,
+    min_weight: T,
+    combine: F,
+) -> CoordinateList<T>
 where
     T: ManifoldsFloat,
     F: Fn(T, T) -> T + Sync,
@@ -401,6 +409,10 @@ where
     }
 
     let (out_indptr, out_entries) = coo_to_sorted_csr(graph);
+    graph.row_indices = Vec::new();
+    graph.col_indices = Vec::new();
+    graph.values = Vec::new();
+
     let (in_indptr, in_entries) = transpose_csr(&out_indptr, &out_entries, n);
 
     let mut merge_indptr = vec![0usize; n + 1];
@@ -433,6 +445,8 @@ where
                 dst,
             );
         });
+    drop(out_entries);
+    drop(in_entries);
 
     // Exact offsets now that the surviving edge count per row is known
     let mut coo_indptr = vec![0usize; n + 1];
@@ -441,23 +455,28 @@ where
     }
 
     let total = coo_indptr[n];
-    let mut row_indices = vec![0usize; total];
     let mut col_indices = vec![0usize; total];
     let mut values = vec![T::zero(); total];
 
-    row_slices_mut(&mut row_indices, &coo_indptr)
+    row_slices_mut(&mut col_indices, &coo_indptr)
         .into_par_iter()
-        .zip(row_slices_mut(&mut col_indices, &coo_indptr))
         .zip(row_slices_mut(&mut values, &coo_indptr))
         .enumerate()
-        .for_each(|(i, ((rows, cols), vals))| {
+        .for_each(|(i, (cols, vals))| {
             let src = &merged[merge_indptr[i]..merge_indptr[i] + lengths[i]];
             for (idx, &(col, w)) in src.iter().enumerate() {
-                rows[idx] = i;
                 cols[idx] = col;
                 vals[idx] = w;
             }
         });
+    drop(merged);
+
+    // row indices last, once the merged buffer is gone
+    let mut row_indices = vec![0usize; total];
+    row_slices_mut(&mut row_indices, &coo_indptr)
+        .into_par_iter()
+        .enumerate()
+        .for_each(|(i, rows)| rows.fill(i));
 
     CoordinateList {
         row_indices,
@@ -681,13 +700,13 @@ where
 /// * `mix_weight = 1.0`: Full fuzzy union (standard UMAP, symmetric)
 /// * `mix_weight = 0.5`: Weighted average of union and directed)
 /// * `mix_weight = 0.0`: Use only outgoing edges (directed)
-pub fn symmetrise_graph<T>(graph: CoordinateList<T>, mix_weight: T) -> CoordinateList<T>
+pub fn symmetrise_graph<T>(mut graph: CoordinateList<T>, mix_weight: T) -> CoordinateList<T>
 where
     T: ManifoldsFloat,
 {
     let directed_weight = T::one() - mix_weight;
 
-    symmetrise_csr(&graph, T::zero(), |w_ij, w_ji| {
+    symmetrise_csr(&mut graph, T::zero(), |w_ij, w_ji| {
         let union = w_ij + w_ji - w_ij * w_ji;
         mix_weight * union + directed_weight * w_ij
     })
@@ -1089,7 +1108,7 @@ where
 /// ### Algorithm
 ///
 /// Delegates to the shared CSR symmetrisation with the arithmetic-mean kernel.
-pub fn symmetrise_affinities_tsne<T>(graph: CoordinateList<T>) -> CoordinateList<T>
+pub fn symmetrise_affinities_tsne<T>(mut graph: CoordinateList<T>) -> CoordinateList<T>
 where
     T: ManifoldsFloat,
 {
@@ -1099,7 +1118,7 @@ where
     // Hoisted so the merge kernel multiplies rather than divides per edge.
     let inv_normalisation = T::one() / (two * n_float);
 
-    symmetrise_csr(&graph, T::zero(), |w_ij, w_ji| {
+    symmetrise_csr(&mut graph, T::zero(), |w_ij, w_ji| {
         (w_ij + w_ji) * inv_normalisation
     })
 }
