@@ -3,6 +3,15 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.4.1
+
+Requires the `manifolds-rs` 0.7.2.
+
+**Features**
+
+- Takes the reduced memory allocations from `manifolds-rs` affecting basically
+  all methods.
+
 ## 0.4.0
 
 Requires the `manifolds-rs` 0.7.0.
