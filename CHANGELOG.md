@@ -3,6 +3,17 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.7.3
+
+**Chore**
+
+- `faer` is pulled in without its default `npy` feature, and `ann-search-rs`
+  is bumped to 0.11.2, which does the same. This removes `npyz` -> `py_literal`
+  -> `pest_derive` -> `stacker` from the build; the `stacker` build script fails
+  to find `windows.h` on Windows ARM64 cross-builds (MSVC host,
+  `aarch64-pc-windows-gnullvm` target). Dependants have to drop the `npy`
+  default as well, as feature unification brings it back otherwise.
+
 ## 0.7.2
 
 **Performance**

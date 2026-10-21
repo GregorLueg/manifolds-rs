@@ -3,6 +3,15 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.4.2
+
+Requires the `manifolds-rs` 0.7.3.
+
+**Chore**
+
+- Builds without `faer`'s `npy` feature, which drops `stacker` from the build
+  tree and fixes Windows ARM64 cross-builds. No API change.
+
 ## 0.4.1
 
 Requires the `manifolds-rs` 0.7.2.
