@@ -181,8 +181,9 @@ fn row_slices_mut<'a, U>(buf: &'a mut [U], indptr: &[usize]) -> Vec<&'a mut [U]>
 /// ### Returns
 ///
 /// `(indptr, entries)` where `entries[indptr[i]..indptr[i + 1]]` holds row `i`
-/// as `(column, weight)` pairs sorted ascending by column.
-fn coo_to_sorted_csr<T>(graph: &CoordinateList<T>) -> (Vec<usize>, Vec<(usize, T)>)
+/// as `(column, weight)` pairs sorted ascending by column. Columns are `u32`,
+/// which halves the entry size against `usize` for `f32`.
+fn coo_to_sorted_csr<T>(graph: &CoordinateList<T>) -> (Vec<usize>, Vec<(u32, T)>)
 where
     T: ManifoldsFloat,
 {
@@ -197,7 +198,7 @@ where
         indptr[i + 1] += indptr[i];
     }
 
-    let mut entries = vec![(0usize, T::zero()); nnz];
+    let mut entries = vec![(0u32, T::zero()); nnz];
     let mut cursor = indptr[..n].to_vec();
 
     for ((&i, &j), &w) in graph
@@ -206,7 +207,7 @@ where
         .zip(&graph.col_indices)
         .zip(&graph.values)
     {
-        entries[cursor[i]] = (j, w);
+        entries[cursor[i]] = (j as u32, w);
         cursor[i] += 1;
     }
 
@@ -235,26 +236,27 @@ where
 /// holds the incoming edges of vertex `i` as `(source, weight)` pairs.
 fn transpose_csr<T>(
     indptr: &[usize],
-    entries: &[(usize, T)],
+    entries: &[(u32, T)],
     n: usize,
-) -> (Vec<usize>, Vec<(usize, T)>)
+) -> (Vec<usize>, Vec<(u32, T)>)
 where
     T: ManifoldsFloat,
 {
     let mut t_indptr = vec![0usize; n + 1];
     for &(col, _) in entries {
-        t_indptr[col + 1] += 1;
+        t_indptr[col as usize + 1] += 1;
     }
     for i in 0..n {
         t_indptr[i + 1] += t_indptr[i];
     }
 
-    let mut t_entries = vec![(0usize, T::zero()); entries.len()];
+    let mut t_entries = vec![(0u32, T::zero()); entries.len()];
     let mut cursor = t_indptr[..n].to_vec();
 
     for row in 0..n {
         for &(col, w) in &entries[indptr[row]..indptr[row + 1]] {
-            t_entries[cursor[col]] = (row, w);
+            let col = col as usize;
+            t_entries[cursor[col]] = (row as u32, w);
             cursor[col] += 1;
         }
     }
@@ -275,7 +277,7 @@ where
 /// ### Returns
 ///
 /// Number of distinct indices appearing in either row.
-fn union_len<T>(a: &[(usize, T)], b: &[(usize, T)]) -> usize {
+fn union_len<T>(a: &[(u32, T)], b: &[(u32, T)]) -> usize {
     let (mut ia, mut ib, mut count) = (0usize, 0usize, 0usize);
 
     while ia < a.len() || ib < b.len() {
@@ -319,11 +321,11 @@ fn union_len<T>(a: &[(usize, T)], b: &[(usize, T)]) -> usize {
 ///
 /// Number of entries written to `dst`, which is at most its length.
 fn merge_row<T, F>(
-    out_row: &[(usize, T)],
-    in_row: &[(usize, T)],
+    out_row: &[(u32, T)],
+    in_row: &[(u32, T)],
     min_weight: T,
     combine: &F,
-    dst: &mut [(usize, T)],
+    dst: &mut [(u32, T)],
 ) -> usize
 where
     T: ManifoldsFloat,
@@ -375,7 +377,8 @@ where
 /// sort.
 ///
 /// Each intermediate is freed as soon as the next stage no longer needs it, so
-/// at most two edge-sized buffers are alive alongside the merged rows.
+/// at most two edge-sized buffers are alive alongside the merged rows. The
+/// intermediates carry `u32` columns, so it panics past `u32::MAX` vertices.
 ///
 /// ### Params
 ///
@@ -408,6 +411,11 @@ where
         };
     }
 
+    assert!(
+        n <= u32::MAX as usize,
+        "graph symmetrisation supports at most 2^32 - 1 vertices, got {n}"
+    );
+
     let (out_indptr, out_entries) = coo_to_sorted_csr(graph);
     graph.row_indices = Vec::new();
     graph.col_indices = Vec::new();
@@ -429,7 +437,7 @@ where
         merge_indptr[i + 1] += merge_indptr[i];
     }
 
-    let mut merged = vec![(0usize, T::zero()); merge_indptr[n]];
+    let mut merged = vec![(0u32, T::zero()); merge_indptr[n]];
     let mut lengths = vec![0usize; n];
 
     row_slices_mut(&mut merged, &merge_indptr)
@@ -465,7 +473,7 @@ where
         .for_each(|(i, (cols, vals))| {
             let src = &merged[merge_indptr[i]..merge_indptr[i] + lengths[i]];
             for (idx, &(col, w)) in src.iter().enumerate() {
-                cols[idx] = col;
+                cols[idx] = col as usize;
                 vals[idx] = w;
             }
         });
@@ -927,6 +935,9 @@ where
     T: ManifoldsFloat,
 {
     let n = knn_indices.len();
+    if n > u32::MAX as usize {
+        return Err(ManifoldsError::TooManyVertices { n });
+    }
 
     let min_k = knn_indices.iter().map(|idx| idx.len()).min().unwrap_or(0);
 
@@ -952,7 +963,7 @@ where
         in_offsets[i + 1] = in_offsets[i] + knn_dists[i].len();
     }
 
-    let mut col_flat = vec![0usize; in_offsets[n]];
+    let mut col_flat = vec![0u32; in_offsets[n]];
     let mut val_flat = vec![T::zero(); in_offsets[n]];
     let mut kept = vec![0usize; n];
 
@@ -1046,7 +1057,7 @@ where
                     let j = knn_indices[i][m];
 
                     if prob > machine_epsilon && j != i {
-                        cols[written] = j;
+                        cols[written] = j as u32;
                         vals[written] = prob;
                         written += 1;
                     }
@@ -1075,7 +1086,9 @@ where
         .for_each(|(i, ((rows, cols), vals))| {
             let lo = in_offsets[i];
             rows.fill(i);
-            cols.copy_from_slice(&col_flat[lo..lo + kept[i]]);
+            for (dst, &src) in cols.iter_mut().zip(&col_flat[lo..lo + kept[i]]) {
+                *dst = src as usize;
+            }
             vals.copy_from_slice(&val_flat[lo..lo + kept[i]]);
         });
 
