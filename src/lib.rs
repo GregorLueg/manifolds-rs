@@ -507,6 +507,9 @@ where
     let start_layout = Instant::now();
 
     let graph_adj = coo_to_adjacency_list(&graph);
+    let n_edges = graph.col_indices.len();
+    // the optimisers only read the adjacency list; at scale the COO is GBs
+    drop(graph);
 
     if verbosity.normal_verbosity() {
         println!(
@@ -519,7 +522,7 @@ where
                 UmapOptimiser::AdamMlx => "Adam (MLX)",
             },
             umap_params.optim_params.n_epochs,
-            graph.col_indices.len().separate_with_underscores()
+            n_edges.separate_with_underscores()
         );
     }
 
@@ -4551,6 +4554,9 @@ where
     let start_layout = Instant::now();
 
     let graph_adj = coo_to_adjacency_list(&graph);
+    let n_edges = graph.col_indices.len();
+    // the optimisers only read the adjacency list; at scale the COO is GBs
+    drop(graph);
 
     if verbosity.normal_verbosity() {
         println!(
@@ -4564,7 +4570,7 @@ where
                 UmapOptimiserGpu::AdamMlx => "Adam (MLX)",
             },
             umap_params.optim_params.n_epochs,
-            graph.col_indices.len().separate_with_underscores()
+            n_edges.separate_with_underscores()
         );
     }
 

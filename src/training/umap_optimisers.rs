@@ -8,6 +8,7 @@ use rand::{
 use rayon::prelude::*;
 
 use crate::prelude::*;
+use crate::training::umap_csr::*;
 use crate::training::*;
 use crate::utils::density::*;
 
@@ -340,8 +341,8 @@ where
             b,
             two_a_b: two * a * b,
             two_gamma_b: two * gamma * b,
-            clip_val: T::from_f64(4.0).unwrap(),
-            eps: T::from_f64(0.001).unwrap(),
+            clip_val: T::from_f64(GRAD_CLIP_VAL).unwrap(),
+            eps: T::from_f64(GRAD_REP_EPS).unwrap(),
         }
     }
 }
@@ -715,10 +716,15 @@ where
     let b_is_one = (consts.b - one).abs() < T::from(1e-10).unwrap();
     let b_is_half = (consts.b - half).abs() < T::from(1e-10).unwrap();
 
-    let mut edges: Vec<(usize, usize, T)> = Vec::new();
+    if n > u32::MAX as usize {
+        return Err(ManifoldsError::TooManyVertices { n });
+    }
+
+    let mut edges: Vec<(u32, u32, T)> =
+        Vec::with_capacity(graph.iter().map(|neighbours| neighbours.len()).sum());
     for (i, neighbours) in graph.iter().enumerate() {
         for &(j, w) in neighbours {
-            edges.push((i, j, w));
+            edges.push((i as u32, j as u32, w));
         }
     }
 
@@ -746,11 +752,10 @@ where
     let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
 
     let neg_sample_rate_t = T::from(params.neg_sample_rate).unwrap();
-    let epochs_per_neg_sample: Vec<T> = epochs_per_sample
+    let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_sample
         .iter()
         .map(|eps| *eps / neg_sample_rate_t)
         .collect();
-    let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
 
     let n_epochs_f = T::from(params.n_epochs).unwrap();
     let lr_schedule: Vec<T> = (0..params.n_epochs)
@@ -787,6 +792,9 @@ where
             if epoch_of_next_sample[edge_idx] > epoch_t {
                 continue;
             }
+
+            let (i, j) = (i as usize, j as usize);
+            let per_neg = epochs_per_sample[edge_idx] / neg_sample_rate_t;
 
             let base_i = i * n_dim;
             let base_j = j * n_dim;
@@ -840,8 +848,7 @@ where
             epoch_of_next_sample[edge_idx] += epochs_per_sample[edge_idx];
 
             // Negative sampling
-            let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
-                / epochs_per_neg_sample[edge_idx])
+            let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx]) / per_neg)
                 .floor()
                 .to_usize()
                 .unwrap_or(0);
@@ -875,8 +882,7 @@ where
                 }
             }
 
-            epoch_of_next_neg_sample[edge_idx] +=
-                T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
+            epoch_of_next_neg_sample[edge_idx] += T::from(n_neg_samples).unwrap() * per_neg;
         }
 
         if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
@@ -967,10 +973,15 @@ where
     let b_is_one = (consts.b - one).abs() < T::from(1e-10).unwrap();
     let b_is_half = (consts.b - half).abs() < T::from(1e-10).unwrap();
 
-    let mut edges: Vec<(usize, usize, T)> = Vec::new();
+    if n > u32::MAX as usize {
+        return Err(ManifoldsError::TooManyVertices { n });
+    }
+
+    let mut edges: Vec<(u32, u32, T)> =
+        Vec::with_capacity(graph.iter().map(|neighbours| neighbours.len()).sum());
     for (i, neighbours) in graph.iter().enumerate() {
         for &(j, w) in neighbours {
-            edges.push((i, j, w));
+            edges.push((i as u32, j as u32, w));
         }
     }
 
@@ -998,11 +1009,10 @@ where
     let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
 
     let neg_sample_rate_t = T::from(params.neg_sample_rate).unwrap();
-    let epochs_per_neg_sample: Vec<T> = epochs_per_sample
+    let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_sample
         .iter()
         .map(|eps| *eps / neg_sample_rate_t)
         .collect();
-    let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
 
     let n_epochs_f = T::from(params.n_epochs).unwrap();
 
@@ -1050,6 +1060,9 @@ where
             if epoch_of_next_sample[edge_idx] > epoch_t {
                 continue;
             }
+
+            let (i, j) = (i as usize, j as usize);
+            let per_neg = epochs_per_sample[edge_idx] / neg_sample_rate_t;
 
             let base_i = i * n_dim;
             let base_j = j * n_dim;
@@ -1108,8 +1121,7 @@ where
 
             epoch_of_next_sample[edge_idx] += epochs_per_sample[edge_idx];
 
-            let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
-                / epochs_per_neg_sample[edge_idx])
+            let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx]) / per_neg)
                 .floor()
                 .to_usize()
                 .unwrap_or(0);
@@ -1148,8 +1160,7 @@ where
                 }
             }
 
-            epoch_of_next_neg_sample[edge_idx] +=
-                T::from(n_neg_samples).unwrap() * epochs_per_neg_sample[edge_idx];
+            epoch_of_next_neg_sample[edge_idx] += T::from(n_neg_samples).unwrap() * per_neg;
         }
 
         // Update bias correction factors for next epoch (matching C++ epoch_end)
@@ -1224,50 +1235,17 @@ where
     // pre-compute a LUT for x^b (mapping squared distances up to 25.0)
     let b_is_one = (consts.b - T::one()).abs() < T::from(1e-10).unwrap();
     let lut = FastPowLut::new(consts.b, 25.0, 65_536);
+    let dist_sq_threshold = T::from(GRAD_DIST_SQ_THRESHOLD).unwrap();
 
-    let mut edges: Vec<(usize, usize, T)> = Vec::new();
-    let mut degree = vec![0; n];
+    let csr = UmapCsrGraph::from_graph(graph)?;
+    let neg_sample_rate_t = T::from(params.neg_sample_rate).unwrap();
 
-    // take only i < j to get the unique undirected edges.
-    for (i, neighbours) in graph.iter().enumerate() {
-        for &(j, w) in neighbours {
-            if i < j {
-                edges.push((i, j, w));
-                degree[i] += 1;
-                degree[j] += 1;
-            }
-        }
-    }
-
-    if edges.is_empty() {
-        return Err(ManifoldsError::NoGraphEdges);
-    }
-
-    let max_weight =
-        edges
-            .iter()
-            .map(|(_, _, w)| *w)
-            .fold(T::zero(), |acc, w| if w > acc { w } else { acc });
-
-    let epochs_per_sample: Vec<T> = edges
+    let mut epoch_of_next_sample: Vec<T> = csr.epochs_per_sample.clone();
+    let mut epoch_of_next_neg_sample: Vec<T> = csr
+        .epochs_per_sample
         .iter()
-        .map(|(_, _, w)| {
-            let norm = *w / max_weight;
-            if norm > T::zero() {
-                T::one() / norm
-            } else {
-                T::from(1e8).unwrap()
-            }
-        })
+        .map(|eps| *eps / neg_sample_rate_t)
         .collect();
-
-    let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
-
-    let epochs_per_neg_sample: Vec<T> = epochs_per_sample
-        .iter()
-        .map(|eps| *eps / T::from(params.neg_sample_rate).unwrap())
-        .collect();
-    let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_neg_sample.clone();
 
     let n_epochs_f = T::from(params.n_epochs).unwrap();
     let lr_schedule: Vec<T> = (0..params.n_epochs)
@@ -1276,23 +1254,6 @@ where
 
     let mut m: Vec<T> = vec![T::zero(); n * n_dim];
     let mut v: Vec<T> = vec![T::zero(); n * n_dim];
-
-    // flatten graph to CSR layout to kill pointer chasing
-    let mut node_edge_offsets = vec![0; n + 1];
-    for i in 0..n {
-        node_edge_offsets[i + 1] = node_edge_offsets[i] + degree[i];
-    }
-
-    // csr_edges stores (edge_idx, is_smaller, other_node_idx)
-    let mut csr_edges = vec![(0usize, false, 0usize); edges.len() * 2];
-    let mut current_offset = node_edge_offsets.clone();
-
-    for (edge_idx, &(i, j, _)) in edges.iter().enumerate() {
-        csr_edges[current_offset[i]] = (edge_idx, true, j);
-        current_offset[i] += 1;
-        csr_edges[current_offset[j]] = (edge_idx, false, i);
-        current_offset[j] += 1;
-    }
 
     let bias_corrections: Vec<(T, T)> = (0..params.n_epochs)
         .map(|epoch| {
@@ -1359,11 +1320,15 @@ where
                 let mut local_has_updates = false;
                 let base_i = node_i * n_dim;
 
-                let start_idx = node_edge_offsets[node_i];
-                let end_idx = node_edge_offsets[node_i + 1];
-                let node_edges = &csr_edges[start_idx..end_idx];
+                let start_idx = csr.node_edge_offsets[node_i] as usize;
+                let end_idx = csr.node_edge_offsets[node_i + 1] as usize;
 
-                for &(edge_idx, is_smaller, other_node) in node_edges {
+                for (&edge_idx, &other_node) in csr.csr_edge_idx[start_idx..end_idx]
+                    .iter()
+                    .zip(&csr.csr_other_node[start_idx..end_idx])
+                {
+                    let edge_idx = edge_idx as usize;
+                    let other_node = other_node as usize;
                     if epoch_of_next_sample[edge_idx] > epoch_t {
                         continue;
                     }
@@ -1377,7 +1342,7 @@ where
                         dist_sq += diff * diff;
                     }
 
-                    if dist_sq >= T::from(1e-8).unwrap() {
+                    if dist_sq >= dist_sq_threshold {
                         let dist_sq_b = if b_is_one { dist_sq } else { lut.get(dist_sq) };
                         let denom = T::one() + consts.a * dist_sq_b;
                         let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
@@ -1398,7 +1363,7 @@ where
                             let cor = density_edge_coeff(
                                 node_i,
                                 other_node,
-                                edges[edge_idx].2,
+                                csr.mu[edge_idx],
                                 dist_sq,
                                 dist_sq_b,
                                 denom,
@@ -1415,9 +1380,10 @@ where
                         }
                     }
 
-                    if is_smaller {
+                    // the smaller endpoint owns the edge's negative samples
+                    if node_i < other_node {
                         let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
-                            / epochs_per_neg_sample[edge_idx])
+                            / (csr.epochs_per_sample[edge_idx] / neg_sample_rate_t))
                             .floor()
                             .to_usize()
                             .unwrap_or(0);
@@ -1490,10 +1456,10 @@ where
         epoch_of_next_sample
             .par_iter_mut()
             .zip(epoch_of_next_neg_sample.par_iter_mut())
-            .zip(epochs_per_sample.par_iter())
-            .zip(epochs_per_neg_sample.par_iter())
-            .for_each(|(((next_sample, next_neg), &per_sample), &per_neg)| {
+            .zip(csr.epochs_per_sample.par_iter())
+            .for_each(|((next_sample, next_neg), &per_sample)| {
                 if *next_sample <= epoch_t {
+                    let per_neg = per_sample / neg_sample_rate_t;
                     *next_sample += per_sample;
 
                     let n_neg_samples = ((epoch_t - *next_neg) / per_neg)
