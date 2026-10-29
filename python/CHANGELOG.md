@@ -3,6 +3,27 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.5.0
+
+Requires the `manifolds-rs` 0.8.0.
+
+**Breaking changes**
+
+- Spectral initialisation (the default for `UMAP`, `DensMAP`, their GPU
+  variants and `ForceAtlas2`), `PHATE` and `DiffusionMaps` return different
+  coordinates than 0.4.x at the same seed. The structure is the same; the eigensolver underneath changed.
+  Runs remain bit-identical at a fixed seed on the CPU.
+
+**Performance**
+
+- Spectral initialisation needs about half the memory on connected graphs
+  and about a quarter on disconnected ones, which matters from a few million
+  cells upwards.
+
+**Fixes**
+
+- A graph too large for `u32` vertex indices raises `ValueError`.
+
 ## 0.4.2
 
 Requires the `manifolds-rs` 0.7.3.

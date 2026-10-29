@@ -142,6 +142,10 @@ clusters, the branches and the separations being there.
 Across dtypes reproducibility does not hold either way: float32 and float64
 runs of the same configuration will differ, as they should.
 
+Across releases it does not hold either: 0.5.0 changed the eigensolver behind
+the spectral initialisation, PHATE and diffusion maps, so coordinates differ
+from 0.4.x at the same seed.
+
 ## Errors
 
 - `ValueError` for anything you can fix by changing an argument, including

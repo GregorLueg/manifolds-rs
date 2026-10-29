@@ -61,6 +61,7 @@ impl From<ManErr> for PyErr {
             | ManifoldsError::PowerMustBePositive { .. }
             | ManifoldsError::NoData
             | ManifoldsError::NoGraphEdges
+            | ManifoldsError::TooManyVertices { .. }
             | ManifoldsError::NotEnoughNeighbours { .. }
             | ManifoldsError::DegenerateLocalRadii
             | ManifoldsError::Fa2InvalidParam { .. }

@@ -3,6 +3,35 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.8.0
+
+**Breaking changes**
+
+- Spectral initialisation, PHATE and diffusion maps return different
+  coordinates than 0.7.x at the same seed. The Lanczos solver behind them is
+  now thick-restarted (see below), so the eigenvectors differ in the last
+  digits for PHATE and diffusion maps, and spectral inits land on a different
+  basis of the leading eigenspace. Runs are still bit-identical at a fixed
+  seed and independent of the thread count.
+- `ManifoldsError` gains `TooManyVertices`, so exhaustive matches on it need
+  an extra arm.
+
+**Performance**
+
+- Spectral initialisation holds one copy of the graph in CSR form, with `u32`
+  columns and weights in the input float type, instead of several `usize`/f64
+  copies. The `D^(-1/2) A D^(-1/2)` normalisation is applied inside the
+  matrix-vector product rather than stored. Disconnected graphs no longer copy
+  the edge list into per-component subgraphs. Peak memory on top of the input
+  graph drops about 2x for connected graphs and about 4x for disconnected
+  ones; a 10M-cell graph with 300M edges needs about 5.5 GB.
+- `compute_largest_eigenpairs_lanczos` and `compute_smallest_eigenpairs_lanczos`
+  run thick-restarted Lanczos (Wu & Simon, 2000), ported from bixverse. The
+  Krylov basis is bounded (23 vectors for a 2D embedding instead of 42),
+  convergence is tested on the residual against `||A||`, and every reduction
+  runs over fixed row blocks. `lanczos_thick_restart` and `LanczosParams` are
+  public for callers with their own operator.
+
 ## 0.7.3
 
 **Chore**

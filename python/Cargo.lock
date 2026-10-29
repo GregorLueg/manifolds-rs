@@ -2873,7 +2873,7 @@ dependencies = [
 
 [[package]]
 name = "manifolds-py"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "cubecl",
  "faer",
@@ -2886,7 +2886,7 @@ dependencies = [
 
 [[package]]
 name = "manifolds-rs"
-version = "0.7.3"
+version = "0.8.0"
 dependencies = [
  "ann-search-rs",
  "approx",
