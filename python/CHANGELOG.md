@@ -17,6 +17,7 @@ Requires `manifolds-rs` 0.8.0.
 
 - Spectral init uses about half the memory on connected graphs and a quarter
   on disconnected ones.
+- `UMAP`, `TSNE` and `PHATE` use less memory. Same embeddings per seed.
 
 ## 0.4.2
 

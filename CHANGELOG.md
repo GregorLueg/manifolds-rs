@@ -9,7 +9,7 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
 - Spectral init, PHATE and diffusion maps give different coordinates than
   0.7.x at the same seed (new eigensolver). Still bit-identical per seed.
-- New `ManifoldsError::TooManyVertices` variant.
+- New `ManifoldsError::TooManyVertices` and `TooManyEdges` variants.
 
 **Performance**
 
@@ -17,6 +17,8 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   on disconnected ones.
 - Lanczos is now thick-restarted with a bounded basis (Wu & Simon, 2000).
   `lanczos_thick_restart` and `LanczosParams` are public.
+- UMAP optimisers use 25-40% less memory. Parallel Adam is ~5% slower.
+- Leaner tSNE optimisers and graph symmetrisation. Same embeddings per seed.
 
 ## 0.7.3
 
