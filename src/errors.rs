@@ -88,6 +88,13 @@ pub enum ManifoldsError {
     #[error("Empty data was parsed through - upstream error?")]
     NoData,
 
+    /// Error if a graph has more vertices than `u32` indices can address
+    #[error("Spectral initialisation supports at most 2^32 - 1 vertices, got {n}")]
+    TooManyVertices {
+        /// Number of vertices in the graph
+        n: usize,
+    },
+
     /// Error if the data is empty
     #[error("UMAP: no edges to optimise - upstream error?")]
     NoGraphEdges,

@@ -7,6 +7,7 @@ use rand::{
     {Rng, SeedableRng},
 };
 use rand_distr::{Distribution, StandardNormal};
+use rayon::prelude::*;
 use std::collections::VecDeque;
 
 use crate::data::structures::*;
@@ -35,6 +36,32 @@ pub const PCA_RANGE: f64 = 1.0;
 /// `2 * n_comp` components and leaves the rest at the origin, which would pile
 /// thousands of components on top of each other.
 const SPECTRAL_META_MAX_COMPONENTS: usize = 2_000;
+
+/// Relative residual tolerance for the spectral Lanczos solve.
+///
+/// An initialisation only needs the coarse shape of the eigenvectors; the
+/// optimiser moves every point afterwards. A tighter tolerance buys digits
+/// nobody sees at the cost of extra restart cycles on clustered spectra.
+const SPECTRAL_LANCZOS_TOL: f64 = 1e-6;
+
+/// Restart budget for the spectral Lanczos solve.
+///
+/// Graphs with cluster structure converge well within it. Structureless
+/// blocks (a component with no spectral gap below the trivial eigenvalue)
+/// never converge and would otherwise burn every cycle on eigenvectors that
+/// carry no layout information anyway. The result after the budget is still
+/// a usable initialisation. Tuned on synthetic graphs only.
+const SPECTRAL_LANCZOS_MAX_RESTARTS: usize = 4;
+
+/// Lanczos parameters for the spectral initialisation.
+///
+/// ### Returns
+///
+/// [`LanczosParams`] with a derived basis size and the spectral tolerance and
+/// restart budget.
+fn spectral_lanczos_params() -> LanczosParams {
+    LanczosParams::new(None, SPECTRAL_LANCZOS_MAX_RESTARTS, SPECTRAL_LANCZOS_TOL)
+}
 
 /////////////
 // Helpers //
@@ -92,52 +119,30 @@ where
 // Helpers //
 /////////////
 
-/// Build a CSR row index over a COO graph via counting sort
+/// Graph in CSR form for the spectral path.
 ///
-/// Entries keep their COO order within a row. The BFS that consumes this walks
-/// rows in that order, so the ordering is part of its reproducibility contract.
-///
-/// ### Params
-///
-/// * `graph` - Graph in COO format
-///
-/// ### Returns
-///
-/// `(indptr, indices)` describing the out-neighbours of each vertex.
-fn coo_to_csr_adjacency<T>(graph: &CoordinateList<T>) -> (Vec<usize>, Vec<usize>)
-where
-    T: ManifoldsFloat,
-{
-    let n = graph.n_samples;
-
-    let mut indptr = vec![0usize; n + 1];
-    for &i in &graph.row_indices {
-        indptr[i + 1] += 1;
-    }
-    for i in 0..n {
-        indptr[i + 1] += indptr[i];
-    }
-
-    let mut indices = vec![0usize; graph.row_indices.len()];
-    let mut cursor = indptr.clone();
-
-    for (&i, &j) in graph.row_indices.iter().zip(&graph.col_indices) {
-        indices[cursor[i]] = j;
-        cursor[i] += 1;
-    }
-
-    (indptr, indices)
+/// One copy of the edges serves the component search, every per-component
+/// solve and the matrix-vector product. Weights stay in the caller's float
+/// type and columns are `u32`, so an f32 graph costs 8 bytes per edge; the
+/// normalisation `D^(-1/2) A D^(-1/2)` is applied inside the matvec rather
+/// than stored.
+struct SpectralGraph<T> {
+    /// Row pointers, `n + 1` long
+    indptr: Vec<usize>,
+    /// Column of each edge
+    indices: Vec<u32>,
+    /// Weight of each edge
+    data: Vec<T>,
+    /// `1 / sqrt(degree)` per vertex, `0` for isolated ones. Empty until
+    /// [`prune_spectral_graph`] fills it.
+    d_inv_sqrt: Vec<f64>,
 }
 
-/// Build a column-sorted CSR from a COO graph via a two-pass radix sort
+/// Build the spectral CSR from a COO graph via a counting sort on rows
 ///
-/// Sorts by column first, then stably by row, so each row ends up with its
-/// column indices ascending, in `O(nnz + n)` and without a per-row allocation.
-///
-/// The column ordering is load-bearing: it fixes the summation order of the
-/// sparse matrix-vector product downstream. Subgraphs cut for disconnected
-/// components carry BFS-permuted local indices, so their columns genuinely do
-/// arrive out of order.
+/// Entries keep their COO order within a row. That order fixes the summation
+/// order of the degrees and the matvec, so it is part of the reproducibility
+/// contract.
 ///
 /// ### Params
 ///
@@ -145,29 +150,17 @@ where
 ///
 /// ### Returns
 ///
-/// `(indptr, indices, values)` in CSR order with values cast to `f64`.
-fn coo_to_csr_sorted<T>(graph: &CoordinateList<T>) -> (Vec<usize>, Vec<usize>, Vec<f64>)
+/// The graph in CSR form, self-loops and all, with `d_inv_sqrt` still empty.
+fn spectral_graph_from_coo<T>(graph: &CoordinateList<T>) -> Result<SpectralGraph<T>, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
     let n = graph.n_samples;
+    if n > u32::MAX as usize {
+        return Err(ManifoldsError::TooManyVertices { n });
+    }
     let nnz = graph.row_indices.len();
 
-    // pass one: order the edges by column
-    let mut counts = vec![0usize; n + 1];
-    for &j in &graph.col_indices {
-        counts[j + 1] += 1;
-    }
-    for j in 0..n {
-        counts[j + 1] += counts[j];
-    }
-    let mut by_col = vec![0usize; nnz];
-    for (e, &j) in graph.col_indices.iter().enumerate() {
-        by_col[counts[j]] = e;
-        counts[j] += 1;
-    }
-
-    // pass two: stable scatter into rows, preserving the column order above
     let mut indptr = vec![0usize; n + 1];
     for &i in &graph.row_indices {
         indptr[i + 1] += 1;
@@ -176,94 +169,261 @@ where
         indptr[i + 1] += indptr[i];
     }
 
-    let mut indices = vec![0usize; nnz];
-    let mut values = vec![0.0f64; nnz];
-    let mut cursor = indptr.clone();
+    let mut indices = vec![0u32; nnz];
+    let mut data = vec![T::zero(); nnz];
+    let mut cursor = indptr[..n].to_vec();
 
-    for &e in &by_col {
-        let i = graph.row_indices[e];
+    for ((&i, &j), &w) in graph
+        .row_indices
+        .iter()
+        .zip(&graph.col_indices)
+        .zip(&graph.values)
+    {
         let p = cursor[i];
-        indices[p] = graph.col_indices[e];
-        values[p] = graph.values[e].to_f64().unwrap();
+        indices[p] = j as u32;
+        data[p] = w;
         cursor[i] += 1;
     }
 
-    (indptr, indices, values)
+    Ok(SpectralGraph {
+        indptr,
+        indices,
+        data,
+        d_inv_sqrt: Vec::new(),
+    })
 }
 
-/// Convert COO graph to negative normalised adjacency in CSR format
+/// Connected-component decomposition of a graph
 ///
-/// Computes `M = - D^(-1/2) * A * D^(-1/2)`
-/// This allows the Lanczos solver (which finds largest magnitude/smallest
-/// algebraic) to converge to the cluster-structure eigenvectors (near -1) much
-/// faster than finding Laplacian eigenvectors near 0.
+/// Carries the inverse maps alongside the membership lists, so a component's
+/// operator can be applied straight off the shared CSR.
+struct Components {
+    /// Vertex indices belonging to each component, in BFS order
+    members: Vec<Vec<usize>>,
+    /// Component label of each vertex
+    labels: Vec<u32>,
+    /// Position of each vertex within its own component
+    local: Vec<u32>,
+}
+
+/// Find connected components using BFS
 ///
-/// Degrees include self-loops; the matrix itself does not.
+/// The traversal order (ascending start vertex, FIFO queue, CSR row order)
+/// fixes both the component ordering and the vertex ordering within each
+/// component.
+///
+/// Note this follows edges in the row-to-column direction only. On a symmetric
+/// graph that gives true connected components; on a directed graph, such as the
+/// raw kNN graph PaCMAP passes in, it gives forward reachability.
 ///
 /// ### Params
 ///
-/// * `graph` - Symmetric weighted graph in COO format
+/// * `graph` - Graph in CSR form
 ///
 /// ### Returns
 ///
-/// Negative normalised adjacency matrix as CSR
-fn graph_to_negative_normalised_adjacency<T>(graph: &CoordinateList<T>) -> CompressedSparseData<f64>
-where
-    T: ManifoldsFloat,
-{
-    let n = graph.n_samples;
-    let (indptr, indices, values) = coo_to_csr_sorted(graph);
+/// The component decomposition, including per-vertex label and local index.
+fn find_connected_components<T>(graph: &SpectralGraph<T>) -> Components {
+    let n = graph.indptr.len() - 1;
 
-    // accumulated in COO order, not CSR order: the two differ once a subgraph's
-    // BFS-local indexing permutes the columns, and the sum order sets the bits
-    let mut degrees = vec![0.0f64; n];
-    for (&i, &w) in graph.row_indices.iter().zip(&graph.values) {
-        degrees[i] += w.to_f64().unwrap();
-    }
+    let mut labels = vec![u32::MAX; n];
+    let mut local = vec![0u32; n];
+    let mut members = Vec::new();
+    let mut queue = VecDeque::new();
 
-    // Compute D^(-1/2), handling isolated vertices
-    let d_inv_sqrt: Vec<f64> = degrees
-        .iter()
-        .map(|&d| if d > 1e-8 { 1.0 / d.sqrt() } else { 0.0 })
-        .collect();
+    for start in 0..n {
+        if labels[start] != u32::MAX {
+            continue;
+        }
 
-    // Build matrix: M = - D^(-1/2) * A * D^(-1/2)
-    let mut out_data = Vec::with_capacity(values.len());
-    let mut out_indices = Vec::with_capacity(indices.len());
-    let mut out_indptr = Vec::with_capacity(n + 1);
-    out_indptr.push(0);
+        let label = members.len() as u32;
+        let mut component = Vec::new();
+        queue.clear();
+        queue.push_back(start);
+        labels[start] = label;
 
-    for i in 0..n {
-        for idx in indptr[i]..indptr[i + 1] {
-            let j = indices[idx];
-            if i != j {
-                // Keep the negative sign
-                out_indices.push(j);
-                out_data.push(-d_inv_sqrt[i] * values[idx] * d_inv_sqrt[j]);
+        while let Some(node) = queue.pop_front() {
+            local[node] = component.len() as u32;
+            component.push(node);
+            for &neighbour in &graph.indices[graph.indptr[node]..graph.indptr[node + 1]] {
+                let neighbour = neighbour as usize;
+                if labels[neighbour] == u32::MAX {
+                    labels[neighbour] = label;
+                    queue.push_back(neighbour);
+                }
             }
         }
-        out_indptr.push(out_data.len());
+
+        members.push(component);
     }
 
-    // constructed directly rather than via `new_csr`, which copies all three
-    CompressedSparseData {
-        data: out_data,
-        indices: out_indices,
-        indptr: out_indptr,
-        cs_type: CompressedSparseFormat::Csr,
-        shape: (n, n),
+    Components {
+        members,
+        labels,
+        local,
     }
 }
 
-/// Compute raw spectral embedding for a single connected component
+/// Compute the degrees and drop the edges the operator does not use
 ///
-/// Computes eigenvectors of the negative normalised adjacency matrix and
-/// returns them as embedding coordinates.
+/// Degrees sum every edge within the vertex's own component, self-loops
+/// included. The CSR is then compacted in place to the off-diagonal,
+/// within-component edges, so every component's operator reads only its own
+/// block and no copy of the edges is made. Cross-component edges only exist on
+/// a directed graph, where BFS reachability is asymmetric.
 ///
-/// There are two random fallbacks. A graph with `n <= n_comp + 1` vertices is
-/// too small for the decomposition and is filled at random wholesale. Beyond
-/// that, Lanczos can converge fewer eigenpairs than were asked for, in which
-/// case only the dimensions it did not supply are filled at random.
+/// ### Params
+///
+/// * `graph` - Graph in CSR form; compacted in place, `d_inv_sqrt` filled
+/// * `labels` - Component label of each vertex
+fn prune_spectral_graph<T>(graph: &mut SpectralGraph<T>, labels: &[u32])
+where
+    T: ManifoldsFloat,
+{
+    let n = labels.len();
+    let mut d_inv_sqrt = vec![0.0f64; n];
+    let mut write = 0usize;
+    let mut row_start = 0usize;
+
+    for i in 0..n {
+        let row_end = graph.indptr[i + 1];
+        let mut degree = 0.0f64;
+        for idx in row_start..row_end {
+            let j = graph.indices[idx] as usize;
+            if labels[j] != labels[i] {
+                continue;
+            }
+            degree += graph.data[idx].to_f64().unwrap();
+            if j != i {
+                graph.indices[write] = graph.indices[idx];
+                graph.data[write] = graph.data[idx];
+                write += 1;
+            }
+        }
+        d_inv_sqrt[i] = if degree > 1e-8 {
+            1.0 / degree.sqrt()
+        } else {
+            0.0
+        };
+        row_start = row_end;
+        graph.indptr[i + 1] = write;
+    }
+
+    graph.indices.truncate(write);
+    graph.data.truncate(write);
+    graph.d_inv_sqrt = d_inv_sqrt;
+}
+
+/// Spectral embedding coordinates for one connected component
+///
+/// Computes the leading eigenvectors of `D^(-1/2) A D^(-1/2)` restricted to
+/// the component, via thick-restarted Lanczos, and skips the trivial top one.
+/// The component is read straight off the shared CSR: `row` maps a local index
+/// to its global row, `col` maps a global column to its local index. For a
+/// single-component graph both are the identity and compile away.
+///
+/// There are two random fallbacks. A component with `n <= n_comp + 1` vertices
+/// is too small for the decomposition and is filled at random wholesale.
+/// Beyond that, Lanczos can converge fewer eigenpairs than were asked for, in
+/// which case only the dimensions it did not supply are filled at random.
+///
+/// ### Params
+///
+/// * `graph` - Pruned graph in CSR form
+/// * `n` - Number of vertices in the component
+/// * `row` - Local index to global row
+/// * `col` - Global column to local index
+/// * `n_comp` - Number of embedding dimensions
+/// * `seed` - Random seed
+///
+/// ### Returns
+///
+/// Raw coordinates, row-major `n x n_comp`.
+fn component_spectral_raw<T, R, C>(
+    graph: &SpectralGraph<T>,
+    n: usize,
+    row: R,
+    col: C,
+    n_comp: usize,
+    seed: u64,
+) -> Result<Vec<T>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    R: Fn(usize) -> usize + Sync,
+    C: Fn(usize) -> usize + Sync,
+{
+    let mut embedding = vec![T::zero(); n * n_comp];
+
+    if n <= n_comp + 1 {
+        let mut rng = StdRng::seed_from_u64(seed);
+        for v in embedding.iter_mut() {
+            *v = T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
+        }
+        return Ok(embedding);
+    }
+
+    let SpectralGraph {
+        indptr,
+        indices,
+        data,
+        d_inv_sqrt,
+    } = graph;
+
+    // `D^(-1/2) x` once per product, so the inner loop is a plain gather
+    let mut scaled = vec![0.0f64; n];
+    let matvec = |x: &[f64], y: &mut [f64]| {
+        let prescale = |(a, s): (usize, &mut f64)| *s = d_inv_sqrt[row(a)] * x[a];
+        if n < PARALLEL_VEC_MIN {
+            scaled.iter_mut().enumerate().for_each(prescale);
+        } else {
+            scaled.par_iter_mut().enumerate().for_each(prescale);
+        }
+        let scaled = &scaled;
+        let kernel = |base: usize, y_chunk: &mut [f64]| {
+            for (offset, y_a) in y_chunk.iter_mut().enumerate() {
+                let i = row(base + offset);
+                let mut acc = 0.0;
+                for idx in indptr[i]..indptr[i + 1] {
+                    acc += data[idx].to_f64().unwrap() * scaled[col(indices[idx] as usize)];
+                }
+                *y_a = d_inv_sqrt[i] * acc;
+            }
+        };
+
+        if n < PARALLEL_VEC_MIN {
+            kernel(0, y);
+        } else {
+            y.par_chunks_mut(SPMV_ROW_CHUNK)
+                .enumerate()
+                .for_each(|(chunk, y_chunk)| kernel(chunk * SPMV_ROW_CHUNK, y_chunk));
+        }
+    };
+
+    let n_eigs = (n_comp + 1).min(n);
+    let ritz = lanczos_thick_restart(n, n_eigs, seed, spectral_lanczos_params(), matvec)?;
+
+    for comp_idx in 0..n_comp {
+        let evec_idx = comp_idx + 1;
+        if evec_idx < ritz.values.len() {
+            let evec = &ritz.vectors[evec_idx * n..(evec_idx + 1) * n];
+            for (i, &v) in evec.iter().enumerate() {
+                embedding[i * n_comp + comp_idx] = T::from_f64(v).unwrap();
+            }
+        } else {
+            let mut rng = StdRng::seed_from_u64(seed + comp_idx as u64);
+            for i in 0..n {
+                embedding[i * n_comp + comp_idx] =
+                    T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
+            }
+        }
+    }
+
+    Ok(embedding)
+}
+
+/// Spectral embedding coordinates of a connected COO graph
+///
+/// Used for the small dense affinity graph of the component meta-layout.
 ///
 /// ### Params
 ///
@@ -283,111 +443,10 @@ where
     T: ManifoldsFloat,
 {
     let n = graph.n_samples;
-    let mut embedding = vec![vec![T::zero(); n_comp]; n];
-
-    if n <= n_comp + 1 {
-        let mut rng = StdRng::seed_from_u64(seed);
-        for row in &mut embedding {
-            for v in row.iter_mut() {
-                *v = T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
-            }
-        }
-        return Ok(embedding);
-    }
-
-    let neg_adjacency = graph_to_negative_normalised_adjacency(graph);
-    let n_eigs = (n_comp + 1).min(n);
-    let (_, evecs) = compute_smallest_eigenpairs_lanczos(&neg_adjacency, n_eigs, seed)?;
-
-    for comp_idx in 0..n_comp {
-        let evec_idx = comp_idx + 1;
-        if evec_idx < evecs[0].len() {
-            for i in 0..n {
-                embedding[i][comp_idx] = T::from_f32(evecs[i][evec_idx]).unwrap();
-            }
-        } else {
-            let mut rng = StdRng::seed_from_u64(seed + comp_idx as u64);
-            for i in 0..n {
-                embedding[i][comp_idx] = T::from_f64(rng.random_range(-1.0..1.0)).unwrap();
-            }
-        }
-    }
-
-    Ok(embedding)
-}
-
-/// Connected-component decomposition of a graph
-///
-/// Carries the inverse maps alongside the membership lists so per-component
-/// subgraphs can be cut in a single pass over the edges.
-struct Components {
-    /// Vertex indices belonging to each component
-    members: Vec<Vec<usize>>,
-    /// Component label of each vertex
-    labels: Vec<usize>,
-    /// Position of each vertex within its own component
-    local: Vec<usize>,
-}
-
-/// Find connected components in a sparse graph using BFS
-///
-/// The traversal order (ascending start vertex, FIFO queue, CSR row order)
-/// fixes both the component ordering and the vertex ordering within each
-/// component, which in turn fixes the local indices every subgraph is cut with.
-///
-/// Note this follows edges in the row-to-column direction only. On a symmetric
-/// graph that gives true connected components; on a directed graph, such as the
-/// raw kNN graph PaCMAP passes in, it gives forward reachability.
-///
-/// ### Params
-///
-/// * `graph` - Sparse graph in COO format
-///
-/// ### Returns
-///
-/// The component decomposition, including per-vertex label and local index.
-fn find_connected_components<T>(graph: &CoordinateList<T>) -> Components
-where
-    T: ManifoldsFloat,
-{
-    let n = graph.n_samples;
-    let (indptr, indices) = coo_to_csr_adjacency(graph);
-
-    let mut labels = vec![usize::MAX; n];
-    let mut local = vec![0usize; n];
-    let mut members = Vec::new();
-    let mut queue = VecDeque::new();
-
-    for start in 0..n {
-        if labels[start] != usize::MAX {
-            continue;
-        }
-
-        let label = members.len();
-        let mut component = Vec::new();
-        queue.clear();
-        queue.push_back(start);
-        labels[start] = label;
-
-        while let Some(node) = queue.pop_front() {
-            local[node] = component.len();
-            component.push(node);
-            for &neighbour in &indices[indptr[node]..indptr[node + 1]] {
-                if labels[neighbour] == usize::MAX {
-                    labels[neighbour] = label;
-                    queue.push_back(neighbour);
-                }
-            }
-        }
-
-        members.push(component);
-    }
-
-    Components {
-        members,
-        labels,
-        local,
-    }
+    let mut csr = spectral_graph_from_coo(graph)?;
+    prune_spectral_graph(&mut csr, &vec![0u32; n]);
+    let flat = component_spectral_raw(&csr, n, |a| a, |j| j, n_comp, seed)?;
+    Ok(flat.chunks_exact(n_comp).map(|r| r.to_vec()).collect())
 }
 
 /// Initialise embedding for graphs with multiple connected components
@@ -400,7 +459,7 @@ where
 ///
 /// ### Params
 ///
-/// * `graph` - Full graph in COO format
+/// * `graph` - Pruned graph in CSR form
 /// * `comps` - Component decomposition of `graph`
 /// * `n_comp` - Number of embedding dimensions
 /// * `seed` - Random seed
@@ -411,7 +470,7 @@ where
 ///
 /// Initial embedding coordinates
 fn multi_component_init<T>(
-    graph: &CoordinateList<T>,
+    graph: &SpectralGraph<T>,
     comps: &Components,
     n_comp: usize,
     seed: u64,
@@ -421,22 +480,13 @@ fn multi_component_init<T>(
 where
     T: ManifoldsFloat,
 {
-    let n = graph.n_samples;
+    let n = comps.labels.len();
     let mut embedding = vec![vec![T::zero(); n_comp]; n];
     let mut rng = StdRng::seed_from_u64(seed);
 
     // Position component centroids relative to each other, unit max-abs.
     // Final scaling to `range` happens at the end.
     let meta = component_meta_layout(&comps.members, n_comp, data, seed)?;
-
-    // Cutting every subgraph costs a full copy of the edge list, so skip it
-    // when no component is large enough to take the spectral branch below.
-    let needs_subgraphs = comps.members.iter().any(|c| c.len() >= 2 * n_comp);
-    let subgraphs = if needs_subgraphs {
-        extract_all_subgraphs(graph, comps)
-    } else {
-        Vec::new()
-    };
 
     for (label, component) in comps.members.iter().enumerate() {
         let centroid = &meta[label];
@@ -454,28 +504,32 @@ where
         }
 
         // Spectral embedding within the component, expanded to data_range
-        let sub = single_component_spectral_raw(&subgraphs[label], n_comp, seed + label as u64)?;
+        let sub = component_spectral_raw(
+            graph,
+            component.len(),
+            |a| component[a],
+            |j| comps.local[j] as usize,
+            n_comp,
+            seed + label as u64,
+        )?;
 
-        let max_abs = sub
-            .iter()
-            .flat_map(|v| v.iter())
-            .fold(T::zero(), |acc, &x| {
-                let a = x.abs();
-                if a > acc {
-                    a
-                } else {
-                    acc
-                }
-            });
+        let max_abs = sub.iter().fold(T::zero(), |acc, &x| {
+            let a = x.abs();
+            if a > acc {
+                a
+            } else {
+                acc
+            }
+        });
         let expansion = if max_abs > T::from_f64(1e-8).unwrap() {
             data_range / max_abs
         } else {
             T::one()
         };
 
-        for (local, &global) in component.iter().enumerate() {
+        for (coords, &global) in sub.chunks_exact(n_comp).zip(component) {
             for d in 0..n_comp {
-                embedding[global][d] = centroid[d] + sub[local][d] * expansion;
+                embedding[global][d] = centroid[d] + coords[d] * expansion;
             }
         }
     }
@@ -784,108 +838,6 @@ where
     max_d / T::from_f64(2.0).unwrap()
 }
 
-/// Cut every component's subgraph in a single pass over the edges
-///
-/// Bucketing by component label costs `O(nnz + n_components)` in total, rather
-/// than one full edge scan per component. The scatter is stable, so each
-/// subgraph keeps its edges in the original COO order.
-///
-/// Edges whose endpoints carry different labels are dropped. That can only
-/// happen on a directed graph, where BFS reachability is asymmetric.
-///
-/// Note this holds every subgraph in memory at once, so peak usage is roughly a
-/// second copy of the edge list.
-///
-/// ### Params
-///
-/// * `graph` - Full graph in COO format
-/// * `comps` - Component decomposition of `graph`
-///
-/// ### Returns
-///
-/// One locally indexed subgraph per component, in component order.
-fn extract_all_subgraphs<T>(graph: &CoordinateList<T>, comps: &Components) -> Vec<CoordinateList<T>>
-where
-    T: ManifoldsFloat,
-{
-    let n_components = comps.members.len();
-
-    let mut offsets = vec![0usize; n_components + 1];
-    for (&i, &j) in graph.row_indices.iter().zip(&graph.col_indices) {
-        if comps.labels[i] == comps.labels[j] {
-            offsets[comps.labels[i] + 1] += 1;
-        }
-    }
-    for c in 0..n_components {
-        offsets[c + 1] += offsets[c];
-    }
-
-    let total = offsets[n_components];
-    let mut rows = vec![0usize; total];
-    let mut cols = vec![0usize; total];
-    let mut vals = vec![T::zero(); total];
-    let mut cursor = offsets.clone();
-
-    for ((&i, &j), &w) in graph
-        .row_indices
-        .iter()
-        .zip(&graph.col_indices)
-        .zip(&graph.values)
-    {
-        let label = comps.labels[i];
-        if label != comps.labels[j] {
-            continue;
-        }
-        let p = cursor[label];
-        rows[p] = comps.local[i];
-        cols[p] = comps.local[j];
-        vals[p] = w;
-        cursor[label] += 1;
-    }
-
-    (0..n_components)
-        .map(|c| {
-            let (lo, hi) = (offsets[c], offsets[c + 1]);
-            CoordinateList {
-                row_indices: rows[lo..hi].to_vec(),
-                col_indices: cols[lo..hi].to_vec(),
-                values: vals[lo..hi].to_vec(),
-                n_samples: comps.members[c].len(),
-            }
-        })
-        .collect()
-}
-
-/// Perform spectral embedding for a single connected component
-///
-/// Computes eigenvectors of the negative normalised adjacency matrix and uses
-/// them as embedding coordinates, then centres, scales to `range` and adds
-/// stabilising noise. Falls back to random initialisation for trivially small
-/// graphs, and for any dimension Lanczos failed to converge.
-///
-/// ### Params
-///
-/// * `graph` - Connected graph in COO format
-/// * `n_comp` - Number of embedding dimensions
-/// * `seed` - Random seed
-/// * `range` - Scaling range for embedding
-///
-/// ### Returns
-///
-/// Initial embedding coordinates
-fn single_component_spectral<T>(
-    graph: &CoordinateList<T>,
-    n_comp: usize,
-    seed: u64,
-    range: T,
-) -> Result<Vec<Vec<T>>, ManifoldsError>
-where
-    T: ManifoldsFloat,
-{
-    let raw = single_component_spectral_raw(graph, n_comp, seed)?;
-    Ok(finalise_spectral_embedding(raw, n_comp, range, seed))
-}
-
 /// Finalise spectral embedding by centring, scaling and adding noise
 ///
 /// Post-processes raw eigenvector coordinates by centring each dimension,
@@ -965,10 +917,14 @@ where
 
 /// Compute spectral layout initialisation for graph
 ///
-/// Uses spectral decomposition of the negative normalised adjacency matrix
-/// `-D^(-1/2) A D^(-1/2)` to initialise embedding coordinates. Handles
-/// disconnected graphs by placing components separately and performing
-/// spectral embedding within each component.
+/// Uses the leading eigenvectors of the normalised adjacency
+/// `D^(-1/2) A D^(-1/2)` (the trivial top one skipped) as embedding
+/// coordinates. Handles disconnected graphs by placing components separately
+/// and performing spectral embedding within each component.
+///
+/// Peak memory beyond the caller's graph is one CSR copy of the edges (`u32`
+/// columns, weights in `T`) plus the Lanczos basis, `max(2k + 10, k + 20)`
+/// f64 vectors of length `n` for `k = n_comp + 1`.
 ///
 /// ### Params
 ///
@@ -994,13 +950,19 @@ where
     T: ManifoldsFloat,
 {
     let range = range.unwrap_or(T::from_f64(SPECTRAL_RANGE).unwrap());
-    let comps = find_connected_components(graph);
+    let mut csr = spectral_graph_from_coo(graph)?;
+    let comps = find_connected_components(&csr);
+    prune_spectral_graph(&mut csr, &comps.labels);
 
     if comps.members.len() > 1 {
-        return multi_component_init(graph, &comps, n_comp, seed, range, data);
+        return multi_component_init(&csr, &comps, n_comp, seed, range, data);
     }
 
-    single_component_spectral(graph, n_comp, seed, range)
+    let n = graph.n_samples;
+    let flat = component_spectral_raw(&csr, n, |a| a, |j| j, n_comp, seed)?;
+    drop(csr);
+    let raw = flat.chunks_exact(n_comp).map(|r| r.to_vec()).collect();
+    Ok(finalise_spectral_embedding(raw, n_comp, range, seed))
 }
 
 ////////////
@@ -1272,38 +1234,46 @@ mod test_init {
     }
 
     #[test]
-    fn test_graph_to_negative_normalised_adjacency_simple() {
-        // Simple graph: 0 <-> 1 with equal weights
+    fn test_prune_spectral_graph_drops_self_loops_keeps_degree() {
+        // 0 <-> 1 plus a self-loop on 0
         let graph = CoordinateList {
-            row_indices: vec![0, 1],
-            col_indices: vec![1, 0],
-            values: vec![1.0, 1.0],
+            row_indices: vec![0, 0, 1],
+            col_indices: vec![0, 1, 0],
+            values: vec![2.0, 1.0, 1.0],
             n_samples: 2,
         };
 
-        let neg_adjacency = graph_to_negative_normalised_adjacency(&graph);
+        let mut csr = spectral_graph_from_coo(&graph).unwrap();
+        let comps = find_connected_components(&csr);
+        prune_spectral_graph(&mut csr, &comps.labels);
 
-        assert_eq!(neg_adjacency.shape(), (2, 2));
-        assert!(neg_adjacency.cs_type.is_csr());
-
-        // Only off-diagonal entries (no diagonal in negative normalised adjacency)
-        assert_eq!(neg_adjacency.get_nnz(), 2);
+        assert_eq!(comps.members.len(), 1);
+        assert_eq!(csr.indptr, vec![0, 1, 2]);
+        assert_eq!(csr.indices, vec![1, 0]);
+        // the self-loop leaves the matrix but still counts towards the degree
+        assert_relative_eq!(csr.d_inv_sqrt[0], 1.0 / 3.0f64.sqrt());
+        assert_relative_eq!(csr.d_inv_sqrt[1], 1.0);
     }
 
     #[test]
-    fn test_graph_to_negative_normalised_adjacency_isolated_vertex() {
-        // Graph with isolated vertex
+    fn test_prune_spectral_graph_isolated_and_cross_edges() {
+        // directed: BFS from 0 claims 2, so 1 -> 0 points into an already
+        // labelled component and is dropped; 3 is isolated
         let graph = CoordinateList {
-            row_indices: vec![0],
-            col_indices: vec![1],
-            values: vec![1.0],
-            n_samples: 3,
+            row_indices: vec![0, 1],
+            col_indices: vec![2, 0],
+            values: vec![1.0, 1.0],
+            n_samples: 4,
         };
 
-        let neg_adjacency = graph_to_negative_normalised_adjacency(&graph);
+        let mut csr = spectral_graph_from_coo(&graph).unwrap();
+        let comps = find_connected_components(&csr);
+        prune_spectral_graph(&mut csr, &comps.labels);
 
-        assert_eq!(neg_adjacency.shape(), (3, 3));
-        // Should handle isolated vertex (vertex 2) gracefully
+        assert_eq!(comps.members, vec![vec![0, 2], vec![1], vec![3]]);
+        assert_eq!(csr.indices, vec![2]);
+        assert_eq!(csr.d_inv_sqrt[1], 0.0);
+        assert_eq!(csr.d_inv_sqrt[3], 0.0);
     }
 
     #[test]
