@@ -5,101 +5,71 @@ Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 
 ## 0.5.0
 
-Requires the `manifolds-rs` 0.8.0.
+Requires `manifolds-rs` 0.8.0.
 
 **Breaking changes**
 
-- Spectral initialisation (the default for `UMAP`, `DensMAP`, their GPU
-  variants and `ForceAtlas2`), `PHATE` and `DiffusionMaps` return different
-  coordinates than 0.4.x at the same seed. The structure is the same; the eigensolver underneath changed.
-  Runs remain bit-identical at a fixed seed on the CPU.
+- Spectral init (`UMAP`, `DensMAP`, their GPU variants, `ForceAtlas2`),
+  `PHATE` and `DiffusionMaps` give different coordinates than 0.4.x at the
+  same seed. Same structure, new eigensolver.
 
 **Performance**
 
-- Spectral initialisation needs about half the memory on connected graphs
-  and about a quarter on disconnected ones, which matters from a few million
-  cells upwards.
-
-**Fixes**
-
-- A graph too large for `u32` vertex indices raises `ValueError`.
+- Spectral init uses about half the memory on connected graphs and a quarter
+  on disconnected ones.
 
 ## 0.4.2
 
-Requires the `manifolds-rs` 0.7.3.
+Requires `manifolds-rs` 0.7.3.
 
 **Chore**
 
-- Builds without `faer`'s `npy` feature, which drops `stacker` from the build
-  tree and fixes Windows ARM64 cross-builds. No API change.
+- Fixes Windows ARM64 cross-builds. No API change.
 
 ## 0.4.1
 
-Requires the `manifolds-rs` 0.7.2.
+Requires `manifolds-rs` 0.7.2.
 
 **Features**
 
-- Takes the reduced memory allocations from `manifolds-rs` affecting basically
-  all methods.
+- Less memory in kNN graph construction.
 
 ## 0.4.0
 
-Requires the `manifolds-rs` 0.7.0.
+Requires `manifolds-rs` 0.7.0.
 
 **Features**
 
 - `DREAMS` and `DREAMSGpu` (Kury, Kobak & Damrich, TMLR 2026): t-SNE pulled
-  towards a global reference layout, so you keep the clusters and get a
-  sensible arrangement of them. `lambda_` slides from plain t-SNE (0) to the
-  reference (1), default 0.15 as in the paper. The reference is PCA of the
-  data unless you pass one to `fit(X, reference=...)` as an
-  `(n_samples, 2)` array (MDS, PHATE, whatever you trust globally).
-- `DREAMSGpu(approx="fft_3k_gpu")` runs the regulariser inside the GPU
-  optimiser as well.
-- `init` is accepted for signature parity with `TSNE` but ignored: DREAMS
-  always starts from its reference.
-- Opt-in MLX for Apple Silicon, from a source build only: `brew install mlx-c`,
-  then `maturin develop --release --features mlx`. `mf.mlx_available()` says
-  whether you have it. It adds `optimiser="adam_mlx"` to `UMAP` and
-  `DensMAP`, `approx="fft_3k_mlx"` to `TSNE`, `DREAMS`, `TSNEGpu` and
-  `DREAMSGpu`, and `ann="exhaustive_mlx" | "ivf_mlx" | "nndescent_mlx"` to
-  every CPU estimator and `knn_graph`. A build without it refuses those names
-  and says how to get them. The published wheels do not carry it, since it
-  links mlx-c dynamically.
-- CPU FFT t-SNE is back in the wheel: `approx="fft"` and `approx="fft_3k"` on
-  `TSNE`, `DensNE`, `DREAMS`, `TSNEGpu` and `DREAMSGpu` (GPU neighbour search,
-  CPU optimiser), and on `mf.tsne(adata)`. The core dropped FFTW for pure-Rust
-  `rustfft`, so there is no GPL library left to keep out.
+  towards a global reference layout.
+- Opt-in MLX for Apple Silicon, source builds only (`--features mlx`).
+- CPU FFT t-SNE (`approx="fft"` and `"fft_3k"`) is back in the wheel.
 
 ## 0.3.2
 
-Requires the `manifolds-rs` 0.6.2.
+Requires `manifolds-rs` 0.6.2.
 
 **Features**
 
-- Pull in the changes from `manifolds-rs` with the improved k-means clustering.
+- Improved k-means.
 
 ## 0.3.1
 
-Requires the `manifolds-rs` 0.6.1.
+Requires `manifolds-rs` 0.6.1.
 
 **Features**
 
-- Pull in the changes from `manifolds-rs` with the faster GPU-accelerated kNN
-  searches.
+- Faster GPU kNN searches.
 
 ## 0.3.0
 
-Requires the `manifolds-rs` 0.6.0.
+Requires `manifolds-rs` 0.6.0.
 
 **Features**
 
-- `TSNE(approx="qd")`, `DensNE(approx="qd")` and `TSNEGpu(approx="qd")`: the
-  quick-and-dirty Barnes-Hut of qdtsne. The tree depth is capped at the new
-  `TsneOptim.max_depth` (default 7) and repulsion is computed once per leaf.
-  On 20k points: ca. 3x faster than `"barnes_hut"`, silhouette 0.783 against
-  0.796; `max_depth=10` gave 2x faster and 0.795.
-- Some of the kNN searches became faster.
+- Quick-and-dirty Barnes-Hut t-SNE: `approx="qd"` on `TSNE`, `DensNE` and
+  `TSNEGpu`.
+- Faster kNN searches.
 
 ## 0.2.1
 
@@ -107,8 +77,7 @@ Requires `manifolds-rs` 0.5.4.
 
 **Features**
 
-- Takes in the faster k-means for some of the indices (and PHATE) and Accelerate
-  GEMM for MacOS.
+- Faster k-means and Accelerate GEMM on macOS.
 
 ## 0.2.0
 
@@ -116,26 +85,17 @@ Requires `manifolds-rs` 0.5.3.
 
 **Features**
 
-- Scanpy-style `mf.umap(adata)` and `mf.tsne(adata)`. They write
-  `obsm["X_umap"]` / `obsm["X_tsne"]` and `uns["umap"]` / `uns["tsne"]` as
-  `sc.tl.umap` / `sc.tl.tsne` do, so `sc.pl.*` works unchanged. UMAP reuses the
-  `sc.pp.neighbors` graph; t-SNE searches on `use_rep` / `n_pcs`.
-  `device="gpu"` switches to the GPU estimators, `key_added` and `copy` behave
-  as in scanpy. Needs the new `anndata` extra: `manifolds-rs[anndata]`.
-- `TSNEGpu(approx="fft_3k_gpu")`: the device-resident three-kernel FFT
-  optimiser. The whole t-SNE optimisation runs on the GPU, no FFTW needed.
+- Scanpy-style `mf.umap(adata)` and `mf.tsne(adata)`, with the `anndata`
+  extra.
+- `TSNEGpu(approx="fft_3k_gpu")`: t-SNE fully on the GPU.
 
 **Breaking changes**
 
-- `approx="fft"` is no longer accepted by `TSNE` / `DensNE`. The wheel is built
-  without FFTW, so it only ever reached a panic in the core; it now fails
-  validation with a `ValueError` like any other unknown name.
+- `approx="fft"` is rejected by `TSNE` / `DensNE`.
 
 **Docs**
 
-- New AnnData / scanpy page with a 25k-cell benchmark against scanpy.
-- The reason CPU FFT t-SNE is not in the wheel is now the right one: FFTW is
-  GPL-2.0-or-later and would be linked statically.
+- New AnnData / scanpy page.
 
 ## 0.1.4
 
