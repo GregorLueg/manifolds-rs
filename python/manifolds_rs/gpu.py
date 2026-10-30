@@ -67,8 +67,9 @@ class UMAPGpu(BaseEmbedding):
     """UMAP with a GPU neighbour search and a GPU Adam optimiser.
 
     ``"nndescent_gpu"`` builds the kNN graph with NN-Descent on the device and
-    is the default for good reason: it is the one that scales. ``"exhaustive_gpu"`` gives exact
-    neighbours and is the honest choice for ground truth, at quadratic cost.
+    is the default for good reason: it is the one that scales.
+    ``"exhaustive_gpu"`` gives exact neighbours and is the honest choice for
+    ground truth, at quadratic cost.
 
     Args:
         n_components: Output dimensionality.
