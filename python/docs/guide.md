@@ -49,11 +49,15 @@ bit-identical embedding. It is a shortcut, not a different algorithm.
 
 ## Choosing a neighbour backend
 
-`"kmknn"` is the default and is exact. It holds up well into the hundreds of
-thousands, which surprises people who assume exact means slow.
+The default follows `k`. Estimators that ask for a small neighbourhood (UMAP,
+densMAP, PHATE, PaCMAP, diffusion maps, ForceAtlas2) default to `"nndescent"`.
+t-SNE, den-SNE and DREAMS ask for `3 * perplexity` neighbours and default to
+`"ivf"`, which holds up better at that size.
 
-Past that, `"nndescent"` or `"hnsw"`. `"exhaustive"` is for ground truth.
-`"annoy"`, `"balltree"` and `"ivf"` are there for the cases where they win.
+`"kmknn"` is exact and holds up well into the hundreds of thousands, which
+surprises people who assume exact means slow. `"exhaustive"` is for ground
+truth. `"hnsw"`, `"annoy"` and `"balltree"` are there for the cases where they
+win.
 
 Each has its own knobs in `NeighbourParams`, and only the ones belonging to your
 chosen backend do anything. Setting `ef_search` while running `"annoy"` is
@@ -134,9 +138,7 @@ equally (0.623 versus 0.628). So it is data-dependent rather than guaranteed
 either way.
 
 If you need the coordinates themselves to be reproducible, use the CPU
-estimators, or turn the graph extraction off with
-`NeighbourParamsGpu(extract_knn=False)`, which narrows but does not eliminate
-it. Do not turn a plot into a figure and expect the pixels back; do rely on the
+estimators, or build the graph once with `knn_graph` and hand it in. Do not turn a plot into a figure and expect the pixels back; do rely on the
 clusters, the branches and the separations being there.
 
 Across dtypes reproducibility does not hold either way: float32 and float64

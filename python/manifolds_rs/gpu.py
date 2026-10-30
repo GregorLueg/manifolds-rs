@@ -66,8 +66,8 @@ _GPU_DTYPE: np.dtype = np.dtype(np.float32)
 class UMAPGpu(BaseEmbedding):
     """UMAP with a GPU neighbour search and a GPU Adam optimiser.
 
-    ``"nndescent_gpu"`` builds a CAGRA graph on the device and is the default
-    for good reason: it is the one that scales. ``"exhaustive_gpu"`` gives exact
+    ``"nndescent_gpu"`` builds the kNN graph with NN-Descent on the device and
+    is the default for good reason: it is the one that scales. ``"exhaustive_gpu"`` gives exact
     neighbours and is the honest choice for ground truth, at quadratic cost.
 
     Args:
@@ -236,9 +236,8 @@ class TSNEGpu(BaseEmbedding):
     optimisation on the device as well: FFT-interpolated repulsion with three
     kernels, the embedding resident on the GPU throughout.
 
-    When `ann` is ``"nndescent_gpu"`` and `NeighbourParamsGpu.k` is left unset,
-    the CAGRA graph degree is backfilled to ``3 * perplexity`` so it is sized for
-    the query t-SNE actually makes.
+    The search defaults to ``"ivf_gpu"`` rather than ``"nndescent_gpu"``: t-SNE
+    asks for ``3 * perplexity`` neighbours, and IVF holds up better at that `k`.
 
     Args:
         n_components: Output dimensionality. Must be 2.
@@ -271,7 +270,7 @@ class TSNEGpu(BaseEmbedding):
         n_epochs: int = 1000,
         learning_rate: float | None = None,
         init: str = "pca",
-        ann: str = "nndescent_gpu",
+        ann: str = "ivf_gpu",
         approx: str = "barnes_hut",
         randomised_init: bool = True,
         init_range: float | None = None,
@@ -343,7 +342,7 @@ class DREAMSGpu(ReferenceEmbedding):
         n_epochs: int = 1000,
         learning_rate: float | None = None,
         init: str = "pca",
-        ann: str = "nndescent_gpu",
+        ann: str = "ivf_gpu",
         approx: str = "barnes_hut",
         randomised_init: bool = True,
         init_range: float | None = None,

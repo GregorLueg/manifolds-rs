@@ -63,8 +63,8 @@ class UMAP(BaseEmbedding):
         n_epochs: Optimisation epochs.
         learning_rate: Initial learning rate.
         init: ``"spectral"``, ``"pca"`` or ``"random"``.
-        ann: Neighbour backend. ``"kmknn"`` is exact and fast up to a few
-            hundred thousand points; ``"hnsw"`` or ``"nndescent"`` past that.
+        ann: Neighbour backend. ``"nndescent"`` suits the small `k` here;
+            ``"kmknn"`` is exact and fast up to a few hundred thousand points.
         optimiser: ``"adam_parallel"``, ``"adam"`` or ``"sgd"``.
         randomised: Use randomised SVD for the PCA initialisation. No effect
             under spectral or random init.
@@ -92,7 +92,7 @@ class UMAP(BaseEmbedding):
         n_epochs: int = 500,
         learning_rate: float = 1.0,
         init: str = "spectral",
-        ann: str = "kmknn",
+        ann: str = "nndescent",
         optimiser: str = "adam_parallel",
         randomised: bool = False,
         init_range: float | None = None,
@@ -174,7 +174,7 @@ class DensMAP(UMAP):
         n_epochs: int = 500,
         learning_rate: float = 1.0,
         init: str = "spectral",
-        ann: str = "kmknn",
+        ann: str = "nndescent",
         optimiser: str = "adam_parallel",
         randomised: bool = False,
         init_range: float | None = None,
@@ -261,7 +261,7 @@ class TSNE(BaseEmbedding):
         n_epochs: int = 1000,
         learning_rate: float | None = None,
         init: str = "pca",
-        ann: str = "kmknn",
+        ann: str = "ivf",
         approx: str = "barnes_hut",
         randomised_init: bool = True,
         init_range: float | None = None,
@@ -330,7 +330,7 @@ class DensNE(TSNE):
         n_epochs: int = 1000,
         learning_rate: float | None = None,
         init: str = "pca",
-        ann: str = "kmknn",
+        ann: str = "ivf",
         approx: str = "barnes_hut",
         randomised_init: bool = True,
         init_range: float | None = None,
@@ -397,7 +397,7 @@ class DREAMS(ReferenceEmbedding):
         n_epochs: int = 1000,
         learning_rate: float | None = None,
         init: str = "pca",
-        ann: str = "kmknn",
+        ann: str = "ivf",
         approx: str = "barnes_hut",
         randomised_init: bool = True,
         init_range: float | None = None,
@@ -487,7 +487,7 @@ class PHATE(BaseEmbedding):
         gamma: float = 1.0,
         mds: str = "sgd_dense",
         mds_iter: int | None = None,
-        ann: str = "kmknn",
+        ann: str = "nndescent",
         randomised: bool = True,
         seed: int = 42,
         verbose: int = 0,
@@ -586,7 +586,7 @@ class PaCMAP(BaseEmbedding):
         n_epochs: int = 450,
         learning_rate: float = 0.01,
         init: str = "pca",
-        ann: str = "kmknn",
+        ann: str = "nndescent",
         optimiser: str = "adam_parallel",
         range_: float | None = 0.01,
         seed: int = 42,
@@ -680,7 +680,7 @@ class DiffusionMaps(BaseEmbedding):
         n_landmarks: int | None = None,
         landmark_method: str = "spectral",
         n_svd: int | None = None,
-        ann: str = "kmknn",
+        ann: str = "nndescent",
         seed: int = 42,
         verbose: int = 0,
         nn_params: NeighbourParams | None = None,
@@ -772,7 +772,7 @@ class ForceAtlas2(BaseEmbedding):
         gravity: float = 1.0,
         lin_log: bool = False,
         init: str = "spectral",
-        ann: str = "kmknn",
+        ann: str = "nndescent",
         approx: str = "barnes_hut",
         randomised_init: bool = False,
         init_range: float | None = None,

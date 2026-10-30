@@ -80,7 +80,8 @@ Rough ordering on the same data, dominated by different things:
   above roughly 50k points or you will wait.
 
 For all of them, past a few hundred thousand points the neighbour search
-dominates. Switch `ann` to `"nndescent"` or `"hnsw"`, or build the graph once
+dominates. The defaults (`"nndescent"`, `"ivf"` for the t-SNE family) are
+built for that; `"hnsw"` is the alternative. Or build the graph once
 with [`knn_graph`](api/neighbours.md) and hand it to each estimator.
 
 ## What none of them do

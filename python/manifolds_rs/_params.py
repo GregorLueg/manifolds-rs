@@ -132,19 +132,8 @@ class NeighbourParams:
         m: HNSW. Edges per node on the upper layers, ``2 * m`` on layer 0.
         ef_construction: HNSW. Candidate list width during the build.
         ef_search: HNSW. Beam width at query time, the recall knob.
-        diversify_prob: NN-Descent. Diversification probability applied to the
-            finished graph.
         delta: NN-Descent. Convergence threshold, as a fraction of neighbours
             updated in an iteration.
-        ef_budget: NN-Descent. Beam budget when querying. ``None`` picks one.
-            No effect when `extract_knn` is on, since no search runs.
-        extract_knn: NN-Descent. Return the graph the descent already built
-            instead of searching it. On by default: a self-kNN query
-            re-searches a graph that is already a kNN graph. Measured on 20k
-            points in 50D, identical recall and about 25% faster at ``k=15``;
-            at ``k=50`` the graph is widened to cover the request, which is
-            slower to build but reaches perfect recall where the beam search
-            drops to 0.989.
         bt_budget: Ball tree. Fraction of the dataset to visit per query.
         n_list: IVF. Voronoi cells. ``None`` gives ``sqrt(n)``.
         n_probes: IVF. Cells visited per query. ``None`` gives ``sqrt(n_list)``.
@@ -155,10 +144,7 @@ class NeighbourParams:
     m: int | None = None
     ef_construction: int | None = None
     ef_search: int | None = None
-    diversify_prob: float | None = None
     delta: float | None = None
-    ef_budget: int | None = None
-    extract_knn: bool | None = None
     bt_budget: float | None = None
     n_list: int | None = None
     n_probes: int | None = None
@@ -168,41 +154,25 @@ class NeighbourParams:
 class NeighbourParamsGpu:
     """Backend-specific knobs for the GPU neighbour search.
 
-    A different set from `NeighbourParams`, not a subset: the device backends
-    build a CAGRA graph and search it with a beam, neither of which has a CPU
-    counterpart.
+    A different set from `NeighbourParams`, not a subset: the device NN-Descent
+    has its own working degree and sampling knobs.
 
     Attributes:
         n_list: IVF-GPU. Voronoi cells. ``None`` gives ``sqrt(n)``.
         n_probes: IVF-GPU. Cells visited per query.
-        k: NN-Descent-GPU. Node degree after pruning. ``None`` gives 30, except
-            under t-SNE where it is backfilled to ``3 * perplexity``.
-        k_build: NN-Descent-GPU. Node degree before pruning.
+        k_build: NN-Descent-GPU. Working degree of the descent. ``None`` gives
+            ``1.5 * k``.
         n_tree: NN-Descent-GPU. Trees used to seed the graph.
         delta: NN-Descent-GPU. Convergence threshold.
         rho: NN-Descent-GPU. Sampling rate per iteration.
-        beam_width: NN-Descent-GPU. Beam width when querying.
-        max_beam_iters: NN-Descent-GPU. Beam iterations when querying.
-        n_entry_points: NN-Descent-GPU. Entry points per query.
-        extract_knn: NN-Descent-GPU. Return the built CAGRA graph instead of
-            searching it. On by default, as for the CPU backend, and worth
-            about a third off a full GPU embedding: 0.74s to 0.48s at 20k
-            points in 50D. It can cost bit-reproducibility on some inputs; see
-            the reproducibility section of the guide. `beam_width`,
-            `max_beam_iters` and `n_entry_points` do nothing when it is on.
     """
 
     n_list: int | None = None
     n_probes: int | None = None
-    k: int | None = None
     k_build: int | None = None
     n_tree: int | None = None
     delta: float | None = None
     rho: float | None = None
-    beam_width: int | None = None
-    max_beam_iters: int | None = None
-    n_entry_points: int | None = None
-    extract_knn: bool | None = None
 
 
 @dataclass(frozen=True)
