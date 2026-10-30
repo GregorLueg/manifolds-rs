@@ -10,6 +10,16 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 - Spectral init, PHATE and diffusion maps give different coordinates than
   0.7.x at the same seed (new eigensolver). Still bit-identical per seed.
 - New `ManifoldsError::TooManyVertices` and `TooManyEdges` variants.
+- `ann-search-rs` 0.12.0. NN-Descent (CPU, wgpu, MLX) builds the kNN graph
+  directly, no index and no query. Dropped from `NearestNeighbourParams`:
+  `diversify_prob`, `ef_budget`, `extract_knn`. Dropped from
+  `NearestNeighbourParamsGpu`: `k`, `beam_width`, `max_beam_iters`,
+  `n_entry_points`, `extract_knn`.
+- kNN defaults follow `k`: `"nndescent"` for UMAP, densMAP, PHATE, PaCMAP,
+  diffusion maps, ForceAtlas2 and parametric UMAP; `"ivf"` for tSNE, densNE
+  and DREAMS; `"ivf_gpu"` for GPU tSNE. Different embeddings at the same seed.
+- `Verbosity` is now the `ann-search-rs` one, re-exported from the prelude.
+  Level 1 also prints the kNN build and query, level 2 the index internals.
 
 **Performance**
 

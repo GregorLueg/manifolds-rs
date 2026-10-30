@@ -12,6 +12,15 @@ Requires `manifolds-rs` 0.8.0.
 - Spectral init (`UMAP`, `DensMAP`, their GPU variants, `ForceAtlas2`),
   `PHATE` and `DiffusionMaps` give different coordinates than 0.4.x at the
   same seed. Same structure, new eigensolver.
+- Default `ann` follows `k`: `"nndescent"` for `UMAP`, `DensMAP`, `PHATE`,
+  `PaCMAP`, `DiffusionMaps` and `ForceAtlas2`; `"ivf"` for `TSNE`, `DensNE`
+  and `DREAMS`; `"ivf_gpu"` for `TSNEGpu` and `DREAMSGpu`. Different
+  embeddings at the same seed.
+- NN-Descent returns the graph it builds, no search. Dropped from
+  `NeighbourParams`: `diversify_prob`, `ef_budget`, `extract_knn`. Dropped
+  from `NeighbourParamsGpu`: `k`, `beam_width`, `max_beam_iters`,
+  `n_entry_points`, `extract_knn`.
+- `verbose=1` also reports the neighbour search, `verbose=2` its internals.
 
 **Performance**
 
