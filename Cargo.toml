@@ -57,7 +57,7 @@ large_scale_diagnostics = []
 ndarray = ["dep:ndarray"]
 
 [dependencies]
-ann-search-rs = { version = "0.11.2" }
+ann-search-rs = { version = "0.12.0" }
 approx = "0.5.1"
 bincode = { version = "2.0.1", features = ["serde"], optional = true }
 burn = { version = "0.22.0", default-features = false, features = [
@@ -84,3 +84,6 @@ rustfft = { version = "6.4.1", optional = true }
 serde = { version = "1.0.228", optional = true }
 thousands = "0.2.0"
 thiserror = "2.0.18"
+
+[patch.crates-io]
+ann-search-rs = { git = "https://github.com/GregorLueg/ann-search-rs.git", branch = "chore-clean-up" }

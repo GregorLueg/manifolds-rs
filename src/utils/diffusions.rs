@@ -750,7 +750,7 @@ where
                     &Dist::SquaredEuclidean,
                     Some(k_means_params),
                     seed,
-                    verbosity.detailed_verbosity(),
+                    verbosity,
                 )?;
 
                 if verbosity.detailed_verbosity() {
@@ -775,7 +775,7 @@ where
                     println!(" Landmark assignments done.")
                 }
 
-                assignemnts
+                assignemnts.into_iter().map(|c| c as usize).collect()
             }
             LandmarkMethod::Density { seed } => {
                 if verbosity.normal_verbosity() {
@@ -1434,7 +1434,7 @@ where
                     &Dist::SquaredEuclidean,
                     Some(k_means_params),
                     seed,
-                    verbosity.detailed_verbosity(),
+                    verbosity,
                 )?;
                 let centroid_norms = vec![T::one(); n_landmarks];
                 let data_norms = vec![T::one(); n];
@@ -1455,7 +1455,7 @@ where
                     let centroid = &centroids[cluster_idx * k_proj..(cluster_idx + 1) * k_proj];
                     let mut best: Option<(usize, T)> = None;
                     for (point_idx, &c) in assignments.iter().enumerate() {
-                        if c == cluster_idx {
+                        if c as usize == cluster_idx {
                             let point =
                                 &embedding_flat[point_idx * k_proj..(point_idx + 1) * k_proj];
                             let d = T::euclidean_simd(centroid, point);

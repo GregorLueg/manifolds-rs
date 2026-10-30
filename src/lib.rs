@@ -154,7 +154,7 @@ where
             n_dim: 2,
             k: 15,
             optimiser: "adam_parallel".to_string(),
-            ann_type: "kmknn".to_string(),
+            ann_type: "nndescent".to_string(),
             initialisation: "spectral".to_string(),
             init_range: None,
             nn_params: NearestNeighbourParams::default(),
@@ -623,7 +623,7 @@ where
         Self {
             n_dim: 2,
             perplexity: T::from_f64(30.0).unwrap(),
-            ann_type: "kmknn".to_string(),
+            ann_type: "ivf".to_string(),
             initialisation: "pca".to_string(),
             init_range: None,
             nn_params: NearestNeighbourParams::default(),
@@ -2152,7 +2152,7 @@ where
     fn default() -> Self {
         Self {
             k: 15,
-            ann_type: "kmknn".to_string(),
+            ann_type: "nndescent".to_string(),
             initialisation: "spectral".to_string(),
             init_range: None,
             randomised_init: false,
@@ -2574,7 +2574,7 @@ where
         Self {
             n_dim: 2,
             k: 5,
-            ann_type: "kmknn".to_string(),
+            ann_type: "nndescent".to_string(),
             ann_params: NearestNeighbourParams::default(),
             diffusion_params,
             mds_method: "sgd_dense".to_string(),
@@ -3068,7 +3068,7 @@ where
     fn default() -> Self {
         Self {
             n_dim: 2,
-            ann_type: "kmknn".to_string(),
+            ann_type: "nndescent".to_string(),
             optimiser_type: "adam_parallel".to_string(),
             n_near: 10,
             n_mid_near: 5,
@@ -3397,7 +3397,7 @@ where
         Self {
             n_dim: 2,
             k: 5,
-            ann_type: "kmknn".to_string(),
+            ann_type: "nndescent".to_string(),
             ann_params: NearestNeighbourParams::default(),
             bandwidth_scale: T::from_f64(1.0).unwrap(),
             thresh: T::from_f64(1e-4).unwrap(),
@@ -3849,7 +3849,7 @@ pub struct ParametricUmapParams<T> {
     /// Number of neighbours
     pub k: usize,
     /// Which of the possible approximate nearest neighbour searches to use.
-    /// Defaults to `"hnsw"`.
+    /// Defaults to `"nndescent"`.
     pub ann_type: String,
     /// Vector of usizes for the hidden layers in the MLP.
     pub hidden_layers: Vec<usize>,
@@ -3870,7 +3870,7 @@ where
         Self {
             n_dim: 2,
             k: 15,
-            ann_type: "hnsw".to_string(),
+            ann_type: "nndescent".to_string(),
             hidden_layers: vec![128, 128, 128],
             nn_params: NearestNeighbourParams::default(),
             umap_graph_params: UmapGraphParams::default(),
@@ -4826,7 +4826,7 @@ pub struct TsneParamsGpu<T> {
     /// Perplexity parameter controlling neighbourhood size (typical: 5-50)
     pub perplexity: T,
     /// Which GPU ANN search to use. One of `"exhaustive_gpu"`, `"ivf_gpu"` or
-    /// `"nndescent_gpu"`. Defaults to `"nndescent_gpu"`.
+    /// `"nndescent_gpu"`. Defaults to `"ivf_gpu"`.
     pub ann_type: String,
     /// Embedding initialisation method: `"pca"`, `"random"`, or `"spectral"`
     pub initialisation: String,
@@ -4849,7 +4849,7 @@ where
         Self {
             n_dim: 2,
             perplexity: T::from_f64(30.0).unwrap(),
-            ann_type: "nndescent_gpu".to_string(),
+            ann_type: "ivf_gpu".to_string(),
             initialisation: "pca".to_string(),
             init_range: None,
             nn_params: NearestNeighbourParamsGpu::default(),
@@ -4998,24 +4998,6 @@ where
         None => {
             let k_float = perplexity * T::from_f64(3.0).unwrap();
             let k = k_float.to_usize().unwrap().max(5).min(data.nrows() - 1);
-
-            // For the nndescent_gpu path, the CAGRA graph degree (`params.k`)
-            // and NNDescent build degree (`params.k_build`) are independent
-            // of the query k. Left at their crate defaults (30 and ~45) they
-            // sit below `3 * perplexity` for any perplexity > ~10, so the
-            // beam search walks a graph too small to serve the query well.
-            // Backfill from `k` here when the user hasn't set them.
-            let scaled_params: NearestNeighbourParamsGpu<T>;
-            let nn_params = if nn_params.k.is_none() || nn_params.k_build.is_none() {
-                scaled_params = NearestNeighbourParamsGpu {
-                    k: nn_params.k.or(Some(k)),
-                    k_build: nn_params.k_build.or(Some(2 * k)),
-                    ..nn_params.clone()
-                };
-                &scaled_params
-            } else {
-                nn_params
-            };
 
             if verbosity.normal_verbosity() {
                 println!("Running GPU kNN search (k={}) using {}...", k, ann_type);

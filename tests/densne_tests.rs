@@ -392,7 +392,15 @@ fn densne_integration_07_precomputed_knn() {
 
     let k = (3.0 * 20.0_f64) as usize;
     let nn_params = NearestNeighbourParams::default();
-    let knn = run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
+    let knn = run_ann_search(
+        data.as_ref(),
+        k,
+        params.tsne_params.ann_type.clone(),
+        &nn_params,
+        42,
+        0,
+    )
+    .unwrap();
 
     let internal = densne(data.as_ref(), None, &params, "bh", 42, 0).unwrap();
     let external = densne(data.as_ref(), Some(knn), &params, "bh", 42, 0).unwrap();

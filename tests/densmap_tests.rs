@@ -394,7 +394,7 @@ fn densmap_integration_07_precomputed_knn() {
     let knn = run_ann_search(
         data.as_ref(),
         params.umap_params.k,
-        "kmknn".to_string(),
+        params.umap_params.ann_type.clone(),
         &nn_params,
         42,
         0,
