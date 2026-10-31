@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
     
     
       
@@ -31,10 +31,10 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.57a0d79d.min.css">
       
         
-        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.fb2fffe2.min.css">
       
       
 
@@ -895,9 +895,10 @@
 
 
         <p>UMAP with a GPU neighbour search and a GPU Adam optimiser.</p>
-<p><code>"nndescent_gpu"</code> builds a CAGRA graph on the device and is the default
-for good reason: it is the one that scales. <code>"exhaustive_gpu"</code> gives exact
-neighbours and is the honest choice for ground truth, at quadratic cost.</p>
+<p><code>"nndescent_gpu"</code> builds the kNN graph with NN-Descent on the device and
+is the default for good reason: it is the one that scales.
+<code>"exhaustive_gpu"</code> gives exact neighbours and is the honest choice for
+ground truth, at quadratic cost.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1394,7 +1395,7 @@ device alongside the rest of the update.</p>
 <a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">n_epochs</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">1000</span><span class="p">,</span>
 <a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">learning_rate</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">init</span><span class="p">:</span> <span class="n"><span title="str">str</span></span> <span class="o">=</span> <span class="s2">"pca"</span><span class="p">,</span>
-<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">ann</span><span class="p">:</span> <span class="n"><span title="str">str</span></span> <span class="o">=</span> <span class="s2">"nndescent_gpu"</span><span class="p">,</span>
+<a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">ann</span><span class="p">:</span> <span class="n"><span title="str">str</span></span> <span class="o">=</span> <span class="s2">"ivf_gpu"</span><span class="p">,</span>
 <a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">approx</span><span class="p">:</span> <span class="n"><span title="str">str</span></span> <span class="o">=</span> <span class="s2">"barnes_hut"</span><span class="p">,</span>
 <a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">randomised_init</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 <a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">init_range</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -1426,9 +1427,8 @@ device alongside the rest of the update.</p>
 repulsion stays on the CPU. <code>approx="fft_3k_gpu"</code> runs the whole
 optimisation on the device as well: FFT-interpolated repulsion with three
 kernels, the embedding resident on the GPU throughout.</p>
-<p>When <code>ann</code> is <code>"nndescent_gpu"</code> and <code>NeighbourParamsGpu.k</code> is left unset,
-the CAGRA graph degree is backfilled to <code>3 * perplexity</code> so it is sized for
-the query t-SNE actually makes.</p>
+<p>The search defaults to <code>"ivf_gpu"</code> rather than <code>"nndescent_gpu"</code>: t-SNE
+asks for <code>3 * perplexity</code> neighbours, and IVF holds up better at that <code>k</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -1551,7 +1551,7 @@ the query t-SNE actually makes.</p>
               </div>
             </td>
             <td>
-                  <code>&#39;nndescent_gpu&#39;</code>
+                  <code>&#39;ivf_gpu&#39;</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -1767,10 +1767,10 @@ optimisers, see <code>TSNE</code>), or <code>"fft_3k_gpu"</code> (GPU optimiser)
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../../assets/javascripts/bundle.c21346df.min.js"></script>
       
     
   </body>

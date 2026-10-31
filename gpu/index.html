@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
     
     
       
@@ -31,10 +31,10 @@
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
       
         
-        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
       
       
 
@@ -965,21 +965,19 @@ not. See <a href="../guide/#reproducibility">the guide</a> for the measurements.
 precomputed graph makes a GPU run reproducible too.</p>
 <h2 id="different-neighbour-backends">Different neighbour backends<a class="headerlink" href="#different-neighbour-backends" title="Permanent link">&para;</a></h2>
 <p>The device backends are not the CPU ones with a suffix. <code>"nndescent_gpu"</code> builds
-a CAGRA graph and is the default because it is the one that scales;
-<code>"ivf_gpu"</code> and <code>"exhaustive_gpu"</code> are the other two. Passing a CPU-only name
-like <code>"hnsw"</code> is an error rather than a silent fallback.</p>
+the kNN graph with NN-Descent on the device and is the default for <code>UMAPGpu</code>
+and <code>DensMAPGpu</code>. <code>TSNEGpu</code> and <code>DREAMSGpu</code> ask for <code>3 * perplexity</code>
+neighbours and default to <code>"ivf_gpu"</code>, which holds up better at that <code>k</code>.
+<code>"exhaustive_gpu"</code> is the third. Passing a CPU-only name like <code>"hnsw"</code> is an
+error rather than a silent fallback.</p>
 <p>Their knobs live in <a href="../api/params/"><code>NeighbourParamsGpu</code></a>, which is a different
-set from the CPU <code>NeighbourParams</code>: CAGRA build degrees and beam-search budgets
-have no CPU counterpart.</p>
+set from the CPU <code>NeighbourParams</code>.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">mf</span><span class="o">.</span><span class="n">UMAPGpu</span><span class="p">(</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">n_neighbors</span><span class="o">=</span><span class="mi">15</span><span class="p">,</span>
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">ann</span><span class="o">=</span><span class="s2">"nndescent_gpu"</span><span class="p">,</span>
-<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">nn_params</span><span class="o">=</span><span class="n">mf</span><span class="o">.</span><span class="n">NeighbourParamsGpu</span><span class="p">(</span><span class="n">k_build</span><span class="o">=</span><span class="mi">64</span><span class="p">,</span> <span class="n">beam_width</span><span class="o">=</span><span class="mi">32</span><span class="p">),</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">nn_params</span><span class="o">=</span><span class="n">mf</span><span class="o">.</span><span class="n">NeighbourParamsGpu</span><span class="p">(</span><span class="n">k_build</span><span class="o">=</span><span class="mi">64</span><span class="p">),</span>
 <a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="p">)</span>
 </code></pre></div>
-<p>Under <code>TSNEGpu</code> with <code>nndescent_gpu</code>, leaving <code>NeighbourParamsGpu.k</code> unset
-backfills the graph degree to <code>3 * perplexity</code>, so it is sized for the query
-t-SNE actually makes.</p>
 <h2 id="mixing-cpu-and-gpu">Mixing CPU and GPU<a class="headerlink" href="#mixing-cpu-and-gpu" title="Permanent link">&para;</a></h2>
 <p>The neighbour graph is just two arrays, so you can build it wherever it is
 cheapest and hand it to whichever estimator you like:</p>
@@ -1080,10 +1078,10 @@ large t-SNE. See the
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
       
     
   </body>
