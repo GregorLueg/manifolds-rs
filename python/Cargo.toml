@@ -64,6 +64,3 @@ panic = "unwind"
 # useless: these are 500-epoch optimisation loops.
 [profile.dev]
 opt-level = 2
-
-[patch.crates-io]
-ann-search-rs = { git = "https://github.com/GregorLueg/ann-search-rs.git", branch = "chore-clean-up" }

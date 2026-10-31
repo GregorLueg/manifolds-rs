@@ -84,6 +84,3 @@ rustfft = { version = "6.4.1", optional = true }
 serde = { version = "1.0.228", optional = true }
 thousands = "0.2.0"
 thiserror = "2.0.18"
-
-[patch.crates-io]
-ann-search-rs = { git = "https://github.com/GregorLueg/ann-search-rs.git", branch = "chore-clean-up" }
