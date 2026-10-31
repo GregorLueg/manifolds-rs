@@ -255,10 +255,7 @@ where
     set(&mut p.m, r.get::<usize>("m")?);
     set(&mut p.ef_construction, r.get::<usize>("ef_construction")?);
     set(&mut p.ef_search, r.get::<usize>("ef_search")?);
-    set(&mut p.diversify_prob, r.float::<T>("diversify_prob")?);
     set(&mut p.delta, r.float::<T>("delta")?);
-    p.ef_budget = r.get::<usize>("ef_budget")?.or(p.ef_budget);
-    set(&mut p.extract_knn, r.get::<bool>("extract_knn")?);
     set(&mut p.bt_budget, r.float::<T>("bt_budget")?);
     p.n_list = r.get::<usize>("n_list")?.or(p.n_list);
     p.n_probes = r.get::<usize>("n_probes")?.or(p.n_probes);
@@ -883,15 +880,10 @@ where
     set(&mut p.dist_metric, r.get::<String>("dist_metric")?);
     p.n_list = r.get::<usize>("n_list")?.or(p.n_list);
     p.n_probes = r.get::<usize>("n_probes")?.or(p.n_probes);
-    p.k = r.get::<usize>("k")?.or(p.k);
     p.k_build = r.get::<usize>("k_build")?.or(p.k_build);
     p.n_tree = r.get::<usize>("n_tree")?.or(p.n_tree);
     set(&mut p.delta, r.float::<T>("delta")?);
     p.rho = r.float::<T>("rho")?.or(p.rho);
-    p.beam_width = r.get::<usize>("beam_width")?.or(p.beam_width);
-    p.max_beam_iters = r.get::<usize>("max_beam_iters")?.or(p.max_beam_iters);
-    p.n_entry_points = r.get::<usize>("n_entry_points")?.or(p.n_entry_points);
-    set(&mut p.extract_knn, r.get::<bool>("extract_knn")?);
     r.finish()
 }
 

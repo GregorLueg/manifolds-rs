@@ -86,21 +86,18 @@ def test_euclidean_and_l2_are_the_same_metric(X: np.ndarray) -> None:
     assert np.array_equal(a, b)
 
 
-def test_extraction_matches_the_query_path(X: np.ndarray) -> None:
-    """NN-Descent can return the graph it built instead of searching it. Both
-    paths owe the caller full, self-free, sorted rows."""
+def test_nndescent_graph_is_full_and_self_free(X: np.ndarray) -> None:
+    """NN-Descent hands back the graph it built. It still owes the caller full,
+    self-free, sorted rows."""
     truth, _ = mf.knn_graph(X, k=10, ann="exhaustive", seed=7)
+    ind, dist = mf.knn_graph(X, k=10, ann="nndescent", seed=7)
 
-    for extract in (True, False):
-        params = mf.NeighbourParams(extract_knn=extract)
-        ind, dist = mf.knn_graph(X, k=10, ann="nndescent", nn_params=params, seed=7)
+    assert (ind >= 0).all(), "rows came back short"
+    assert not (ind == np.arange(X.shape[0])[:, None]).any()
+    assert (np.diff(dist, axis=1) >= 0).all()
 
-        assert (ind >= 0).all(), f"extract={extract}: rows came back short"
-        assert not (ind == np.arange(X.shape[0])[:, None]).any()
-        assert (np.diff(dist, axis=1) >= 0).all()
-
-        hits = sum(len(set(a) & set(b)) for a, b in zip(ind, truth, strict=True))
-        assert hits / truth.size > 0.9
+    hits = sum(len(set(a) & set(b)) for a, b in zip(ind, truth, strict=True))
+    assert hits / truth.size > 0.9
 
 
 def test_cosine_differs_from_euclidean(X: np.ndarray) -> None:

@@ -38,8 +38,8 @@ Optimisers and approximations are picked by string:
 |---|---|
 | UMAP optimiser | `"adam_parallel"` (default), `"adam"`, `"sgd"`, `"adam_gpu"`, `"adam_mlx"` |
 | t-SNE repulsion | `"bh"`, `"qd"`, `"fft"`, `"fft_3k"`, `"fft_3k_gpu"`, `"fft_3k_mlx"` |
-| kNN, CPU | `"kmknn"`, `"exhaustive"`, `"hnsw"`, `"nndescent"`, `"annoy"`, `"ivf"`, `"balltree"` |
-| kNN, wgpu | `"nndescent_gpu"` (default), `"ivf_gpu"`, `"exhaustive_gpu"` |
+| kNN, CPU | `"nndescent"` (default), `"ivf"` (default for the t-SNE family), `"kmknn"`, `"exhaustive"`, `"hnsw"`, `"annoy"`, `"balltree"` |
+| kNN, wgpu | `"nndescent_gpu"` (default), `"ivf_gpu"` (default for t-SNE), `"exhaustive_gpu"` |
 | kNN, MLX | `"nndescent_mlx"`, `"ivf_mlx"`, `"exhaustive_mlx"` |
 
 Distances: Euclidean and cosine. Initialisations: spectral (Lanczos), PCA,

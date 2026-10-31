@@ -60,10 +60,10 @@ def test_precomputed_knn_matches_an_internal_search(X: np.ndarray) -> None:
     """Handing in the graph the estimator would have built changes nothing.
 
     The point of the shortcut is that it is a shortcut, not a different
-    algorithm. UMAP's own search is `"kmknn"` with `k = n_neighbors`, so the
-    same call built externally has to land on the same embedding.
+    algorithm. UMAP's own search is `"nndescent"` with `k = n_neighbors`, so
+    the same call built externally has to land on the same embedding.
     """
-    ind, dist = mf.knn_graph(X, k=15, ann="kmknn", seed=42)
+    ind, dist = mf.knn_graph(X, k=15, ann="nndescent", seed=42)
     internal = mf.UMAP(n_neighbors=15, n_epochs=20).fit_transform(X)
     external = mf.UMAP(n_neighbors=15, n_epochs=20).fit_transform(
         X, knn_indices=ind, knn_distances=dist

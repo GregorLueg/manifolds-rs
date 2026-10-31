@@ -3,179 +3,131 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.8.0
+
+**Breaking changes**
+
+- Spectral init, PHATE and diffusion maps give different coordinates than
+  0.7.x at the same seed (new eigensolver). Still bit-identical per seed.
+- New `ManifoldsError::TooManyVertices` and `TooManyEdges` variants.
+- `ann-search-rs` 0.12.0. NN-Descent (CPU, wgpu, MLX) builds the kNN graph
+  directly, no index and no query. Dropped from `NearestNeighbourParams`:
+  `diversify_prob`, `ef_budget`, `extract_knn`. Dropped from
+  `NearestNeighbourParamsGpu`: `k`, `beam_width`, `max_beam_iters`,
+  `n_entry_points`, `extract_knn`.
+- kNN defaults follow `k`: `"nndescent"` for UMAP, densMAP, PHATE, PaCMAP,
+  diffusion maps, ForceAtlas2 and parametric UMAP; `"ivf"` for tSNE, densNE
+  and DREAMS; `"ivf_gpu"` for GPU tSNE. Different embeddings at the same seed.
+- `Verbosity` is now the `ann-search-rs` one, re-exported from the prelude.
+  Level 1 also prints the kNN build and query, level 2 the index internals.
+
+**Performance**
+
+- Spectral init uses about half the memory on connected graphs and a quarter
+  on disconnected ones.
+- Lanczos is now thick-restarted with a bounded basis (Wu & Simon, 2000).
+  `lanczos_thick_restart` and `LanczosParams` are public.
+- UMAP optimisers use 25-40% less memory. Parallel Adam is ~5% slower.
+- Leaner tSNE optimisers and graph symmetrisation. Same embeddings per seed.
+
 ## 0.7.3
 
 **Chore**
 
-- `faer` is pulled in without its default `npy` feature, and `ann-search-rs`
-  is bumped to 0.11.2, which does the same. This removes `npyz` -> `py_literal`
-  -> `pest_derive` -> `stacker` from the build; the `stacker` build script fails
-  to find `windows.h` on Windows ARM64 cross-builds (MSVC host,
-  `aarch64-pc-windows-gnullvm` target). Dependants have to drop the `npy`
-  default as well, as feature unification brings it back otherwise.
+- `faer` without its `npy` feature and `ann-search-rs` 0.11.2. Fixes Windows
+  ARM64 cross-builds. Dependants need to drop `npy` too.
 
 ## 0.7.2
 
 **Performance**
 
-- Reduced memory allocations during filtering of the kNN graphs (removal of
-  self) and reduced memory during kNN symmetrisation affecting basically
-  all methods.
+- Less memory in kNN graph filtering and symmetrisation.
 
 ## 0.7.1
 
 **Fixes**
 
-- `parametric` pulls in less of burn. burn now builds with
-  `default-features = false` and only the features parametric UMAP uses
-  (`std`, `flex`, `autodiff`, `optim`, `dataset`, `simd`, `rayon`). `train` is
-  gone, and with it `burn-train`, ratatui, crossterm, sysinfo and
-  nvml-wrapper. Same API, same burn-flex backend. If you relied on this crate
-  to switch on burn's `train` for you, enable it on your own `burn` dependency.
+- `parametric` builds burn without default features; `burn-train` and its
+  dependencies are gone. Enable `train` on your own `burn` if you need it.
 
 ## 0.7.0
 
 **Features**
 
-- DREAMS (Kury, Kobak & Damrich, TMLR 2026): t-SNE regularised towards a
-  global reference embedding, PCA by default or any `[2][n_samples]` layout
-  you hand it (MDS, PHATE, ...). `lambda` slides between plain t-SNE (0) and
-  the reference (1); the default of 0.15 is the paper's. New `dreams()` with
-  `DreamsParams`, working with all four CPU approximations (`"bh"`, `"qd"`,
-  `"fft"`, `"fft_3k"`).
-- The update follows the authors' openTSNE fork rather than Equation 2 of the
-  paper, since the published `lambda` was tuned on the code. On Tasic
-  (n = 23,822, 4 seeds) `lambda = 0.15` matches the reference fork on kNN
-  preservation and CPD. At `lambda >= 0.3` ours stays somewhat more local
-  (kNN 0.274 against 0.222 at 0.5, CPD equal).
-- `dreams_gpu()` with `DreamsParamsGpu`. With `"fft_3k_gpu"` the regulariser
-  runs inside the GPU three-kernel optimiser; f32 on the GPU matches the f64
-  CPU path within seed noise.
-- `pca_scores()` in `data::init` for the unscaled PCA scores, and
-  `DreamsState` / `dreams_setup()` in `utils::dreams` for anyone wiring the
-  regulariser into their own loop.
-- Experimental `mlx` feature for Apple Silicon, through mlx-c (`brew install
-  mlx-c`). The CPU entry points take MLX names: `"adam_mlx"` for the UMAP and
-  densMAP optimiser, `"fft_3k_mlx"` for `tsne` and `dreams` (and `tsne_gpu` /
-  `dreams_gpu`), and `"exhaustive_mlx"`, `"ivf_mlx"`, `"nndescent_mlx"` for the
-  kNN search in `run_ann_search`. `MLX_AVAILABLE` says whether it was compiled
-  in. `f32` only.
-- How it stacks up against wgpu on an M1 Max, at 100k to 1m points: the MLX kNN
-  search is 1.2x to 1.8x faster, the UMAP optimiser ties, and the t-SNE
-  optimiser ties at 100k but runs at half wgpu's speed at 1m. Details in
-  [`docs/benchmarks_mlx.md`](docs/benchmarks_mlx.md).
-- Faster wgpu three-kernel FFT t-SNE: one plane per box for the splat, the
-  attraction walks the CSR one row per SIMD group, and the 2D FFT works on a
-  transposed spectrum and skips all-zero rows.
-- `cubecl` 0.11, `burn` 0.22, `faer` 0.24, `cubecl-utils-rs` 0.2.0 and
+- DREAMS (Kury, Kobak & Damrich, TMLR 2026) via `dreams()` and `dreams_gpu()`:
+  t-SNE regularised towards a global reference layout.
+- Experimental `mlx` feature for Apple Silicon: `"adam_mlx"`, `"fft_3k_mlx"`
+  and MLX kNN indices. See [`docs/benchmarks_mlx.md`](docs/benchmarks_mlx.md).
+- Faster wgpu three-kernel FFT t-SNE.
+- `fft_tsne` runs on pure-Rust `rustfft` instead of FFTW.
+- `cubecl` 0.11, `burn` 0.22, `faer` 0.24, `cubecl-utils-rs` 0.2.0,
   `ann-search-rs` 0.11.0.
-- FFTW is gone. `fft_tsne` now runs on `rustfft` and `realfft`: pure Rust,
-  MIT/Apache, no C build and no GPL. `n_fft` is padded up to the next `2^a` or
-  `3 * 2^a`, which rustfft handles far better than the `6 * n_boxes` sizes.
-  Against the old FFTW build on an M1 Max (100 epochs, 50k and 250k points),
-  `f32` is within 4% and `f64` up to 18% slower, worst in the late phase on the
-  largest grid.
 
 **Fixes**
 
-- `run_ann_search` drops the query point by index rather than by position.
-  With exact duplicates in the data, the point could rank second and survive as
-  its own neighbour.
+- `run_ann_search` no longer keeps a point as its own neighbour when the data
+  has exact duplicates.
 
 **Breaking changes**
 
-- `optimise_bh_tsne`, `optimise_qd_tsne`, `optimise_fft_tsne`,
-  `optimise_fft3k_tsne` and `optimise_fft3k_tsne_gpu` take an extra
-  `dreams: Option<&DreamsState<T>>` argument. Pass `None` for plain t-SNE.
-- `ManifoldsError` has three new variants (`DreamsInvalidLambda`,
-  `DreamsReferenceMismatch`, `DreamsDegenerateReference`), plus `MlxError` in
-  MLX builds, so exhaustive matches on it need updating.
-- The GPU functions (`umap_gpu`, `densmap_gpu`, `tsne_gpu`, `dreams_gpu`, the
-  `construct_*_graph_gpu` helpers, `run_ann_search_gpu`) lost their
-  `R: Runtime` type parameter and take a `cubecl::Device`:
-  `umap_gpu::<f32>(..., WgpuDevice::default().into(), ...)`.
-- `parametric_umap` and `train_parametric_umap_model` lost their burn backend
-  type parameter and take a `&burn::tensor::Device`, e.g. `Device::flex()`.
-- `utils::fft::FftwFloat` is now `FftFloat`, a blanket trait over
-  `rustfft::FftNum` floats, and the FFT buffers hold
-  `num_complex::Complex<T>`. `FftLane3k` is gone; both paths share `FftLane`.
-  `FftGrid::n_fft` is no longer `2 * n_interp_points * n_boxes_per_dim` but
-  that rounded up by `fft_len`.
+- The `optimise_*_tsne` functions take an extra `dreams` argument; pass `None`.
+- New `ManifoldsError` variants for DREAMS and MLX.
+- GPU functions take a `cubecl::Device` instead of an `R: Runtime` parameter.
+- Parametric UMAP takes a `&burn::tensor::Device` instead of a backend type.
+- `FftwFloat` is now `FftFloat`; `FftLane3k` is gone.
 
 ## 0.6.2
 
 **Features**
 
-- Take in the recent changes from `ann-search-rs` (version `"0.10.1"`) with
-  improved k-means.
+- `ann-search-rs` 0.10.1 with improved k-means.
 
 ## 0.6.1
 
 **Features**
 
-- Take in the recent changes from `ann-search-rs` (version `"0.10.0"`) with
-  the accelerated GPU indices.
+- `ann-search-rs` 0.10.0 with faster GPU indices.
 
 ## 0.6.0
 
 **Features**
 
-- Quick-and-dirty Barnes-Hut tSNE (`"qd"` / `"bh_qd"`) after
-  [qdtsne](https://github.com/libscran/qdtsne): the tree depth is capped at
-  `TsneOptimParams::max_depth` (default 7) and repulsion is computed once per
-  leaf from its centre of mass, plus each point's interaction with the rest of
-  its own leaf. On 20k points the optimiser ran in roughly 40% of the plain
-  Barnes-Hut time. Works for den-SNE and through `tsne_gpu` as well.
-- `BarnesHutTree::with_max_depth()`, `compute_leaf_forces()` and
-  `point_force_from_leaf()` in `utils::bh_tree`.
-- Bump to `ann-search-rs` version `"0.9.3"` with further speed improvements.
+- Quick-and-dirty Barnes-Hut t-SNE (`"qd"`) after
+  [qdtsne](https://github.com/libscran/qdtsne), with a capped tree depth.
+- `ann-search-rs` 0.9.3.
 
 **Breaking changes**
 
-- `TsneOptimParams` has a new `max_depth: usize` field and
-  `TsneOptimParams::new()` an extra `max_depth: Option<usize>` argument. Struct
-  literals without `..Default::default()` need the field added.
+- `TsneOptimParams` has a new `max_depth` field.
 
 ## 0.5.4
 
 **Features**
 
-- Take in the new `ann-search-rs (0.9.1)` with improved k-means and Accelerate
-  enabled on MacOS giving for some of the indices very decent speed gains on
-  Macs.
+- `ann-search-rs` 0.9.1 with improved k-means and Accelerate on macOS.
 
 ## 0.5.3
 
-**Feature**
+**Features**
 
-- FFT 3-kernel version added. Tends to be faster than the original FFT. Both
-  options are now supported and can be chosen.
-- A GPU-accelerated version of the FFT 3-kernel has also been implemented.
+- Three-kernel FFT t-SNE, on CPU and GPU.
 
 ## 0.5.2
 
-**Feature**
+**Features**
 
-- Faster FFT-accelerated tSNE.
+- Faster FFT t-SNE.
 
 ## 0.5.1
 
 **Features**
 
-- ForceAtlas2 via `forceatlas2()` (on the fuzzy kNN graph, like scanpy's
-  `draw_graph`) and `forceatlas2_from_graph()` (on any symmetric graph). Node
-  masses `1 + degree`, linear or LinLog attraction, (strong) gravity, dissuade
-  hubs, edge weight influence and Gephi's adaptive speed. Repulsion runs on a
-  mass-weighted Barnes-Hut tree. Matches the reference Python implementation
-  to 1e-9 with `theta = 0`.
+- ForceAtlas2 via `forceatlas2()` and `forceatlas2_from_graph()`.
 
 **Breaking changes**
 
-This should not affect most users.
-
-- `utils::bh_tree`: `Node::count: u32` is now `Node::mass: T`, and
-  `BarnesHutTree::rebuild()` takes an extra `masses: Option<&[T]>` argument
-  (`None` keeps the old unit-mass behaviour). tSNE results are unchanged.
+- `bh_tree`: `Node::count` is now `Node::mass`, and `BarnesHutTree::rebuild()`
+  takes an extra `masses` argument.
 
 ## 0.5.0
 

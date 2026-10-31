@@ -1,8 +1,8 @@
 //! The contract `run_ann_search` offers its callers.
 //!
-//! Two things worth pinning down, because both used to be wrong. Distances are
-//! true distances in every metric, and the NNDescent backend can hand back the
-//! graph it built rather than searching it.
+//! Two things worth pinning down. Distances are true distances in every
+//! metric, and the NNDescent backend hands back the graph it built, full rows
+//! and no self edge.
 
 mod commons;
 
@@ -154,62 +154,36 @@ fn cosine_distances_are_left_alone() {
 ///////////////////
 
 #[test]
-fn extraction_and_query_agree_on_the_neighbours() {
+fn nndescent_graph_matches_exhaustive() {
     let (data, _) = commons::create_diagnostic_data(60, 10, 42);
     let k = 10;
+    let params = NearestNeighbourParams::<f64>::default();
 
-    let truth = run_ann_search(
-        data.as_ref(),
-        k,
-        "exhaustive".to_string(),
-        &NearestNeighbourParams::default(),
-        42,
-        0,
-    )
-    .unwrap()
-    .0;
+    let truth = run_ann_search(data.as_ref(), k, "exhaustive".to_string(), &params, 42, 0)
+        .unwrap()
+        .0;
+    let (idx, dist) =
+        run_ann_search(data.as_ref(), k, "nndescent".to_string(), &params, 42, 0).unwrap();
 
-    let search = |extract: bool| {
-        let params = NearestNeighbourParams {
-            extract_knn: extract,
-            ..NearestNeighbourParams::<f64>::default()
-        };
-        run_ann_search(data.as_ref(), k, "nndescent".to_string(), &params, 42, 0).unwrap()
-    };
-
-    for extract in [false, true] {
-        let (idx, dist) = search(extract);
-
-        assert_eq!(idx.len(), data.nrows());
-        assert!(
-            idx.iter().all(|r| r.len() == k),
-            "extract={extract}: rows must be full, extraction drops unfilled slots"
-        );
-        assert!(
-            idx.iter().enumerate().all(|(i, r)| !r.contains(&i)),
-            "extract={extract}: self must not appear; the two paths remove it differently"
-        );
-        assert!(
-            dist.iter().all(|r| r.windows(2).all(|w| w[0] <= w[1])),
-            "extract={extract}: rows must stay sorted"
-        );
-        assert!(
-            recall(&idx, &truth, k) > 0.9,
-            "extract={extract}: recall {} is too low",
-            recall(&idx, &truth, k)
-        );
-    }
+    assert_eq!(idx.len(), data.nrows());
+    assert!(idx.iter().all(|r| r.len() == k), "rows must be full");
+    assert!(
+        idx.iter().enumerate().all(|(i, r)| !r.contains(&i)),
+        "self must not appear"
+    );
+    assert!(
+        dist.iter().all(|r| r.windows(2).all(|w| w[0] <= w[1])),
+        "rows must stay sorted"
+    );
+    let r = recall(&idx, &truth, k);
+    assert!(r > 0.9, "recall {r} is too low");
 }
 
 #[test]
-fn extraction_is_reproducible() {
-    // The CPU path is; the GPU one is not, which is why `extract_knn` defaults
-    // to true here and false there.
+fn nndescent_is_reproducible() {
+    // The CPU graph is; the GPU one is not.
     let (data, _) = commons::create_diagnostic_data(50, 10, 42);
-    let params = NearestNeighbourParams {
-        extract_knn: true,
-        ..NearestNeighbourParams::<f64>::default()
-    };
+    let params = NearestNeighbourParams::<f64>::default();
 
     let run =
         || run_ann_search(data.as_ref(), 10, "nndescent".to_string(), &params, 42, 0).unwrap();
@@ -218,27 +192,21 @@ fn extraction_is_reproducible() {
 }
 
 #[test]
-fn extraction_widens_the_graph_to_cover_k() {
-    // The build degree defaults to 30 and extraction cannot return more than
-    // the graph holds, so a larger `k` has to widen it rather than come back
-    // short.
+fn nndescent_fills_large_k() {
+    // tSNE asks for `3 * perplexity` neighbours, well past the crate's default
+    // degree of 30, so the graph has to be built at the requested `k`.
     let (data, _) = commons::create_diagnostic_data(60, 10, 42);
     let k = 50;
-    let params = NearestNeighbourParams {
-        extract_knn: true,
-        ..NearestNeighbourParams::<f64>::default()
-    };
 
-    let (idx, _) =
-        run_ann_search(data.as_ref(), k, "nndescent".to_string(), &params, 42, 0).unwrap();
+    let (idx, _) = run_ann_search(
+        data.as_ref(),
+        k,
+        "nndescent".to_string(),
+        &NearestNeighbourParams::<f64>::default(),
+        42,
+        0,
+    )
+    .unwrap();
 
-    assert!(
-        idx.iter().all(|r| r.len() == k),
-        "rows came back short, so the build degree did not cover k"
-    );
-}
-
-#[test]
-fn extraction_is_the_default() {
-    assert!(NearestNeighbourParams::<f64>::default().extract_knn);
+    assert!(idx.iter().all(|r| r.len() == k), "rows came back short");
 }

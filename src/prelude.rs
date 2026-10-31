@@ -54,49 +54,23 @@ pub type UmapGraphResults<T> =
 #[cfg(feature = "parametric")]
 pub type ParametricUmapResults<T> = Result<(Vec<Vec<T>>, TrainedUmapModel<T>), ManifoldsError>;
 
-///////////
-// Enums //
-///////////
+///////////////
+// Verbosity //
+///////////////
 
-/// Enum that controls verbosity
-#[derive(Clone, Copy, Debug, Default)]
-pub enum Verbosity {
-    /// No verbosity at all
-    #[default]
-    Quiet,
-    /// Normal levels of verbosity
-    Normal,
-    /// Detailed verbosity with increased messages
-    Detailed,
-}
+/// Verbosity is shared with `ann-search-rs`, so the level a caller picks is
+/// handed straight to the kNN builds and queries.
+pub use ann_search_rs::prelude::Verbosity;
 
-impl Verbosity {
-    /// Returns true if normal or detailed verbosity is set
-    pub fn normal_verbosity(&self) -> bool {
-        matches!(self, Verbosity::Normal | Verbosity::Detailed)
-    }
-
-    /// Returns true if detailed verbosity is set
-    pub fn detailed_verbosity(&self) -> bool {
-        matches!(self, Verbosity::Detailed)
-    }
-}
-
-/// Parse verbosity leverl
+/// Parse a numeric verbosity level
 ///
 /// ### Params
 ///
-/// * `level` - If `1` returns [Verbosity::Normal], with `2`
-///   [Verbosity::Detailed]
+/// * `level` - `0` quiet, `1` normal, `2` detailed. Anything else is quiet.
 ///
 /// ### Returns
 ///
-/// The desired [Verbosity] level.
+/// The matching [Verbosity].
 pub fn parse_verbosity_level(level: usize) -> Verbosity {
-    match level {
-        0 => Verbosity::Quiet,
-        1 => Verbosity::Normal,
-        2 => Verbosity::Detailed,
-        _ => Verbosity::Quiet,
-    }
+    ann_search_rs::prelude::parse_annsearch_verbosity(level)
 }

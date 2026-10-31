@@ -1,10 +1,11 @@
-//! Host-side pieces shared by the device-resident UMAP Adam optimisers (cubecl
-//! and MLX): the CSR layout of the graph, the gradient constants, the per-epoch
-//! Adam schedule, and CPU mirrors of the kernels for the unit tests.
+//! Host-side pieces shared by the parallel CPU and device-resident UMAP Adam
+//! optimisers (cubecl and MLX): the CSR layout of the graph, the gradient
+//! constants, the per-epoch Adam schedule, and CPU mirrors of the kernels for
+//! the unit tests.
 
 use crate::prelude::*;
 use crate::training::umap_optimisers::UmapOptimParams;
-#[cfg(test)]
+#[cfg(all(test, any(feature = "gpu", mlx_available)))]
 use crate::utils::density::DENS_EPS;
 
 ////////////
@@ -72,65 +73,79 @@ where
     ///
     /// A CSR representation on success. `ManifoldsError::NoData` if the graph
     /// has no nodes; `ManifoldsError::NoGraphEdges` if no edges survive the
-    /// `i < j` filter.
+    /// `i < j` filter; `TooManyVertices` / `TooManyEdges` if the graph does
+    /// not fit `u32` indices.
     pub fn from_graph(graph: &[Vec<(usize, T)>]) -> Result<Self, ManifoldsError> {
         let n = graph.len();
         if n == 0 {
             return Err(ManifoldsError::NoData);
         }
 
-        let mut edges: Vec<(usize, usize, T)> = Vec::new();
-        let mut degree = vec![0u32; n];
+        if n > u32::MAX as usize {
+            return Err(ManifoldsError::TooManyVertices { n });
+        }
 
+        // two passes over the adjacency list instead of an intermediate edge
+        // list: at ~10^8 edges that list alone is several GB
+        let mut node_edge_offsets = vec![0u32; n + 1];
+        let mut n_edges = 0usize;
         for (i, neighbours) in graph.iter().enumerate() {
-            for &(j, w) in neighbours {
+            for &(j, _) in neighbours {
                 if i < j {
-                    edges.push((i, j, w));
-                    degree[i] += 1;
-                    degree[j] += 1;
+                    node_edge_offsets[i + 1] += 1;
+                    node_edge_offsets[j + 1] += 1;
+                    n_edges += 1;
                 }
             }
         }
 
-        if edges.is_empty() {
+        if n_edges == 0 {
             return Err(ManifoldsError::NoGraphEdges);
         }
+        if 2 * n_edges > u32::MAX as usize {
+            return Err(ManifoldsError::TooManyEdges { n_edges });
+        }
 
-        let n_edges = edges.len();
-
-        let mut node_edge_offsets = vec![0u32; n + 1];
         for i in 0..n {
-            node_edge_offsets[i + 1] = node_edge_offsets[i] + degree[i];
+            node_edge_offsets[i + 1] += node_edge_offsets[i];
         }
 
         let mut csr_edge_idx = vec![0u32; 2 * n_edges];
         let mut csr_other_node = vec![0u32; 2 * n_edges];
+        let mut mu: Vec<T> = Vec::with_capacity(n_edges);
 
-        let mut cursor = node_edge_offsets.clone();
-        for (edge_idx, &(i, j, _)) in edges.iter().enumerate() {
-            let pos_i = cursor[i] as usize;
-            csr_edge_idx[pos_i] = edge_idx as u32;
-            csr_other_node[pos_i] = j as u32;
-            cursor[i] += 1;
+        let mut cursor = node_edge_offsets[..n].to_vec();
+        for (i, neighbours) in graph.iter().enumerate() {
+            for &(j, w) in neighbours {
+                if i < j {
+                    let edge_idx = mu.len() as u32;
+                    mu.push(w);
 
-            let pos_j = cursor[j] as usize;
-            csr_edge_idx[pos_j] = edge_idx as u32;
-            csr_other_node[pos_j] = i as u32;
-            cursor[j] += 1;
+                    let pos_i = cursor[i] as usize;
+                    csr_edge_idx[pos_i] = edge_idx;
+                    csr_other_node[pos_i] = j as u32;
+                    cursor[i] += 1;
+
+                    let pos_j = cursor[j] as usize;
+                    csr_edge_idx[pos_j] = edge_idx;
+                    csr_other_node[pos_j] = i as u32;
+                    cursor[j] += 1;
+                }
+            }
         }
+        drop(cursor);
 
         let zero = T::zero();
         let one = T::one();
         let large_epoch = T::from(1e8).unwrap();
-        let max_weight = edges
+        let max_weight = mu
             .iter()
-            .map(|(_, _, w)| *w)
-            .fold(zero, |acc, w| if w > acc { w } else { acc });
+            .fold(zero, |acc, &w| if w > acc { w } else { acc });
 
-        let epochs_per_sample: Vec<T> = edges
+        let epochs_per_sample: Vec<T> = mu
             .iter()
-            .map(|(_, _, w)| {
-                let norm = *w / max_weight;
+            .map(|&w| {
+                let norm = w / max_weight;
                 if norm > zero {
                     one / norm
                 } else {
@@ -138,8 +153,6 @@ where
                 }
             })
             .collect();
-
-        let mu: Vec<T> = edges.iter().map(|(_, _, w)| *w).collect();
 
         Ok(Self {
             n,
@@ -192,7 +205,7 @@ where
 /// Splitmix-style host-side hash matching the device negative-sampling hash
 /// (cubecl `gpu_hash_neg`, MLX `hash_neg`) bit-for-bit. Kept in sync manually
 /// so the CPU reference reproduces the same negative samples.
-#[cfg(test)]
+#[cfg(all(test, any(feature = "gpu", mlx_available)))]
 #[inline]
 pub(crate) fn cpu_hash_neg(
     seed: u32,
@@ -216,7 +229,7 @@ pub(crate) fn cpu_hash_neg(
 }
 
 /// Host-side mirror of the densMAP state the gradient kernel reads.
-#[cfg(test)]
+#[cfg(all(test, any(feature = "gpu", mlx_available)))]
 pub(crate) struct CpuDensRef<T> {
     /// Embedding log radii `[n]`, from `cpu_dens_radii`.
     pub(crate) re: Vec<T>,
@@ -230,7 +243,7 @@ pub(crate) struct CpuDensRef<T> {
 
 /// Host-side reference implementation of `umap_dens_radii`. Same iteration
 /// order as the kernel.
-#[cfg(test)]
+#[cfg(all(test, any(feature = "gpu", mlx_available)))]
 pub(crate) fn cpu_dens_radii<T>(
     embd_flat: &[T],
     csr: &UmapCsrGraph<T>,
@@ -281,7 +294,7 @@ where
 /// order as the kernel so attractive-only runs match bit-for-bit; runs with
 /// negatives are FP-tolerant because `powf` and FMAs may compile differently
 /// on the GPU.
-#[cfg(test)]
+#[cfg(all(test, any(feature = "gpu", mlx_available)))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cpu_grad_accum<T>(
     embd_flat: &[T],
@@ -404,7 +417,7 @@ where
 }
 
 /// Host-side reference implementation of `umap_adam_update` for one epoch.
-#[cfg(test)]
+#[cfg(all(test, any(feature = "gpu", mlx_available)))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn cpu_adam_update<T>(
     node_grad: &[T],

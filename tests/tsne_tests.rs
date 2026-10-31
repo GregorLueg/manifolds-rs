@@ -921,8 +921,15 @@ fn tsne_integration_13_precomputed_knn() {
 
     // Run kNN search separately
     let nn_params = NearestNeighbourParams::default();
-    let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
+    let (knn_indices, knn_dist) = run_ann_search(
+        data.as_ref(),
+        k,
+        TsneParams::<f64>::default().ann_type,
+        &nn_params,
+        42,
+        0,
+    )
+    .unwrap();
 
     println!(
         "Precomputed kNN: {} neighbours per point",

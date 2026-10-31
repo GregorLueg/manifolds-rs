@@ -56,25 +56,22 @@ precomputed graph makes a GPU run reproducible too.
 ## Different neighbour backends
 
 The device backends are not the CPU ones with a suffix. `"nndescent_gpu"` builds
-a CAGRA graph and is the default because it is the one that scales;
-`"ivf_gpu"` and `"exhaustive_gpu"` are the other two. Passing a CPU-only name
-like `"hnsw"` is an error rather than a silent fallback.
+the kNN graph with NN-Descent on the device and is the default for `UMAPGpu`
+and `DensMAPGpu`. `TSNEGpu` and `DREAMSGpu` ask for `3 * perplexity`
+neighbours and default to `"ivf_gpu"`, which holds up better at that `k`.
+`"exhaustive_gpu"` is the third. Passing a CPU-only name like `"hnsw"` is an
+error rather than a silent fallback.
 
 Their knobs live in [`NeighbourParamsGpu`](api/params.md), which is a different
-set from the CPU `NeighbourParams`: CAGRA build degrees and beam-search budgets
-have no CPU counterpart.
+set from the CPU `NeighbourParams`.
 
 ```python
 mf.UMAPGpu(
     n_neighbors=15,
     ann="nndescent_gpu",
-    nn_params=mf.NeighbourParamsGpu(k_build=64, beam_width=32),
+    nn_params=mf.NeighbourParamsGpu(k_build=64),
 )
 ```
-
-Under `TSNEGpu` with `nndescent_gpu`, leaving `NeighbourParamsGpu.k` unset
-backfills the graph degree to `3 * perplexity`, so it is sized for the query
-t-SNE actually makes.
 
 ## Mixing CPU and GPU
 

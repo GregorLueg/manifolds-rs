@@ -6,7 +6,6 @@ use num_traits::{Float, FromPrimitive};
 use rayon::prelude::*;
 use thousands::*;
 
-use crate::data::graph::coo_to_adjacency_list;
 use crate::data::structures::*;
 use crate::prelude::*;
 use crate::utils::bh_tree::*;
@@ -451,11 +450,11 @@ where
 ///
 /// ### Params
 ///
-/// * `adj` - Row-major adjacency of the symmetric affinity graph
+/// * `csr` - Affinity graph in CSR
 /// * `pos` - Interleaved positions `[x0, y0, x1, y1, ...]`
 /// * `exag_factor` - Current exaggeration factor
 /// * `attr` - Output, interleaved attractive force per point, overwritten
-fn accumulate_attractive<T>(adj: &[Vec<(usize, T)>], pos: &[T], exag_factor: T, attr: &mut [T])
+fn accumulate_attractive<T>(csr: &AttrCsr<T>, pos: &[T], exag_factor: T, attr: &mut [T])
 where
     T: ManifoldsFloat,
 {
@@ -467,7 +466,9 @@ where
 
             let mut attr_x = T::zero();
             let mut attr_y = T::zero();
-            for &(j, p_val) in &adj[i] {
+            let (nbrs, p_vals) = csr.row(i);
+            for (&j, &p_val) in nbrs.iter().zip(p_vals) {
+                let j = j as usize;
                 let dx = px - pos[2 * j];
                 let dy = py - pos[2 * j + 1];
                 let dist_sq = dx * dx + dy * dy;
@@ -494,13 +495,13 @@ where
 ///
 /// ### Params
 ///
-/// * `adj` - Row-major adjacency of the symmetric affinity graph
+/// * `csr` - Affinity graph in CSR
 /// * `pos` - Interleaved positions `[x0, y0, x1, y1, ...]`
 /// * `exag_factor` - Current exaggeration factor
 /// * `attr` - Output, interleaved attractive force per point, overwritten
 /// * `scratch` - Output, radii accumulators and log-radii, overwritten
 fn accumulate_attractive_and_radii<T>(
-    adj: &[Vec<(usize, T)>],
+    csr: &AttrCsr<T>,
     pos: &[T],
     exag_factor: T,
     attr: &mut [T],
@@ -521,7 +522,9 @@ fn accumulate_attractive_and_radii<T>(
             let mut sum_sq = T::zero();
             let mut sum_phi = T::zero();
 
-            for &(j, p_val) in &adj[i] {
+            let (nbrs, p_vals) = csr.row(i);
+            for (&j, &p_val) in nbrs.iter().zip(p_vals) {
+                let j = j as usize;
                 let dx = px - pos[2 * j];
                 let dy = py - pos[2 * j + 1];
                 let dist_sq = dx * dx + dy * dy;
@@ -554,7 +557,7 @@ fn accumulate_attractive_and_radii<T>(
 /// ### Params
 ///
 /// * `i` - Point index
-/// * `adj_i` - `i`'s row of the adjacency; only the neighbour indices are used
+/// * `nbrs` - `i`'s neighbour indices from the CSR
 /// * `pos` - Interleaved positions `[x0, y0, x1, y1, ...]`
 /// * `r` - Z-scored original log-radii, `[n]`
 /// * `scratch` - Embedding radii for the current epoch
@@ -567,7 +570,7 @@ fn accumulate_attractive_and_radii<T>(
 #[inline]
 fn density_gradient<T>(
     i: usize,
-    adj_i: &[(usize, T)],
+    nbrs: &[u32],
     pos: &[T],
     r: &[T],
     scratch: &DensScratch<T>,
@@ -589,7 +592,8 @@ where
     let mut grad_x = T::zero();
     let mut grad_y = T::zero();
 
-    for &(j, _) in adj_i {
+    for &j in nbrs {
+        let j = j as usize;
         let dx = px - pos[2 * j];
         let dy = py - pos[2 * j + 1];
         let phi = one / (one + dx * dx + dy * dy);
@@ -745,7 +749,7 @@ fn optimise_bh_tsne_impl<T>(
     };
     let mut leaf_forces: Vec<(T, T, T)> = Vec::new();
 
-    let adj = coo_to_adjacency_list(graph);
+    let csr = AttrCsr::from_coo(graph);
 
     for epoch in 0..params.n_epochs {
         let momentum = if epoch < TSNE_MOMENTUM_SWITCH_ITER {
@@ -806,11 +810,11 @@ fn optimise_bh_tsne_impl<T>(
         // term is live this epoch.
         let dens_ctx = match (dens, dens_scratch.as_mut()) {
             (Some(state), Some(scratch)) if state.is_active(epoch, params.n_epochs) => {
-                accumulate_attractive_and_radii(&adj, &pos, exag_factor, &mut attr, scratch);
+                accumulate_attractive_and_radii(&csr, &pos, exag_factor, &mut attr, scratch);
                 Some((state, &*scratch, DensGradConsts::new(&scratch.re, state)))
             }
             _ => {
-                accumulate_attractive(&adj, &pos, exag_factor, &mut attr);
+                accumulate_attractive(&csr, &pos, exag_factor, &mut attr);
                 None
             }
         };
@@ -831,7 +835,7 @@ fn optimise_bh_tsne_impl<T>(
 
                 let (dens_x, dens_y) = match &dens_ctx {
                     Some((state, scratch, consts)) => {
-                        density_gradient(i, &adj[i], &pos, &state.r, scratch, consts)
+                        density_gradient(i, csr.row(i).0, &pos, &state.r, scratch, consts)
                     }
                     None => (T::zero(), T::zero()),
                 };
@@ -887,7 +891,6 @@ fn optimise_bh_tsne_impl<T>(
 ///
 /// `u32` indices halve the per-edge traffic against `Vec<(usize, T)>`, which
 /// pads to 16 bytes per edge for `f32`.
-#[cfg(feature = "fft_tsne")]
 struct AttrCsr<T> {
     /// Row offsets, length `n + 1`
     indptr: Vec<usize>,
@@ -897,37 +900,58 @@ struct AttrCsr<T> {
     values: Vec<T>,
 }
 
-#[cfg(feature = "fft_tsne")]
 impl<T: ManifoldsFloat> AttrCsr<T> {
-    /// Flatten an adjacency list into CSR.
+    /// Counting-sort a COO graph into CSR.
+    ///
+    /// Keeps each row's entries in COO order, so neighbour sums accumulate in
+    /// the same order as `coo_to_adjacency_list` would give.
     ///
     /// ### Params
     ///
-    /// * `adj` - Row-major adjacency, `adj[i]` holds `(j, p_ij)` pairs
+    /// * `graph` - Affinity graph in COO
     ///
     /// ### Returns
     ///
     /// The CSR graph.
-    fn from_adjacency(adj: &[Vec<(usize, T)>]) -> Self {
-        let mut indptr = Vec::with_capacity(adj.len() + 1);
-        indptr.push(0);
-        for row in adj {
-            indptr.push(indptr.last().unwrap() + row.len());
+    fn from_coo(graph: &CoordinateList<T>) -> Self {
+        let n = graph.n_samples;
+        let nnz = graph.values.len();
+
+        let mut indptr = vec![0usize; n + 1];
+        for &i in &graph.row_indices {
+            indptr[i + 1] += 1;
         }
-        let nnz = *indptr.last().unwrap();
-        let mut indices = Vec::with_capacity(nnz);
-        let mut values = Vec::with_capacity(nnz);
-        for row in adj {
-            for &(j, w) in row {
-                indices.push(j as u32);
-                values.push(w);
-            }
+        for i in 0..n {
+            indptr[i + 1] += indptr[i];
         }
+
+        let mut indices = vec![0u32; nnz];
+        let mut values = vec![T::zero(); nnz];
+        let mut cursor = indptr[..n].to_vec();
+        for ((&i, &j), &w) in graph
+            .row_indices
+            .iter()
+            .zip(&graph.col_indices)
+            .zip(&graph.values)
+        {
+            let slot = cursor[i];
+            indices[slot] = j as u32;
+            values[slot] = w;
+            cursor[i] += 1;
+        }
+
         Self {
             indptr,
             indices,
             values,
         }
+    }
+
+    /// Neighbour indices and weights of row `i`.
+    #[inline(always)]
+    fn row(&self, i: usize) -> (&[u32], &[T]) {
+        let (lo, hi) = (self.indptr[i], self.indptr[i + 1]);
+        (&self.indices[lo..hi], &self.values[lo..hi])
     }
 }
 
@@ -949,11 +973,11 @@ where
         .for_each(|(i, out)| {
             let px = pos[2 * i];
             let py = pos[2 * i + 1];
-            let (lo, hi) = (csr.indptr[i], csr.indptr[i + 1]);
+            let (nbrs, p_vals) = csr.row(i);
 
             let mut attr_x = T::zero();
             let mut attr_y = T::zero();
-            for (&j, &p_val) in csr.indices[lo..hi].iter().zip(&csr.values[lo..hi]) {
+            for (&j, &p_val) in nbrs.iter().zip(p_vals) {
                 let j = j as usize;
                 let dx = px - pos[2 * j];
                 let dy = py - pos[2 * j + 1];
@@ -1135,14 +1159,10 @@ where
     let min_gain = T::from_f64(TSNE_MIN_GAIN).unwrap();
     let max_step_norm = step_cap_from_lr(lr);
 
-    let mut uy = vec![vec![T::zero(); n_dim]; n];
-    let mut gains = vec![vec![T::one(); n_dim]; n];
+    let mut uy = vec![T::zero(); n * n_dim];
+    let mut gains = vec![T::one(); n * n_dim];
 
-    // the adjacency list is kept only for the density helpers shared with
-    // Barnes-Hut; the attractive pass reads the leaner CSR.
-    let adj_full = coo_to_adjacency_list(graph);
-    let csr = AttrCsr::from_adjacency(&adj_full);
-    let adj = if dens.is_some() { adj_full } else { Vec::new() };
+    let csr = AttrCsr::from_coo(graph);
 
     // pre-allocated FFT-side buffers and position snapshot.
     let mut charges = vec![T::zero(); if three_kernel { 0 } else { n * n_terms }];
@@ -1306,7 +1326,7 @@ where
         // when the density term is live this epoch.
         let dens_ctx = match (dens, dens_scratch.as_mut()) {
             (Some(state), Some(scratch)) if state.is_active(epoch, params.n_epochs) => {
-                accumulate_attractive_and_radii(&adj, &pos, exag_factor, &mut attr, scratch);
+                accumulate_attractive_and_radii(&csr, &pos, exag_factor, &mut attr, scratch);
                 Some((state, &*scratch, DensGradConsts::new(&scratch.re, state)))
             }
             _ => {
@@ -1319,8 +1339,8 @@ where
         let dreams_ctx = dreams.map(|state| (state, state.epoch_consts(&pos, exag_factor)));
 
         embd.par_iter_mut()
-            .zip(uy.par_iter_mut())
-            .zip(gains.par_iter_mut())
+            .zip(uy.par_chunks_mut(n_dim))
+            .zip(gains.par_chunks_mut(n_dim))
             .enumerate()
             .for_each(|(i, ((point, u_i), gains_i))| {
                 let x = xs[i];
@@ -1348,7 +1368,7 @@ where
 
                 let (dens_x, dens_y) = match &dens_ctx {
                     Some((state, scratch, consts)) => {
-                        density_gradient(i, &adj[i], &pos, &state.r, scratch, consts)
+                        density_gradient(i, csr.row(i).0, &pos, &state.r, scratch, consts)
                     }
                     None => (T::zero(), T::zero()),
                 };

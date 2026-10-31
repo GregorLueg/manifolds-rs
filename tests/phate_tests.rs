@@ -368,8 +368,11 @@ fn phate_integration_07_full_phate_quality() {
 
     println!("\n=== PHATE DIAGNOSTIC 7: Full PHATE Quality ===");
 
+    // Exact kNN: the separation ratio on 200 points swings with a single
+    // missed edge, which would make this a test of the ANN rather than PHATE.
     let params = PhateParams {
         k: 10,
+        ann_type: "kmknn".to_string(),
         ..PhateParams::default()
     };
 
@@ -550,8 +553,15 @@ fn phate_integration_11_precomputed_knn() {
     println!("\n=== PHATE DIAGNOSTIC 11: Precomputed kNN ===");
 
     let nn_params = NearestNeighbourParams::default();
-    let (knn_indices, knn_dist) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
+    let (knn_indices, knn_dist) = run_ann_search(
+        data.as_ref(),
+        k,
+        PhateParams::<f64>::default().ann_type,
+        &nn_params,
+        42,
+        0,
+    )
+    .unwrap();
 
     let params = PhateParams {
         k,

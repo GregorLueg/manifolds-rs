@@ -88,6 +88,20 @@ pub enum ManifoldsError {
     #[error("Empty data was parsed through - upstream error?")]
     NoData,
 
+    /// Error if a graph has more vertices than `u32` indices can address
+    #[error("u32-indexed graphs support at most 2^32 - 1 vertices, got {n}")]
+    TooManyVertices {
+        /// Number of vertices in the graph
+        n: usize,
+    },
+
+    /// Error if a UMAP graph has more edges than its `u32` CSR can address
+    #[error("UMAP supports at most 2^31 - 1 undirected edges, got {n_edges}")]
+    TooManyEdges {
+        /// Number of undirected edges in the graph
+        n_edges: usize,
+    },
+
     /// Error if the data is empty
     #[error("UMAP: no edges to optimise - upstream error?")]
     NoGraphEdges,

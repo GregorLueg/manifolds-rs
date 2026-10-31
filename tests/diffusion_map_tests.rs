@@ -343,8 +343,15 @@ fn dm_integration_10_precomputed_knn() {
     let k = 10;
 
     let nn_params = NearestNeighbourParams::default();
-    let (ki, kd) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
+    let (ki, kd) = run_ann_search(
+        data.as_ref(),
+        k,
+        DiffusionMapsParams::<f64>::default().ann_type,
+        &nn_params,
+        42,
+        0,
+    )
+    .unwrap();
 
     let params = DiffusionMapsParams {
         k,

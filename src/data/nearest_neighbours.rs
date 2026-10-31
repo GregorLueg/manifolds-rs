@@ -14,18 +14,6 @@ use std::default::Default;
 
 use crate::prelude::*;
 
-///////////////
-// Constants //
-///////////////
-
-/// Graph degree `ann-search-rs` builds an NNDescent index with when given
-/// `None`.
-///
-/// Mirrored rather than imported because the crate does not export it. It only
-/// matters as a floor: widening the degree for extraction must never narrow it
-/// below what the query path would have built.
-const NNDESCENT_DEFAULT_DEGREE: usize = 30;
-
 /////////////
 // Helpers //
 /////////////
@@ -77,22 +65,9 @@ pub struct NearestNeighbourParams<T> {
     pub ef_construction: usize,
     /// HNSW: search budget
     pub ef_search: usize,
-    /// NNDescent: diversification probability after generation of the graph.
-    pub diversify_prob: T,
     /// NNDescent: convergence criterium. If less than these percentage of
     /// neighbours have been udpated, the algorithm counts as converged.
     pub delta: T,
-    /// NNDescent: optional beam search budget for querying. Ignored when
-    /// `extract_knn` is set, since no search runs.
-    pub ef_budget: Option<usize>,
-    /// NNDescent: return the graph the descent already built instead of running
-    /// a beam search over it. Defaults to `true`.
-    ///
-    /// A self-kNN query re-searches a graph that is already a kNN graph, which
-    /// is the work the descent just did. Extraction skips it. The build degree
-    /// is widened to cover `k` when this is set, since extraction cannot return
-    /// more neighbours than the graph holds. No effect on any other backend.
-    pub extract_knn: bool,
     /// BallTree: Proportions of N to search in the BallTree
     pub bt_budget: T,
     /// IVF: Number of lists, clusters to use. If not provided, will default
@@ -129,11 +104,6 @@ impl<T> NearestNeighbourParams<T> {
     /// **NN Descent**
     ///
     /// * `delta` - Early termination criterium.
-    /// * `diversify_prob` - Diversifying probability at the end of the index
-    ///   generation. Generates additional random edges which can improve the
-    ///   Recall.
-    /// * `ef_budget` - Optional query budget. Ignored when `extract_knn` is set.
-    /// * `extract_knn` - Return the built graph rather than searching it.
     ///
     /// **BallTree**
     ///
@@ -154,10 +124,7 @@ impl<T> NearestNeighbourParams<T> {
         ef_construction: usize,
         ef_search: usize,
         // nndescent
-        diversify_prob: T,
         delta: T,
-        ef_budget: Option<usize>,
-        extract_knn: bool,
         // balltree
         bt_budget: T,
         // ivf / kmknn
@@ -171,10 +138,7 @@ impl<T> NearestNeighbourParams<T> {
             m,
             ef_construction,
             ef_search,
-            diversify_prob,
             delta,
-            ef_budget,
-            extract_knn,
             bt_budget,
             n_list,
             n_probes,
@@ -202,10 +166,7 @@ where
             ef_construction: 200,
             ef_search: 100,
             // nndescent
-            diversify_prob: T::from(0.0).unwrap(),
             delta: T::from(0.001).unwrap(),
-            ef_budget: None,
-            extract_knn: true,
             // balltree
             bt_budget: T::from(0.1).unwrap(),
             // ivf
@@ -273,6 +234,50 @@ where
             .collect()
     });
     Ok((indices, dist))
+}
+
+/// Unpack a flat NN-Descent kNN graph into per-node rows.
+///
+/// Unfilled slots sit at the end of a row as [`KNN_GRAPH_EMPTY`] and are
+/// dropped, so a row can come back shorter than the graph's `k`.
+///
+/// ### Params
+///
+/// * `graph` - The flat graph from one of the `build_knn_graph_*` builders
+///
+/// ### Returns
+///
+/// `(knn_indices, optional distances)`, rows sorted by distance ascending.
+pub(crate) fn knn_graph_to_rows<U>(graph: KnnGraph<U>) -> (Vec<Vec<usize>>, Option<Vec<Vec<U>>>)
+where
+    U: Copy + Send + Sync,
+{
+    let KnnGraph {
+        indices,
+        distances,
+        k,
+        ..
+    } = graph;
+    let k = k.max(1);
+
+    let rows: Vec<Vec<usize>> = indices
+        .par_chunks(k)
+        .map(|row| {
+            row.iter()
+                .take_while(|&&j| j != KNN_GRAPH_EMPTY)
+                .map(|&j| j as usize)
+                .collect()
+        })
+        .collect();
+
+    let dist = distances.map(|d| {
+        d.par_chunks(k)
+            .zip(rows.par_iter())
+            .map(|(row, idx)| row[..idx.len()].to_vec())
+            .collect()
+    });
+
+    (rows, dist)
 }
 
 /// Parse the AnnSearch to use
@@ -355,15 +360,15 @@ where
 
     let (knn_indices, knn_dist) = match ann_search {
         AnnSearch::Annoy => {
-            let index = build_annoy_index(data, &params_nn.dist_metric, params_nn.n_tree, seed)?;
+            let index = build_annoy_index(
+                data,
+                &params_nn.dist_metric,
+                params_nn.n_tree,
+                seed,
+                verbosity,
+            )?;
 
-            query_annoy_self(
-                &index,
-                k + 1,
-                params_nn.search_budget,
-                true,
-                verbosity.detailed_verbosity(),
-            )?
+            query_annoy_self(&index, k + 1, params_nn.search_budget, true, verbosity)?
         }
         AnnSearch::Hnsw => {
             let index = build_hnsw_index(
@@ -372,72 +377,42 @@ where
                 params_nn.ef_construction,
                 &params_nn.dist_metric,
                 seed,
-                verbosity.detailed_verbosity(),
-            );
-
-            query_hnsw_self(
-                &index,
-                k + 1,
-                params_nn.ef_search,
-                true,
-                verbosity.normal_verbosity(),
-            )?
-        }
-        AnnSearch::NNDescent => {
-            // Extraction can only hand back what the graph holds, so the degree
-            // has to cover the request. `None` leaves the crate's own 30, which
-            // is what the query path has always built.
-            let graph_k = if params_nn.extract_knn {
-                Some((k + 1).max(NNDESCENT_DEFAULT_DEGREE))
-            } else {
-                None
-            };
-
-            let index = build_nndescent_index(
-                data,
-                &params_nn.dist_metric,
-                params_nn.delta,
-                params_nn.diversify_prob,
-                graph_k,
-                None,
-                None,
-                None,
-                seed,
-                verbosity.detailed_verbosity(),
+                verbosity,
             )?;
 
-            if params_nn.extract_knn {
-                // `include_self` so the row shape matches the query path and the
-                // shared self-removal below applies to both. Asking for the self
-                // edge only to drop it costs one prepended entry per row.
-                extract_nndescent_knn(&index, Some(k + 1), true, true)?
-            } else {
-                query_nndescent_self(
-                    &index,
-                    k + 1,
-                    params_nn.ef_budget,
-                    true,
-                    verbosity.normal_verbosity(),
-                )?
-            }
+            query_hnsw_self(&index, k + 1, params_nn.ef_search, true, verbosity)?
+        }
+        AnnSearch::NNDescent => {
+            let knn_params = NNDescentKnnParams::new(
+                k,
+                None,
+                None,
+                None,
+                params_nn.delta.to_f64().unwrap(),
+                false,
+                true,
+            );
+            let graph = build_knn_graph_nndescent(
+                data,
+                &params_nn.dist_metric,
+                Some(knn_params),
+                seed,
+                verbosity,
+            )?;
+
+            knn_graph_to_rows(graph)
         }
         AnnSearch::BallTree => {
-            let index = build_balltree_index(data, &params_nn.dist_metric, seed)?;
+            let index = build_balltree_index(data, &params_nn.dist_metric, seed, verbosity)?;
 
             let budget = (data.nrows() as f32 * params_nn.bt_budget.to_f32().unwrap()) as usize;
 
-            query_balltree_self(
-                &index,
-                k + 1,
-                Some(budget),
-                true,
-                verbosity.normal_verbosity(),
-            )?
+            query_balltree_self(&index, k + 1, Some(budget), true, verbosity)?
         }
         AnnSearch::Exhaustive => {
-            let index = build_exhaustive_index(data, &params_nn.dist_metric);
+            let index = build_exhaustive_index(data, &params_nn.dist_metric, verbosity);
 
-            query_exhaustive_self(&index, k + 1, true, verbosity.normal_verbosity())?
+            query_exhaustive_self(&index, k + 1, true, verbosity)?
         }
         AnnSearch::Ivf => {
             let index = build_ivf_index(
@@ -446,16 +421,10 @@ where
                 None,
                 &params_nn.dist_metric,
                 seed,
-                verbosity.detailed_verbosity(),
+                verbosity,
             )?;
 
-            query_ivf_self(
-                &index,
-                k + 1,
-                params_nn.n_probes,
-                true,
-                verbosity.normal_verbosity(),
-            )?
+            query_ivf_self(&index, k + 1, params_nn.n_probes, true, verbosity)?
         }
         AnnSearch::KmKnn => {
             let index = build_kmknn_index(
@@ -464,21 +433,22 @@ where
                 params_nn.n_list,
                 None,
                 seed,
-                verbosity.detailed_verbosity(),
+                verbosity,
             )?;
 
-            query_kmknn_self(&index, k + 1, true, verbosity.normal_verbosity())?
+            query_kmknn_self(&index, k + 1, true, verbosity)?
         }
         #[cfg(mlx_available)]
         AnnSearch::ExhaustiveMlx => {
             let data_fp32 = cast_matrix_to_fp32(data);
-            let index = build_exhaustive_index_mlx(data_fp32.as_ref(), &params_nn.dist_metric)?;
+            let index =
+                build_exhaustive_index_mlx(data_fp32.as_ref(), &params_nn.dist_metric, verbosity)?;
 
             cast_mlx_knn(query_exhaustive_index_mlx_self(
                 &index,
                 k + 1,
                 true,
-                verbosity.detailed_verbosity(),
+                verbosity,
             ))?
         }
         #[cfg(mlx_available)]
@@ -490,7 +460,7 @@ where
                 None,
                 &params_nn.dist_metric,
                 seed,
-                verbosity.detailed_verbosity(),
+                verbosity,
             )?;
 
             cast_mlx_knn(query_ivf_index_mlx_self(
@@ -499,55 +469,34 @@ where
                 params_nn.n_probes,
                 None,
                 true,
-                verbosity.normal_verbosity(),
+                verbosity,
             ))?
         }
         #[cfg(mlx_available)]
         AnnSearch::NNDescentMlx => {
             let data_fp32 = cast_matrix_to_fp32(data);
-            let graph_k = Some((k + 1).max(NNDESCENT_DEFAULT_DEGREE));
-            let delta = params_nn.delta.to_f32();
-
-            if params_nn.extract_knn {
-                // The raw graph build skips the CAGRA pruning the index needs
-                // for beam search, which extraction never runs.
-                let graph = build_knn_graph_mlx(
-                    data_fp32.as_ref(),
-                    &params_nn.dist_metric,
-                    graph_k,
-                    None,
-                    None,
-                    None,
-                    delta,
-                    None,
-                    None,
-                    seed,
-                    verbosity.detailed_verbosity(),
-                )?;
-                cast_mlx_knn(Ok(graph.extract_knn(Some(k + 1), true, true)))?
-            } else {
-                let index = build_nndescent_index_mlx(
-                    data_fp32.as_ref(),
-                    &params_nn.dist_metric,
-                    graph_k,
-                    None,
-                    None,
-                    None,
-                    delta,
-                    None,
-                    None,
-                    seed,
-                    verbosity.detailed_verbosity(),
-                )?;
-                cast_mlx_knn(query_nndescent_index_mlx_self(&index, k + 1, None, true))?
-            }
+            let graph = build_knn_graph_mlx(
+                data_fp32.as_ref(),
+                &params_nn.dist_metric,
+                Some(k),
+                None,
+                None,
+                None,
+                params_nn.delta.to_f32(),
+                None,
+                None,
+                seed,
+                verbosity,
+            )?;
+            cast_mlx_knn(Ok(graph.extract_knn(Some(k), false, true)))?
         }
     };
 
     let knn_dist = knn_dist.unwrap();
 
     // Remove self by index rather than position: the f32 device backends can
-    // rank an exact duplicate ahead of the point itself. In place: rebuilding
+    // rank an exact duplicate ahead of the point itself. The NN-Descent graphs
+    // carry no self edge, so nothing is removed for them. In place: rebuilding
     // the rows through an iterator loses the size hint and over-allocates.
     let (knn_indices, mut knn_dist): (Vec<Vec<usize>>, Vec<Vec<T>>) = knn_indices
         .into_par_iter()

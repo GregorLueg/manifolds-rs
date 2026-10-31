@@ -1,7 +1,7 @@
 //! Math helper functions
 
+use ann_search_rs::prelude::SimdDistance;
 use faer::{Mat, MatMut, MatRef};
-use num_traits::ToPrimitive;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal, StandardNormal};
@@ -27,7 +27,7 @@ const VNE_SPARSE_RANK: usize = 100;
 /// threads. The value cannot change the result: each output element is an
 /// independent sum over its own row, so the partition never reorders an
 /// accumulation.
-const SPMV_ROW_CHUNK: usize = 512;
+pub(crate) const SPMV_ROW_CHUNK: usize = 512;
 
 /// Vector length below which elementwise and row-parallel work runs serially.
 ///
@@ -35,7 +35,7 @@ const SPMV_ROW_CHUNK: usize = 512;
 /// graph with many small components rayon's dispatch cost would otherwise
 /// dominate the arithmetic. Going serial is bit-identical: neither the matvec
 /// nor `normalise` reduces across rows.
-const PARALLEL_VEC_MIN: usize = 4096;
+pub(crate) const PARALLEL_VEC_MIN: usize = 4096;
 
 ////////////////////
 // Randomised SVD //
@@ -285,24 +285,121 @@ where
 // Lanczos Eigenvalue calculations //
 /////////////////////////////////////
 
-/// Internal output of a Lanczos tridiagonalisation + tridiagonal eigen-decomp.
-struct LanczosEigendecomp {
-    /// Eigenvalues of the Eigen decomposition
-    tri_evals: Vec<f64>,
-    /// Eigenvectors of the Eigen decomposition
-    tri_evecs: Mat<f64>,
-    /// Krylov basis, flat and row-major over the iteration index: basis vector
-    /// `k` is `v_basis[k * n..(k + 1) * n]`. Contiguous so each basis vector is
-    /// a single SIMD-friendly slice.
-    v_basis: Vec<f64>,
-    /// Number of Lanczos iterations actually completed. Below the requested
-    /// count when the recurrence broke down early.
-    n_iter: usize,
-    /// Number of samples
-    n: usize,
+/////////////////////
+// Lanczos: consts //
+/////////////////////
+
+/// Ritz vectors retained across a restart, above the requested pair count.
+const LANCZOS_RESTART_GUARD: usize = 5;
+
+/// Norm ratio below which a second Gram-Schmidt pass is run.
+///
+/// The DGKS criterion. A drop past `1 / sqrt(2)` means the projection cancelled
+/// at least half the vector, which is where the round-off it leaves behind
+/// stops being negligible.
+const LANCZOS_ORTHO_REFINE_RATIO: f64 = 0.707;
+
+/// Lanczos breakdown threshold, relative to the running `||A||` estimate.
+///
+/// The attainable floor on the residual norm after two Gram-Schmidt passes is
+/// `~eps * sqrt(n) * ||A||`, so this sits above it while still only firing on
+/// a genuinely invariant subspace.
+const LANCZOS_BREAKDOWN_RATIO: f64 = 1e-12;
+
+/// Rows per partial sum in the reductions over basis-length vectors.
+///
+/// Fixed rather than derived from the thread count, so the summation order and
+/// with it the result are the same on any machine. Not tuned.
+const REDUCE_CHUNK: usize = 8192;
+
+//////////////////////
+// Lanczos: structs //
+//////////////////////
+
+/// Parameters for the thick-restarted Lanczos eigensolver.
+#[derive(Clone, Copy, Debug)]
+pub struct LanczosParams {
+    /// Krylov basis vectors held at once. `None` derives it from the requested
+    /// component count as `max(2k + 10, k + 20)`. Together with `n` this sets
+    /// the solver's memory: `basis_size * n` f64.
+    pub basis_size: Option<usize>,
+    /// Maximum restart cycles. Each cycle costs one basis worth of
+    /// matrix-vector products plus the orthogonalisation against the basis.
+    pub max_restarts: usize,
+    /// Relative residual tolerance. A Ritz pair counts as converged once
+    /// `||A x - lambda x||` drops below `tol * ||A||`.
+    pub tol: f64,
 }
 
-/// Helper function for dot product of two vectors
+impl LanczosParams {
+    /// Generate new Lanczos parameters.
+    ///
+    /// ### Params
+    ///
+    /// * `basis_size` - Krylov basis vectors held at once; `None` derives it
+    ///   from the requested component count.
+    /// * `max_restarts` - Maximum restart cycles.
+    /// * `tol` - Relative residual tolerance.
+    ///
+    /// ### Returns
+    ///
+    /// Self
+    pub fn new(basis_size: Option<usize>, max_restarts: usize, tol: f64) -> Self {
+        Self {
+            basis_size,
+            max_restarts,
+            tol,
+        }
+    }
+
+    /// Resolve the basis size for a given component count.
+    ///
+    /// ### Params
+    ///
+    /// * `n_components` - Eigenpairs requested, already capped at `n`.
+    /// * `n` - Matrix dimension, which caps the basis.
+    ///
+    /// ### Returns
+    ///
+    /// The number of basis vectors to hold, at least one and never above `n`.
+    fn resolve_basis(&self, n_components: usize, n: usize) -> usize {
+        self.basis_size
+            .unwrap_or_else(|| (n_components * 2 + 10).max(n_components + 20))
+            .max(n_components + 1)
+            .min(n)
+            .max(1)
+    }
+}
+
+impl Default for LanczosParams {
+    /// Derived basis size, 64 restarts and a relative tolerance of `1e-8`.
+    fn default() -> Self {
+        Self::new(None, 64, 1e-8)
+    }
+}
+
+/// Ritz pairs from [`lanczos_thick_restart`].
+#[derive(Clone, Debug)]
+pub struct RitzPairs {
+    /// Ritz values sorted descending.
+    pub values: Vec<f64>,
+    /// Unit-norm Ritz vectors, column-major: vector `c` is
+    /// `vectors[c * n..(c + 1) * n]`.
+    pub vectors: Vec<f64>,
+    /// Whether the largest residual over the returned pairs met
+    /// `tol * ||A||`.
+    pub converged: bool,
+}
+
+//////////////////////
+// Lanczos: helpers //
+//////////////////////
+
+/// Dot product of two vectors
+///
+/// Below `PARALLEL_VEC_MIN` a single SIMD pass. Above it, partial sums over
+/// fixed `REDUCE_CHUNK` blocks run in parallel and are added in block order,
+/// so the result does not depend on the thread count.
 ///
 /// ### Params
 ///
@@ -317,10 +414,18 @@ where
     T: ManifoldsFloat,
 {
     assert_same_len!(a, b);
-    T::dot_simd(a, b)
+    if a.len() < PARALLEL_VEC_MIN {
+        return T::dot_simd(a, b);
+    }
+    let partials: Vec<T> = a
+        .par_chunks(REDUCE_CHUNK)
+        .zip(b.par_chunks(REDUCE_CHUNK))
+        .map(|(x, y)| T::dot_simd(x, y))
+        .collect();
+    partials.into_iter().fold(T::zero(), |acc, p| acc + p)
 }
 
-/// Helper function to normalise a vector
+/// Euclidean norm of a vector
 ///
 /// ### Params
 ///
@@ -328,7 +433,7 @@ where
 ///
 /// ### Returns
 ///
-/// Normalised dot product of the vector `v`
+/// `||v||_2`
 fn norm<T>(v: &[T]) -> T
 where
     T: ManifoldsFloat,
@@ -353,56 +458,323 @@ where
     }
 }
 
-/// Helper function to calculate eigenvalues
+/// Project a vector onto the leading columns of the basis: `out = V^T v`.
+///
+/// Partial products over fixed `REDUCE_CHUNK` row blocks, summed in block
+/// order, so the result is independent of the thread count. Each block of `v`
+/// stays in cache across the `width` basis columns.
 ///
 /// ### Params
 ///
-/// * `alpha` - alpha vector
-/// * `beta` - beta vector
-///
-/// ### Returns
-///
-/// Tuple of `(eigenvectors, eigenvalues)`
-fn tridiag_eig<T>(alpha: &[T], beta: &[T]) -> Result<(Vec<T::Real>, Mat<T>), ManifoldsError>
-where
-    T: ManifoldsFloat,
-{
-    let n = alpha.len();
-    let mut t = Mat::<T>::zeros(n, n);
+/// * `basis` - Column-major basis buffer with `n` rows.
+/// * `n` - Length of a basis vector.
+/// * `width` - Leading columns to project against.
+/// * `v` - Vector of length `n`.
+/// * `out` - Receives `V^T v`; must be exactly `width` long.
+fn basis_project(basis: &[f64], n: usize, width: usize, v: &[f64], out: &mut [f64]) {
+    let block = |(c, v_chunk): (usize, &[f64])| -> Vec<f64> {
+        let start = c * REDUCE_CHUNK;
+        (0..width)
+            .map(|k| {
+                let col = &basis[k * n + start..k * n + start + v_chunk.len()];
+                <f64 as SimdDistance>::dot_simd(col, v_chunk)
+            })
+            .collect()
+    };
 
-    for i in 0..n {
-        t[(i, i)] = alpha[i];
-        if i < n - 1 {
-            t[(i, i + 1)] = beta[i];
-            t[(i + 1, i)] = beta[i];
+    let partials: Vec<Vec<f64>> = if n < PARALLEL_VEC_MIN {
+        v.chunks(REDUCE_CHUNK).enumerate().map(block).collect()
+    } else {
+        v.par_chunks(REDUCE_CHUNK).enumerate().map(block).collect()
+    };
+
+    out.fill(0.0);
+    for p in &partials {
+        for (o, &x) in out.iter_mut().zip(p) {
+            *o += x;
         }
     }
-
-    let eig = t
-        .self_adjoint_eigen(faer::Side::Lower)
-        .map_err(|_| ManifoldsError::FaerEigenError)?;
-    let evals = eig.S().column_vector().iter().copied().collect();
-    let evecs = eig.U().to_owned();
-
-    Ok((evals, evecs))
 }
 
-/// Lanczos Eigen decomposition
+/// Accumulate a basis expansion into a vector: `v += scale * V c`.
+///
+/// Elementwise over rows with the columns added in ascending order, so the
+/// row partition never changes the result.
 ///
 /// ### Params
 ///
-/// * `matrix` - The sparse matrix for which to run the Eigen decompositon.
-/// * `n_components` - Number of components to identify
-/// * `seed` - Random seed for reproducibility
+/// * `basis` - Column-major basis buffer with `n` rows.
+/// * `n` - Length of a basis vector.
+/// * `coeffs` - Coefficients, one per leading basis column used.
+/// * `scale` - Factor applied to the expansion (`-1` subtracts it).
+/// * `v` - Vector of length `n`, updated in place.
+fn basis_axpy(basis: &[f64], n: usize, coeffs: &[f64], scale: f64, v: &mut [f64]) {
+    let block = |(c, v_chunk): (usize, &mut [f64])| {
+        let start = c * REDUCE_CHUNK;
+        for (k, &coeff) in coeffs.iter().enumerate() {
+            let a = scale * coeff;
+            let col = &basis[k * n + start..k * n + start + v_chunk.len()];
+            for (x, &b) in v_chunk.iter_mut().zip(col) {
+                *x += a * b;
+            }
+        }
+    };
+
+    if n < PARALLEL_VEC_MIN {
+        v.chunks_mut(REDUCE_CHUNK).enumerate().for_each(block);
+    } else {
+        v.par_chunks_mut(REDUCE_CHUNK).enumerate().for_each(block);
+    }
+}
+
+/// Expand Ritz coefficient columns back into the full space.
+///
+/// ### Params
+///
+/// * `basis` - Column-major basis buffer with `n` rows.
+/// * `n` - Length of a basis vector.
+/// * `width` - Basis columns spanned by the coefficients.
+/// * `coeffs` - Rayleigh-Ritz eigenvectors, column-wise.
+/// * `n_out` - Leading coefficient columns to expand.
+/// * `out` - Receives the `n_out` expanded vectors, column-major. Overwritten.
+fn basis_expand(
+    basis: &[f64],
+    n: usize,
+    width: usize,
+    coeffs: MatRef<f64>,
+    n_out: usize,
+    out: &mut [f64],
+) {
+    for (o, column) in out.chunks_exact_mut(n).take(n_out).enumerate() {
+        let c: Vec<f64> = (0..width).map(|k| coeffs[(k, o)]).collect();
+        column.fill(0.0);
+        basis_axpy(basis, n, &c, 1.0, column);
+    }
+}
+
+/// Eigen-decompose the leading `size` block of a symmetric matrix, descending.
+///
+/// ### Params
+///
+/// * `h` - Symmetric matrix; only the leading `size` by `size` block is read.
+/// * `size` - Size of the block to decompose.
 ///
 /// ### Returns
 ///
-/// The `LanczosEigendecomp`
-fn lanczos_eigendecomp<T>(
+/// `(eigenvalues, eigenvectors)` sorted by descending eigenvalue, the
+/// eigenvectors held column-wise.
+fn symmetric_eigen_descending(
+    h: MatRef<f64>,
+    size: usize,
+) -> Result<(Vec<f64>, Mat<f64>), ManifoldsError> {
+    let block = Mat::<f64>::from_fn(size, size, |i, j| h[(i, j)]);
+    let eig = block
+        .self_adjoint_eigen(faer::Side::Lower)
+        .map_err(|_| ManifoldsError::FaerEigenError)?;
+
+    let raw_values = eig.S().column_vector();
+    let raw_vectors = eig.U();
+
+    let mut order: Vec<usize> = (0..size).collect();
+    order.sort_by(|&a, &b| raw_values[b].total_cmp(&raw_values[a]));
+
+    let values: Vec<f64> = order.iter().map(|&i| raw_values[i]).collect();
+    let vectors = Mat::<f64>::from_fn(size, size, |i, j| raw_vectors[(i, order[j])]);
+
+    Ok((values, vectors))
+}
+
+/// Largest eigenpairs of a symmetric operator via thick-restarted Lanczos.
+///
+/// Each cycle builds a Krylov basis of at most [`LanczosParams::basis_size`]
+/// vectors with full reorthogonalisation, does a Rayleigh-Ritz extraction and
+/// restarts from the best Ritz vectors plus the residual direction. The basis
+/// stays bounded while the iteration keeps going, so memory is
+/// `basis_size * n` f64 regardless of how many matvecs convergence takes.
+///
+/// The projected matrix is accumulated explicitly as `H[i][j] = <v_i, A v_j>`
+/// rather than as a tridiagonal recurrence: after a thick restart the leading
+/// basis vectors are Ritz vectors, so the projection is arrow-shaped.
+/// Orthogonalisation is classical Gram-Schmidt with a DGKS-conditional second
+/// pass. Convergence uses the Arnoldi residual `|beta_m| * |y[m-1]|`, tested
+/// against `tol * ||A||`.
+///
+/// Every reduction runs over fixed row blocks, so a seed reproduces the run
+/// bit for bit on any thread count, provided `matvec` does too.
+///
+/// ### Params
+///
+/// * `n` - Dimension of the operator.
+/// * `n_components` - Number of eigenpairs to compute. Capped at `n`.
+/// * `seed` - Seed for the starting vector.
+/// * `params` - [`LanczosParams`] for basis size, restarts and tolerance.
+/// * `matvec` - Symmetric operator, writes `A x` into `y`.
+///
+/// ### Returns
+///
+/// [`RitzPairs`] with at most `min(n_components, n)` pairs, fewer if the
+/// iteration hit an invariant subspace first.
+///
+/// ### References
+///
+/// Wu & Simon, SIAM J. Matrix Anal. Appl., 2000
+pub fn lanczos_thick_restart<M>(
+    n: usize,
+    n_components: usize,
+    seed: u64,
+    params: LanczosParams,
+    mut matvec: M,
+) -> Result<RitzPairs, ManifoldsError>
+where
+    M: FnMut(&[f64], &mut [f64]),
+{
+    if n_components == 0 || n == 0 {
+        return Err(ManifoldsError::NoData);
+    }
+
+    let n_keep = n_components.min(n);
+    let m = params.resolve_basis(n_keep, n);
+
+    let mut basis = vec![0.0f64; m * n];
+    let mut h = Mat::<f64>::zeros(m, m);
+    let mut w = vec![0.0f64; n];
+    let mut coeffs = vec![0.0f64; m];
+
+    let mut rng = StdRng::seed_from_u64(seed);
+    for x in basis[..n].iter_mut() {
+        *x = rng.random::<f64>() - 0.5;
+    }
+    normalise(&mut basis[..n]);
+
+    // basis vectors carried over from the previous cycle, zero on the first
+    let mut locked = 0usize;
+    let mut ritz_values: Vec<f64> = Vec::new();
+    let mut ritz_coeffs = Mat::<f64>::zeros(0, 0);
+    let mut m_final = 0usize;
+
+    // lower bound on ||A||_2, refined as the iteration sees more of the matrix
+    let mut norm_estimate = 0.0f64;
+    let mut converged = false;
+    let budget = params.max_restarts.max(1);
+
+    for cycle in 0..budget {
+        let mut m_eff = m;
+        let mut last_beta = 0.0f64;
+
+        for j in locked..m {
+            matvec(&basis[j * n..(j + 1) * n], &mut w);
+            let width = j + 1;
+
+            // taken before any subtraction, so `h` is the exact projection;
+            // they double as the first Gram-Schmidt coefficients
+            basis_project(&basis, n, width, &w, &mut coeffs[..width]);
+            for i in 0..width {
+                h[(i, j)] = coeffs[i];
+                h[(j, i)] = coeffs[i];
+            }
+
+            let before = norm(&w);
+            norm_estimate = norm_estimate.max(before);
+
+            basis_axpy(&basis, n, &coeffs[..width], -1.0, &mut w);
+            last_beta = norm(&w);
+
+            if last_beta < LANCZOS_ORTHO_REFINE_RATIO * before {
+                basis_project(&basis, n, width, &w, &mut coeffs[..width]);
+                basis_axpy(&basis, n, &coeffs[..width], -1.0, &mut w);
+                last_beta = norm(&w);
+            }
+
+            // the basis spans an invariant subspace: its Ritz pairs are exact
+            if last_beta <= LANCZOS_BREAKDOWN_RATIO * norm_estimate {
+                m_eff = width;
+                last_beta = 0.0;
+                break;
+            }
+
+            if width < m {
+                let inv = 1.0 / last_beta;
+                let next = &mut basis[width * n..(width + 1) * n];
+                for (dst, &src) in next.iter_mut().zip(w.iter()) {
+                    *dst = src * inv;
+                }
+            }
+        }
+
+        let (values, vectors) = symmetric_eigen_descending(h.as_ref(), m_eff)?;
+
+        let n_out = n_keep.min(m_eff);
+        let residual = (0..n_out).fold(0.0f64, |acc, i| {
+            acc.max(last_beta * vectors[(m_eff - 1, i)].abs())
+        });
+        norm_estimate = norm_estimate
+            .max(values[0].abs())
+            .max(values[m_eff - 1].abs());
+        converged = residual <= params.tol * norm_estimate;
+
+        ritz_values = values;
+        ritz_coeffs = vectors;
+        m_final = m_eff;
+
+        if converged || m_eff < m || cycle + 1 == budget {
+            break;
+        }
+
+        // Thick restart: keep the best Ritz vectors, then hand the residual
+        // direction over as the next basis vector. Never retain more than half
+        // the basis, or a cycle buys too few new Krylov vectors to pay for it.
+        let keep = (n_keep + LANCZOS_RESTART_GUARD).min(m / 2).max(1);
+        let mut restarted = vec![0.0f64; keep * n];
+        basis_expand(&basis, n, m_eff, ritz_coeffs.as_ref(), keep, &mut restarted);
+
+        let inv = 1.0 / last_beta;
+        w.iter_mut().for_each(|x| *x *= inv);
+
+        h.fill(0.0);
+        basis[..keep * n].copy_from_slice(&restarted);
+        for (i, &value) in ritz_values.iter().take(keep).enumerate() {
+            h[(i, i)] = value;
+        }
+        basis[keep * n..(keep + 1) * n].copy_from_slice(&w);
+        locked = keep;
+    }
+
+    let n_out = n_keep.min(m_final);
+    let mut ritz = vec![0.0f64; n_out * n];
+    basis_expand(&basis, n, m_final, ritz_coeffs.as_ref(), n_out, &mut ritz);
+    drop(basis);
+
+    for column in ritz.chunks_exact_mut(n) {
+        let scale = norm(column);
+        let inv = if scale > 0.0 { 1.0 / scale } else { 0.0 };
+        column.iter_mut().for_each(|v| *v *= inv);
+    }
+
+    Ok(RitzPairs {
+        values: ritz_values[..n_out].to_vec(),
+        vectors: ritz,
+        converged,
+    })
+}
+
+/// Thick-restarted Lanczos on a sparse matrix, optionally negated.
+///
+/// ### Params
+///
+/// * `matrix` - Symmetric sparse matrix. CSC input is transposed once.
+/// * `n_components` - Number of eigenpairs to compute
+/// * `seed` - For reproducibility
+/// * `negate` - Run on `-A`, which turns the largest pairs into the smallest
+///
+/// ### Returns
+///
+/// The [`RitzPairs`] of `A` or `-A`
+fn sparse_lanczos<T>(
     matrix: &CompressedSparseData<T>,
     n_components: usize,
     seed: u64,
-) -> Result<LanczosEigendecomp, ManifoldsError>
+    negate: bool,
+) -> Result<RitzPairs, ManifoldsError>
 where
     T: ManifoldsFloat,
 {
@@ -410,9 +782,7 @@ where
     if n == 0 {
         return Err(ManifoldsError::NoData);
     }
-    let n_iter = (n_components * 4 + 30).min(n);
 
-    // Borrow when the input is already CSR; only the CSC path needs an owned copy
     let csr_owned;
     let csr: &CompressedSparseData<T> = match matrix.cs_type {
         CompressedSparseFormat::Csr => matrix,
@@ -426,9 +796,9 @@ where
         csr.indices.as_slice(),
         csr.indptr.as_slice(),
     );
+    let sign = if negate { -1.0 } else { 1.0 };
 
-    // `T -> f64` at point of use rather than as an up-front copy of the whole
-    // value array: identical arithmetic, and half the bytes streamed for f32.
+    // `T -> f64` at point of use rather than as an up-front widened copy
     let matvec = |x: &[f64], y: &mut [f64]| {
         let kernel = |base: usize, y_chunk: &mut [f64]| {
             for (offset, y_i) in y_chunk.iter_mut().enumerate() {
@@ -437,7 +807,7 @@ where
                 for idx in indptr[i]..indptr[i + 1] {
                     acc += data[idx].to_f64().unwrap() * x[indices[idx]];
                 }
-                *y_i = acc;
+                *y_i = sign * acc;
             }
         };
 
@@ -450,170 +820,50 @@ where
         }
     };
 
-    let mut v = vec![0.0; n];
-    let mut v_old = vec![0.0; n];
-    let mut w = vec![0.0; n];
-    let mut v_basis = vec![0.0; n_iter * n];
-
-    let mut rng = StdRng::seed_from_u64(seed);
-    for i in 0..n {
-        v[i] = rng.random::<f64>() - 0.5;
-    }
-    normalise(&mut v);
-
-    let mut alpha = vec![0.0; n_iter];
-    let mut beta = vec![0.0; n_iter];
-    let mut n_done = 0;
-
-    for j in 0..n_iter {
-        v_basis[j * n..(j + 1) * n].copy_from_slice(&v);
-        n_done = j + 1;
-
-        matvec(&v, &mut w);
-        alpha[j] = dot(&w, &v);
-
-        for i in 0..n {
-            w[i] -= alpha[j] * v[i];
-            if j > 0 {
-                w[i] -= beta[j - 1] * v_old[i];
-            }
-        }
-
-        // Modified Gram-Schmidt: every coefficient is taken against the
-        // already-updated `w`, so the `k` loop is inherently sequential.
-        for k in 0..=j {
-            let basis_k = &v_basis[k * n..(k + 1) * n];
-            let coeff = dot(&w, basis_k);
-            for i in 0..n {
-                w[i] -= coeff * basis_k[i];
-            }
-        }
-
-        beta[j] = norm(&w);
-        if beta[j] < 1e-12 {
-            break;
-        }
-
-        v_old.copy_from_slice(&v);
-        v.copy_from_slice(&w);
-        normalise(&mut v);
-    }
-
-    // Truncate to the iterations actually completed. On an early breakdown the
-    // untouched tail of alpha/beta stays zero, and feeding that to the
-    // tridiagonal solve injects spurious zero Ritz values whose basis rows are
-    // all zero, which back-transform into a dead embedding dimension.
-    let (tri_evals, tri_evecs) = tridiag_eig(&alpha[..n_done], &beta[..n_done.saturating_sub(1)])?;
-    v_basis.truncate(n_done * n);
-
-    Ok(LanczosEigendecomp {
-        tri_evals,
-        tri_evecs,
-        v_basis,
-        n_iter: n_done,
-        n,
-    })
+    lanczos_thick_restart(n, n_components, seed, LanczosParams::default(), matvec)
 }
 
-/// Select the Eigen pairs (either largest or smallest)
+/// Convert Ritz pairs into the `(eigenvalues, per-point eigenvectors)` layout.
 ///
 /// ### Params
 ///
-/// * `decomp` - The Lanczos Eigen decomposition
-/// * `n_components` - The number of components to extract
-/// * `largest` - Return the largest or smallest (boolean)
+/// * `ritz` - Ritz pairs, `n` rows per vector
+/// * `n` - Number of points
+/// * `sign` - Factor applied to the eigenvalues (`-1` undoes a negation)
 ///
 /// ### Returns
 ///
-/// (eigenvalues, eigenvectors) where eigenvectors[i][j] is element j of
-/// eigenvector i
-fn select_eigenpairs(
-    decomp: &LanczosEigendecomp,
-    n_components: usize,
-    largest: bool,
-) -> (Vec<f32>, Vec<Vec<f32>>) {
-    let n = decomp.n;
-    let n_iter = decomp.n_iter;
-
-    let mut indices: Vec<usize> = (0..decomp.tri_evals.len()).collect();
-    if largest {
-        indices.sort_by(|&i, &j| {
-            decomp.tri_evals[j]
-                .partial_cmp(&decomp.tri_evals[i])
-                .unwrap()
-        });
-    } else {
-        indices.sort_by(|&i, &j| {
-            decomp.tri_evals[i]
-                .partial_cmp(&decomp.tri_evals[j])
-                .unwrap()
-        });
-    }
-
-    // An early Lanczos breakdown leaves fewer Ritz values than were asked for:
-    // a clique, or any component whose operator has few distinct eigenvalues,
-    // exhausts the Krylov space in a couple of iterations. Return the short
-    // result rather than inventing eigenpairs; every caller checks the width.
-    let n_sel = n_components.min(indices.len());
-
-    let mut sel_evals: Vec<f32> = Vec::with_capacity(n_sel);
-    let mut sel_evecs: Vec<Vec<f32>> = Vec::with_capacity(n_sel);
-
-    for &idx in indices.iter().take(n_sel) {
-        // `j` outer, `i` inner: each element still accumulates in ascending `j`,
-        // so this is bit-identical to the transposed order while streaming one
-        // contiguous basis vector at a time instead of interleaving `n_iter`.
-        let mut evec = vec![0.0; n];
-        for j in 0..n_iter {
-            let c_j = decomp.tri_evecs[(j, idx)];
-            let basis_j = &decomp.v_basis[j * n..(j + 1) * n];
-            for i in 0..n {
-                evec[i] += basis_j[i] * c_j;
-            }
-        }
-
-        let norm_e: f64 = evec.iter().map(|x| x * x).sum::<f64>().sqrt();
-        if norm_e > 0.0 {
-            for x in &mut evec {
-                *x /= norm_e;
-            }
-        }
-
-        sel_evals.push(decomp.tri_evals[idx].to_f64().unwrap() as f32);
-        sel_evecs.push(evec.iter().map(|&x| x as f32).collect());
-    }
-
-    let mut transposed = vec![vec![0.0f32; n_sel]; n];
-    for comp_idx in 0..n_sel {
-        for point_idx in 0..n {
-            transposed[point_idx][comp_idx] = sel_evecs[comp_idx][point_idx];
-        }
-    }
-
-    (sel_evals, transposed)
+/// `(eigenvalues, eigenvectors)` where `eigenvectors[i][j]` is element `i` of
+/// eigenvector `j`.
+fn ritz_to_rows(ritz: &RitzPairs, n: usize, sign: f64) -> (Vec<f32>, Vec<Vec<f32>>) {
+    let n_out = ritz.values.len();
+    let evals = ritz.values.iter().map(|&v| (sign * v) as f32).collect();
+    let evecs = (0..n)
+        .map(|i| (0..n_out).map(|c| ritz.vectors[c * n + i] as f32).collect())
+        .collect();
+    (evals, evecs)
 }
 
 /// Compute smallest eigenvalues and eigenvectors using Lanczos
 ///
-/// This function returns the smallest eigenvalues, specifically designed
-/// for spectral initialisations.
+/// Thick-restarted Lanczos on `-A`, see [`lanczos_thick_restart`].
 ///
 /// ### Params
 ///
-/// * `matrix` - Sparse matrix in CSR format
+/// * `matrix` - Symmetric sparse matrix
 /// * `n_components` - Number of eigenpairs to compute
 /// * `seed` - For reproducibility
 ///
 /// ### Returns
 ///
-/// (eigenvalues, eigenvectors) where `eigenvectors[i][j]` is element j of
-/// eigenvector i.
+/// (eigenvalues, eigenvectors) sorted ascending, where `eigenvectors[i][j]` is
+/// element i of eigenvector j.
 ///
 /// Both are at most `n_components` wide, and can be SHORTER: an operator with
 /// fewer distinct eigenvalues than requested (a clique, a rank-deficient
-/// kernel) breaks the Lanczos recurrence down early and yields only as many
-/// Ritz pairs as its Krylov space admits. Callers must check the width rather
-/// than assume `n_components`.
+/// kernel) hits an invariant subspace early and yields only as many Ritz pairs
+/// as its Krylov space admits. Callers must check the width rather than assume
+/// `n_components`.
 pub fn compute_smallest_eigenpairs_lanczos<T>(
     matrix: &CompressedSparseData<T>,
     n_components: usize,
@@ -622,30 +872,30 @@ pub fn compute_smallest_eigenpairs_lanczos<T>(
 where
     T: ManifoldsFloat,
 {
-    let decomp = lanczos_eigendecomp(matrix, n_components, seed)?;
-    Ok(select_eigenpairs(&decomp, n_components, false))
+    let ritz = sparse_lanczos(matrix, n_components, seed, true)?;
+    Ok(ritz_to_rows(&ritz, matrix.shape.0, -1.0))
 }
 
 /// Compute largest eigenvalues and eigenvectors using Lanczos
 ///
-/// This function returns the largest eigenvalues.
+/// Thick-restarted Lanczos, see [`lanczos_thick_restart`].
 ///
 /// ### Params
 ///
-/// * `matrix` - Sparse matrix in CSR format
+/// * `matrix` - Symmetric sparse matrix
 /// * `n_components` - Number of eigenpairs to compute
 /// * `seed` - For reproducibility
 ///
 /// ### Returns
 ///
-/// (eigenvalues, eigenvectors) where `eigenvectors[i][j]` is element j of
-/// eigenvector i.
+/// (eigenvalues, eigenvectors) sorted descending, where `eigenvectors[i][j]` is
+/// element i of eigenvector j.
 ///
 /// Both are at most `n_components` wide, and can be SHORTER: an operator with
 /// fewer distinct eigenvalues than requested (a clique, a rank-deficient
-/// kernel) breaks the Lanczos recurrence down early and yields only as many
-/// Ritz pairs as its Krylov space admits. Callers must check the width rather
-/// than assume `n_components`.
+/// kernel) hits an invariant subspace early and yields only as many Ritz pairs
+/// as its Krylov space admits. Callers must check the width rather than assume
+/// `n_components`.
 pub fn compute_largest_eigenpairs_lanczos<T>(
     matrix: &CompressedSparseData<T>,
     n_components: usize,
@@ -654,8 +904,8 @@ pub fn compute_largest_eigenpairs_lanczos<T>(
 where
     T: ManifoldsFloat,
 {
-    let decomp = lanczos_eigendecomp(matrix, n_components, seed)?;
-    Ok(select_eigenpairs(&decomp, n_components, true))
+    let ritz = sparse_lanczos(matrix, n_components, seed, false)?;
+    Ok(ritz_to_rows(&ritz, matrix.shape.0, 1.0))
 }
 
 /////////////////////////
@@ -810,23 +1060,14 @@ mod test_utils_math {
     }
 
     #[test]
-    fn test_tridiag_eig_simple() {
-        // Simple 2x2 tridiagonal matrix
-        // [2  1]
-        // [1  2]
-        let alpha = vec![2.0, 2.0];
-        let beta = vec![1.0];
-
-        let (evals, _) = tridiag_eig(&alpha, &beta).unwrap();
+    fn test_symmetric_eigen_descending_simple() {
+        // [2 1; 1 2] has eigenvalues 3 and 1
+        let h = Mat::<f64>::from_fn(2, 2, |i, j| if i == j { 2.0 } else { 1.0 });
+        let (evals, _) = symmetric_eigen_descending(h.as_ref(), 2).unwrap();
 
         assert_eq!(evals.len(), 2);
-
-        // Eigenvalues should be 1 and 3
-        let mut sorted_evals = evals.clone();
-        sorted_evals.sort_by(|a: &f64, b: &f64| a.partial_cmp(b).unwrap());
-
-        assert_relative_eq!(sorted_evals[0], 1.0, epsilon = 1e-5);
-        assert_relative_eq!(sorted_evals[1], 3.0, epsilon = 1e-5);
+        assert_relative_eq!(evals[0], 3.0, epsilon = 1e-10);
+        assert_relative_eq!(evals[1], 1.0, epsilon = 1e-10);
     }
 
     #[test]
