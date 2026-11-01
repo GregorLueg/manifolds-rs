@@ -41,7 +41,8 @@ def knn_graph(
 
     Args:
         X: Array-like of shape ``(n_samples, n_features)``. float32 and float64
-            are used as-is; anything else is promoted to float64.
+            are accepted; anything else is promoted to float64. Every backend
+            bar ``"exhaustive"`` searches in float32 regardless.
         k: Neighbours per point, excluding self.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
         ann: ``"exhaustive"``, ``"kmknn"``, ``"balltree"``, ``"annoy"``,
@@ -54,7 +55,7 @@ def knn_graph(
 
     Returns:
         ``(indices, distances)``, both ``(n_samples, k)``. Indices are int64,
-        distances match the dtype of `X`. Indices first, unlike scikit-learn:
+        distances come back in the dtype of `X`. Indices first, unlike scikit-learn:
         it is the order the estimators take them in.
 
     Raises:

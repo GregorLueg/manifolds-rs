@@ -160,8 +160,10 @@ class BaseEmbedding:
         Args:
             X: Array-like of shape ``(n_samples, n_features)``. float32 and
                 float64 are used as-is; other numeric types are promoted to
-                float64. The element type picks the precision the whole
-                pipeline runs in. From 100,000 samples the pipeline runs in
+                float64. The element type picks the precision the pipeline runs
+                in, apart from the neighbour search, which is float32 on every
+                backend bar ``"exhaustive"``. From 100,000 samples the pipeline
+                runs in
                 float64 regardless, except for the ``"fft_3k_gpu"`` and
                 ``"fft_3k_mlx"`` t-SNE optimisers.
             y: Ignored, present for scikit-learn pipeline compatibility.
