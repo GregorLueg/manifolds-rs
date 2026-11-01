@@ -24,6 +24,15 @@ from beartype import beartype
 
 from ._validate import check_knn, check_matrix, check_reference
 
+###########
+# Globals #
+###########
+
+#: Sample count above which `fit` widens float32 input to float64. Accumulations
+#: over this many points (centring, variances, forces) lose too much in float32.
+#: Same threshold as manifoldsR.
+_FP64_SAMPLE_THRESHOLD: int = 100_000
+
 
 class NotFittedError(ValueError, AttributeError):
     """Raised when `embedding_` is read before `fit`.
@@ -135,7 +144,8 @@ class BaseEmbedding:
             X: Array-like of shape ``(n_samples, n_features)``. float32 and
                 float64 are used as-is; other numeric types are promoted to
                 float64. The element type picks the precision the whole
-                pipeline runs in.
+                pipeline runs in. Above 100,000 samples float32 is widened to
+                float64 too, except on the GPU estimators, which have no float64.
             y: Ignored, present for scikit-learn pipeline compatibility.
             knn_indices: Optional ``(n_samples, k)`` precomputed neighbour
                 indices, excluding self. Skips the neighbour search, which on
@@ -151,6 +161,8 @@ class BaseEmbedding:
             ValueError: If only one of the two kNN arrays was given.
         """
         arr = check_matrix(X, dtype=self._FORCE_DTYPE)
+        if self._FORCE_DTYPE is None and arr.shape[0] > _FP64_SAMPLE_THRESHOLD:
+            arr = arr.astype(np.float64, copy=False)
 
         if (knn_indices is None) != (knn_distances is None):
             raise ValueError("knn_indices and knn_distances must be given together")
@@ -192,8 +204,8 @@ class BaseEmbedding:
             knn_distances: Distances matching `knn_indices`.
 
         Returns:
-            The embedding, ``(n_samples, n_components)``, in the same float type
-            as the input.
+            The embedding, ``(n_samples, n_components)``, in the float type the
+            pipeline ran in. See `fit`.
         """
         self.fit(X, y, knn_indices=knn_indices, knn_distances=knn_distances)
         return self.embedding_
