@@ -28,9 +28,8 @@ from ._validate import check_knn, check_matrix, check_reference
 # Globals #
 ###########
 
-#: Sample count from which `fit` runs the pipeline in float64. float32 SVD and
-#: long accumulations are not reliable at this scale. The threshold is on the low
-#: side on purpose, and matches manifoldsR and bixverse.gpu.
+#: Sample count from which `fit` runs the pipeline in float64. On the low side on
+#: purpose, and the same number manifoldsR and bixverse.gpu use.
 _FP64_SAMPLE_THRESHOLD: int = 100_000
 
 #: t-SNE optimisers whose kernels cannot run in float64 on Metal.
