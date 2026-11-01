@@ -8,9 +8,11 @@ with ``--no-default-features``.
 Three things differ from the CPU estimators, all of them consequences of the
 backend rather than choices:
 
-- **float32 only.** WGSL has no float64, so `fit` casts rather than letting a
-  float64 array fail somewhere inside a kernel. That is a narrowing conversion,
-  and the only one this package performs silently.
+- **float32 below 100,000 samples.** `fit` casts down to it, the only narrowing
+  this package performs silently. From 100,000 samples the graph, initialisation
+  and CPU optimisers run in float64, as on the CPU estimators, while the search
+  and UMAP's Adam cast to float32 on the device. ``"fft_3k_gpu"`` has float32
+  kernels, so it stays float32 at any size.
 - **Different neighbour backends.** ``"nndescent_gpu"``, ``"ivf_gpu"`` and
   ``"exhaustive_gpu"``, with their own knobs. See `NeighbourParamsGpu`.
 - **Only the search and the optimiser run on the device.** The UMAP Adam update,
@@ -59,7 +61,7 @@ if not hasattr(_core, "umap_gpu"):  # pragma: no cover - build-dependent
 # Globals #
 ###########
 
-#: The only element type the GPU backend can carry.
+#: The element type the device kernels run in.
 _GPU_DTYPE: np.dtype = np.dtype(np.float32)
 
 
@@ -96,7 +98,7 @@ class UMAPGpu(BaseEmbedding):
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.umap_gpu
-    _FORCE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
+    _BASE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
 
     @beartype
     def __init__(
@@ -259,7 +261,7 @@ class TSNEGpu(BaseEmbedding):
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.tsne_gpu
-    _FORCE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
+    _BASE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
     _EXTRA: ClassVar[tuple[str, ...]] = ("approx",)
 
     @beartype
@@ -330,7 +332,7 @@ class DREAMSGpu(ReferenceEmbedding):
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.dreams_gpu
-    _FORCE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
+    _BASE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
     _EXTRA: ClassVar[tuple[str, ...]] = ("approx",)
 
     @beartype

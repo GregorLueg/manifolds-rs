@@ -8,18 +8,16 @@
 //! The device is pinned to wgpu: there is nothing on the Python side to choose
 //! a backend with.
 //!
-//! Unlike the CPU paths these are float32 only. WGSL has no `f64`, and the
-//! Python layer casts on the way in rather than letting a float64 array fail
-//! somewhere inside a kernel.
+//! The design matrix dtype picks `T`, as on the CPU paths. WGSL has no `f64`,
+//! so the crate casts to `f32` at the device boundary; the Python layer decides
+//! which dtype arrives here.
 
 use cubecl::wgpu::WgpuDevice;
 use cubecl::Device;
-use numpy::PyReadonlyArray2;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use crate::error::ManErr;
-use crate::{convert, dispatch, params, pool};
+use crate::dispatch::{embed_dispatch, embed_dispatch_ref};
 
 /// Fetch the default wgpu device.
 ///
@@ -31,57 +29,6 @@ pub(crate) fn default_device() -> Device {
     WgpuDevice::default().into()
 }
 
-////////////
-// Macros //
-////////////
-
-/// Run one GPU entry point.
-///
-/// No dtype dispatch, so this is a plain function body rather than a two-arm
-/// macro, but the `py.detach(|| pool::run(...))` nesting rule is the same as
-/// [`crate::dispatch`] and matters for the same reason: the CPU half of these
-/// pipelines is still a rayon fan-out.
-macro_rules! gpu_body {
-    ($py:ident, $x:ident, $dict:ident, $ki:ident, $kd:ident, $build:ident, $run:expr) => {{
-        let a = $x.extract::<PyReadonlyArray2<'_, f32>>().map_err(|_| {
-            ::pyo3::exceptions::PyTypeError::new_err(
-                "the GPU paths are float32 only, since WGSL has no f64; pass a \
-                     C-contiguous float32 array",
-            )
-        })?;
-        let (data, n, dim) = convert::flat(&a)?;
-        let p = params::$build::<f32>($dict)?;
-        let knn = dispatch::knn_arm::<f32>($ki, $kd, n)?;
-        let f = $run;
-        let embedding = $py
-            .detach(|| pool::run(|| f(data, n, dim, &p, knn, default_device())))
-            .map_err(ManErr)?;
-        Ok(convert::pack_embedding($py, embedding)?.into_any())
-    }};
-}
-
-/// As [`gpu_body`], with an optional `(n, 2)` reference embedding that `$run`
-/// receives after `knn`.
-macro_rules! gpu_body_ref {
-    ($py:ident, $x:ident, $dict:ident, $ki:ident, $kd:ident, $rf:ident, $build:ident, $run:expr) => {{
-        let a = $x.extract::<PyReadonlyArray2<'_, f32>>().map_err(|_| {
-            ::pyo3::exceptions::PyTypeError::new_err(
-                "the GPU paths are float32 only, since WGSL has no f64; pass a \
-                     C-contiguous float32 array",
-            )
-        })?;
-        let (data, n, dim) = convert::flat(&a)?;
-        let p = params::$build::<f32>($dict)?;
-        let knn = dispatch::knn_arm::<f32>($ki, $kd, n)?;
-        let reference = dispatch::reference_arm::<f32>($rf, n)?;
-        let f = $run;
-        let embedding = $py
-            .detach(|| pool::run(|| f(data, n, dim, &p, knn, reference, default_device())))
-            .map_err(ManErr)?;
-        Ok(convert::pack_embedding($py, embedding)?.into_any())
-    }};
-}
-
 ///////////////////
 // Entry points  //
 ///////////////////
@@ -90,17 +37,17 @@ macro_rules! gpu_body_ref {
 ///
 /// ### Params
 ///
-/// * `x` - Samples by features, C-contiguous float32.
+/// * `x` - Samples by features, C-contiguous float32 or float64.
 /// * `params` - Parameters, as built by the Python layer. See
 ///   [`crate::params::umap_gpu`].
 /// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices.
-/// * `knn_distances` - Optional `(n, k)` float32 distances.
+/// * `knn_distances` - Optional `(n, k)` distances, same dtype as `x`.
 /// * `seed` - Fixes the initialisation and the negative sampling.
 /// * `verbose` - `0` silent, `1` normal, `2` detailed.
 ///
 /// ### Returns
 ///
-/// The embedding as an `(n_samples, n_dim)` float32 array.
+/// The embedding as an `(n_samples, n_dim)` array, same dtype as `x`.
 #[pyfunction]
 #[pyo3(signature = (x, params, *, knn_indices = None, knn_distances = None, seed = 42, verbose = 0))]
 pub fn umap_gpu<'py>(
@@ -112,18 +59,18 @@ pub fn umap_gpu<'py>(
     seed: usize,
     verbose: usize,
 ) -> PyResult<Bound<'py, PyAny>> {
-    gpu_body!(
+    embed_dispatch!(
         py,
         x,
         params,
         knn_indices,
         knn_distances,
         umap_gpu,
-        |data, n, dim, p, knn, device| manifolds_rs::umap_gpu::<f32>(
+        |data, n, dim, p, knn| manifolds_rs::umap_gpu(
             (data, n, dim),
             knn,
             p,
-            device,
+            default_device(),
             seed,
             verbose
         )
@@ -134,17 +81,17 @@ pub fn umap_gpu<'py>(
 ///
 /// ### Params
 ///
-/// * `x` - Samples by features, C-contiguous float32.
+/// * `x` - Samples by features, C-contiguous float32 or float64.
 /// * `params` - Parameters, as built by the Python layer. See
 ///   [`crate::params::densmap_gpu`].
 /// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices.
-/// * `knn_distances` - Optional `(n, k)` float32 distances.
+/// * `knn_distances` - Optional `(n, k)` distances, same dtype as `x`.
 /// * `seed` - Fixes the initialisation and the negative sampling.
 /// * `verbose` - `0` silent, `1` normal, `2` detailed.
 ///
 /// ### Returns
 ///
-/// The embedding as an `(n_samples, n_dim)` float32 array.
+/// The embedding as an `(n_samples, n_dim)` array, same dtype as `x`.
 #[pyfunction]
 #[pyo3(signature = (x, params, *, knn_indices = None, knn_distances = None, seed = 42, verbose = 0))]
 pub fn densmap_gpu<'py>(
@@ -156,18 +103,18 @@ pub fn densmap_gpu<'py>(
     seed: usize,
     verbose: usize,
 ) -> PyResult<Bound<'py, PyAny>> {
-    gpu_body!(
+    embed_dispatch!(
         py,
         x,
         params,
         knn_indices,
         knn_distances,
         densmap_gpu,
-        |data, n, dim, p, knn, device| manifolds_rs::densmap_gpu::<f32>(
+        |data, n, dim, p, knn| manifolds_rs::densmap_gpu(
             (data, n, dim),
             knn,
             p,
-            device,
+            default_device(),
             seed,
             verbose
         )
@@ -178,19 +125,20 @@ pub fn densmap_gpu<'py>(
 ///
 /// ### Params
 ///
-/// * `x` - Samples by features, C-contiguous float32.
+/// * `x` - Samples by features, C-contiguous float32 or float64. Must be
+///   float32 for `"fft_3k_gpu"`; the Python layer guarantees that.
 /// * `params` - Parameters, as built by the Python layer. See
 ///   [`crate::params::tsne_gpu`].
 /// * `approx` - Repulsive-force approximation. `"barnes_hut"`, `"qd"`,
 ///   `"fft"` and `"fft_3k"` optimise on the CPU, `"fft_3k_gpu"` on the device.
 /// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices.
-/// * `knn_distances` - Optional `(n, k)` float32 distances.
+/// * `knn_distances` - Optional `(n, k)` distances, same dtype as `x`.
 /// * `seed` - Fixes the initialisation.
 /// * `verbose` - `0` silent, `1` normal, `2` detailed.
 ///
 /// ### Returns
 ///
-/// The embedding as an `(n_samples, 2)` float32 array.
+/// The embedding as an `(n_samples, 2)` array, same dtype as `x`.
 #[pyfunction]
 #[pyo3(signature = (x, params, *, approx = "barnes_hut", knn_indices = None, knn_distances = None, seed = 42, verbose = 0))]
 #[allow(clippy::too_many_arguments)]
@@ -204,19 +152,19 @@ pub fn tsne_gpu<'py>(
     seed: usize,
     verbose: usize,
 ) -> PyResult<Bound<'py, PyAny>> {
-    gpu_body!(
+    embed_dispatch!(
         py,
         x,
         params,
         knn_indices,
         knn_distances,
         tsne_gpu,
-        |data, n, dim, p, knn, device| manifolds_rs::tsne_gpu::<f32>(
+        |data, n, dim, p, knn| manifolds_rs::tsne_gpu(
             (data, n, dim),
             knn,
             p,
             approx,
-            device,
+            default_device(),
             seed,
             verbose
         )
@@ -227,20 +175,21 @@ pub fn tsne_gpu<'py>(
 ///
 /// ### Params
 ///
-/// * `x` - Samples by features, C-contiguous float32.
+/// * `x` - Samples by features, C-contiguous float32 or float64. Must be
+///   float32 for `"fft_3k_gpu"`; the Python layer guarantees that.
 /// * `params` - Parameters, as built by the Python layer. See
 ///   [`crate::params::dreams_gpu`].
 /// * `approx` - Repulsive-force approximation. See [`tsne_gpu`].
-/// * `reference` - Optional `(n, 2)` float32 reference embedding. `None` uses
-///   PCA.
+/// * `reference` - Optional `(n, 2)` reference embedding, same dtype as `x`.
+///   `None` uses PCA.
 /// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices.
-/// * `knn_distances` - Optional `(n, k)` float32 distances.
+/// * `knn_distances` - Optional `(n, k)` distances, same dtype as `x`.
 /// * `seed` - Fixes the PCA initialisation and the optimiser.
 /// * `verbose` - `0` silent, `1` normal, `2` detailed.
 ///
 /// ### Returns
 ///
-/// The embedding as an `(n_samples, 2)` float32 array.
+/// The embedding as an `(n_samples, 2)` array, same dtype as `x`.
 #[pyfunction]
 #[pyo3(signature = (x, params, *, approx = "barnes_hut", reference = None, knn_indices = None, knn_distances = None, seed = 42, verbose = 0))]
 #[allow(clippy::too_many_arguments)]
@@ -255,7 +204,7 @@ pub fn dreams_gpu<'py>(
     seed: usize,
     verbose: usize,
 ) -> PyResult<Bound<'py, PyAny>> {
-    gpu_body_ref!(
+    embed_dispatch_ref!(
         py,
         x,
         params,
@@ -263,13 +212,13 @@ pub fn dreams_gpu<'py>(
         knn_distances,
         reference,
         dreams_gpu,
-        |data, n, dim, p, knn, rf, device| manifolds_rs::dreams_gpu::<f32>(
+        |data, n, dim, p, knn, rf| manifolds_rs::dreams_gpu(
             (data, n, dim),
             knn,
             rf,
             p,
             approx,
-            device,
+            default_device(),
             seed,
             verbose
         )

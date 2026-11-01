@@ -28,10 +28,13 @@ from ._validate import check_knn, check_matrix, check_reference
 # Globals #
 ###########
 
-#: Sample count above which `fit` widens float32 input to float64. Accumulations
-#: over this many points (centring, variances, forces) lose too much in float32.
-#: Same threshold as manifoldsR.
+#: Sample count from which `fit` runs the pipeline in float64. float32 SVD and
+#: long accumulations are not reliable at this scale. The threshold is on the low
+#: side on purpose, and matches manifoldsR and bixverse.gpu.
 _FP64_SAMPLE_THRESHOLD: int = 100_000
+
+#: t-SNE optimisers whose kernels cannot run in float64 on Metal.
+_FP32_ONLY_APPROX: frozenset[str] = frozenset({"fft_3k_gpu", "fft_3k_mlx"})
 
 
 class NotFittedError(ValueError, AttributeError):
@@ -52,9 +55,9 @@ class BaseEmbedding:
 
     #: The `_manifolds` function this estimator drives.
     _FN: ClassVar[Callable[..., Any]]
-    #: Element type to force on `fit`, or ``None`` to keep the caller's. The GPU
-    #: estimators pin float32: WGSL has no float64.
-    _FORCE_DTYPE: ClassVar[np.dtype | None] = None
+    #: Element type below the float64 threshold, or ``None`` to keep the caller's.
+    #: The GPU estimators pin float32 there.
+    _BASE_DTYPE: ClassVar[np.dtype | None] = None
     #: Extra keyword arguments passed straight through to the core, beyond the
     #: parameter payload. Only t-SNE uses it, for `approx`.
     _EXTRA: ClassVar[tuple[str, ...]] = ()
@@ -130,6 +133,21 @@ class BaseEmbedding:
     # Fit #
     #######
 
+    def _fit_dtype(self, n_samples: int) -> np.dtype | None:
+        """Element type `fit` runs in.
+
+        Args:
+            n_samples: Rows in the design matrix.
+
+        Returns:
+            float64 from `_FP64_SAMPLE_THRESHOLD` samples unless the optimiser
+            cannot run in it, otherwise `_BASE_DTYPE`.
+        """
+        fp32_only = getattr(self, "approx", "").lower() in _FP32_ONLY_APPROX
+        if n_samples >= _FP64_SAMPLE_THRESHOLD and not fp32_only:
+            return np.dtype(np.float64)
+        return self._BASE_DTYPE
+
     def fit(
         self,
         X: Any,
@@ -144,8 +162,9 @@ class BaseEmbedding:
             X: Array-like of shape ``(n_samples, n_features)``. float32 and
                 float64 are used as-is; other numeric types are promoted to
                 float64. The element type picks the precision the whole
-                pipeline runs in. Above 100,000 samples float32 is widened to
-                float64 too, except on the GPU estimators, which have no float64.
+                pipeline runs in. From 100,000 samples the pipeline runs in
+                float64 regardless, except for the ``"fft_3k_gpu"`` and
+                ``"fft_3k_mlx"`` t-SNE optimisers.
             y: Ignored, present for scikit-learn pipeline compatibility.
             knn_indices: Optional ``(n_samples, k)`` precomputed neighbour
                 indices, excluding self. Skips the neighbour search, which on
@@ -160,9 +179,8 @@ class BaseEmbedding:
         Raises:
             ValueError: If only one of the two kNN arrays was given.
         """
-        arr = check_matrix(X, dtype=self._FORCE_DTYPE)
-        if self._FORCE_DTYPE is None and arr.shape[0] > _FP64_SAMPLE_THRESHOLD:
-            arr = arr.astype(np.float64, copy=False)
+        x = np.asarray(X)
+        arr = check_matrix(x, dtype=self._fit_dtype(x.shape[0] if x.ndim else 0))
 
         if (knn_indices is None) != (knn_distances is None):
             raise ValueError("knn_indices and knn_distances must be given together")
