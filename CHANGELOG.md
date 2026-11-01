@@ -3,6 +3,16 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.8.1
+
+**Bug fixes**
+
+- PCA initialisation always runs its centring and SVD in `f64`, whatever `T` is.
+  In `f32` the SVD collapsed the layout onto a few points from about 520k
+  samples. This also covers the default DREAMS reference. `f32` callers get
+  different coordinates than 0.8.0 at the same seed, and hold an `f64` copy of
+  the matrix during init.
+
 ## 0.8.0
 
 **Breaking changes**

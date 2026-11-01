@@ -123,9 +123,10 @@ operation the old ones went through.
 ## Precision
 
 float32 in, float32 throughout; float64 in, float64 throughout. Anything else is
-promoted to float64 rather than narrowed, so precision is never lost by
-accident. The GPU estimators are the exception and cast to float32, because WGSL
-has no float64 and the alternative is a failure inside a kernel.
+promoted to float64 rather than narrowed. From 100,000 samples every estimator
+runs in float64 and returns float64, whatever you pass. PCA initialisation always
+runs in float64. Below 100,000 samples the GPU estimators cast to float32. The
+`"fft_3k_gpu"` and `"fft_3k_mlx"` t-SNE optimisers stay float32 at any size.
 
 ## What is not in the wheel
 

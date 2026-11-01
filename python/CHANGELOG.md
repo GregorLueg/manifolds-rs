@@ -3,6 +3,24 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.5.1
+
+Requires `manifolds-rs` 0.8.1.
+
+**Bug fixes**
+
+- PCA initialisation always runs its centring and SVD in float64. In float32 the
+  SVD collapsed the layout onto a few points from about 520k samples, and t-SNE
+  was the one to suffer since PCA is its default. float32 runs give different
+  coordinates than 0.5.0 at the same seed.
+
+**Changes**
+
+- From 100,000 samples every estimator runs in float64, whatever dtype you pass,
+  and returns float64. That includes the GPU estimators: the search and UMAP's
+  Adam still cast to float32 on the device. `approx="fft_3k_gpu"` and
+  `"fft_3k_mlx"` stay float32 at any size.
+
 ## 0.5.0
 
 Requires `manifolds-rs` 0.8.0.

@@ -5,14 +5,22 @@ The details that will otherwise bite you.
 ## Precision
 
 float32 in, float32 throughout. float64 in, float64 throughout. Anything else,
-integers included, is promoted to float64 rather than narrowed, so precision is
-never lost by accident.
+integers included, is promoted to float64 rather than narrowed.
 
-The design matrix picks the precision for the whole pipeline, including the
-neighbour search and the optimiser. There is no separate knob for it.
+Below 100,000 samples the design matrix picks the precision for the pipeline,
+including the neighbour search and the optimiser. There is no separate knob for
+it.
 
-The GPU estimators are the exception: they cast to float32 because WGSL has no
-float64. That is the only silent narrowing anywhere in the package.
+From 100,000 samples every estimator runs in float64 and returns float64, whatever
+you pass. `knn_graph` isn't an estimator and keeps your dtype.
+
+Three exceptions:
+
+- PCA initialisation always runs its centring and SVD in float64, then casts the
+  result back. The float32 SVD collapses the layout from about 520k samples.
+- The GPU estimators cast to float32 below 100,000 samples. That is the only
+  silent narrowing of your input in the package.
+- `approx="fft_3k_gpu"` and `"fft_3k_mlx"` stay float32 at any size.
 
 ## Distances
 
@@ -146,7 +154,8 @@ runs of the same configuration will differ, as they should.
 
 Across releases it does not hold either: 0.5.0 changed the eigensolver behind
 the spectral initialisation, PHATE and diffusion maps, so coordinates differ
-from 0.4.x at the same seed.
+from 0.4.x at the same seed. 0.5.1 moved PCA initialisation to float64 and runs
+100,000 samples and up in float64, so float32 runs differ from 0.5.0.
 
 ## Errors
 
