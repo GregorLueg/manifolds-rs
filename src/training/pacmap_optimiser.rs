@@ -25,7 +25,7 @@ const W_NB_PHASE2: f64 = 3.0;
 const W_MN_PHASE2_END: f64 = 3.0;
 /// Weight for nearest points during the third phase (local structure refinement)
 const W_NB_PHASE3: f64 = 1.0;
-/// Starting point of the medium-near points that decreases then during second phase
+/// Starting weight of the mid-near pairs, decaying across the first phase
 const W_MN_PHASE1: f64 = 1000.0;
 /// Weight for the far-away points (kept constant during training)
 const W_FP: f64 = 1.0;
@@ -77,7 +77,7 @@ pub struct PacmapOptimParams<T> {
     pub eps: T,
     /// End of phase 1 (mid-near dominant). Default 100.
     pub phase1_end: usize,
-    /// End of phase 2 (mid-near weight decays to 0). Default 200.
+    /// End of phase 2 (mid-near weight held low). Default 200.
     pub phase2_end: usize,
 }
 
@@ -93,20 +93,20 @@ where
     ///
     /// * `n_epochs` - Total number of optimisation epochs across all three
     ///   phases. Default `450` (100 + 100 + 250).
-    /// * `lr` - Adam learning rate. Default `0.01`. PaCMAP is less sensitive to
-    ///   this than UMAP since all pairs are processed every epoch.
+    /// * `lr` - Adam learning rate. Default `1.0`. Adam moves a coordinate by
+    ///   about `lr` per epoch at most, so `lr * n_epochs` caps the layout's size.
+    ///   Much smaller values leave it compressed, and more so as `n` grows.
     /// * `beta1` - Adam first moment decay. Default `0.9` (standard Adam).
     ///   Unlike UMAP's uwot implementation which uses `0.5`, PaCMAP processes
     ///   all pairs every epoch so standard momentum is appropriate.
     /// * `beta2` - Adam second moment decay. Default `0.999` (standard Adam).
     /// * `eps` - Adam numerical stability constant. Default `1e-7`.
     /// * `phase1_end` - Epoch at which phase 1 ends and phase 2 begins. During
-    ///   phase 1 mid-near weight is dominant (`w_mn=1000`), anchoring global
+    ///   phase 1 the mid-near weight decays from `1000` to `3`, anchoring global
     ///   structure. Default `100`.
     /// * `phase2_end` - Epoch at which phase 2 ends and phase 3 begins. During
-    ///   phase 2 the mid-near weight decays linearly to zero and near pair
-    ///   weight.
-    ///   increases (`w_nb=3`). Default `200`.
+    ///   phase 2 the mid-near weight holds at `3` and the near pair weight rises
+    ///   to `3`. Default `200`.
     ///
     /// ### Returns
     ///
@@ -123,7 +123,7 @@ where
     ) -> Self {
         Self {
             n_epochs: n_epochs.unwrap_or(PHASE3_END),
-            lr: lr.unwrap_or(T::from_f64(0.01).unwrap()),
+            lr: lr.unwrap_or(T::from_f64(1.0).unwrap()),
             beta1: beta1.unwrap_or(T::from_f64(BETA1).unwrap()),
             beta2: beta2.unwrap_or(T::from_f64(BETA2).unwrap()),
             eps: eps.unwrap_or(T::from_f64(EPS).unwrap()),
@@ -153,12 +153,9 @@ where
 ///
 /// | Phase | Epochs                    | w_near | w_mid_near      | w_further |
 /// |-------|---------------------------|--------|-----------------|-----------|
-/// | 1     | `0..phase1_end`           | 1.0    | 1000.0          | 1.0       |
-/// | 2     | `phase1_end..phase2_end`  | 3.0    | 1000.0 → 0.0    | 1.0       |
+/// | 1     | `0..phase1_end`           | 2.0    | 1000.0 → 3.0    | 1.0       |
+/// | 2     | `phase1_end..phase2_end`  | 3.0    | 3.0             | 1.0       |
 /// | 3     | `phase2_end..`            | 1.0    | 0.0             | 1.0       |
-///
-/// In phase 2 `w_mid_near` decays linearly from `1000.0` to `0.0`, handing
-/// off global structure responsibility to the near pairs.
 ///
 /// ### Params
 ///
@@ -378,7 +375,7 @@ where
         beta2t *= params.beta2;
 
         if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
-            println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
+            println!("  Epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
 
@@ -527,7 +524,7 @@ where
         beta2t = beta2t * params.beta2;
 
         if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
-            println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
+            println!("  Epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
 

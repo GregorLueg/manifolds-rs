@@ -153,7 +153,6 @@ pub fn classic_mds<T>(
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
-    StandardNormal: Distribution<T>,
 {
     let n = dist.len();
 
@@ -189,12 +188,13 @@ where
     let mut embedding = vec![vec![T::zero(); n_components]; n];
 
     if randomised {
-        let rsvd = randomised_svd(d_sq.as_ref(), n_components, seed, None, None)?;
+        let d_sq_f64 = Mat::<f64>::from_fn(n, n, |i, j| d_sq[(i, j)].to_f64().unwrap());
+        let rsvd = randomised_svd(d_sq_f64.as_ref(), n_components, seed, None, None)?;
         for i in 0..n {
             for k in 0..n_components {
                 let singular_val = rsvd.s[k];
-                if singular_val > T::zero() {
-                    embedding[i][k] = rsvd.u[(i, k)] * singular_val.sqrt();
+                if singular_val > 0.0 {
+                    embedding[i][k] = T::from_f64(rsvd.u[(i, k)] * singular_val.sqrt()).unwrap();
                 }
             }
         }
@@ -306,9 +306,9 @@ where
         T::zero()
     };
 
-    if verbosity.normal_verbosity() {
+    if verbosity.detailed_verbosity() {
         println!(
-               "SGD-MDS: n={}, pairs_per_iter={}, n_iter={}, eta_max={:.6}, eta_min={:.6}, batch_scale={:.2}",
+               " SGD-MDS: n={}, pairs_per_iter={}, n_iter={}, eta_max={:.6}, eta_min={:.6}, batch_scale={:.2}",
                n.separate_with_underscores(),
                pairs_per_iter.separate_with_underscores(),
                n_iter.separate_with_underscores(),
@@ -372,7 +372,7 @@ where
 
         if verbosity.normal_verbosity() && iteration % 100 == 0 {
             println!(
-                " Iter {}: stress={:.6}, lr={:.6}",
+                "  Iter {} | stress = {:.6} | lr = {:.6}",
                 iteration.separate_with_underscores(),
                 stress.to_f64().unwrap(),
                 lr_i.to_f64().unwrap(),
@@ -384,7 +384,7 @@ where
             if rel_change < T::from(1e-6).unwrap() && iteration > 50 {
                 if verbosity.normal_verbosity() {
                     println!(
-                        " Converged at iteration {} (rel_change={:.2e})",
+                        "  Converged at iteration {} (rel_change={:.2e})",
                         iteration,
                         rel_change.to_f64().unwrap()
                     );

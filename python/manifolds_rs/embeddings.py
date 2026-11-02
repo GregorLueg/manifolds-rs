@@ -71,7 +71,7 @@ class UMAP(BaseEmbedding):
         init_range: Scale of the initial coordinates. ``None`` lets the core
             pick per initialisation.
         seed: Fixes the initialisation and the negative sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed. Progress goes to
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed. Progress goes to
             the process stdout, not ``sys.stdout``. In Jupyter that lands in the
             terminal running the kernel.
         nn_params: Backend-specific neighbour knobs. See `NeighbourParams`.
@@ -244,7 +244,7 @@ class TSNE(BaseEmbedding):
         randomised_init: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
         optim_params: See `TsneOptim`.
     """
@@ -455,8 +455,10 @@ class PHATE(BaseEmbedding):
 
     Args:
         n_components: Output dimensionality.
-        k: Neighbours used to build the affinity graph. Smaller than UMAP's
-            because the diffusion does the smoothing.
+        k: Neighbours that set the kernel bandwidth. Smaller than UMAP's because
+            the diffusion does the smoothing. The search runs ``3k + 2`` wide,
+            since the kernel keeps anything just past the ``k``-th neighbour, so
+            give a precomputed graph that width as well.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
         decay: Alpha-decay exponent of the kernel. ``None`` gives a binary
             connectivity kernel instead.
@@ -468,7 +470,7 @@ class PHATE(BaseEmbedding):
         ann: Neighbour backend.
         randomised: Use randomised SVD for the initialisation.
         seed: Fixes the initialisation and the landmark sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
         diffusion_params: Remaining operator knobs, landmarks included. See
             `PhateDiffusion`.
@@ -543,8 +545,8 @@ class PaCMAP(BaseEmbedding):
     """Pairwise-controlled manifold approximation and projection.
 
     Three kinds of pair rather than UMAP's one: near pairs pull, further pairs
-    push, and mid-near pairs hold the global arrangement together while their
-    weight decays over the first two phases. That decay is what lets PaCMAP keep
+    push, and mid-near pairs hold the global arrangement together. Their weight
+    starts high and decays across the first phase, which is what lets PaCMAP keep
     global structure without the spectral initialisation UMAP leans on.
 
     PCA initialisation is the default and close to required: random init costs
@@ -552,12 +554,10 @@ class PaCMAP(BaseEmbedding):
 
     Args:
         n_components: Output dimensionality.
-        n_near: Near (attractive) pairs per point.
+        n_near: Near (attractive) pairs per point, and the width of the kNN
+            search. A precomputed graph must be at least this wide.
         n_mid_near: Mid-near pairs per point.
         n_further: Further (repulsive) pairs per point.
-        mn_candidate_start: First kNN slot the mid-near sampler draws from.
-        mn_candidate_end: Last such slot, and therefore the width of the kNN
-            search. A precomputed graph must be at least this wide.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
         n_epochs: Optimisation epochs across all three phases.
         learning_rate: Adam learning rate.
@@ -566,7 +566,7 @@ class PaCMAP(BaseEmbedding):
         optimiser: ``"adam_parallel"`` or ``"adam"``.
         range_: Scale of the initial coordinates.
         seed: Fixes the initialisation and the pair sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
         optim_params: Phase boundaries and Adam knobs. See `PacmapOptim`.
     """
@@ -580,11 +580,9 @@ class PaCMAP(BaseEmbedding):
         n_near: int = 10,
         n_mid_near: int = 5,
         n_further: int = 20,
-        mn_candidate_start: int = 4,
-        mn_candidate_end: int = 50,
         metric: str = "euclidean",
         n_epochs: int = 450,
-        learning_rate: float = 0.01,
+        learning_rate: float = 1.0,
         init: str = "pca",
         ann: str = "nndescent",
         optimiser: str = "adam_parallel",
@@ -598,8 +596,6 @@ class PaCMAP(BaseEmbedding):
         self.n_near = n_near
         self.n_mid_near = n_mid_near
         self.n_further = n_further
-        self.mn_candidate_start = mn_candidate_start
-        self.mn_candidate_end = mn_candidate_end
         self.metric = metric
         self.n_epochs = n_epochs
         self.learning_rate = learning_rate
@@ -618,8 +614,6 @@ class PaCMAP(BaseEmbedding):
             "n_near": self.n_near,
             "n_mid_near": self.n_mid_near,
             "n_further": self.n_further,
-            "mn_candidate_start": self.mn_candidate_start,
-            "mn_candidate_end": self.mn_candidate_end,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
             "optimiser_type": check_choice(
@@ -660,7 +654,7 @@ class DiffusionMaps(BaseEmbedding):
         n_svd: Components for spectral landmark selection.
         ann: Neighbour backend.
         seed: Fixes the landmark sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
     """
 
@@ -751,7 +745,7 @@ class ForceAtlas2(BaseEmbedding):
         init_range: Scale of the initial coordinates. ``None`` lets the core
             pick per initialisation.
         seed: Fixes the initialisation.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
         graph_params: Fuzzy simplicial set knobs. See `UmapGraph`.
             ``mix_weight`` must stay at ``1``: anything lower leaves the graph

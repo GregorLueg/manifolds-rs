@@ -3,6 +3,44 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.6.0
+
+Requires `manifolds-rs` 0.9.0.
+
+**Breaking changes**
+
+= DiffusionMaps keeps its eigenpairs in float64. float64 runs shift by about
+  1e-7 of a component’s standard deviation at 20k samples.
+- `float32` runs of PHATE and DiffusionMaps with spectral landmarks, and of
+  PHATE(mds="classic"), give different coordinates than `0.5.0` at the same
+  seed. The randomised SVDs now run in float64.
+- The neighbour search runs in `float32` on every backend except "exhaustive",
+  which keeps your dtype. This is faster with recall unchanged.
+  `float64` runs give different coordinates than 0.5.0, and knn_graph values have
+  float32 precision.
+- PaCMAP defaults to learning_rate=1.0 (was 0.01), drops mn_candidate_start and
+  mn_candidate_end, and searches n_near neighbours instead of 50. A precomputed
+  graph only needs to be that wide. Embeddings differ from 0.5.0.
+- PHATE follows the reference kernel: 3k + 2 neighbours, thresholded by thresh,
+  unit diagonal, landmark operator built from the kernel. All runs differ from
+  0.5.0, and a precomputed graph should be that wide.
+- verbose takes 0 (quiet), 1 (timed stages, epochs every 50) or 2 (also
+  parameters, landmark selection, index internals). Other values raise
+  ValueError.
+
+**Bug fixes**
+
+- PCA initialisation always runs in `float64`. In `float32` the SVD collapsed
+  the layout from about 520k samples. float32 runs differ from 0.5.0.
+- PaCMAP no longer compresses the layout and PaCMAP mid-near pairs are now
+  genuinely mid-near.
+- Spectral landmark selection works at scale (seven power iterations on the
+  normalised kernel instead of two on the raw one). DiffusionMaps with spectral
+  landmarks gets the same change and now projects with P, so its coordinates
+  differ too.
+- Spectral landmark selection no longer fails on `float32` input on large data
+  sets (≥ 500,000 samples)
+
 ## 0.5.0
 
 Requires `manifolds-rs` 0.8.0.

@@ -4,15 +4,28 @@ The details that will otherwise bite you.
 
 ## Precision
 
-float32 in, float32 throughout. float64 in, float64 throughout. Anything else,
-integers included, is promoted to float64 rather than narrowed, so precision is
-never lost by accident.
+float32 in, float32 out. float64 in, float64 out. Anything else, integers
+included, is promoted to float64 rather than narrowed.
 
-The design matrix picks the precision for the whole pipeline, including the
-neighbour search and the optimiser. There is no separate knob for it.
+The design matrix picks the precision for the pipeline at any size, including
+the optimiser. There is no separate knob for it.
 
-The GPU estimators are the exception: they cast to float32 because WGSL has no
-float64. That is the only silent narrowing anywhere in the package.
+Worth knowing on large data: float32 kept up. On real single cell PCA at 1M cells,
+UMAP, t-SNE, PaCMAP and ForceAtlas2 scored the same in both precisions, while
+float64 took up to 51% longer and 46% more memory. That is one dataset, and nothing
+above 1M was tested.
+
+Four exceptions:
+
+- The neighbour search runs in float32 on every backend bar `"exhaustive"`, and
+  the distances are cast back up. So `knn_graph` on float64 input returns float64
+  with float32 precision in the values. Want float64 ground truth? Use
+  `"exhaustive"`.
+- PCA initialisation and the randomised SVDs always run in float64, then cast the
+  result back. The float32 factorisations break down at about 520k samples.
+- The GPU estimators cast to float32 at any size. That is the only silent
+  narrowing of your input in the package.
+- `approx="fft_3k_mlx"` optimises in float32 on the device, whatever you pass.
 
 ## Distances
 
@@ -38,8 +51,8 @@ pacmap = mf.PaCMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
 ```
 
 Two things to get right. Give the shared graph the widest `k` any consumer
-needs: PaCMAP indexes into the list up to `mn_candidate_end`, 50 by default,
-which is usually the binding constraint. And the graph must be complete: a row
+needs, which for `PHATE` means `3k + 2`, since its kernel keeps anything just past
+the `k`-th neighbour. And the graph must be complete: a row
 an approximate backend could not fill is padded with `-1`, and that is refused
 rather than quietly dropped, because a hole in the graph is not something these
 algorithms can embed.
@@ -89,6 +102,11 @@ Two parameters take `None` as a real value rather than "use the default":
 Everywhere else `None` means "let the crate decide".
 
 ## Verbosity
+
+`verbose=0` is quiet. `verbose=1` prints each stage with its timing, plus the
+optimiser's epochs every 50. `verbose=2` adds the parameters, the neighbour index
+internals and the landmark selection. Anything else raises `ValueError`.
+Warnings print at every level, to stderr.
 
 `verbose=1` or `2` writes progress to the *process* stdout, not `sys.stdout`. In
 Jupyter that lands in the terminal running the kernel, not in the notebook. This
@@ -146,7 +164,9 @@ runs of the same configuration will differ, as they should.
 
 Across releases it does not hold either: 0.5.0 changed the eigensolver behind
 the spectral initialisation, PHATE and diffusion maps, so coordinates differ
-from 0.4.x at the same seed.
+from 0.4.x at the same seed. 0.6.0 moved PCA initialisation and the randomised
+SVDs to float64, so float32 runs differ from 0.5.0. It also moved the neighbour
+search to float32, so float64 runs differ too.
 
 ## Errors
 

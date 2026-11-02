@@ -1,7 +1,7 @@
 //! Module containing functions to initialise embeddings. This ranges from
 //! random initialisation, PCA-based initialisation and spectral initialisation.
 
-use faer::MatRef;
+use faer::{Mat, MatRef};
 use rand::{
     rngs::StdRng,
     {Rng, SeedableRng},
@@ -1013,6 +1013,10 @@ where
 /// Component ratios are preserved, which is what a global reference embedding
 /// (DREAMS) needs; [`pca_layout`] rescales each component on top of this.
 ///
+/// Centring and the SVD always run in `f64`, whatever `T` is: the `f32` SVD
+/// returns garbage at large sample counts, collapsing the scores onto a few
+/// rows.
+///
 /// ### Params
 ///
 /// * `data` - Input data matrix (samples × features)
@@ -1031,14 +1035,14 @@ pub fn pca_scores<T>(
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
-    StandardNormal: Distribution<T>,
 {
     let (n_samples, n_features) = (data.nrows(), data.ncols());
 
     // Centre the data
-    let mut centred = data.to_owned();
+    let mut centred =
+        Mat::<f64>::from_fn(n_samples, n_features, |i, j| data[(i, j)].to_f64().unwrap());
     for j in 0..n_features {
-        let mean = (0..n_samples).map(|i| data[(i, j)]).sum::<T>() / T::from(n_samples).unwrap();
+        let mean = centred.col(j).iter().sum::<f64>() / n_samples as f64;
         for i in 0..n_samples {
             centred[(i, j)] -= mean;
         }
@@ -1062,7 +1066,7 @@ where
     Ok((0..n_samples)
         .map(|i| {
             (0..n_comp)
-                .map(|c| svd_result.u[(i, c)] * svd_result.s[c])
+                .map(|c| T::from_f64(svd_result.u[(i, c)] * svd_result.s[c]).unwrap())
                 .collect()
         })
         .collect())
@@ -1093,7 +1097,6 @@ pub fn pca_layout<T>(
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
-    StandardNormal: Distribution<T>,
 {
     let target_std = range.unwrap_or(T::from_f64(PCA_RANGE).unwrap());
     let mut embedding = pca_scores(data, n_comp, randomised, seed)?;

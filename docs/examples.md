@@ -219,8 +219,7 @@ let embedding = umap(
 
 The indices and distances must exclude the point itself, which is what
 `run_ann_search` gives you. The graph is taken as-is, no `k` check, so make it
-match the `k` in the parameter struct. PaCMAP is the exception: it needs
-`k >= mn_candidate_end` for mid-near pair sampling.
+match the `k` in the parameter struct. PaCMAP checks it: `k >= n_near`.
 
 ## GPU (`gpu` feature)
 

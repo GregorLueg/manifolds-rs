@@ -777,7 +777,7 @@ mod tests {
         let pos = lcg_cloud(1_000, 5);
         let tree = BarnesHutTree::new(&pos);
         let (mut mx, mut my) = (0.0, 0.0);
-        for p in pos.chunks_exact(2) {
+        for p in pos.as_chunks::<2>().0.iter() {
             mx += p[0];
             my += p[1];
         }

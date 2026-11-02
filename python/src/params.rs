@@ -701,11 +701,6 @@ where
     set(&mut p.n_near, r.get::<usize>("n_near")?);
     set(&mut p.n_mid_near, r.get::<usize>("n_mid_near")?);
     set(&mut p.n_further, r.get::<usize>("n_further")?);
-    set(
-        &mut p.mn_candidate_start,
-        r.get::<usize>("mn_candidate_start")?,
-    );
-    set(&mut p.mn_candidate_end, r.get::<usize>("mn_candidate_end")?);
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     // As for PHATE's `decay`: an explicit `None` means no initialisation
     // range, which is not the same as leaving the default of 0.01 in place.

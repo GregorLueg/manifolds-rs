@@ -41,12 +41,7 @@ def X32(X: np.ndarray) -> np.ndarray:
 
 @pytest.fixture(scope="session")
 def knn(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """A precomputed neighbour graph wide enough for every estimator.
-
-    PaCMAP indexes into the kNN list up to ``mn_candidate_end``, which defaults
-    to 50, so the graph has to be at least that wide for the shared fixture to
-    be usable by all of them.
-    """
+    """A precomputed neighbour graph wide enough for every estimator."""
     return mf.knn_graph(X, k=50, ann="kmknn", seed=7)
 
 

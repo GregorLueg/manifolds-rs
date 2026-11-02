@@ -14,6 +14,24 @@ _NATIVE_DTYPES = (np.float32, np.float64)
 
 
 @beartype
+def check_verbose(verbose: int) -> int:
+    """Reject a verbosity level the core would silently treat as quiet.
+
+    Args:
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
+
+    Returns:
+        The level, unchanged.
+
+    Raises:
+        ValueError: If `verbose` is not 0, 1 or 2.
+    """
+    if verbose not in (0, 1, 2):
+        raise ValueError(f"verbose must be 0, 1 or 2, got {verbose}")
+    return verbose
+
+
+@beartype
 def check_matrix(
     x: Any, *, name: str = "X", dtype: np.dtype | None = None
 ) -> np.ndarray:
@@ -27,9 +45,8 @@ def check_matrix(
     Args:
         x: Array-like of shape ``(n_samples, n_features)``.
         name: Argument name, used in error messages.
-        dtype: Element type to force, overriding the promotion rule above. The
-            GPU estimators set this to float32, since WGSL has no float64 and
-            the alternative is a failure deep inside a kernel.
+        dtype: Element type to force, overriding the promotion rule above. See
+            `BaseEmbedding._BASE_DTYPE`.
 
     Returns:
         A C-contiguous 2-D array, of `dtype` when one was given.

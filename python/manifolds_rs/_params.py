@@ -251,8 +251,8 @@ class PacmapOptim:
     """PaCMAP optimiser knobs beyond the epochs and learning rate.
 
     The three phases are what PaCMAP does instead of early exaggeration: the
-    mid-near weight starts high, decays to zero across phase 2, and phase 3 is
-    near pairs and repulsion alone.
+    mid-near weight starts high, decays across phase 1, holds low through phase 2,
+    and phase 3 is near pairs and repulsion alone.
 
     Attributes:
         beta1: Adam first-moment decay.

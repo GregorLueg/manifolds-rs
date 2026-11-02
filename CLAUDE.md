@@ -64,7 +64,7 @@ Feature-gated code, tests, and prelude re-exports are conditional on these; when
 - `src/errors.rs` — `ManifoldsError` (thiserror). Prefer returning errors over panics; recent versions have been migrating panics to variants here.
 - `src/prelude.rs` — re-exports and the `Verbosity` enum (`parse_verbosity_level(0|1|2)`).
 
-Numeric generics: everything flows through `T: ManifoldsFloat` (CPU) or `T: ManifoldsFloatGpu` (GPU-side). GPU functions are additionally generic over a `cubecl::Runtime` (`WgpuRuntime`, `CudaRuntime`). Linear algebra is `faer`; parallelism is `rayon`. When a fix requires wider precision, the existing convention (see tSNE) is to cast to `f64` at the numerically sensitive step, not to widen the whole pipeline.
+Numeric generics: everything flows through `T: ManifoldsFloat` (CPU) or `T: ManifoldsFloatGpu` (GPU-side). GPU functions are additionally generic over a `cubecl::Runtime` (`WgpuRuntime`, `CudaRuntime`). Linear algebra is `faer`; parallelism is `rayon`. When a fix requires wider precision, the existing convention (see tSNE) is to cast to `f64` at the numerically sensitive step, not to widen the whole pipeline. PCA initialisation and both randomised SVDs always run in `f64`, because the `f32` factorisations break at large sample counts. The reverse holds for the CPU kNN search: `run_ann_search` always runs in `f32` and casts the distances up to `T`, bar `"exhaustive"`, which stays in `T`.
 
 Pre-computed kNN is a first-class shortcut: every entry point accepts `Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>` so callers running many embeddings can compute the graph once via `run_ann_search`.
 

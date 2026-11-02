@@ -872,10 +872,10 @@ fn optimise_bh_tsne_impl<T>(
 
         recentre_embedding(embd);
 
-        if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(
-                " Epoch {}/{} | Z = {}",
-                epoch,
+                "  Epoch {}/{} | Z = {}",
+                epoch + 1,
                 params.n_epochs,
                 (z_total.round() as i64).separate_with_underscores()
             );
@@ -1405,10 +1405,10 @@ where
 
         recentre_embedding(embd);
 
-        if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(
-                " Epoch {}/{} | Z = {} | n_boxes = {}",
-                epoch,
+                "  Epoch {}/{} | Z = {} | n_boxes = {}",
+                epoch + 1,
                 params.n_epochs,
                 (sum_q.round() as i64).separate_with_underscores(),
                 n_boxes,

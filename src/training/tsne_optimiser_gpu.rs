@@ -1631,13 +1631,6 @@ where
         dreams_coef: T::zero(),
     };
 
-    if verbosity.normal_verbosity() {
-        println!(
-            "Running {} epochs of three-kernel FFT t-SNE on the GPU.",
-            params.n_epochs
-        );
-    }
-
     let mut last_span = half_span;
 
     for epoch in 0..params.n_epochs {
@@ -1657,7 +1650,7 @@ where
             }
             if verbosity.normal_verbosity() && epoch % 50 == 0 {
                 println!(
-                    " Epoch {}/{} | extent = {:.1} | n_boxes = {}",
+                    "  Epoch {}/{} | extent = {:.1} | n_boxes = {}",
                     epoch, params.n_epochs, span, grid.geom.n_boxes
                 );
             }

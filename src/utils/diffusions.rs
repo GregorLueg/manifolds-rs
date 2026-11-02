@@ -34,6 +34,17 @@ use crate::utils::sparse_ops::*;
 /// PHATE
 pub const PHATE_MAX_T: usize = 100;
 
+/// Multiple of `k + 1` that PHATE searches. The alpha-decay kernel stays above
+/// its threshold for points just past the `k`-th neighbour, and in high dimensions
+/// there are many of those, so a graph cut at `k` loses a good part of the kernel.
+const PHATE_SEARCH_MULTIPLIER: usize = 3;
+
+/// Power iterations for spectral landmark selection. The spectrum of a kNN affinity
+/// is close to flat, so two iterations leave the leading subspace unconverged, and
+/// k-means then has little to separate. Each iteration costs two sparse products and
+/// a QR.
+const SPECTRAL_LANDMARK_POWER_ITER: usize = 7;
+
 ///////////
 // PHATE //
 ///////////
@@ -133,6 +144,119 @@ impl<T> PhateDiffusionParams<T> {
             t,
             gamma,
         }
+    }
+}
+
+/// Width of the kNN search PHATE runs for a given `k`.
+///
+/// ### Params
+///
+/// * `k` - Neighbours that set the kernel bandwidth.
+///
+/// ### Returns
+///
+/// Neighbours to search for, excluding self.
+pub fn phate_search_width(k: usize) -> usize {
+    (k + 1) * PHATE_SEARCH_MULTIPLIER - 1
+}
+
+/// Put ones on the diagonal of a kernel, so a walker can stay where it is.
+///
+/// Each point sits at distance zero from itself, so this is the value the
+/// alpha-decay kernel gives it.
+///
+/// ### Params
+///
+/// * `matrix` - Kernel in CSR format with sorted columns.
+///
+/// ### Returns
+///
+/// The kernel with a unit diagonal, columns still sorted.
+pub fn add_unit_diagonal<T>(matrix: &CompressedSparseData<T>) -> CompressedSparseData<T>
+where
+    T: ManifoldsFloat,
+{
+    let n = matrix.nrows();
+    let capacity = matrix.data.len() + n;
+    let mut data = Vec::with_capacity(capacity);
+    let mut indices = Vec::with_capacity(capacity);
+    let mut indptr = Vec::with_capacity(n + 1);
+    indptr.push(0);
+
+    for i in 0..n {
+        let mut placed = false;
+        for idx in matrix.indptr[i]..matrix.indptr[i + 1] {
+            let j = matrix.indices[idx];
+            if j == i {
+                continue;
+            }
+            if !placed && j > i {
+                indices.push(i);
+                data.push(T::one());
+                placed = true;
+            }
+            indices.push(j);
+            data.push(matrix.data[idx]);
+        }
+        if !placed {
+            indices.push(i);
+            data.push(T::one());
+        }
+        indptr.push(data.len());
+    }
+
+    CompressedSparseData::new_csr(&data, &indices, &indptr, matrix.shape)
+}
+
+/// Symmetric normalisation of a kernel: `K(x, y) / sqrt(d(x) * d(y))`.
+///
+/// Spectral landmark selection needs this rather than the raw kernel. The leading
+/// singular vectors of a raw kernel sit on its highest degree points, so nearly
+/// every other point is close to zero in that space.
+///
+/// ### Params
+///
+/// * `matrix` - Kernel in CSR format.
+///
+/// ### Returns
+///
+/// The normalised kernel, with the same sparsity pattern.
+fn symmetric_normalise<T>(matrix: &CompressedSparseData<T>) -> CompressedSparseData<T>
+where
+    T: ManifoldsFloat,
+{
+    let degrees: Vec<f64> = (0..matrix.nrows())
+        .into_par_iter()
+        .map(|i| {
+            matrix.data[matrix.indptr[i]..matrix.indptr[i + 1]]
+                .iter()
+                .map(|v| v.to_f64().unwrap())
+                .sum()
+        })
+        .collect();
+
+    let data: Vec<T> = (0..matrix.nrows())
+        .into_par_iter()
+        .flat_map_iter(|i| {
+            let degrees = &degrees;
+            (matrix.indptr[i]..matrix.indptr[i + 1]).map(move |idx| {
+                let denom = (degrees[i] * degrees[matrix.indices[idx]]).sqrt();
+                let scaled = if denom > 0.0 {
+                    matrix.data[idx].to_f64().unwrap() / denom
+                } else {
+                    0.0
+                };
+                T::from_f64(scaled).unwrap()
+            })
+        })
+        .collect();
+
+    CompressedSparseData {
+        data,
+        indices: matrix.indices.clone(),
+        indptr: matrix.indptr.clone(),
+        cs_type: matrix.cs_type.clone(),
+        shape: matrix.shape,
     }
 }
 
@@ -412,20 +536,20 @@ where
     min_idx
 }
 
-/// Build the row-stochastic Diffusion Operator P from the landmark data.
+/// Sum the kernel rows of the points assigned to each landmark.
 ///
 /// ### Params
 ///
-/// * `diffusion_op`: The diffusion operator.
+/// * `kernel`: The kernel, not yet normalised, so a point weighs in by its degree.
 /// * `assignments`: The assignments of points to landmarks.
 /// * `n_landmarks`: The number of landmarks.
 /// * `n`: The number of points.
 ///
 /// ### Returns
 ///
-/// The row-stochastic Diffusion Operator P.
+/// The landmark by point matrix, not yet normalised.
 fn build_landmarks_to_data<T>(
-    diffusion_op: &CompressedSparseData<T>,
+    kernel: &CompressedSparseData<T>,
     assignments: &[usize],
     n_landmarks: usize,
 ) -> CompressedSparseData<T>
@@ -440,7 +564,7 @@ where
 
     let rows: Vec<SparseRow<T>> = (0..n_landmarks)
         .into_par_iter()
-        .map(|landmark_idx| sparse_row_sum(diffusion_op, &landmark_pts[landmark_idx]))
+        .map(|landmark_idx| sparse_row_sum(kernel, &landmark_pts[landmark_idx]))
         .collect();
 
     sparse_row_to_csr(&rows, n)
@@ -658,8 +782,8 @@ where
 
         let assignments: Vec<usize> = match landmark_method {
             LandmarkMethod::Random { seed } => {
-                if verbosity.normal_verbosity() {
-                    println!(" Using random selection of landmarks.")
+                if verbosity.detailed_verbosity() {
+                    println!("  Using random selection of landmarks")
                 }
 
                 let landmark_indices = random_sample(0..n, n_landmarks, seed);
@@ -713,14 +837,20 @@ where
             }
             #[allow(unused_variables)]
             LandmarkMethod::Spectral { n_svd } => {
-                if verbosity.normal_verbosity() {
-                    println!(" Using spectral detection of landmarks.")
+                if verbosity.detailed_verbosity() {
+                    println!("  Using spectral detection of landmarks")
                 }
 
-                let svd = sparse_randomised_svd(affinity, n_svd, seed as u64, None, None)?;
+                let svd = sparse_randomised_svd(
+                    &symmetric_normalise(affinity),
+                    n_svd,
+                    seed as u64,
+                    None,
+                    Some(SPECTRAL_LANDMARK_POWER_ITER),
+                )?;
 
                 if verbosity.detailed_verbosity() {
-                    println!(" Finished calculation of randomised SVD on the affinity matrix.")
+                    println!("  Finished calculation of randomised SVD on the affinity matrix.")
                 }
 
                 let v = &svd.v;
@@ -732,7 +862,8 @@ where
                         let j = diffusion_op.indices[idx];
                         let a_val = diffusion_op.data[idx];
                         for col in 0..k {
-                            embedding_flat[i * k + col] += a_val * v[(j, col)];
+                            embedding_flat[i * k + col] +=
+                                a_val * T::from_f64(v[(j, col)]).unwrap();
                         }
                     }
                 }
@@ -750,11 +881,11 @@ where
                     &Dist::SquaredEuclidean,
                     Some(k_means_params),
                     seed,
-                    verbosity,
+                    parse_verbosity_level(ann_verbose(verbosity)),
                 )?;
 
                 if verbosity.detailed_verbosity() {
-                    println!(" Centroids identified.")
+                    println!("  Centroids identified.")
                 }
 
                 let centroid_norms = vec![T::one(); n_landmarks]; // Euclidean, unused
@@ -771,15 +902,15 @@ where
                     &Dist::SquaredEuclidean,
                 );
 
-                if verbosity.normal_verbosity() {
-                    println!(" Landmark assignments done.")
+                if verbosity.detailed_verbosity() {
+                    println!("  Landmark assignments done.")
                 }
 
                 assignemnts.into_iter().map(|c| c as usize).collect()
             }
             LandmarkMethod::Density { seed } => {
-                if verbosity.normal_verbosity() {
-                    println!(" Using degree-weighted (density) selection of landmarks.")
+                if verbosity.detailed_verbosity() {
+                    println!("  Using degree-weighted (density) selection of landmarks")
                 }
 
                 // calculate weights
@@ -864,7 +995,7 @@ where
             }
         };
 
-        let mut p_mn = build_landmarks_to_data(diffusion_op, &assignments, n_landmarks);
+        let mut p_mn = build_landmarks_to_data(affinity, &assignments, n_landmarks);
         let mut p_nm = p_mn.transpose();
 
         normalise_csr_rows_l1(&mut p_mn)?;
@@ -1373,14 +1504,14 @@ where
         // landmark selection
         let landmark_indices: Vec<usize> = match landmark_method {
             LandmarkMethod::Random { seed } => {
-                if verbosity.normal_verbosity() {
-                    println!(" Using random landmark selection.");
+                if verbosity.detailed_verbosity() {
+                    println!("  Using random landmark selection");
                 }
                 random_sample(0..n, n_landmarks, seed)
             }
             LandmarkMethod::Density { seed } => {
-                if verbosity.normal_verbosity() {
-                    println!(" Using density landmark selection.");
+                if verbosity.detailed_verbosity() {
+                    println!("  Using density landmark selection");
                 }
                 let affinity = affinity.expect("density landmarks require affinity matrix");
                 let weights: Vec<f64> = (0..n)
@@ -1405,21 +1536,31 @@ where
                 set.into_iter().collect()
             }
             LandmarkMethod::Spectral { n_svd } => {
-                if verbosity.normal_verbosity() {
-                    println!(" Using spectral landmark selection.");
+                if verbosity.detailed_verbosity() {
+                    println!("  Using spectral landmark selection");
                 }
                 let affinity = affinity.expect("spectral landmarks require affinity matrix");
-                let svd = sparse_randomised_svd(affinity, n_svd, seed as u64, None, None)?;
+                let svd = sparse_randomised_svd(
+                    &symmetric_normalise(affinity),
+                    n_svd,
+                    seed as u64,
+                    None,
+                    Some(SPECTRAL_LANDMARK_POWER_ITER),
+                )?;
+                // project with P, not the kernel: a point's position must not
+                // scale with its degree, or k-means splits on degree
+                let projector = build_diffusion_operator(affinity);
                 let v = &svd.v;
                 let k_proj = v.ncols();
                 let mut embedding_flat: Vec<T> = vec![T::zero(); n * k_proj];
 
                 for i in 0..n {
-                    for idx in affinity.indptr[i]..affinity.indptr[i + 1] {
-                        let j = affinity.indices[idx];
-                        let a_val = affinity.data[idx];
+                    for idx in projector.indptr[i]..projector.indptr[i + 1] {
+                        let j = projector.indices[idx];
+                        let a_val = projector.data[idx];
                         for col in 0..k_proj {
-                            embedding_flat[i * k_proj + col] += a_val * v[(j, col)];
+                            embedding_flat[i * k_proj + col] +=
+                                a_val * T::from_f64(v[(j, col)]).unwrap();
                         }
                     }
                 }
@@ -1434,7 +1575,7 @@ where
                     &Dist::SquaredEuclidean,
                     Some(k_means_params),
                     seed,
-                    verbosity,
+                    parse_verbosity_level(ann_verbose(verbosity)),
                 )?;
                 let centroid_norms = vec![T::one(); n_landmarks];
                 let data_norms = vec![T::one(); n];
@@ -1510,7 +1651,7 @@ where
             "kmknn".to_string(),
             &nn_params,
             seed,
-            verbose,
+            ann_verbose(verbosity),
         )?;
         // with this config it behaves like a Gaussian
         let ll_graph = phate_alpha_decay_affinities(
@@ -1539,8 +1680,8 @@ where
             &dist_enum,
         );
 
-        if verbosity.normal_verbosity() {
-            println!(" Finished landmark generation in {:.2?}", start.elapsed());
+        if verbosity.detailed_verbosity() {
+            println!("  Finished landmark generation in {:.2?}", start.elapsed());
         }
 
         Ok(Self {
@@ -1567,7 +1708,7 @@ where
     ///
     /// ### Returns
     ///
-    /// `(eigenvalues, eigenvectors)` both in f32; eigenvectors indexed as
+    /// `(eigenvalues, eigenvectors)` both in f64; eigenvectors indexed as
     /// `evecs[point][component]`.
     ///
     /// Fewer than `n_dim + 1` pairs come back when the landmark operator has
@@ -1579,7 +1720,7 @@ where
         &self,
         n_dim: usize,
         seed: u64,
-    ) -> Result<(Vec<f32>, Vec<Vec<f32>>), ManifoldsError> {
+    ) -> Result<(Vec<f64>, Vec<Vec<f64>>), ManifoldsError> {
         compute_largest_eigenpairs_lanczos(&self.p_sym_ll, n_dim + 1, seed)
     }
 
@@ -1620,8 +1761,8 @@ where
     /// extension)
     pub fn compute_landmark_embedding(
         &self,
-        evals: &[f32],
-        evecs: &[Vec<f32>],
+        evals: &[f64],
+        evecs: &[Vec<f64>],
         n_dim: usize,
         t: usize,
     ) -> (Vec<Vec<T>>, Vec<T>) {
@@ -1629,12 +1770,12 @@ where
         let mut lambdas: Vec<T> = Vec::with_capacity(n_dim);
 
         for comp_idx in 1..=n_dim {
-            let lambda = T::from_f32(evals[comp_idx]).unwrap();
+            let lambda = T::from_f64(evals[comp_idx]).unwrap();
             let lambda_t = lambda.powi(t as i32);
             lambdas.push(lambda);
 
-            let mut max_abs = 0.0f32;
-            let mut sign = 1.0f32;
+            let mut max_abs = 0.0f64;
+            let mut sign = 1.0f64;
             for l in 0..self.n_landmarks {
                 let v = evecs[l][comp_idx];
                 if v.abs() > max_abs {
@@ -1644,7 +1785,7 @@ where
             }
 
             for l in 0..self.n_landmarks {
-                let u = T::from_f32(evecs[l][comp_idx] * sign).unwrap();
+                let u = T::from_f64(evecs[l][comp_idx] * sign).unwrap();
                 embedding[l][comp_idx - 1] = lambda_t * u / self.sqrt_degrees_l[l];
             }
         }

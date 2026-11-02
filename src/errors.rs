@@ -143,8 +143,8 @@ pub enum ManifoldsError {
     NotEnoughNeighbours {
         /// Provided number of neighbours
         n_provided: usize,
-        /// The end for the mid_near neighbours
-        mid_near_candidate_end: usize,
+        /// Near pairs per point, which the graph must cover
+        n_near: usize,
     },
 
     // -- density preservation --

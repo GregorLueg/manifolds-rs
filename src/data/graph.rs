@@ -866,7 +866,7 @@ where
 
     if verbosity.detailed_verbosity() {
         println!(
-            " Filtered out {} weak edges.",
+            " Filtered out {} weak edges",
             (original_edge_no - filtered_edge_no).separate_with_underscores(),
         );
     }
@@ -1352,9 +1352,9 @@ where
         .zip(knn_dists.par_iter())
         .enumerate()
         .map(|(i, (indices, dists))| {
-            // bandwidth: dist to kth nearest neighbour
-            // note: indices[0] is self, so indices[knn-1] is the kth neighbour
-            // (excluding self)
+            // bandwidth: distance to the kth neighbour. The lists exclude self, and
+            // may run past knn, in which case the extra points join the kernel
+            // while their affinity clears the threshold
             let bandwidth_dist = if knn > 0 && knn <= dists.len() {
                 dists[knn - 1]
             } else {

@@ -54,8 +54,8 @@ mf.umap(adata, device="gpu")
 mf.tsne(adata, device="gpu", approx="fft_3k_gpu")
 ```
 
-`device="gpu"` swaps in `UMAPGpu` / `TSNEGpu`, float32 throughout. See
-[GPU](gpu.md) for what runs on the device.
+`device="gpu"` swaps in `UMAPGpu` / `TSNEGpu`. See [GPU](gpu.md) for what runs on
+the device and in which precision.
 
 ## What gets written
 

@@ -194,7 +194,8 @@ pub fn metric_returns_squared(metric: &str) -> bool {
     matches!(parse_ann_dist(metric), Some(Dist::SquaredEuclidean))
 }
 
-/// Cast matrix to `fp32` for the f32-only device backends (wgpu, MLX).
+/// Cast matrix to `fp32` for the neighbour searches, all of which bar the CPU
+/// exhaustive one run in `f32`.
 ///
 /// ### Params
 ///
@@ -203,7 +204,6 @@ pub fn metric_returns_squared(metric: &str) -> bool {
 /// ### Returns
 ///
 /// `Mat` in f32
-#[cfg(any(feature = "gpu", mlx_available))]
 pub(crate) fn cast_matrix_to_fp32<T>(data: MatRef<T>) -> faer::Mat<f32>
 where
     T: AnnSearchFloat,
@@ -213,17 +213,16 @@ where
     })
 }
 
-/// Cast the f32 distances an MLX backend hands back up to `T`.
+/// Cast the f32 distances of a neighbour search back up to `T`.
 ///
 /// ### Params
 ///
-/// * `knn` - `(knn_indices, optional distances)` from an MLX query
+/// * `knn` - `(knn_indices, optional distances)` from an `f32` search
 ///
 /// ### Returns
 ///
 /// The same rows with the distances in `T`.
-#[cfg(mlx_available)]
-fn cast_mlx_knn<T>(knn: KnnOptionResult<f32>) -> KnnOptionResult<T>
+fn cast_knn<T>(knn: KnnOptionResult<f32>) -> KnnOptionResult<T>
 where
     T: AnnSearchFloat,
 {
@@ -316,6 +315,10 @@ pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
 
 /// Run the approximate nearest neighbour search prior to UMAP
 ///
+/// Every backend bar `"exhaustive"` searches in `f32` whatever `T` is, and the
+/// distances are cast back up to `T`. `"exhaustive"` stays in `T`, so `f64`
+/// ground truth remains available.
+///
 /// ### Params
 ///
 /// * `data` - The data with samples x features
@@ -323,7 +326,7 @@ pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
 /// * `ann_type` - Which approximate nearest neighbour search to use. One of
 ///   `"annoy"`, `"balltree"`, `"exhaustive"`, `"hnsw"`, `"ivf"`, `"kmknn"` or
 ///   `"nndescent"`. With the MLX backend compiled in also `"exhaustive_mlx"`,
-///   `"ivf_mlx"` and `"nndescent_mlx"`, which run in f32 whatever `T` is.
+///   `"ivf_mlx"` and `"nndescent_mlx"`.
 /// * `params_nn` - The parameters for the approximate nearest neighbour search.
 /// * `seed` - Seed for reproducibility.
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -351,8 +354,8 @@ where
     let verbosity = parse_verbosity_level(verbose);
 
     let ann_search = parse_ann_search(&ann_type).unwrap_or_else(|| {
-        println!(
-            "Unrecognised approximate nearest neighbour method provided: {:?}. Default to KmKnn.",
+        eprintln!(
+            "Warning: unrecognised approximate nearest neighbour method provided: {:?}. Default to KmKnn.",
             ann_type
         );
         AnnSearch::default()
@@ -360,19 +363,25 @@ where
 
     let (knn_indices, knn_dist) = match ann_search {
         AnnSearch::Annoy => {
-            let index = build_annoy_index(
-                data,
+            let index = build_annoy_index::<f32>(
+                cast_matrix_to_fp32(data),
                 &params_nn.dist_metric,
                 params_nn.n_tree,
                 seed,
                 verbosity,
             )?;
 
-            query_annoy_self(&index, k + 1, params_nn.search_budget, true, verbosity)?
+            cast_knn(query_annoy_self(
+                &index,
+                k + 1,
+                params_nn.search_budget,
+                true,
+                verbosity,
+            ))?
         }
         AnnSearch::Hnsw => {
-            let index = build_hnsw_index(
-                data,
+            let index = build_hnsw_index::<f32>(
+                cast_matrix_to_fp32(data),
                 params_nn.m,
                 params_nn.ef_construction,
                 &params_nn.dist_metric,
@@ -380,7 +389,13 @@ where
                 verbosity,
             )?;
 
-            query_hnsw_self(&index, k + 1, params_nn.ef_search, true, verbosity)?
+            cast_knn(query_hnsw_self::<f32>(
+                &index,
+                k + 1,
+                params_nn.ef_search,
+                true,
+                verbosity,
+            ))?
         }
         AnnSearch::NNDescent => {
             let knn_params = NNDescentKnnParams::new(
@@ -392,22 +407,33 @@ where
                 false,
                 true,
             );
-            let graph = build_knn_graph_nndescent(
-                data,
+            let graph = build_knn_graph_nndescent::<f32>(
+                cast_matrix_to_fp32(data),
                 &params_nn.dist_metric,
                 Some(knn_params),
                 seed,
                 verbosity,
             )?;
 
-            knn_graph_to_rows(graph)
+            cast_knn(Ok(knn_graph_to_rows(graph)))?
         }
         AnnSearch::BallTree => {
-            let index = build_balltree_index(data, &params_nn.dist_metric, seed, verbosity)?;
+            let index = build_balltree_index::<f32>(
+                cast_matrix_to_fp32(data),
+                &params_nn.dist_metric,
+                seed,
+                verbosity,
+            )?;
 
             let budget = (data.nrows() as f32 * params_nn.bt_budget.to_f32().unwrap()) as usize;
 
-            query_balltree_self(&index, k + 1, Some(budget), true, verbosity)?
+            cast_knn(query_balltree_self(
+                &index,
+                k + 1,
+                Some(budget),
+                true,
+                verbosity,
+            ))?
         }
         AnnSearch::Exhaustive => {
             let index = build_exhaustive_index(data, &params_nn.dist_metric, verbosity);
@@ -415,8 +441,8 @@ where
             query_exhaustive_self(&index, k + 1, true, verbosity)?
         }
         AnnSearch::Ivf => {
-            let index = build_ivf_index(
-                data,
+            let index = build_ivf_index::<f32>(
+                cast_matrix_to_fp32(data),
                 params_nn.n_list,
                 None,
                 &params_nn.dist_metric,
@@ -424,11 +450,17 @@ where
                 verbosity,
             )?;
 
-            query_ivf_self(&index, k + 1, params_nn.n_probes, true, verbosity)?
+            cast_knn(query_ivf_self(
+                &index,
+                k + 1,
+                params_nn.n_probes,
+                true,
+                verbosity,
+            ))?
         }
         AnnSearch::KmKnn => {
-            let index = build_kmknn_index(
-                data,
+            let index = build_kmknn_index::<f32>(
+                cast_matrix_to_fp32(data),
                 &params_nn.dist_metric,
                 params_nn.n_list,
                 None,
@@ -436,7 +468,7 @@ where
                 verbosity,
             )?;
 
-            query_kmknn_self(&index, k + 1, true, verbosity)?
+            cast_knn(query_kmknn_self(&index, k + 1, true, verbosity))?
         }
         #[cfg(mlx_available)]
         AnnSearch::ExhaustiveMlx => {
@@ -444,7 +476,7 @@ where
             let index =
                 build_exhaustive_index_mlx(data_fp32.as_ref(), &params_nn.dist_metric, verbosity)?;
 
-            cast_mlx_knn(query_exhaustive_index_mlx_self(
+            cast_knn(query_exhaustive_index_mlx_self(
                 &index,
                 k + 1,
                 true,
@@ -463,7 +495,7 @@ where
                 verbosity,
             )?;
 
-            cast_mlx_knn(query_ivf_index_mlx_self(
+            cast_knn(query_ivf_index_mlx_self(
                 &index,
                 k + 1,
                 params_nn.n_probes,
@@ -488,13 +520,13 @@ where
                 seed,
                 verbosity,
             )?;
-            cast_mlx_knn(Ok(graph.extract_knn(Some(k), false, true)))?
+            cast_knn(Ok(graph.extract_knn(Some(k), false, true)))?
         }
     };
 
     let knn_dist = knn_dist.unwrap();
 
-    // Remove self by index rather than position: the f32 device backends can
+    // Remove self by index rather than position: the f32 backends can
     // rank an exact duplicate ahead of the point itself. The NN-Descent graphs
     // carry no self edge, so nothing is removed for them. In place: rebuilding
     // the rows through an iterator loses the size hint and over-allocates.

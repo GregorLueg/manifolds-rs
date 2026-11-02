@@ -35,12 +35,14 @@ path slower than the CPU one. Past a few hundred thousand it usually is. Measure
 on your own data and hardware before switching; on Apple Silicon in particular
 the GPU rarely blows the CPU out of the water for these workloads.
 
-## float32 only
+## Precision
 
-WGSL has no float64. `fit` casts a float64 array down rather than letting it
-fail somewhere inside a kernel, and that is the only silent narrowing this
-package performs anywhere. If that matters for your data, stay on the CPU
-estimators, which run in whatever precision you hand them.
+WGSL has no float64, so the GPU estimators run in float32 at any size. `fit` casts
+your input down, float64 included, and the embedding comes back as float32. That is
+the only silent narrowing of your input in the package. If it matters for your
+data, stay on the CPU estimators, which keep your dtype.
+
+PCA initialisation still runs in float64 on the CPU and casts the result back.
 
 ## Reproducibility
 

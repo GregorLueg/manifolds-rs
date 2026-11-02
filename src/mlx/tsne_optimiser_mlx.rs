@@ -1045,13 +1045,6 @@ where
     fp[6] = dreams.map_or(1.0, |d| 1.0 / d.ref_norm()) as f32;
     fp[7] = dreams.map_or(1.0, |d| f(d.keep()));
 
-    if verbosity.normal_verbosity() {
-        println!(
-            "Running {} epochs of three-kernel FFT t-SNE on MLX.",
-            params.n_epochs
-        );
-    }
-
     let mut last_span = half_span;
     for ep in 0..params.n_epochs {
         if ep > 0 && ep % GRID_CHECK_INTERVAL == 0 {
@@ -1068,7 +1061,7 @@ where
             }
             if verbosity.normal_verbosity() && ep % 50 == 0 {
                 println!(
-                    " Epoch {}/{} | extent = {:.1} | n_boxes = {}",
+                    "  Epoch {}/{} | extent = {:.1} | n_boxes = {}",
                     ep, params.n_epochs, span, grid.geom.n_boxes
                 );
             }

@@ -122,10 +122,11 @@ operation the old ones went through.
 
 ## Precision
 
-float32 in, float32 throughout; float64 in, float64 throughout. Anything else is
-promoted to float64 rather than narrowed, so precision is never lost by
-accident. The GPU estimators are the exception and cast to float32, because WGSL
-has no float64 and the alternative is a failure inside a kernel.
+float32 in, float32 out; float64 in, float64 out. Anything else is promoted to
+float64 rather than narrowed. The neighbour search runs in float32 on every backend
+bar `"exhaustive"`, while PCA initialisation and the randomised SVDs always run in
+float64. The GPU estimators cast to float32 at any size, and the `"fft_3k_mlx"`
+t-SNE optimiser runs in float32 on the device.
 
 ## What is not in the wheel
 
