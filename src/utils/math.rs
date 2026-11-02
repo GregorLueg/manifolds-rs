@@ -4,7 +4,7 @@ use ann_search_rs::prelude::SimdDistance;
 use faer::{Mat, MatMut, MatRef};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use rand_distr::{Distribution, Normal, StandardNormal};
+use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
 
 use crate::assert_same_len;
@@ -54,6 +54,9 @@ pub struct RandomSvdResults<T> {
 
 /// Randomised SVD
 ///
+/// Takes and returns `f64`: the `f32` factorisations in faer return garbage at
+/// large sample counts.
+///
 /// ### Params
 ///
 /// * `x` - The matrix on which to apply the randomised SVD.
@@ -79,17 +82,13 @@ pub struct RandomSvdResults<T> {
 ///    `Q = QR(X * Z)`
 /// 5. Form B = Q^T * X and compute its SVD
 /// 6. Reconstruct the final `SVD: U = Q * U_B, V = V_B, S = S_B`
-pub fn randomised_svd<T>(
-    x: MatRef<T>,
+pub fn randomised_svd(
+    x: MatRef<f64>,
     rank: usize,
     seed: usize,
     oversampling: Option<usize>,
     n_power_iter: Option<usize>,
-) -> Result<RandomSvdResults<T>, ManifoldsError>
-where
-    T: ManifoldsFloat,
-    StandardNormal: Distribution<T>,
-{
+) -> Result<RandomSvdResults<f64>, ManifoldsError> {
     let ncol = x.ncols();
     let nrow = x.nrows();
 
@@ -106,7 +105,7 @@ where
 
     // Create a random matrix
     let mut rng = StdRng::seed_from_u64(seed as u64);
-    let normal = Normal::new(T::from(0.0).unwrap(), T::from(1.0).unwrap()).unwrap();
+    let normal = Normal::new(0.0, 1.0).unwrap();
     let omega = Mat::from_fn(ncol, sample_size, |_, _| normal.sample(&mut rng));
 
     // Multiply random matrix with original and use QR composition to get
@@ -136,7 +135,9 @@ where
 
 /// Sparse randomised SVD
 ///
-/// Calculates the sparse randomised SVD.
+/// Calculates the sparse randomised SVD. Runs in and returns `f64` whatever `T`
+/// is: the `f32` factorisations in faer return garbage at large sample counts,
+/// which leaves a rank-one result.
 ///
 /// ### Params
 ///
@@ -148,16 +149,16 @@ where
 ///
 /// ### Returns
 ///
-/// The RandomSvdResults
+/// The RandomSvdResults, in `f64`
 pub fn sparse_randomised_svd<T>(
     matrix: &CompressedSparseData<T>,
     rank: usize,
     seed: u64,
     oversampling: Option<usize>,
     n_power_iter: Option<usize>,
-) -> Result<RandomSvdResults<T>, ManifoldsError>
+) -> Result<RandomSvdResults<f64>, ManifoldsError>
 where
-    T: Into<T> + ManifoldsFloat,
+    T: ManifoldsFloat,
 {
     let (n, m) = matrix.shape;
     let os = oversampling.unwrap_or(10);
@@ -187,31 +188,32 @@ where
     let data_csr = csr.data.as_slice();
     let data_csc = csc.data.as_slice();
 
-    let spmm = |sparse: &CompressedSparseData<T>, data: &[T], x_flat: &[T], y_flat: &mut [T]| {
-        let n_outer = sparse.indptr.len() - 1;
+    let spmm =
+        |sparse: &CompressedSparseData<T>, data: &[T], x_flat: &[f64], y_flat: &mut [f64]| {
+            let n_outer = sparse.indptr.len() - 1;
 
-        y_flat
-            .par_chunks_exact_mut(ncols)
-            .take(n_outer)
-            .enumerate()
-            .for_each(|(i, y_row)| {
-                y_row.fill(T::zero());
+            y_flat
+                .par_chunks_exact_mut(ncols)
+                .take(n_outer)
+                .enumerate()
+                .for_each(|(i, y_row)| {
+                    y_row.fill(0.0);
 
-                for idx in sparse.indptr[i]..sparse.indptr[i + 1] {
-                    let j = sparse.indices[idx];
-                    let a_val = data[idx];
-                    let x_row = &x_flat[j * ncols..(j + 1) * ncols];
+                    for idx in sparse.indptr[i]..sparse.indptr[i + 1] {
+                        let j = sparse.indices[idx];
+                        let a_val = data[idx].to_f64().unwrap();
+                        let x_row = &x_flat[j * ncols..(j + 1) * ncols];
 
-                    for col in 0..ncols {
-                        y_row[col] += a_val * x_row[col];
+                        for col in 0..ncols {
+                            y_row[col] += a_val * x_row[col];
+                        }
                     }
-                }
-            });
-    };
+                });
+        };
 
-    let to_row_major = |mat: MatRef<T>| -> Vec<T> {
+    let to_row_major = |mat: MatRef<f64>| -> Vec<f64> {
         let rows = mat.nrows();
-        let mut flat = vec![T::zero(); rows * ncols];
+        let mut flat = vec![0.0; rows * ncols];
         flat.par_chunks_exact_mut(ncols)
             .enumerate()
             .for_each(|(i, row_slice)| {
@@ -222,7 +224,7 @@ where
         flat
     };
 
-    let from_row_major = |flat: &[T], mut mat: MatMut<T>| {
+    let from_row_major = |flat: &[f64], mut mat: MatMut<f64>| {
         let rows = mat.nrows();
         for i in 0..rows {
             let row_slice = &flat[i * ncols..(i + 1) * ncols];
@@ -234,18 +236,16 @@ where
 
     let mut rng = StdRng::seed_from_u64(seed);
     let normal = Normal::new(0.0, 1.0).unwrap();
-    let omega = Mat::from_fn(m, sample_size, |_, _| {
-        T::from_f64(normal.sample(&mut rng)).unwrap()
-    });
+    let omega = Mat::from_fn(m, sample_size, |_, _| normal.sample(&mut rng));
 
     let mut x_flat = to_row_major(omega.as_ref());
-    let mut y_flat = vec![T::zero(); n * ncols];
-    let mut z_flat = vec![T::zero(); m * ncols];
+    let mut y_flat = vec![0.0; n * ncols];
+    let mut z_flat = vec![0.0; m * ncols];
 
     // Y = A * Omega
     spmm(csr, data_csr, &x_flat, &mut y_flat);
 
-    let mut y = Mat::<T>::zeros(n, sample_size);
+    let mut y = Mat::<f64>::zeros(n, sample_size);
     from_row_major(&y_flat, y.as_mut());
     let mut q = y.qr().compute_thin_Q();
 
@@ -264,10 +264,10 @@ where
 
     // B_t = A^T * Q
     x_flat = to_row_major(q.as_ref());
-    let mut b_t_flat = vec![T::zero(); m * ncols];
+    let mut b_t_flat = vec![0.0; m * ncols];
     spmm(csc, data_csc, &x_flat, &mut b_t_flat);
 
-    let mut b_t = Mat::<T>::zeros(m, sample_size);
+    let mut b_t = Mat::<f64>::zeros(m, sample_size);
     from_row_major(&b_t_flat, b_t.as_mut());
 
     let b = b_t.transpose().to_owned();
@@ -275,7 +275,7 @@ where
     // Final SVD on the small B matrix
     let svd = b.thin_svd().map_err(|_| ManifoldsError::FaerSvdError)?;
     let u = (&q * svd.U()).get(.., ..rank).to_owned();
-    let s: Vec<T> = svd.S().column_vector().iter().copied().take(rank).collect();
+    let s: Vec<f64> = svd.S().column_vector().iter().copied().take(rank).collect();
     let v = svd.V().get(.., ..rank).to_owned();
 
     Ok(RandomSvdResults { u, s, v })
@@ -938,7 +938,7 @@ where
     } else {
         let rank = VNE_SPARSE_RANK.min(n.saturating_sub(1));
         let svd = sparse_randomised_svd(operator, rank, 42, None, None)?;
-        svd.s
+        svd.s.iter().map(|&s| T::from_f64(s).unwrap()).collect()
     };
 
     let mut eigenvalues_t = eigenvalues.clone();

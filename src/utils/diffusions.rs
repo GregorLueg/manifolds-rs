@@ -732,7 +732,8 @@ where
                         let j = diffusion_op.indices[idx];
                         let a_val = diffusion_op.data[idx];
                         for col in 0..k {
-                            embedding_flat[i * k + col] += a_val * v[(j, col)];
+                            embedding_flat[i * k + col] +=
+                                a_val * T::from_f64(v[(j, col)]).unwrap();
                         }
                     }
                 }
@@ -1419,7 +1420,8 @@ where
                         let j = affinity.indices[idx];
                         let a_val = affinity.data[idx];
                         for col in 0..k_proj {
-                            embedding_flat[i * k_proj + col] += a_val * v[(j, col)];
+                            embedding_flat[i * k_proj + col] +=
+                                a_val * T::from_f64(v[(j, col)]).unwrap();
                         }
                     }
                 }

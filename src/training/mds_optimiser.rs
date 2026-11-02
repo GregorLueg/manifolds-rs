@@ -153,7 +153,6 @@ pub fn classic_mds<T>(
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
-    StandardNormal: Distribution<T>,
 {
     let n = dist.len();
 
@@ -189,12 +188,13 @@ where
     let mut embedding = vec![vec![T::zero(); n_components]; n];
 
     if randomised {
-        let rsvd = randomised_svd(d_sq.as_ref(), n_components, seed, None, None)?;
+        let d_sq_f64 = Mat::<f64>::from_fn(n, n, |i, j| d_sq[(i, j)].to_f64().unwrap());
+        let rsvd = randomised_svd(d_sq_f64.as_ref(), n_components, seed, None, None)?;
         for i in 0..n {
             for k in 0..n_components {
                 let singular_val = rsvd.s[k];
-                if singular_val > T::zero() {
-                    embedding[i][k] = rsvd.u[(i, k)] * singular_val.sqrt();
+                if singular_val > 0.0 {
+                    embedding[i][k] = T::from_f64(rsvd.u[(i, k)] * singular_val.sqrt()).unwrap();
                 }
             }
         }
