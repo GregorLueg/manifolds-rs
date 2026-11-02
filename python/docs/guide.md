@@ -4,18 +4,21 @@ The details that will otherwise bite you.
 
 ## Precision
 
-float32 in, float32 throughout. float64 in, float64 throughout. Anything else,
-integers included, is promoted to float64 rather than narrowed.
+float32 in, float32 out. float64 in, float64 out. Anything else, integers
+included, is promoted to float64 rather than narrowed.
 
 Below 100,000 samples the design matrix picks the precision for the pipeline,
-including the neighbour search and the optimiser. There is no separate knob for
-it.
+including the optimiser. There is no separate knob for it.
 
 From 100,000 samples every estimator runs in float64 and returns float64, whatever
 you pass. `knn_graph` isn't an estimator and keeps your dtype.
 
-Three exceptions:
+Four exceptions:
 
+- The neighbour search runs in float32 on every backend bar `"exhaustive"`, and
+  the distances are cast back up. So `knn_graph` on float64 input returns float64
+  with float32 precision in the values. Want float64 ground truth? Use
+  `"exhaustive"`.
 - PCA initialisation always runs its centring and SVD in float64, then casts the
   result back. The float32 SVD collapses the layout from about 520k samples.
 - The GPU estimators cast to float32 below 100,000 samples. That is the only
@@ -155,7 +158,8 @@ runs of the same configuration will differ, as they should.
 Across releases it does not hold either: 0.5.0 changed the eigensolver behind
 the spectral initialisation, PHATE and diffusion maps, so coordinates differ
 from 0.4.x at the same seed. 0.5.1 moved PCA initialisation to float64 and runs
-100,000 samples and up in float64, so float32 runs differ from 0.5.0.
+100,000 samples and up in float64, so float32 runs differ from 0.5.0. It also
+moved the neighbour search to float32, so float64 runs differ too.
 
 ## Errors
 

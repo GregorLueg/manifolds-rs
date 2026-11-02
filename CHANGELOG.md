@@ -13,6 +13,15 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   different coordinates than 0.8.0 at the same seed, and hold an `f64` copy of
   the matrix during init.
 
+**Changes**
+
+- `run_ann_search` searches in `f32` whatever `T` is, on every CPU backend bar
+  `"exhaustive"`, and casts the distances back up to `T`. `"exhaustive"` stays in
+  `T`, so `f64` runs still give ground truth. On `f64` input at 100k x 50,
+  `"nndescent"` went from 0.93 s to 0.65 s and `"ivf"` from 1.37 s to 0.91 s, with
+  recall unchanged. `f64` callers get different coordinates than 0.8.0 at the same
+  seed, and hold an extra `f32` copy of the matrix during the search.
+
 ## 0.8.0
 
 **Breaking changes**

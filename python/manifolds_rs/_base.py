@@ -163,8 +163,7 @@ class BaseEmbedding:
                 float64. The element type picks the precision the pipeline runs
                 in, apart from the neighbour search, which is float32 on every
                 backend bar ``"exhaustive"``. From 100,000 samples the pipeline
-                runs in
-                float64 regardless, except for the ``"fft_3k_gpu"`` and
+                runs in float64 regardless, except for the ``"fft_3k_gpu"`` and
                 ``"fft_3k_mlx"`` t-SNE optimisers.
             y: Ignored, present for scikit-learn pipeline compatibility.
             knn_indices: Optional ``(n_samples, k)`` precomputed neighbour

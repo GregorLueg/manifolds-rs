@@ -20,6 +20,11 @@ Requires `manifolds-rs` 0.8.1.
   and returns float64. That includes the GPU estimators: the search and UMAP's
   Adam still cast to float32 on the device. `approx="fft_3k_gpu"` and
   `"fft_3k_mlx"` stay float32 at any size.
+- The neighbour search runs in float32 on every backend bar `"exhaustive"`, which
+  stays in your dtype. On float64 input at 100k x 50, `"nndescent"` went from
+  0.93 s to 0.65 s and `"ivf"` from 1.37 s to 0.91 s, with recall unchanged.
+  float64 runs give different coordinates than 0.5.0 at the same seed, and
+  `knn_graph` still returns your dtype but with float32 precision in the values.
 
 ## 0.5.0
 
