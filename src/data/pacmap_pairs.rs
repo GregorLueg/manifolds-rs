@@ -392,7 +392,7 @@ mod test_pacmap_pairs {
     fn test_mid_near_distinct_within_a_point() {
         let knn = dummy_knn(50, 10);
         let pairs = pairs_for(&knn, 10, 5, 20, 42);
-        for chunk in pairs.mid_near.chunks_exact(5) {
+        for chunk in pairs.mid_near.as_chunks::<5>().0.iter() {
             let mut js: Vec<usize> = chunk.iter().map(|p| p.1).collect();
             js.sort_unstable();
             js.dedup();

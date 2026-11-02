@@ -1014,7 +1014,7 @@ where
     drop(knn_dist);
 
     if verbosity.normal_verbosity() {
-        println!(" Initialising via {} ...", &params.initialisation);
+        println!(" Initialising via {} ...", params.initialisation);
     }
 
     // 2. initialise embedding
@@ -2487,7 +2487,7 @@ where
     )?;
 
     if verbosity.normal_verbosity() {
-        println!(" Initialising via {} ...", &params.initialisation);
+        println!(" Initialising via {} ...", params.initialisation);
     }
 
     let init_type = parse_initilisation(
@@ -5332,7 +5332,7 @@ where
     )?;
 
     if verbosity.normal_verbosity() {
-        println!(" Initialising via {} ...", &params.initialisation);
+        println!(" Initialising via {} ...", params.initialisation);
     }
 
     let init_type = parse_initilisation(
