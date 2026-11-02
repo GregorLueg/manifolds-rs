@@ -1239,7 +1239,7 @@ mod test_utils_math {
         assert_eq!(evals.len(), 3);
 
         for (k, &lambda) in evals.iter().enumerate() {
-            let v: Vec<f64> = (0..n).map(|i| evecs[i][k] as f64).collect();
+            let v: Vec<f64> = (0..n).map(|i| evecs[i][k]).collect();
             let norm_v = v.iter().map(|x| x * x).sum::<f64>().sqrt();
             assert!(
                 norm_v > 0.5,
@@ -1252,7 +1252,7 @@ mod test_utils_math {
                 for idx in indptr[i]..indptr[i + 1] {
                     mv += data[idx] * v[indices[idx]];
                 }
-                let r = mv - lambda as f64 * v[i];
+                let r = mv - lambda * v[i];
                 resid_sq += r * r;
             }
             let rel = resid_sq.sqrt() / norm_v;
