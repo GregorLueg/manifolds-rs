@@ -37,18 +37,12 @@ the GPU rarely blows the CPU out of the water for these workloads.
 
 ## Precision
 
-WGSL has no float64, so everything on the device is float32. What happens off the
-device depends on the sample count:
+WGSL has no float64, so the GPU estimators run in float32 at any size. `fit` casts
+your input down, float64 included, and the embedding comes back as float32. That is
+the only silent narrowing of your input in the package. If it matters for your
+data, stay on the CPU estimators, which keep your dtype.
 
-- Below 100,000 samples, `fit` casts your input to float32, float64 included. That
-  is the only silent narrowing of your input in the package. If it matters for
-  your data, stay on the CPU estimators, which keep your dtype at this size.
-- From 100,000 samples, the graph and any CPU optimiser run in float64, and the
-  embedding comes back as float64. The search and UMAP's Adam cast to float32 at
-  the device boundary.
-- `approx="fft_3k_gpu"` stays float32 at any size.
-
-PCA initialisation runs in float64 either way.
+PCA initialisation still runs in float64 on the CPU and casts the result back.
 
 ## Reproducibility
 

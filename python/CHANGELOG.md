@@ -11,11 +11,10 @@ Requires `manifolds-rs` 0.9.0.
 
 - `DiffusionMaps` keeps its eigenpairs in float64 instead of narrowing them to
   float32. float64 runs move by about 1e-7 of a component's standard deviation at
-  20k samples. float32 runs stay bit-identical.
-- From 100,000 samples every estimator runs in float64, whatever dtype you pass,
-  and returns float64. That includes the GPU estimators: the search and UMAP's
-  Adam still cast to float32 on the device. `approx="fft_3k_gpu"` and
-  `"fft_3k_mlx"` stay float32 at any size.
+  20k samples. float32 runs without spectral landmarks stay bit-identical.
+- float32 runs of `PHATE` and `DiffusionMaps` with spectral landmarks, and of
+  `PHATE(mds="classic")`, give different coordinates than 0.5.0 at the same seed:
+  the randomised SVDs now run in float64.
 - The neighbour search runs in float32 on every backend bar `"exhaustive"`, which
   stays in your dtype. On float64 input at 100k x 50, `"nndescent"` went from
   0.93 s to 0.65 s and `"ivf"` from 1.37 s to 0.91 s, with recall unchanged.
@@ -31,6 +30,11 @@ Requires `manifolds-rs` 0.9.0.
   SVD collapsed the layout onto a few points from about 520k samples, and t-SNE
   was the one to suffer since PCA is its default. float32 runs give different
   coordinates than 0.5.0 at the same seed.
+- Spectral landmark selection no longer breaks on float32 input from somewhere
+  between 500k and 540k samples. The float32 SVD came back rank-one and k-means
+  put 99.9% of the points in one landmark, which wiped out the structure of a
+  landmark `PHATE` embedding. float32 runs now hold float64 singular vectors during
+  selection, so the peak memory of landmark `PHATE` matches float64.
 
 ## 0.5.0
 

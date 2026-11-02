@@ -11,7 +11,11 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   `eigendecompose` return `f64` eigenpairs instead of narrowing them to `f32`, and
   `compute_landmark_embedding` takes `f64`. `diffusion_maps` on `f64` input moves
   by about 1e-7 of a component's standard deviation at 20k samples. `f32` runs
-  stay bit-identical.
+  without spectral landmarks stay bit-identical.
+- `randomised_svd` takes and returns `f64`, and `sparse_randomised_svd` returns
+  `f64` whatever `T` is. `f32` runs of PHATE and diffusion maps with spectral
+  landmarks, and of classic MDS with `randomised`, give different coordinates than
+  0.8.0 at the same seed. PHATE and diffusion maps on `f64` input stay bit-identical.
 - `run_ann_search` searches in `f32` whatever `T` is, on every CPU backend bar
   `"exhaustive"`, and casts the distances back up to `T`. `"exhaustive"` stays in
   `T`, so `f64` runs still give ground truth. On `f64` input at 100k x 50,
@@ -32,6 +36,11 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   samples. This also covers the default DREAMS reference. `f32` callers get
   different coordinates than 0.8.0 at the same seed, and hold an `f64` copy of
   the matrix during init.
+- Spectral landmark selection no longer breaks on `f32` input from somewhere
+  between 500k and 540k samples. The `f32` SVD came back rank-one and k-means put
+  99.9% of the points in one landmark, which wiped out the structure of a landmark
+  PHATE embedding. `f32` runs now hold `f64` singular vectors during selection,
+  so the peak memory of landmark PHATE matches `f64`.
 
 ## 0.8.0
 

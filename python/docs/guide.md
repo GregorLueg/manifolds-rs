@@ -7,11 +7,13 @@ The details that will otherwise bite you.
 float32 in, float32 out. float64 in, float64 out. Anything else, integers
 included, is promoted to float64 rather than narrowed.
 
-Below 100,000 samples the design matrix picks the precision for the pipeline,
-including the optimiser. There is no separate knob for it.
+The design matrix picks the precision for the pipeline at any size, including
+the optimiser. There is no separate knob for it.
 
-From 100,000 samples every estimator runs in float64 and returns float64, whatever
-you pass. `knn_graph` isn't an estimator and keeps your dtype.
+Worth knowing on large data: float32 kept up. On real single cell PCA at 1M cells,
+UMAP, t-SNE, PaCMAP and ForceAtlas2 scored the same in both precisions, while
+float64 took up to 51% longer and 46% more memory. That is one dataset, and nothing
+above 1M was tested.
 
 Four exceptions:
 
@@ -19,11 +21,11 @@ Four exceptions:
   the distances are cast back up. So `knn_graph` on float64 input returns float64
   with float32 precision in the values. Want float64 ground truth? Use
   `"exhaustive"`.
-- PCA initialisation always runs its centring and SVD in float64, then casts the
-  result back. The float32 SVD collapses the layout from about 520k samples.
-- The GPU estimators cast to float32 below 100,000 samples. That is the only
-  silent narrowing of your input in the package.
-- `approx="fft_3k_gpu"` and `"fft_3k_mlx"` stay float32 at any size.
+- PCA initialisation and the randomised SVDs always run in float64, then cast the
+  result back. The float32 factorisations break down at about 520k samples.
+- The GPU estimators cast to float32 at any size. That is the only silent
+  narrowing of your input in the package.
+- `approx="fft_3k_mlx"` optimises in float32 on the device, whatever you pass.
 
 ## Distances
 
@@ -162,9 +164,9 @@ runs of the same configuration will differ, as they should.
 
 Across releases it does not hold either: 0.5.0 changed the eigensolver behind
 the spectral initialisation, PHATE and diffusion maps, so coordinates differ
-from 0.4.x at the same seed. 0.6.0 moved PCA initialisation to float64 and runs
-100,000 samples and up in float64, so float32 runs differ from 0.5.0. It also
-moved the neighbour search to float32, so float64 runs differ too.
+from 0.4.x at the same seed. 0.6.0 moved PCA initialisation and the randomised
+SVDs to float64, so float32 runs differ from 0.5.0. It also moved the neighbour
+search to float32, so float64 runs differ too.
 
 ## Errors
 

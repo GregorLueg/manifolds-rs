@@ -8,9 +8,8 @@
 //! The device is pinned to wgpu: there is nothing on the Python side to choose
 //! a backend with.
 //!
-//! The design matrix dtype picks `T`, as on the CPU paths. WGSL has no `f64`,
-//! so the crate casts to `f32` at the device boundary; the Python layer decides
-//! which dtype arrives here.
+//! The design matrix dtype picks `T`, as on the CPU paths. WGSL has no `f64`, so
+//! the Python estimators always send `f32`.
 
 use cubecl::wgpu::WgpuDevice;
 use cubecl::Device;

@@ -123,11 +123,10 @@ operation the old ones went through.
 ## Precision
 
 float32 in, float32 out; float64 in, float64 out. Anything else is promoted to
-float64 rather than narrowed. From 100,000 samples every estimator runs in float64
-and returns float64, whatever you pass. The neighbour search runs in float32 on
-every backend bar `"exhaustive"`, and PCA initialisation always runs in float64.
-Below 100,000 samples the GPU estimators cast to float32. The `"fft_3k_gpu"` and
-`"fft_3k_mlx"` t-SNE optimisers stay float32 at any size.
+float64 rather than narrowed. The neighbour search runs in float32 on every backend
+bar `"exhaustive"`, while PCA initialisation and the randomised SVDs always run in
+float64. The GPU estimators cast to float32 at any size, and the `"fft_3k_mlx"`
+t-SNE optimiser runs in float32 on the device.
 
 ## What is not in the wheel
 
