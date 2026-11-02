@@ -106,7 +106,8 @@ Device limits are queried at runtime, never assumed.
 
 Everything on the device is `f32`: WGSL has no `f64`, and consumer GPUs run it
 at a crawl anyway. Results are reproducible in structure, not bit for bit,
-since parallel reductions have no fixed order. Need `f64`? Stay on the CPU.
+since parallel reductions have no fixed order. Need `f64`? Stay on the CPU, though
+the kNN search there runs in `f32` too, on every backend bar `"exhaustive"`.
 
 ## MLX (experimental)
 
