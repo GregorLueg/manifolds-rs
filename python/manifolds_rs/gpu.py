@@ -8,11 +8,8 @@ with ``--no-default-features``.
 Three things differ from the CPU estimators, all of them consequences of the
 backend rather than choices:
 
-- **float32 below 100,000 samples.** `fit` casts down to it, the only narrowing
-  this package performs silently. From 100,000 samples the graph, initialisation
-  and CPU optimisers run in float64, as on the CPU estimators, while the search
-  and UMAP's Adam cast to float32 on the device. ``"fft_3k_gpu"`` has float32
-  kernels, so it stays float32 at any size.
+- **float32 at any size.** `fit` casts down to it, the only narrowing this
+  package performs silently.
 - **Different neighbour backends.** ``"nndescent_gpu"``, ``"ivf_gpu"`` and
   ``"exhaustive_gpu"``, with their own knobs. See `NeighbourParamsGpu`.
 - **Only the search and the optimiser run on the device.** The UMAP Adam update,

@@ -46,7 +46,7 @@ def check_matrix(
         x: Array-like of shape ``(n_samples, n_features)``.
         name: Argument name, used in error messages.
         dtype: Element type to force, overriding the promotion rule above. See
-            `BaseEmbedding._fit_dtype`.
+            `BaseEmbedding._BASE_DTYPE`.
 
     Returns:
         A C-contiguous 2-D array, of `dtype` when one was given.
