@@ -157,7 +157,7 @@ runs of the same configuration will differ, as they should.
 
 Across releases it does not hold either: 0.5.0 changed the eigensolver behind
 the spectral initialisation, PHATE and diffusion maps, so coordinates differ
-from 0.4.x at the same seed. 0.5.1 moved PCA initialisation to float64 and runs
+from 0.4.x at the same seed. 0.6.0 moved PCA initialisation to float64 and runs
 100,000 samples and up in float64, so float32 runs differ from 0.5.0. It also
 moved the neighbour search to float32, so float64 runs differ too.
 
