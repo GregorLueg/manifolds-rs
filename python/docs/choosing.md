@@ -46,8 +46,8 @@ and branch points survive PHATE that t-SNE tears into blobs. If your biology is
 continuous, this is the one.
 
 **PaCMAP** uses three kinds of pair: near pairs pull, further pairs push, and
-mid-near pairs hold the global arrangement together while their weight decays
-over the first two phases. That decay is what lets it keep global structure
+mid-near pairs hold the global arrangement together. Their weight starts high
+and decays across the first phase, which is what lets it keep global structure
 without leaning on a spectral initialisation. PCA init is close to required;
 random init throws away most of the advantage.
 

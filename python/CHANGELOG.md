@@ -20,6 +20,10 @@ Requires `manifolds-rs` 0.9.0.
   0.93 s to 0.65 s and `"ivf"` from 1.37 s to 0.91 s, with recall unchanged.
   float64 runs give different coordinates than 0.5.0 at the same seed, and
   `knn_graph` still returns your dtype but with float32 precision in the values.
+- `PaCMAP` defaults to `learning_rate=1.0` rather than `0.01`, and loses
+  `mn_candidate_start` and `mn_candidate_end`. It searches `n_near` neighbours
+  rather than 50, and a precomputed graph only needs to be that wide. Different
+  embeddings at the same seed.
 - `verbose` follows one grammar: `0` quiet, `1` timed stages and optimiser epochs
   every 50, `2` also parameters, landmark selection and the neighbour index
   internals. Anything else raises `ValueError` instead of silently being quiet.
@@ -30,6 +34,12 @@ Requires `manifolds-rs` 0.9.0.
   SVD collapsed the layout onto a few points from about 520k samples, and t-SNE
   was the one to suffer since PCA is its default. float32 runs give different
   coordinates than 0.5.0 at the same seed.
+- `PaCMAP` no longer compresses the layout. At `learning_rate=0.01` Adam could not
+  move points far enough, and it got worse with `n`: 15-NN preservation on real
+  single cell data at 500k went from 0.0027 to 0.0511, against 0.0517 for the
+  reference implementation.
+- `PaCMAP` mid-near pairs are mid-near. They were kNN slots 4 to 8, so all of them
+  were already near pairs.
 - Spectral landmark selection no longer breaks on float32 input from somewhere
   between 500k and 540k samples. The float32 SVD came back rank-one and k-means
   put 99.9% of the points in one landmark, which wiped out the structure of a

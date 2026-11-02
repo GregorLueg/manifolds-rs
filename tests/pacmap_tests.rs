@@ -3,6 +3,8 @@
 mod commons;
 use commons::*;
 
+use ann_search_rs::utils::dist::Dist;
+use ann_search_rs::utils::matrix_to_flat;
 use manifolds_rs::data::pacmap_pairs::construct_pacmap_pairs;
 use manifolds_rs::prelude::*;
 use manifolds_rs::*;
@@ -119,7 +121,17 @@ fn pacmap_integration_02_pair_counts() {
     let (knn_indices, _) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
-    let pairs = construct_pacmap_pairs(&knn_indices, n_near, n_mid_near, n_further, 4, 50, 42);
+    let (flat, _, dim) = matrix_to_flat(data.as_ref());
+    let pairs = construct_pacmap_pairs(
+        &flat,
+        dim,
+        &knn_indices,
+        n_near,
+        n_mid_near,
+        n_further,
+        &Dist::SquaredEuclidean,
+        42,
+    );
 
     println!("\n=== PaCMAP DIAGNOSTIC 2: Pair Counts ===");
     println!(
@@ -143,7 +155,17 @@ fn pacmap_integration_03_no_self_pairs() {
     let (knn_indices, _) =
         run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
-    let pairs = construct_pacmap_pairs(&knn_indices, 10, 5, 20, 4, 50, 42);
+    let (flat, _, dim) = matrix_to_flat(data.as_ref());
+    let pairs = construct_pacmap_pairs(
+        &flat,
+        dim,
+        &knn_indices,
+        10,
+        5,
+        20,
+        &Dist::SquaredEuclidean,
+        42,
+    );
 
     println!("\n=== PaCMAP DIAGNOSTIC 3: No Self-Pairs ===");
 
@@ -160,33 +182,39 @@ fn pacmap_integration_03_no_self_pairs() {
 }
 
 #[test]
-fn pacmap_integration_04_mid_near_candidate_window() {
-    let (data, _) = create_diagnostic_data(50, 10, 42);
-    let k = 50;
-    let candidate_start = 4;
-    let candidate_end = 50;
+fn pacmap_integration_04_mid_near_outside_near() {
+    let (data, _) = create_diagnostic_data(200, 10, 42);
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, _) =
-        run_ann_search(data.as_ref(), k, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
+        run_ann_search(data.as_ref(), 10, "kmknn".to_string(), &nn_params, 42, 0).unwrap();
 
-    let pairs = construct_pacmap_pairs(&knn_indices, 10, 5, 20, candidate_start, candidate_end, 42);
+    let (flat, _, dim) = matrix_to_flat(data.as_ref());
+    let pairs = construct_pacmap_pairs(
+        &flat,
+        dim,
+        &knn_indices,
+        10,
+        5,
+        20,
+        &Dist::SquaredEuclidean,
+        42,
+    );
 
-    println!("\n=== PaCMAP DIAGNOSTIC 4: Mid-Near Candidate Window ===");
-
-    for &(i, j) in &pairs.mid_near {
-        let window_end = candidate_end.min(knn_indices[i].len());
-        let window = &knn_indices[i][candidate_start..window_end];
-        assert!(
-            window.contains(&j),
-            "mid-near pair ({},{}) not from candidate window [{},{})",
-            i,
-            j,
-            candidate_start,
-            window_end
-        );
-    }
-    println!("All mid-near pairs drawn from candidate window");
+    let in_near = pairs
+        .mid_near
+        .iter()
+        .filter(|&&(i, j)| knn_indices[i].contains(&j))
+        .count();
+    println!("\n=== PaCMAP DIAGNOSTIC 4: Mid-Near Outside Near ===");
+    println!(
+        "{in_near} of {} mid-near pairs are near pairs",
+        pairs.mid_near.len()
+    );
+    assert!(
+        (in_near as f64) < 0.05 * pairs.mid_near.len() as f64,
+        "mid-near pairs should sit outside the kNN list"
+    );
 }
 
 #[test]
@@ -300,7 +328,7 @@ fn pacmap_integration_09_cluster_separation() {
 #[test]
 fn pacmap_integration_10_precomputed_knn() {
     let (data, _) = create_diagnostic_data(50, 10, 42);
-    let k = 50;
+    let k = PacmapParams::<f64>::default().n_near;
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =
@@ -380,7 +408,8 @@ fn pacmap_integration_12_further_pairs_influence() {
         .map(|i| (1..=10).map(|o| (i + o) % n).collect())
         .collect();
 
-    let pairs_full = construct_pacmap_pairs(&knn, 10, 5, 20, 4, 10, 42);
+    let flat: Vec<f64> = (0..n * 2).map(|x| x as f64).collect();
+    let pairs_full = construct_pacmap_pairs(&flat, 2, &knn, 10, 5, 20, &Dist::SquaredEuclidean, 42);
     let pairs_no_fp = PacmapPairs {
         near: pairs_full.near.clone(),
         mid_near: pairs_full.mid_near.clone(),

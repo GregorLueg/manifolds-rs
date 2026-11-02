@@ -543,8 +543,8 @@ class PaCMAP(BaseEmbedding):
     """Pairwise-controlled manifold approximation and projection.
 
     Three kinds of pair rather than UMAP's one: near pairs pull, further pairs
-    push, and mid-near pairs hold the global arrangement together while their
-    weight decays over the first two phases. That decay is what lets PaCMAP keep
+    push, and mid-near pairs hold the global arrangement together. Their weight
+    starts high and decays across the first phase, which is what lets PaCMAP keep
     global structure without the spectral initialisation UMAP leans on.
 
     PCA initialisation is the default and close to required: random init costs
@@ -552,12 +552,10 @@ class PaCMAP(BaseEmbedding):
 
     Args:
         n_components: Output dimensionality.
-        n_near: Near (attractive) pairs per point.
+        n_near: Near (attractive) pairs per point, and the width of the kNN
+            search. A precomputed graph must be at least this wide.
         n_mid_near: Mid-near pairs per point.
         n_further: Further (repulsive) pairs per point.
-        mn_candidate_start: First kNN slot the mid-near sampler draws from.
-        mn_candidate_end: Last such slot, and therefore the width of the kNN
-            search. A precomputed graph must be at least this wide.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
         n_epochs: Optimisation epochs across all three phases.
         learning_rate: Adam learning rate.
@@ -580,11 +578,9 @@ class PaCMAP(BaseEmbedding):
         n_near: int = 10,
         n_mid_near: int = 5,
         n_further: int = 20,
-        mn_candidate_start: int = 4,
-        mn_candidate_end: int = 50,
         metric: str = "euclidean",
         n_epochs: int = 450,
-        learning_rate: float = 0.01,
+        learning_rate: float = 1.0,
         init: str = "pca",
         ann: str = "nndescent",
         optimiser: str = "adam_parallel",
@@ -598,8 +594,6 @@ class PaCMAP(BaseEmbedding):
         self.n_near = n_near
         self.n_mid_near = n_mid_near
         self.n_further = n_further
-        self.mn_candidate_start = mn_candidate_start
-        self.mn_candidate_end = mn_candidate_end
         self.metric = metric
         self.n_epochs = n_epochs
         self.learning_rate = learning_rate
@@ -618,8 +612,6 @@ class PaCMAP(BaseEmbedding):
             "n_near": self.n_near,
             "n_mid_near": self.n_mid_near,
             "n_further": self.n_further,
-            "mn_candidate_start": self.mn_candidate_start,
-            "mn_candidate_end": self.mn_candidate_end,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
             "optimiser_type": check_choice(

@@ -22,6 +22,12 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   `"nndescent"` went from 0.93 s to 0.65 s and `"ivf"` from 1.37 s to 0.91 s, with
   recall unchanged. `f64` callers get different coordinates than 0.8.0 at the same
   seed, and hold an extra `f32` copy of the matrix during the search.
+- `pacmap` defaults to a learning rate of `1.0` rather than `0.01`, and
+  `PacmapParams` loses `mn_candidate_start` and `mn_candidate_end`. Mid-near pairs
+  are the second closest of six random points, so `construct_pacmap_pairs` takes
+  the data and a metric, and the kNN search size is now `n_near` rather than 50.
+  `ManifoldsError::NotEnoughNeighbours` carries `n_near`. Different embeddings at
+  the same seed.
 - One verbosity grammar across every embedding. Level 1 prints `Running <name> on
   <n> samples ...`, timed stages, epochs every 50 and `... finished <name> in`.
   Level 2 adds parameters, landmark selection and the kNN internals, which level 1
@@ -36,6 +42,12 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   samples. This also covers the default DREAMS reference. `f32` callers get
   different coordinates than 0.8.0 at the same seed, and hold an `f64` copy of
   the matrix during init.
+- PaCMAP no longer compresses the layout. At `0.01` Adam could not move points
+  far enough, and it got worse with `n`: 15-NN preservation on real single cell
+  data at 500k went from 0.0027 to 0.0511, against 0.0517 for the reference
+  implementation.
+- PaCMAP mid-near pairs are mid-near. They were kNN slots 4 to 8, so all of them
+  were already near pairs.
 - Spectral landmark selection no longer breaks on `f32` input from somewhere
   between 500k and 540k samples. The `f32` SVD came back rank-one and k-means put
   99.9% of the points in one landmark, which wiped out the structure of a landmark

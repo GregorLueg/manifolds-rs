@@ -51,8 +51,7 @@ pacmap = mf.PaCMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
 ```
 
 Two things to get right. Give the shared graph the widest `k` any consumer
-needs: PaCMAP indexes into the list up to `mn_candidate_end`, 50 by default,
-which is usually the binding constraint. And the graph must be complete: a row
+needs. And the graph must be complete: a row
 an approximate backend could not fill is padded with `-1`, and that is refused
 rather than quietly dropped, because a hole in the graph is not something these
 algorithms can embed.

@@ -25,6 +25,7 @@ pub mod parametric;
 use ann_search_rs::cpu::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::cpu::nndescent::{NNDescent, NNDescentQuery};
 use ann_search_rs::utils::dist::parse_ann_dist;
+use ann_search_rs::utils::matrix_to_flat;
 use ann_search_rs::utils::nndescent_utils::ApplySortedUpdates;
 use faer::MatRef;
 use rand_distr::{Distribution, StandardNormal};
@@ -3098,18 +3099,12 @@ pub struct PacmapParams<T> {
     pub ann_type: String,
     /// Which optimiser to use. Options are `"adam"` and `"adam_parallel"`
     pub optimiser_type: String,
-    /// Near pairs per point (attractive). Default 10.
+    /// Near pairs per point (attractive), and the kNN search size. Default 10.
     pub n_near: usize,
     /// Mid-near pairs per point (attractive, global structure). Default 5.
     pub n_mid_near: usize,
     /// Further (random) pairs per point (repulsive). Default 20.
     pub n_further: usize,
-    /// Start index into kNN list for mid-near candidate window. Default 4
-    /// (skip the 4 nearest).
-    pub mn_candidate_start: usize,
-    /// End index into kNN list for mid-near candidate window. Default 50.
-    /// Also determines the kNN search size.
-    pub mn_candidate_end: usize,
     /// Embedding initialisation. Default `"pca"`. PCA is strongly recommended
     /// for PaCMAP as random init degrades global structure.
     pub initialisation: String,
@@ -3133,8 +3128,6 @@ where
             n_near: 10,
             n_mid_near: 5,
             n_further: 20,
-            mn_candidate_start: 4,
-            mn_candidate_end: 50,
             initialisation: "pca".to_string(),
             range: Some(T::from_f64(0.01).unwrap()),
             nn_params: NearestNeighbourParams::default(),
@@ -3153,10 +3146,6 @@ where
     /// For sensible defaults, use [`PacmapParams::default`] or
     /// [`PacmapParams::new_default_2d`] instead.
     ///
-    /// The kNN search size is set to `mn_candidate_end` internally, since the
-    /// mid-near candidate window indexes into the kNN list and must not run
-    /// past its end.
-    ///
     /// ### Params
     ///
     /// * `n_dim` - Number of dimensions for the embedding.
@@ -3166,13 +3155,9 @@ where
     ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `optimiser_type` - Which optimiser to use. Options are `"adam"` and
     ///   `"adam_parallel"`.
-    /// * `n_near` - Near pairs per point (attractive).
+    /// * `n_near` - Near pairs per point (attractive), and the kNN search size.
     /// * `n_mid_near` - Mid-near pairs per point (attractive, global structure).
     /// * `n_further` - Further (random) pairs per point (repulsive).
-    /// * `mn_candidate_start` - Start index into the kNN list for the mid-near
-    ///   candidate window.
-    /// * `mn_candidate_end` - End index into the kNN list for the mid-near
-    ///   candidate window. Also determines the kNN search size.
     /// * `initialisation` - Embedding initialisation. PCA is strongly
     ///   recommended for PaCMAP as random init degrades global structure.
     /// * `range` - The range for the initial embedding.
@@ -3190,8 +3175,6 @@ where
         n_near: usize,
         n_mid_near: usize,
         n_further: usize,
-        mn_candidate_start: usize,
-        mn_candidate_end: usize,
         initialisation: String,
         range: Option<T>,
         nn_params: NearestNeighbourParams<T>,
@@ -3204,8 +3187,6 @@ where
             n_near,
             n_mid_near,
             n_further,
-            mn_candidate_start,
-            mn_candidate_end,
             initialisation,
             range,
             nn_params,
@@ -3252,8 +3233,7 @@ where
 /// * `data` - Input data as samples x features. Accepts a faer matrix, an
 ///   ndarray 2-D array (with the `ndarray` feature) or a row-major
 ///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
-/// * `precomputed_knn` - Optional precomputed kNN. Must have been computed
-///   with k >= `params.mn_candidate_end` to support mid-near sampling.
+/// * `precomputed_knn` - Optional precomputed kNN, with k >= `params.n_near`.
 /// * `params` - PaCMAP parameters.
 /// * `seed` - Seed for reproducibility.
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -3295,10 +3275,10 @@ where
             if indices.is_empty() {
                 return Err(ManifoldsError::NoData);
             }
-            if indices[0].len() < params_pacmap.mn_candidate_end {
+            if indices[0].len() < params_pacmap.n_near {
                 return Err(ManifoldsError::NotEnoughNeighbours {
                     n_provided: indices[0].len(),
-                    mid_near_candidate_end: params_pacmap.mn_candidate_end,
+                    n_near: params_pacmap.n_near,
                 });
             }
             if verbosity.normal_verbosity() {
@@ -3310,13 +3290,13 @@ where
             if verbosity.normal_verbosity() {
                 println!(
                     " kNN search via {} (k = {}) ...",
-                    params_pacmap.ann_type, params_pacmap.mn_candidate_end
+                    params_pacmap.ann_type, params_pacmap.n_near
                 );
             }
             let start_knn = Instant::now();
             let result = run_ann_search(
                 data,
-                params_pacmap.mn_candidate_end,
+                params_pacmap.n_near,
                 params_pacmap.ann_type.clone(),
                 &params_pacmap.nn_params,
                 seed,
@@ -3335,13 +3315,17 @@ where
 
     let start_pairs = Instant::now();
 
+    let (data_flat, _, dim) = matrix_to_flat(data);
+    let metric = parse_ann_dist(&params_pacmap.nn_params.dist_metric).unwrap_or_default();
+
     let pairs: PacmapPairs = construct_pacmap_pairs(
+        &data_flat,
+        dim,
         &knn_indices,
         params_pacmap.n_near,
         params_pacmap.n_mid_near,
         params_pacmap.n_further,
-        params_pacmap.mn_candidate_start,
-        params_pacmap.mn_candidate_end,
+        &metric,
         seed as u64,
     );
 

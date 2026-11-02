@@ -81,9 +81,7 @@ for name, estimator in [
     results[name] = estimator.fit_transform(X, knn_indices=ind, knn_distances=dist)
 ```
 
-`k=50` because PaCMAP indexes into the kNN list up to `mn_candidate_end`, which
-defaults to 50. Give the shared graph the widest `k` any of your estimators
-needs.
+Give the shared graph the widest `k` any of your estimators needs.
 
 ## Trajectories
 
