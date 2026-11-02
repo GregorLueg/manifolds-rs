@@ -74,3 +74,23 @@ pub use ann_search_rs::prelude::Verbosity;
 pub fn parse_verbosity_level(level: usize) -> Verbosity {
     ann_search_rs::prelude::parse_annsearch_verbosity(level)
 }
+
+/// Numeric level to hand a kNN build that runs inside an embedding.
+///
+/// The embedding prints one timed stage for the search at normal verbosity, so
+/// the build only speaks when detailed output was asked for.
+///
+/// ### Params
+///
+/// * `verbosity` - The embedding's verbosity
+///
+/// ### Returns
+///
+/// `2` when detailed, otherwise `0`.
+pub(crate) fn ann_verbose(verbosity: Verbosity) -> usize {
+    if verbosity.detailed_verbosity() {
+        2
+    } else {
+        0
+    }
+}

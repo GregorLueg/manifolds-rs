@@ -866,7 +866,7 @@ where
 
     if verbosity.detailed_verbosity() {
         println!(
-            " Filtered out {} weak edges.",
+            " Filtered out {} weak edges",
             (original_edge_no - filtered_edge_no).separate_with_underscores(),
         );
     }

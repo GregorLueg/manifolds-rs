@@ -306,9 +306,9 @@ where
         T::zero()
     };
 
-    if verbosity.normal_verbosity() {
+    if verbosity.detailed_verbosity() {
         println!(
-               "SGD-MDS: n={}, pairs_per_iter={}, n_iter={}, eta_max={:.6}, eta_min={:.6}, batch_scale={:.2}",
+               " SGD-MDS: n={}, pairs_per_iter={}, n_iter={}, eta_max={:.6}, eta_min={:.6}, batch_scale={:.2}",
                n.separate_with_underscores(),
                pairs_per_iter.separate_with_underscores(),
                n_iter.separate_with_underscores(),
@@ -372,7 +372,7 @@ where
 
         if verbosity.normal_verbosity() && iteration % 100 == 0 {
             println!(
-                " Iter {}: stress={:.6}, lr={:.6}",
+                "  Iter {} | stress = {:.6} | lr = {:.6}",
                 iteration.separate_with_underscores(),
                 stress.to_f64().unwrap(),
                 lr_i.to_f64().unwrap(),
@@ -384,7 +384,7 @@ where
             if rel_change < T::from(1e-6).unwrap() && iteration > 50 {
                 if verbosity.normal_verbosity() {
                     println!(
-                        " Converged at iteration {} (rel_change={:.2e})",
+                        "  Converged at iteration {} (rel_change={:.2e})",
                         iteration,
                         rel_change.to_f64().unwrap()
                     );

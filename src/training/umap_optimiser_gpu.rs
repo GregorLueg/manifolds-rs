@@ -1171,13 +1171,6 @@ where
     // seed fits in u32; upper bits of a u64 seed are unused.
     let seed_u32 = seed as u32;
 
-    if verbosity.normal_verbosity() {
-        println!(
-            "Running {} epochs with GPU-accelerated Adam optimisation.",
-            params.n_epochs
-        );
-    }
-
     for epoch in 0..params.n_epochs {
         // densMAP: refresh the radii and weights before the gradient pass, so
         // both read the same embedding
@@ -1192,15 +1185,13 @@ where
         launch_adam_update(&client, &state, params, epoch);
         launch_edge_schedule_update(&client, &state, epoch);
 
-        if verbosity.normal_verbosity() && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs)
-        {
-            let gn = launch_grad_norm(&client, &state)?;
-            println!(
-                " Epoch {} / {}: grad norm {:.2?}",
-                epoch + 1,
-                params.n_epochs,
-                gn
-            );
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
+            print!("  Epoch {}/{}", epoch + 1, params.n_epochs);
+            // the norm needs a readback, so it stays out of the normal path
+            if verbosity.detailed_verbosity() {
+                print!(" | grad norm = {:.2?}", launch_grad_norm(&client, &state)?);
+            }
+            println!();
         }
     }
 

@@ -233,7 +233,7 @@ where
     let verbosity = parse_verbosity_level(verbose);
 
     let ann_search = parse_ann_search_gpu(&ann_type).unwrap_or_else(|| {
-        println!("Unrecognised GPU-accelerated approximate nearest neighbour method provided: {:?}. Default to GPU NNDescent.", ann_type);
+        eprintln!("Warning: unrecognised GPU-accelerated approximate nearest neighbour method provided: {:?}. Default to GPU NNDescent.", ann_type);
         AnnSearchGpu::default()
     });
 

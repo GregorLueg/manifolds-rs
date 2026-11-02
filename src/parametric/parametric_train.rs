@@ -13,6 +13,7 @@ use crate::data::structures::*;
 use crate::parametric::batch::*;
 use crate::parametric::dataset::*;
 use crate::parametric::model::*;
+use crate::prelude::Verbosity;
 
 ////////////
 // Params //
@@ -251,7 +252,7 @@ pub fn graph_to_trainings_data<T>(graph_data: &CoordinateList<T>) -> UmapEdgeDat
 /// * `train_params` - The training parameters for the parametric UMAP
 /// * `device` - The device on which to train the model on
 /// * `seed` - Seed for reproducibility.
-/// * `verbose` - Controls verbosity of the function.
+/// * `verbosity` - Epoch lines print at normal verbosity and above.
 ///
 /// ### Returns
 ///
@@ -263,7 +264,7 @@ pub fn train_parametric_umap<T>(
     train_params: &TrainParametricParams<T>,
     device: &Device,
     seed: usize,
-    verbose: bool,
+    verbosity: Verbosity,
 ) -> (Vec<Vec<T>>, TrainedUmapModel<T>)
 where
     T: Element + Float + FromPrimitive + ToPrimitive,
@@ -275,11 +276,8 @@ where
     let tensor_data: Tensor<2> = data_to_tensor(data, device);
     let edge_dataset = graph_to_trainings_data(&graph_data);
 
-    if verbose {
-        println!(
-            "Training parametric UMAP on {} positive edges...",
-            edge_dataset.len()
-        );
+    if verbosity.normal_verbosity() {
+        println!(" Training on {} positive edges ...", edge_dataset.len());
     }
 
     let batcher = UmapBatcher::new(train_params.neg_sample_rate, n_samples, seed as u64);
@@ -296,8 +294,8 @@ where
     let use_correlation = train_params.corr_weight > T::zero();
 
     for epoch in 0..train_params.n_epochs {
-        let should_log =
-            verbose && (epoch == 0 || (epoch + 1) % 25 == 0 || epoch + 1 == train_params.n_epochs);
+        let should_log = verbosity.normal_verbosity()
+            && ((epoch + 1) % 50 == 0 || epoch + 1 == train_params.n_epochs);
 
         let mut total_loss = 0.0;
         let mut n_batches = 0;
@@ -344,7 +342,7 @@ where
 
         if should_log {
             println!(
-                "Epoch {}/{}: Loss = {:.6}",
+                "  Epoch {}/{} | loss = {:.6}",
                 epoch + 1,
                 train_params.n_epochs,
                 total_loss / n_batches as f64

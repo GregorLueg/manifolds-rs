@@ -14,6 +14,24 @@ _NATIVE_DTYPES = (np.float32, np.float64)
 
 
 @beartype
+def check_verbose(verbose: int) -> int:
+    """Reject a verbosity level the core would silently treat as quiet.
+
+    Args:
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
+
+    Returns:
+        The level, unchanged.
+
+    Raises:
+        ValueError: If `verbose` is not 0, 1 or 2.
+    """
+    if verbose not in (0, 1, 2):
+        raise ValueError(f"verbose must be 0, 1 or 2, got {verbose}")
+    return verbose
+
+
+@beartype
 def check_matrix(
     x: Any, *, name: str = "X", dtype: np.dtype | None = None
 ) -> np.ndarray:

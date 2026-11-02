@@ -71,7 +71,7 @@ class UMAP(BaseEmbedding):
         init_range: Scale of the initial coordinates. ``None`` lets the core
             pick per initialisation.
         seed: Fixes the initialisation and the negative sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed. Progress goes to
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed. Progress goes to
             the process stdout, not ``sys.stdout``. In Jupyter that lands in the
             terminal running the kernel.
         nn_params: Backend-specific neighbour knobs. See `NeighbourParams`.
@@ -244,7 +244,7 @@ class TSNE(BaseEmbedding):
         randomised_init: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
         optim_params: See `TsneOptim`.
     """
@@ -468,7 +468,7 @@ class PHATE(BaseEmbedding):
         ann: Neighbour backend.
         randomised: Use randomised SVD for the initialisation.
         seed: Fixes the initialisation and the landmark sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
         diffusion_params: Remaining operator knobs, landmarks included. See
             `PhateDiffusion`.
@@ -566,7 +566,7 @@ class PaCMAP(BaseEmbedding):
         optimiser: ``"adam_parallel"`` or ``"adam"``.
         range_: Scale of the initial coordinates.
         seed: Fixes the initialisation and the pair sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
         optim_params: Phase boundaries and Adam knobs. See `PacmapOptim`.
     """
@@ -660,7 +660,7 @@ class DiffusionMaps(BaseEmbedding):
         n_svd: Components for spectral landmark selection.
         ann: Neighbour backend.
         seed: Fixes the landmark sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
     """
 
@@ -751,7 +751,7 @@ class ForceAtlas2(BaseEmbedding):
         init_range: Scale of the initial coordinates. ``None`` lets the core
             pick per initialisation.
         seed: Fixes the initialisation.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
         graph_params: Fuzzy simplicial set knobs. See `UmapGraph`.
             ``mix_weight`` must stay at ``1``: anything lower leaves the graph

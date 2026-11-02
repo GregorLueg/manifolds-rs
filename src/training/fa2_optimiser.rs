@@ -519,10 +519,10 @@ where
 
         std::mem::swap(&mut force, &mut old_force);
 
-        if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(
-                " Epoch {}/{} | speed = {:.3e} | swing / traction = {:.3}",
-                epoch,
+                "  Epoch {}/{} | speed = {:.3e} | swing / traction = {:.3}",
+                epoch + 1,
                 params.n_epochs,
                 speed,
                 swing / traction.max(f64::MIN_POSITIVE)

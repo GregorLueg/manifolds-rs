@@ -354,8 +354,8 @@ where
     let verbosity = parse_verbosity_level(verbose);
 
     let ann_search = parse_ann_search(&ann_type).unwrap_or_else(|| {
-        println!(
-            "Unrecognised approximate nearest neighbour method provided: {:?}. Default to KmKnn.",
+        eprintln!(
+            "Warning: unrecognised approximate nearest neighbour method provided: {:?}. Default to KmKnn.",
             ann_type
         );
         AnnSearch::default()

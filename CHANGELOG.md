@@ -18,6 +18,12 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   `"nndescent"` went from 0.93 s to 0.65 s and `"ivf"` from 1.37 s to 0.91 s, with
   recall unchanged. `f64` callers get different coordinates than 0.8.0 at the same
   seed, and hold an extra `f32` copy of the matrix during the search.
+- One verbosity grammar across every embedding. Level 1 prints `Running <name> on
+  <n> samples ...`, timed stages, epochs every 50 and `... finished <name> in`.
+  Level 2 adds parameters, landmark selection and the kNN internals, which level 1
+  no longer prints inside an embedding. The GPU UMAP gradient norm moved to level 2.
+  Warnings about unknown parameters go to stderr. `train_parametric_umap` takes
+  `Verbosity` instead of `bool`.
 
 **Bug fixes**
 

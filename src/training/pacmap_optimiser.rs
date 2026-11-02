@@ -378,7 +378,7 @@ where
         beta2t *= params.beta2;
 
         if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
-            println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
+            println!("  Epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
 
@@ -527,7 +527,7 @@ where
         beta2t = beta2t * params.beta2;
 
         if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
-            println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
+            println!("  Epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
 

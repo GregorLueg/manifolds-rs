@@ -22,7 +22,7 @@ from typing import Any, ClassVar
 import numpy as np
 from beartype import beartype
 
-from ._validate import check_knn, check_matrix, check_reference
+from ._validate import check_knn, check_matrix, check_reference, check_verbose
 
 ###########
 # Globals #
@@ -198,7 +198,7 @@ class BaseEmbedding:
             arr,
             self._params(),
             seed=self.seed,
-            verbose=self.verbose,
+            verbose=check_verbose(self.verbose),
             **extra,
             **knn,
         )

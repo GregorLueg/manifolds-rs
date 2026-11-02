@@ -101,6 +101,11 @@ Everywhere else `None` means "let the crate decide".
 
 ## Verbosity
 
+`verbose=0` is quiet. `verbose=1` prints each stage with its timing, plus the
+optimiser's epochs every 50. `verbose=2` adds the parameters, the neighbour index
+internals and the landmark selection. Anything else raises `ValueError`.
+Warnings print at every level, to stderr.
+
 `verbose=1` or `2` writes progress to the *process* stdout, not `sys.stdout`. In
 Jupyter that lands in the terminal running the kernel, not in the notebook. This
 is the core printing directly and there is nothing this layer can do about it

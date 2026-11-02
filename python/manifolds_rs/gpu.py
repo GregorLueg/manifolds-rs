@@ -91,7 +91,7 @@ class UMAPGpu(BaseEmbedding):
         randomised: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation and the negative sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParamsGpu`.
         graph_params: See `UmapGraph`.
         optim_params: See `UmapOptim`.
@@ -255,7 +255,7 @@ class TSNEGpu(BaseEmbedding):
         randomised_init: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParamsGpu`.
         optim_params: See `TsneOptim`.
     """

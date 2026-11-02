@@ -23,7 +23,7 @@ from beartype import beartype
 
 from . import _manifolds as _core
 from ._params import ANN_CPU, METRICS, NeighbourParams, merge
-from ._validate import check_choice, check_matrix
+from ._validate import check_choice, check_matrix, check_verbose
 
 
 @beartype
@@ -51,7 +51,7 @@ def knn_graph(
             ``"nndescent"`` or ``"hnsw"``.
         nn_params: Backend-specific knobs. See `NeighbourParams`.
         seed: Fixes anything randomised in the build.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
 
     Returns:
         ``(indices, distances)``, both ``(n_samples, k)``. Indices are int64,
@@ -70,5 +70,5 @@ def knn_graph(
         ann=check_choice(ann, ANN_CPU, name="ann"),
         nn_params=group,
         seed=seed,
-        verbose=verbose,
+        verbose=check_verbose(verbose),
     )

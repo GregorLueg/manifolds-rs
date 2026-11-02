@@ -21,6 +21,9 @@ Requires `manifolds-rs` 0.9.0.
   0.93 s to 0.65 s and `"ivf"` from 1.37 s to 0.91 s, with recall unchanged.
   float64 runs give different coordinates than 0.5.0 at the same seed, and
   `knn_graph` still returns your dtype but with float32 precision in the values.
+- `verbose` follows one grammar: `0` quiet, `1` timed stages and optimiser epochs
+  every 50, `2` also parameters, landmark selection and the neighbour index
+  internals. Anything else raises `ValueError` instead of silently being quiet.
 
 **Bug fixes**
 

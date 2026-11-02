@@ -658,8 +658,8 @@ where
 
         let assignments: Vec<usize> = match landmark_method {
             LandmarkMethod::Random { seed } => {
-                if verbosity.normal_verbosity() {
-                    println!(" Using random selection of landmarks.")
+                if verbosity.detailed_verbosity() {
+                    println!("  Using random selection of landmarks")
                 }
 
                 let landmark_indices = random_sample(0..n, n_landmarks, seed);
@@ -713,14 +713,14 @@ where
             }
             #[allow(unused_variables)]
             LandmarkMethod::Spectral { n_svd } => {
-                if verbosity.normal_verbosity() {
-                    println!(" Using spectral detection of landmarks.")
+                if verbosity.detailed_verbosity() {
+                    println!("  Using spectral detection of landmarks")
                 }
 
                 let svd = sparse_randomised_svd(affinity, n_svd, seed as u64, None, None)?;
 
                 if verbosity.detailed_verbosity() {
-                    println!(" Finished calculation of randomised SVD on the affinity matrix.")
+                    println!("  Finished calculation of randomised SVD on the affinity matrix.")
                 }
 
                 let v = &svd.v;
@@ -750,11 +750,11 @@ where
                     &Dist::SquaredEuclidean,
                     Some(k_means_params),
                     seed,
-                    verbosity,
+                    parse_verbosity_level(ann_verbose(verbosity)),
                 )?;
 
                 if verbosity.detailed_verbosity() {
-                    println!(" Centroids identified.")
+                    println!("  Centroids identified.")
                 }
 
                 let centroid_norms = vec![T::one(); n_landmarks]; // Euclidean, unused
@@ -771,15 +771,15 @@ where
                     &Dist::SquaredEuclidean,
                 );
 
-                if verbosity.normal_verbosity() {
-                    println!(" Landmark assignments done.")
+                if verbosity.detailed_verbosity() {
+                    println!("  Landmark assignments done.")
                 }
 
                 assignemnts.into_iter().map(|c| c as usize).collect()
             }
             LandmarkMethod::Density { seed } => {
-                if verbosity.normal_verbosity() {
-                    println!(" Using degree-weighted (density) selection of landmarks.")
+                if verbosity.detailed_verbosity() {
+                    println!("  Using degree-weighted (density) selection of landmarks")
                 }
 
                 // calculate weights
@@ -1373,14 +1373,14 @@ where
         // landmark selection
         let landmark_indices: Vec<usize> = match landmark_method {
             LandmarkMethod::Random { seed } => {
-                if verbosity.normal_verbosity() {
-                    println!(" Using random landmark selection.");
+                if verbosity.detailed_verbosity() {
+                    println!("  Using random landmark selection");
                 }
                 random_sample(0..n, n_landmarks, seed)
             }
             LandmarkMethod::Density { seed } => {
-                if verbosity.normal_verbosity() {
-                    println!(" Using density landmark selection.");
+                if verbosity.detailed_verbosity() {
+                    println!("  Using density landmark selection");
                 }
                 let affinity = affinity.expect("density landmarks require affinity matrix");
                 let weights: Vec<f64> = (0..n)
@@ -1405,8 +1405,8 @@ where
                 set.into_iter().collect()
             }
             LandmarkMethod::Spectral { n_svd } => {
-                if verbosity.normal_verbosity() {
-                    println!(" Using spectral landmark selection.");
+                if verbosity.detailed_verbosity() {
+                    println!("  Using spectral landmark selection");
                 }
                 let affinity = affinity.expect("spectral landmarks require affinity matrix");
                 let svd = sparse_randomised_svd(affinity, n_svd, seed as u64, None, None)?;
@@ -1434,7 +1434,7 @@ where
                     &Dist::SquaredEuclidean,
                     Some(k_means_params),
                     seed,
-                    verbosity,
+                    parse_verbosity_level(ann_verbose(verbosity)),
                 )?;
                 let centroid_norms = vec![T::one(); n_landmarks];
                 let data_norms = vec![T::one(); n];
@@ -1510,7 +1510,7 @@ where
             "kmknn".to_string(),
             &nn_params,
             seed,
-            verbose,
+            ann_verbose(verbosity),
         )?;
         // with this config it behaves like a Gaussian
         let ll_graph = phate_alpha_decay_affinities(
@@ -1539,8 +1539,8 @@ where
             &dist_enum,
         );
 
-        if verbosity.normal_verbosity() {
-            println!(" Finished landmark generation in {:.2?}", start.elapsed());
+        if verbosity.detailed_verbosity() {
+            println!("  Finished landmark generation in {:.2?}", start.elapsed());
         }
 
         Ok(Self {
