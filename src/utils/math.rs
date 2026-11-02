@@ -835,11 +835,11 @@ where
 ///
 /// `(eigenvalues, eigenvectors)` where `eigenvectors[i][j]` is element `i` of
 /// eigenvector `j`.
-fn ritz_to_rows(ritz: &RitzPairs, n: usize, sign: f64) -> (Vec<f32>, Vec<Vec<f32>>) {
+fn ritz_to_rows(ritz: &RitzPairs, n: usize, sign: f64) -> (Vec<f64>, Vec<Vec<f64>>) {
     let n_out = ritz.values.len();
-    let evals = ritz.values.iter().map(|&v| (sign * v) as f32).collect();
+    let evals = ritz.values.iter().map(|&v| sign * v).collect();
     let evecs = (0..n)
-        .map(|i| (0..n_out).map(|c| ritz.vectors[c * n + i] as f32).collect())
+        .map(|i| (0..n_out).map(|c| ritz.vectors[c * n + i]).collect())
         .collect();
     (evals, evecs)
 }
@@ -868,7 +868,7 @@ pub fn compute_smallest_eigenpairs_lanczos<T>(
     matrix: &CompressedSparseData<T>,
     n_components: usize,
     seed: u64,
-) -> Result<(Vec<f32>, Vec<Vec<f32>>), ManifoldsError>
+) -> Result<(Vec<f64>, Vec<Vec<f64>>), ManifoldsError>
 where
     T: ManifoldsFloat,
 {
@@ -900,7 +900,7 @@ pub fn compute_largest_eigenpairs_lanczos<T>(
     matrix: &CompressedSparseData<T>,
     n_components: usize,
     seed: u64,
-) -> Result<(Vec<f32>, Vec<Vec<f32>>), ManifoldsError>
+) -> Result<(Vec<f64>, Vec<Vec<f64>>), ManifoldsError>
 where
     T: ManifoldsFloat,
 {
@@ -1303,7 +1303,7 @@ mod test_utils_math {
         let mut sorted = evals.clone();
         sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
 
-        assert_relative_eq!(sorted[0], 2.0 + 2.0_f32.sqrt(), epsilon = 0.05);
+        assert_relative_eq!(sorted[0], 2.0 + 2.0_f64.sqrt(), epsilon = 0.05);
         assert_relative_eq!(sorted[1], 2.0, epsilon = 0.05);
     }
 

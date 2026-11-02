@@ -1567,7 +1567,7 @@ where
     ///
     /// ### Returns
     ///
-    /// `(eigenvalues, eigenvectors)` both in f32; eigenvectors indexed as
+    /// `(eigenvalues, eigenvectors)` both in f64; eigenvectors indexed as
     /// `evecs[point][component]`.
     ///
     /// Fewer than `n_dim + 1` pairs come back when the landmark operator has
@@ -1579,7 +1579,7 @@ where
         &self,
         n_dim: usize,
         seed: u64,
-    ) -> Result<(Vec<f32>, Vec<Vec<f32>>), ManifoldsError> {
+    ) -> Result<(Vec<f64>, Vec<Vec<f64>>), ManifoldsError> {
         compute_largest_eigenpairs_lanczos(&self.p_sym_ll, n_dim + 1, seed)
     }
 
@@ -1620,8 +1620,8 @@ where
     /// extension)
     pub fn compute_landmark_embedding(
         &self,
-        evals: &[f32],
-        evecs: &[Vec<f32>],
+        evals: &[f64],
+        evecs: &[Vec<f64>],
         n_dim: usize,
         t: usize,
     ) -> (Vec<Vec<T>>, Vec<T>) {
@@ -1629,12 +1629,12 @@ where
         let mut lambdas: Vec<T> = Vec::with_capacity(n_dim);
 
         for comp_idx in 1..=n_dim {
-            let lambda = T::from_f32(evals[comp_idx]).unwrap();
+            let lambda = T::from_f64(evals[comp_idx]).unwrap();
             let lambda_t = lambda.powi(t as i32);
             lambdas.push(lambda);
 
-            let mut max_abs = 0.0f32;
-            let mut sign = 1.0f32;
+            let mut max_abs = 0.0f64;
+            let mut sign = 1.0f64;
             for l in 0..self.n_landmarks {
                 let v = evecs[l][comp_idx];
                 if v.abs() > max_abs {
@@ -1644,7 +1644,7 @@ where
             }
 
             for l in 0..self.n_landmarks {
-                let u = T::from_f32(evecs[l][comp_idx] * sign).unwrap();
+                let u = T::from_f64(evecs[l][comp_idx] * sign).unwrap();
                 embedding[l][comp_idx - 1] = lambda_t * u / self.sqrt_degrees_l[l];
             }
         }

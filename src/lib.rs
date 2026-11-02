@@ -3761,11 +3761,11 @@ where
             let n = sqrt_degrees.len();
             let mut embedding = vec![vec![T::zero(); dm_params.n_dim]; n];
             for comp_idx in 1..=dm_params.n_dim {
-                let lambda = T::from_f32(evals[comp_idx]).unwrap();
+                let lambda = T::from_f64(evals[comp_idx]).unwrap();
                 let lambda_t = lambda.powi(t as i32);
 
-                let mut max_abs = 0.0f32;
-                let mut sign = 1.0f32;
+                let mut max_abs = 0.0f64;
+                let mut sign = 1.0f64;
                 for i in 0..n {
                     let v = evecs[i][comp_idx];
                     if v.abs() > max_abs {
@@ -3774,7 +3774,7 @@ where
                     }
                 }
                 for i in 0..n {
-                    let u = T::from_f32(evecs[i][comp_idx] * sign).unwrap();
+                    let u = T::from_f64(evecs[i][comp_idx] * sign).unwrap();
                     embedding[i][comp_idx - 1] = lambda_t * u / sqrt_degrees[i];
                 }
             }
