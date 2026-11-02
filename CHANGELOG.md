@@ -9,19 +9,14 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
 - `compute_largest_eigenpairs_lanczos`, `compute_smallest_eigenpairs_lanczos` and
   `eigendecompose` return `f64` eigenpairs instead of narrowing them to `f32`, and
-  `compute_landmark_embedding` takes `f64`. `diffusion_maps` on `f64` input moves
-  by about 1e-7 of a component's standard deviation at 20k samples. `f32` runs
-  without spectral landmarks stay bit-identical.
+  `compute_landmark_embedding` takes `f64`.
 - `randomised_svd` takes and returns `f64`, and `sparse_randomised_svd` returns
   `f64` whatever `T` is. `f32` runs of PHATE and diffusion maps with spectral
   landmarks, and of classic MDS with `randomised`, give different coordinates than
   0.8.0 at the same seed. PHATE and diffusion maps on `f64` input stay bit-identical.
 - `run_ann_search` searches in `f32` whatever `T` is, on every CPU backend bar
   `"exhaustive"`, and casts the distances back up to `T`. `"exhaustive"` stays in
-  `T`, so `f64` runs still give ground truth. On `f64` input at 100k x 50,
-  `"nndescent"` went from 0.93 s to 0.65 s and `"ivf"` from 1.37 s to 0.91 s, with
-  recall unchanged. `f64` callers get different coordinates than 0.8.0 at the same
-  seed, and hold an extra `f32` copy of the matrix during the search.
+  `T`, so `f64` runs still give ground truth.
 - `pacmap` defaults to a learning rate of `1.0` rather than `0.01`, and
   `PacmapParams` loses `mn_candidate_start` and `mn_candidate_end`. Mid-near pairs
   are the second closest of six random points, so `construct_pacmap_pairs` takes
@@ -31,8 +26,7 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 - PHATE follows the reference kernel. The kNN search runs `3k + 2` wide
   (`phate_search_width`), neighbours past `k` join the kernel while their affinity
   clears `thresh`, the kernel has a unit diagonal, and the landmark operator sums
-  the kernel rather than `P`. All PHATE runs give different coordinates than 0.8.0
-  at the same seed. A precomputed graph should be that wide too.
+  the kernel rather than `P`.
 - One verbosity grammar across every embedding. Level 1 prints `Running <name> on
   <n> samples ...`, timed stages, epochs every 50 and `... finished <name> in`.
   Level 2 adds parameters, landmark selection and the kNN internals, which level 1
@@ -43,28 +37,12 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 **Bug fixes**
 
 - PCA initialisation always runs its centring and SVD in `f64`, whatever `T` is.
-  In `f32` the SVD collapsed the layout onto a few points from about 520k
-  samples. This also covers the default DREAMS reference. `f32` callers get
-  different coordinates than 0.8.0 at the same seed, and hold an `f64` copy of
-  the matrix during init.
-- PaCMAP no longer compresses the layout. At `0.01` Adam could not move points
-  far enough, and it got worse with `n`: 15-NN preservation on real single cell
-  data at 500k went from 0.0027 to 0.0511, against 0.0517 for the reference
-  implementation.
-- PaCMAP mid-near pairs are mid-near. They were kNN slots 4 to 8, so all of them
-  were already near pairs.
+  In `f32` the SVD collapsed the layout onto a few points in larger data sets,
+  if the upstream supplied values were `f32`.
+- PaCMAP no longer compresses the layout: mid-near pairs are mid-near. They were
+  kNN slots 4 to 8, so all of the were already near pairs.
 - Spectral landmark selection works at scale. It ran two power iterations on the
-  raw kernel and now runs seven on the symmetrically normalised one. On a synthetic
-  branching trajectory at 1M cells with `k = 5`, the share of embedding neighbours
-  on the right branch went from 28% to 96%, against 95% for the reference
-  implementation. Diffusion maps with spectral landmarks gets the same change and
-  now projects with `P` rather than the kernel, so its coordinates differ from
-  0.8.0 too.
-- Spectral landmark selection no longer breaks on `f32` input from somewhere
-  between 500k and 540k samples. The `f32` SVD came back rank-one and k-means put
-  99.9% of the points in one landmark, which wiped out the structure of a landmark
-  PHATE embedding. `f32` runs now hold `f64` singular vectors during selection,
-  so the peak memory of landmark PHATE matches `f64`.
+  raw kernel and now runs seven on the symmetrically normalised one.
 
 ## 0.8.0
 
