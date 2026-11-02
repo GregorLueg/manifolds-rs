@@ -555,7 +555,7 @@ fn phate_integration_11_precomputed_knn() {
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) = run_ann_search(
         data.as_ref(),
-        k,
+        manifolds_rs::utils::diffusions::phate_search_width(k),
         PhateParams::<f64>::default().ann_type,
         &nn_params,
         42,

@@ -28,6 +28,11 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   the data and a metric, and the kNN search size is now `n_near` rather than 50.
   `ManifoldsError::NotEnoughNeighbours` carries `n_near`. Different embeddings at
   the same seed.
+- PHATE follows the reference kernel. The kNN search runs `3k + 2` wide
+  (`phate_search_width`), neighbours past `k` join the kernel while their affinity
+  clears `thresh`, the kernel has a unit diagonal, and the landmark operator sums
+  the kernel rather than `P`. All PHATE runs give different coordinates than 0.8.0
+  at the same seed. A precomputed graph should be that wide too.
 - One verbosity grammar across every embedding. Level 1 prints `Running <name> on
   <n> samples ...`, timed stages, epochs every 50 and `... finished <name> in`.
   Level 2 adds parameters, landmark selection and the kNN internals, which level 1
@@ -48,6 +53,13 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   implementation.
 - PaCMAP mid-near pairs are mid-near. They were kNN slots 4 to 8, so all of them
   were already near pairs.
+- Spectral landmark selection works at scale. It ran two power iterations on the
+  raw kernel and now runs seven on the symmetrically normalised one. On a synthetic
+  branching trajectory at 1M cells with `k = 5`, the share of embedding neighbours
+  on the right branch went from 28% to 96%, against 95% for the reference
+  implementation. Diffusion maps with spectral landmarks gets the same change and
+  now projects with `P` rather than the kernel, so its coordinates differ from
+  0.8.0 too.
 - Spectral landmark selection no longer breaks on `f32` input from somewhere
   between 500k and 540k samples. The `f32` SVD came back rank-one and k-means put
   99.9% of the points in one landmark, which wiped out the structure of a landmark

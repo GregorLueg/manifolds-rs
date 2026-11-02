@@ -24,6 +24,11 @@ Requires `manifolds-rs` 0.9.0.
   `mn_candidate_start` and `mn_candidate_end`. It searches `n_near` neighbours
   rather than 50, and a precomputed graph only needs to be that wide. Different
   embeddings at the same seed.
+- `PHATE` follows the reference kernel. It searches `3k + 2` neighbours, keeps
+  those past `k` while their affinity clears `thresh`, has a unit diagonal, and
+  builds the landmark operator from the kernel. All `PHATE` runs give different
+  coordinates than 0.5.0 at the same seed, and a precomputed graph should be that
+  wide too.
 - `verbose` follows one grammar: `0` quiet, `1` timed stages and optimiser epochs
   every 50, `2` also parameters, landmark selection and the neighbour index
   internals. Anything else raises `ValueError` instead of silently being quiet.
@@ -40,6 +45,13 @@ Requires `manifolds-rs` 0.9.0.
   reference implementation.
 - `PaCMAP` mid-near pairs are mid-near. They were kNN slots 4 to 8, so all of them
   were already near pairs.
+- Spectral landmark selection works at scale. It ran two power iterations on the
+  raw kernel and now runs seven on the symmetrically normalised one. On a synthetic
+  branching trajectory at 1M cells with `k=5`, the share of embedding neighbours on
+  the right branch went from 28% to 96%, against 95% for the reference
+  implementation. `DiffusionMaps` with spectral landmarks gets the same change and
+  now projects with `P` rather than the kernel, so its coordinates differ from
+  0.5.0 too.
 - Spectral landmark selection no longer breaks on float32 input from somewhere
   between 500k and 540k samples. The float32 SVD came back rank-one and k-means
   put 99.9% of the points in one landmark, which wiped out the structure of a

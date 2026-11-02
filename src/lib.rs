@@ -2583,7 +2583,8 @@ where
 pub struct PhateParams<T> {
     /// Number of output dimensions (default: 2)
     pub n_dim: usize,
-    /// Number of neighbours to use
+    /// Neighbours that set the kernel bandwidth. The kNN search runs wider, see
+    /// [`phate_search_width`].
     pub k: usize,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"`, or `"balltree"`.
@@ -2728,10 +2729,12 @@ where
 /// * `data` - Input data as samples x features. Accepts a faer matrix, an
 ///   ndarray 2-D array (with the `ndarray` feature) or a row-major
 ///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
-/// * `k` - Number of nearest neighbours for graph construction
+/// * `k` - Neighbours that set the kernel bandwidth
 /// * `precomputed_knn` - Precomputed kNN indices and distances as
 ///   `Some((Vec<Vec<usize>>, Vec<Vec<T>>))`, or `None` to run search
-///   internally. Indices and distances must exclude self.
+///   internally. Indices and distances must exclude self. Every neighbour given
+///   joins the kernel while its affinity clears `thresh`, so make the graph
+///   [`phate_search_width`] wide, as the internal search is.
 /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
 ///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
 ///   provide a weird string, the function will default to `"kmknn"`
@@ -2777,12 +2780,16 @@ where
         }
         None => {
             if verbosity.normal_verbosity() {
-                println!(" kNN search via {} (k = {}) ...", ann_type, k);
+                println!(
+                    " kNN search via {} (k = {}) ...",
+                    ann_type,
+                    phate_search_width(k)
+                );
             }
             let start_knn = Instant::now();
             let result = run_ann_search(
                 data,
-                k,
+                phate_search_width(k),
                 ann_type.to_string(),
                 nn_params,
                 seed,
@@ -2817,7 +2824,7 @@ where
         );
     }
 
-    let affinity = coo_to_csr(&graph);
+    let affinity = add_unit_diagonal(&coo_to_csr(&graph));
     let diffusion_op = build_diffusion_operator(&affinity);
 
     match phate_params.diffusion_params.n_landmarks {

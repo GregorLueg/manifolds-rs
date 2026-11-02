@@ -455,8 +455,10 @@ class PHATE(BaseEmbedding):
 
     Args:
         n_components: Output dimensionality.
-        k: Neighbours used to build the affinity graph. Smaller than UMAP's
-            because the diffusion does the smoothing.
+        k: Neighbours that set the kernel bandwidth. Smaller than UMAP's because
+            the diffusion does the smoothing. The search runs ``3k + 2`` wide,
+            since the kernel keeps anything just past the ``k``-th neighbour, so
+            give a precomputed graph that width as well.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
         decay: Alpha-decay exponent of the kernel. ``None`` gives a binary
             connectivity kernel instead.
