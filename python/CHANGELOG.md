@@ -9,22 +9,29 @@ Requires `manifolds-rs` 0.9.0.
 
 **Breaking changes**
 
-= DiffusionMaps keeps its eigenpairs in float64. float64 runs shift by about
-  1e-7 of a component’s standard deviation at 20k samples.
-- `float32` runs of PHATE and DiffusionMaps with spectral landmarks, and of
-  PHATE(mds="classic"), give different coordinates than `0.5.0` at the same
-  seed. The randomised SVDs now run in float64.
+- `float32` runs of `PHATE(mds="classic")` give different coordinates than 0.5.0 at
+  the same seed. The randomised SVDs run in float64.
 - The neighbour search runs in `float32` on every backend except "exhaustive",
   which keeps your dtype. This is faster with recall unchanged.
   `float64` runs give different coordinates than 0.5.0, and knn_graph values have
   float32 precision.
-- PaCMAP defaults to learning_rate=1.0 (was 0.01) and ann="ivf" (was
-  "nndescent"), drops mn_candidate_start and
-  mn_candidate_end, and searches n_near neighbours instead of 50. A precomputed
-  graph only needs to be that wide. Embeddings differ from 0.5.0.
-- PHATE follows the reference kernel: 6k + 5 neighbours, thresholded by thresh,
-  unit diagonal, landmark operator built from the kernel. All runs differ from
-  0.5.0, and a precomputed graph should be that wide.
+- PaCMAP follows the reference. Embeddings differ from 0.5.0.
+  - It defaults to learning_rate=1.0 (was 0.01) and ann="ivf" (was "nndescent"),
+    and drops mn_candidate_start and mn_candidate_end.
+  - The search runs n_near + 50 neighbours wide (was 50) and picks the near pairs
+    from those by locally scaled distance. A precomputed graph needs at least
+    n_near neighbours and should be n_near + 50 wide.
+  - Further pairs exclude the near pairs.
+  - PCA initialisation is the PC scores times range_, so the ratio between the
+    components survives, with range_=None meaning 0.01.
+- PHATE follows the reference. All runs differ from 0.5.0.
+  - It uses 2048 landmarks by default (was none).
+  - The search runs 6k + 5 neighbours wide (was k), thresholded by thresh, with a
+    unit diagonal and a landmark operator built from the kernel. A precomputed
+    graph should be that wide.
+  - The log potential of an unreached state is large rather than zero.
+  - SGD-MDS scales its budget with the sample count: 300 iterations below 1000
+    points, 500 below 5000, 800 otherwise.
 - verbose takes 0 (quiet), 1 (timed stages, epochs every 50) or 2 (also
   parameters, landmark selection, index internals). Other values raise
   ValueError.
@@ -41,14 +48,15 @@ Requires `manifolds-rs` 0.9.0.
 
 - PCA initialisation always runs in `float64`. In `float32` the SVD collapsed
   the layout from about 520k samples. float32 runs differ from 0.5.0.
-- PaCMAP no longer compresses the layout and PaCMAP mid-near pairs are now
-  genuinely mid-near.
+- PaCMAP no longer compresses the layout: mid-near pairs are the second closest of
+  six random points, not neighbours.
 - Spectral landmark selection works at scale (seven power iterations on the
   normalised kernel instead of two on the raw one). DiffusionMaps with spectral
-  landmarks gets the same change and now projects with P, so its coordinates
-  differ too.
+  landmarks gets the same change and projects with P, so its coordinates differ too.
 - Spectral landmark selection no longer fails on `float32` input on large data
-  sets (≥ 500,000 samples)
+  sets (≥ 500,000 samples).
+- `PHATE` honours `n_svd` and, with landmarks, `mds_iter`. Both were ignored.
+- `PHATE` drops empty landmarks instead of keeping them as zero rows of the operator.
 
 ## 0.5.0
 
