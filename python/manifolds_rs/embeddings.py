@@ -587,7 +587,7 @@ class PaCMAP(BaseEmbedding):
         n_epochs: int = 450,
         learning_rate: float = 1.0,
         init: str = "pca",
-        ann: str = "nndescent",
+        ann: str = "ivf",
         optimiser: str = "adam_parallel",
         range_: float | None = 0.01,
         seed: int = 42,

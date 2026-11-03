@@ -18,7 +18,8 @@ Requires `manifolds-rs` 0.9.0.
   which keeps your dtype. This is faster with recall unchanged.
   `float64` runs give different coordinates than 0.5.0, and knn_graph values have
   float32 precision.
-- PaCMAP defaults to learning_rate=1.0 (was 0.01), drops mn_candidate_start and
+- PaCMAP defaults to learning_rate=1.0 (was 0.01) and ann="ivf" (was
+  "nndescent"), drops mn_candidate_start and
   mn_candidate_end, and searches n_near neighbours instead of 50. A precomputed
   graph only needs to be that wide. Embeddings differ from 0.5.0.
 - PHATE follows the reference kernel: 6k + 5 neighbours, thresholded by thresh,
