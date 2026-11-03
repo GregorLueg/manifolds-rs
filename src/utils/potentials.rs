@@ -1,6 +1,7 @@
 //! Helper functions to calculate potentials for PHATE.
 
 use ann_search_rs::utils::dist::Dist;
+use faer::Mat;
 use rayon::prelude::*;
 
 use crate::data::structures::CompressedSparseData;
@@ -153,6 +154,47 @@ where
     }
 }
 
+/// Diffusion potential of a dense `P^t`, as rows.
+///
+/// Every entry is transformed, zeros included, so there is no fill to put back.
+///
+/// ### Params
+///
+/// * `powered` - Dense `P^t`
+/// * `gamma` - PHATE gamma parameter. `1` gives the log potential, `-1` the
+///   identity and anything else the power potential.
+///
+/// ### Returns
+///
+/// The potential, one `Vec` per row of `powered`.
+pub fn dense_potential_rows<T>(powered: &Mat<T>, gamma: T) -> Vec<Vec<T>>
+where
+    T: ManifoldsFloat,
+{
+    let tol = T::from(1e-10).unwrap();
+    let eps = T::from(POTENTIAL_EPS).unwrap();
+    let c = (T::one() - gamma) / T::from(2.0).unwrap();
+
+    let transform = |val: T| -> T {
+        if (gamma - T::one()).abs() < tol {
+            -(val.min(T::one()).max(T::zero()) + eps).ln()
+        } else if (gamma + T::one()).abs() < tol {
+            val
+        } else {
+            val.powf(c) / c
+        }
+    };
+
+    (0..powered.nrows())
+        .into_par_iter()
+        .map(|i| {
+            (0..powered.ncols())
+                .map(|j| transform(powered[(i, j)]))
+                .collect()
+        })
+        .collect()
+}
+
 /// Extract a CSR row as a dense vector
 ///
 /// ### Params
@@ -233,6 +275,25 @@ where
         .into_par_iter()
         .map(|i| csr_row_to_dense(potential, i, fill))
         .collect();
+
+    pairwise_row_distances(&dense_rows, metric)
+}
+
+/// Compute pairwise distances between dense rows.
+///
+/// ### Params
+///
+/// * `dense_rows` - The rows, all of the same length
+/// * `metric` - Distance metric ("euclidean" or "cosine")
+///
+/// ### Returns
+///
+/// Dense N × N distance matrix (as `Vec<Vec<T>>`)
+pub fn pairwise_row_distances<T>(dense_rows: &[Vec<T>], metric: &Dist) -> Vec<Vec<T>>
+where
+    T: ManifoldsFloat,
+{
+    let n = dense_rows.len();
 
     let norms: Vec<T> = if matches!(metric, Dist::Cosine) {
         dense_rows
@@ -485,6 +546,30 @@ mod test_distance_computation {
         let one = -(1.0 + eps).ln();
         let expected = (2.0 * (top - one).powi(2)).sqrt();
         assert_relative_eq!(dist[0][1], expected, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn test_dense_potential_agrees_with_sparse_path() {
+        let data = vec![1.0, 1.0, 0.5, 0.5];
+        let indices = vec![0, 1, 0, 1];
+        let indptr = vec![0, 1, 2, 4];
+        let mat = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 2));
+
+        for gamma in [1.0_f64, -1.0, 0.0] {
+            let sparse = calculate_potential(&mat, 1, gamma).unwrap();
+            let via_fill = compute_potential_distances_with_fill(
+                &sparse,
+                &Dist::SquaredEuclidean,
+                potential_of_zero(gamma),
+            );
+            let rows = dense_potential_rows(&mat.to_dense(), gamma);
+            let via_dense = pairwise_row_distances(&rows, &Dist::SquaredEuclidean);
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert_relative_eq!(via_fill[i][j], via_dense[i][j], epsilon = 1e-12);
+                }
+            }
+        }
     }
 
     #[test]

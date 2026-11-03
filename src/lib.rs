@@ -57,7 +57,10 @@ use crate::utils::density::{DENSMAP_LAMBDA, DENSNE_LAMBDA};
 use crate::utils::diffusions::*;
 use crate::utils::dreams::{dreams_setup, DREAMS_LAMBDA};
 use crate::utils::math::{compute_largest_eigenpairs_lanczos, von_neumann_entropy_f64};
-use crate::utils::potentials::{compute_potential_distances_with_fill, potential_of_zero};
+use crate::utils::potentials::{
+    compute_potential_distances_with_fill, dense_potential_rows, pairwise_row_distances,
+    potential_of_zero,
+};
 use crate::utils::sparse_ops::matrix_power;
 
 #[cfg(mlx_available)]
@@ -3029,23 +3032,22 @@ where
                     landmarks.get_n_landmarks()
                 );
             }
-            let landmark_powered = landmarks.power(t)?;
-            let landmark_potential =
-                calculate_potential(&landmark_powered, 1, phate_params.diffusion_params.gamma)?;
+            let landmark_potential = dense_potential_rows(
+                &landmarks.power_dense(t)?,
+                phate_params.diffusion_params.gamma,
+            );
 
             if verbosity.normal_verbosity() {
                 println!(
-                    " ... landmark potential ({} x {}) in {:.2?}",
-                    landmark_potential.shape().0,
-                    landmark_potential.shape().1,
+                    " ... landmark potential ({0} x {0}) in {1:.2?}",
+                    landmark_potential.len(),
                     start_potential.elapsed()
                 );
                 println!(" Computing landmark distances ...");
             }
 
             start_mds = Instant::now();
-            let landmark_distances =
-                compute_potential_distances_with_fill(&landmark_potential, &dist, potential_fill);
+            let landmark_distances = pairwise_row_distances(&landmark_potential, &dist);
 
             let landmark_mds_params = MdsOptimParams::new(
                 landmarks.get_n_landmarks(),

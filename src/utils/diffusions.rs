@@ -6,7 +6,7 @@ use ann_search_rs::prelude::KMeansTrainingParams;
 use ann_search_rs::utils::dist::{parse_ann_dist, Dist};
 use ann_search_rs::utils::k_means_utils::{assign_all_parallel, train_centroids};
 use ann_search_rs::utils::nndescent_utils::ApplySortedUpdates;
-use faer::MatRef;
+use faer::{Mat, MatRef};
 use faer_traits::ComplexField;
 use num_traits::Float;
 use rand::prelude::Distribution;
@@ -478,6 +478,29 @@ where
     (vectors_flat, n, dim)
 }
 
+/// Copy an `f64` matrix into a flat row-major vector of `T`.
+///
+/// ### Params
+///
+/// * `mat` - Matrix to copy, stored by column
+///
+/// ### Returns
+///
+/// The rows, `nrows * ncols` long.
+fn rows_to_flat<T>(mat: MatRef<f64>) -> Vec<T>
+where
+    T: ManifoldsFloat,
+{
+    let k = mat.ncols();
+    let mut flat = vec![T::zero(); mat.nrows() * k];
+    flat.par_chunks_mut(k).enumerate().for_each(|(i, row)| {
+        for (c, out) in row.iter_mut().enumerate() {
+            *out = T::from_f64(mat[(i, c)]).unwrap();
+        }
+    });
+    flat
+}
+
 /// Randomly sample indices from a range.
 ///
 /// ### Params
@@ -894,20 +917,23 @@ where
                     println!("  Finished calculation of randomised SVD on the affinity matrix.")
                 }
 
-                let v = &svd.v;
-                let k = v.ncols();
+                let k = svd.v.ncols();
+                let v_rows: Vec<T> = rows_to_flat(svd.v.as_ref());
                 let mut embedding_flat: Vec<T> = vec![T::zero(); n * k];
 
-                for i in 0..n {
-                    for idx in diffusion_op.indptr[i]..diffusion_op.indptr[i + 1] {
-                        let j = diffusion_op.indices[idx];
-                        let a_val = diffusion_op.data[idx];
-                        for col in 0..k {
-                            embedding_flat[i * k + col] +=
-                                a_val * T::from_f64(v[(j, col)]).unwrap();
+                embedding_flat
+                    .par_chunks_mut(k)
+                    .enumerate()
+                    .for_each(|(i, row)| {
+                        for idx in diffusion_op.indptr[i]..diffusion_op.indptr[i + 1] {
+                            let j = diffusion_op.indices[idx];
+                            let a_val = diffusion_op.data[idx];
+                            let v_row = &v_rows[j * k..(j + 1) * k];
+                            for (out, &v) in row.iter_mut().zip(v_row) {
+                                *out += a_val * v;
+                            }
                         }
-                    }
-                }
+                    });
 
                 // reduce the number of iterations here...
                 // doesn't have to be perfect
@@ -1072,6 +1098,19 @@ where
         T: AddAssign,
     {
         matrix_power(&self.landmark_op, t)
+    }
+
+    /// Power the landmark operator t times, as a dense matrix
+    ///
+    /// ### Params
+    ///
+    /// * `t` - Number of diffusion steps
+    ///
+    /// ### Returns
+    ///
+    /// L^t (n_landmarks × n_landmarks matrix)
+    pub fn power_dense(&self, t: usize) -> Result<Mat<T>, ManifoldsError> {
+        dense_matrix_power(&self.landmark_op, t)
     }
 
     /// Compute diffusion at optimal time

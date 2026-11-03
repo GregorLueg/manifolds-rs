@@ -1,7 +1,7 @@
 //! Math helper functions
 
 use ann_search_rs::prelude::SimdDistance;
-use faer::{Mat, MatMut, MatRef};
+use faer::{Mat, MatMut, MatRef, Side};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal};
@@ -133,6 +133,32 @@ pub fn randomised_svd(
 // Sparse randomised SVD //
 ///////////////////////////
 
+/// Orthonormal basis of a tall matrix via Cholesky QR.
+///
+/// Forms the small Gram matrix `Y^T Y`, so most of the work is GEMM. Loses
+/// orthogonality as `cond(Y)^2 * eps`, which is fine for an intermediate basis.
+/// Falls back to Householder QR when `Y` is too close to rank deficient for the
+/// Cholesky factorisation.
+///
+/// ### Params
+///
+/// * `y` - Tall matrix, `n x k`
+///
+/// ### Returns
+///
+/// The `n x k` basis.
+fn cholesky_qr(y: &Mat<f64>) -> Mat<f64> {
+    let gram = y.transpose() * y;
+    match gram.llt(Side::Lower) {
+        Ok(llt) => {
+            let mut l_inv = Mat::<f64>::identity(y.ncols(), y.ncols());
+            llt.L().solve_lower_triangular_in_place(l_inv.as_mut());
+            y * l_inv.transpose()
+        }
+        Err(_) => y.qr().compute_thin_Q(),
+    }
+}
+
 /// Sparse randomised SVD
 ///
 /// Calculates the sparse randomised SVD. Runs in and returns `f64` whatever `T`
@@ -247,10 +273,15 @@ where
 
     let mut y = Mat::<f64>::zeros(n, sample_size);
     from_row_major(&y_flat, y.as_mut());
-    let mut q = y.qr().compute_thin_Q();
+    let mut q = if n_iter == 0 {
+        y.qr().compute_thin_Q()
+    } else {
+        cholesky_qr(&y)
+    };
 
-    // Power Iterations
-    for _ in 0..n_iter {
+    // Power Iterations. The intermediate bases only have to stop the columns
+    // collapsing onto the top vector, so only the last one gets a Householder QR.
+    for iter in 0..n_iter {
         // Z = A^T * Q  --> Notice we use `csc` here!
         x_flat = to_row_major(q.as_ref());
         spmm(csc, data_csc, &x_flat, &mut z_flat);
@@ -259,7 +290,11 @@ where
         spmm(csr, data_csr, &z_flat, &mut y_flat);
 
         from_row_major(&y_flat, y.as_mut());
-        q = y.qr().compute_thin_Q();
+        q = if iter + 1 == n_iter {
+            y.qr().compute_thin_Q()
+        } else {
+            cholesky_qr(&y)
+        };
     }
 
     // B_t = A^T * Q
@@ -958,11 +993,11 @@ where
     let (n, _) = operator.shape;
 
     let eigenvalues: Vec<f64> = if n < VNE_DENSE_THRESHOLD {
-        let dense = operator.to_dense();
-        let svd = dense.thin_svd().map_err(|_| ManifoldsError::FaerSvdError)?;
-        svd.S()
-            .column_vector()
-            .iter()
+        operator
+            .to_dense()
+            .singular_values()
+            .map_err(|_| ManifoldsError::FaerSvdError)?
+            .into_iter()
             .map(|s| s.to_f64().unwrap())
             .collect()
     } else {
@@ -1048,6 +1083,38 @@ pub fn choose_grid_size(
 mod test_utils_math {
     use super::*;
     use approx::assert_relative_eq;
+
+    /// Largest absolute entry of `Q^T Q - I`.
+    fn orthonormality_error(q: &Mat<f64>) -> f64 {
+        let gram = q.transpose() * q;
+        let mut worst = 0.0_f64;
+        for i in 0..gram.nrows() {
+            for j in 0..gram.ncols() {
+                let target = if i == j { 1.0 } else { 0.0 };
+                worst = worst.max((gram[(i, j)] - target).abs());
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn test_cholesky_qr_gives_orthonormal_basis() {
+        let y = Mat::<f64>::from_fn(50, 4, |i, j| {
+            ((i * (j + 2) + j) as f64).sin() + (i == j) as u8 as f64
+        });
+        let q = cholesky_qr(&y);
+        assert_eq!((q.nrows(), q.ncols()), (50, 4));
+        assert!(orthonormality_error(&q) < 1e-8);
+    }
+
+    #[test]
+    fn test_cholesky_qr_falls_back_on_rank_deficient_input() {
+        // two identical columns: the Gram matrix has no Cholesky factor
+        let y = Mat::<f64>::from_fn(20, 2, |i, _| (i as f64 + 1.0).sin());
+        let q = cholesky_qr(&y);
+        assert!(q.col(0).iter().all(|v| v.is_finite()));
+        assert!(q.col(1).iter().all(|v| v.is_finite()));
+    }
 
     #[test]
     fn test_dot_product() {
