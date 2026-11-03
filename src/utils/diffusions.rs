@@ -39,6 +39,13 @@ pub const PHATE_MAX_T: usize = 100;
 /// there are many of those, so a graph cut at `k` loses a good part of the kernel.
 const PHATE_SEARCH_MULTIPLIER: usize = 3;
 
+/// Default number of landmarks. Full PHATE needs an N x N dense distance matrix,
+/// which stops being practical long before single cell sizes.
+pub const PHATE_DEFAULT_LANDMARKS: usize = 2048;
+
+/// Default number of singular vectors for spectral landmark selection.
+pub const PHATE_DEFAULT_N_SVD: usize = 100;
+
 /// Power iterations for spectral landmark selection. The spectrum of a kNN affinity
 /// is close to flat, so two iterations leave the leading subspace unconverged, and
 /// k-means then has little to separate. Each iteration costs two sparse products and
@@ -570,6 +577,40 @@ where
     sparse_row_to_csr(&rows, n)
 }
 
+/// Relabel landmark assignments so that no landmark is left without points.
+///
+/// K-means can leave a centroid empty. An empty landmark has no transitions, so
+/// it would sit in the operator as a zero row.
+///
+/// ### Params
+///
+/// * `assignments` - Landmark label of each point, modified in place
+/// * `n_landmarks` - Number of labels before compaction
+///
+/// ### Returns
+///
+/// The number of landmarks that have at least one point.
+fn compact_assignments(assignments: &mut [usize], n_landmarks: usize) -> usize {
+    let mut used = vec![false; n_landmarks];
+    for &a in assignments.iter() {
+        used[a] = true;
+    }
+
+    let mut new_label = vec![0; n_landmarks];
+    let mut n_used = 0;
+    for (label, &is_used) in new_label.iter_mut().zip(&used) {
+        if is_used {
+            *label = n_used;
+            n_used += 1;
+        }
+    }
+
+    for a in assignments.iter_mut() {
+        *a = new_label[*a];
+    }
+    n_used
+}
+
 /// Find the knee point in a curve using the method from PHATE
 ///
 /// This identifies the "elbow" where the curve transitions from steep to flat.
@@ -780,7 +821,7 @@ where
         let landmark_method = parse_landmark_method(method, Some(seed), n_svd).unwrap_or_default();
         let distance = parse_ann_dist(distance).unwrap_or_default();
 
-        let assignments: Vec<usize> = match landmark_method {
+        let mut assignments: Vec<usize> = match landmark_method {
             LandmarkMethod::Random { seed } => {
                 if verbosity.detailed_verbosity() {
                     println!("  Using random selection of landmarks")
@@ -995,7 +1036,12 @@ where
             }
         };
 
-        let mut p_mn = build_landmarks_to_data(affinity, &assignments, n_landmarks);
+        let n_used = compact_assignments(&mut assignments, n_landmarks);
+        if verbosity.detailed_verbosity() && n_used < n_landmarks {
+            println!("  Dropped {} empty landmarks", n_landmarks - n_used);
+        }
+
+        let mut p_mn = build_landmarks_to_data(affinity, &assignments, n_used);
         let mut p_nm = p_mn.transpose();
 
         normalise_csr_rows_l1(&mut p_mn)?;
@@ -1004,7 +1050,7 @@ where
         let landmark_op = csr_matmul_csr(&p_mn, &p_nm)?;
 
         Ok(Self {
-            n_landmarks,
+            n_landmarks: n_used,
             method: landmark_method,
             assignments,
             landmark_op,
@@ -1025,13 +1071,6 @@ where
     where
         T: AddAssign,
     {
-        if t == 0 {
-            // Return identity matrix
-            unimplemented!("Return identity for t = 0");
-        } else if t == 1 {
-            return Ok(self.landmark_op.clone());
-        }
-
         matrix_power(&self.landmark_op, t)
     }
 
@@ -1086,7 +1125,7 @@ where
     ///
     /// Optimal t value (knee point of entropy curve)
     pub fn find_optimal_t(&self, t_max: usize) -> Result<usize, ManifoldsError> {
-        let entropy = landmark_von_neumann_entropy(&self.landmark_op, t_max)?;
+        let entropy = von_neumann_entropy_f64(&self.landmark_op, t_max)?;
         Ok(find_knee_point(&entropy))
     }
 
@@ -1859,6 +1898,26 @@ where
 ///////////
 // Tests //
 ///////////
+
+#[cfg(test)]
+mod test_landmark_labels {
+    use super::*;
+
+    #[test]
+    fn test_compact_assignments_drops_empty_labels() {
+        let mut labels = vec![4, 0, 4, 2];
+        let n_used = compact_assignments(&mut labels, 6);
+        assert_eq!(n_used, 3);
+        assert_eq!(labels, vec![2, 0, 2, 1]);
+    }
+
+    #[test]
+    fn test_compact_assignments_keeps_full_labels() {
+        let mut labels = vec![1, 0, 2];
+        assert_eq!(compact_assignments(&mut labels, 3), 3);
+        assert_eq!(labels, vec![1, 0, 2]);
+    }
+}
 
 #[cfg(test)]
 mod test_data_diffusion {

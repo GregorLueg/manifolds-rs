@@ -929,31 +929,60 @@ pub fn landmark_von_neumann_entropy<T>(
 where
     T: ManifoldsFloat,
 {
+    Ok(von_neumann_entropy_f64(operator, t_max)?
+        .into_iter()
+        .map(|h| T::from_f64(h).unwrap())
+        .collect())
+}
+
+/// Von Neumann entropy of a matrix at each power, accumulated in `f64`.
+///
+/// The curve only moves by small amounts past the knee, and powers of the
+/// singular values underflow quickly, so `f32` would shift the knee.
+///
+/// ### Params
+///
+/// * `operator`: The matrix for which to calculate the von Neumann entropy.
+/// * `t_max`: The maximum number of powers to consider.
+///
+/// ### Returns
+///
+/// A vector of von Neumann entropies for each power.
+pub fn von_neumann_entropy_f64<T>(
+    operator: &CompressedSparseData<T>,
+    t_max: usize,
+) -> Result<Vec<f64>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
     let (n, _) = operator.shape;
 
-    let eigenvalues: Vec<T> = if n < VNE_DENSE_THRESHOLD {
+    let eigenvalues: Vec<f64> = if n < VNE_DENSE_THRESHOLD {
         let dense = operator.to_dense();
         let svd = dense.thin_svd().map_err(|_| ManifoldsError::FaerSvdError)?;
-        svd.S().column_vector().iter().copied().collect()
+        svd.S()
+            .column_vector()
+            .iter()
+            .map(|s| s.to_f64().unwrap())
+            .collect()
     } else {
         let rank = VNE_SPARSE_RANK.min(n.saturating_sub(1));
-        let svd = sparse_randomised_svd(operator, rank, 42, None, None)?;
-        svd.s.iter().map(|&s| T::from_f64(s).unwrap()).collect()
+        sparse_randomised_svd(operator, rank, 42, None, None)?.s
     };
 
     let mut eigenvalues_t = eigenvalues.clone();
     let mut entropy = Vec::with_capacity(t_max);
 
     for _ in 0..t_max {
-        let sum: T = eigenvalues_t.iter().copied().sum();
+        let sum: f64 = eigenvalues_t.iter().sum();
 
-        if sum <= T::zero() {
-            entropy.push(T::zero());
+        if sum <= 0.0 {
+            entropy.push(0.0);
         } else {
-            let h: T = eigenvalues_t
+            let h: f64 = eigenvalues_t
                 .iter()
                 .map(|&v| {
-                    let prob = v / sum + T::epsilon();
+                    let prob = v / sum + f64::EPSILON;
                     -prob * prob.ln()
                 })
                 .sum();

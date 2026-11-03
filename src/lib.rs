@@ -56,8 +56,8 @@ use crate::training::umap_optimisers::*;
 use crate::utils::density::{DENSMAP_LAMBDA, DENSNE_LAMBDA};
 use crate::utils::diffusions::*;
 use crate::utils::dreams::{dreams_setup, DREAMS_LAMBDA};
-use crate::utils::math::compute_largest_eigenpairs_lanczos;
-use crate::utils::potentials::compute_potential_distances;
+use crate::utils::math::{compute_largest_eigenpairs_lanczos, von_neumann_entropy_f64};
+use crate::utils::potentials::{compute_potential_distances_with_fill, potential_of_zero};
 use crate::utils::sparse_ops::matrix_power;
 
 #[cfg(mlx_available)]
@@ -2616,7 +2616,7 @@ where
             // parser's own default. Same operator either way, but a default
             // that its own parser rejects is a trap for the next reader.
             "add".to_string(),
-            None,
+            Some(PHATE_DEFAULT_LANDMARKS),
             "spectral".to_string(),
             None,
             None,
@@ -2847,7 +2847,12 @@ where
                 &phate_params.diffusion_params.landmark_method,
                 &nn_params.dist_metric,
                 seed,
-                Some(100),
+                Some(
+                    phate_params
+                        .diffusion_params
+                        .n_svd
+                        .unwrap_or(PHATE_DEFAULT_N_SVD),
+                ),
                 verbose,
             )?;
             if verbosity.normal_verbosity() {
@@ -2948,7 +2953,7 @@ where
             match &phate_diffusion {
                 PhateDiffusion::Landmark { landmarks } => landmarks.find_optimal_t(t_max),
                 PhateDiffusion::Full { operator } => {
-                    let entropy = landmark_von_neumann_entropy(operator, t_max)?;
+                    let entropy = von_neumann_entropy_f64(operator, t_max)?;
                     Ok(find_knee_point(&entropy))
                 }
             }
@@ -2968,7 +2973,9 @@ where
         None,
     );
 
-    let start_embed = Instant::now();
+    let start_potential = Instant::now();
+    let potential_fill = potential_of_zero(phate_params.diffusion_params.gamma);
+    let start_mds;
 
     let embedding = match phate_diffusion {
         PhateDiffusion::Full { operator } => {
@@ -2983,23 +2990,25 @@ where
                     " ... potential ({} x {}) in {:.2?}",
                     potential.shape().0,
                     potential.shape().1,
-                    start_embed.elapsed()
+                    start_potential.elapsed()
                 );
             }
+
+            start_mds = Instant::now();
+            let distances =
+                compute_potential_distances_with_fill(&potential, &dist, potential_fill);
 
             let res = match mds_method {
                 MdsMethod::ClassicMds => {
                     if verbosity.normal_verbosity() {
                         println!(" Running classic MDS ...");
                     }
-                    let distances = compute_potential_distances(&potential, &dist);
                     classic_mds(&distances, phate_params.n_dim, mds_params.randomised, seed)
                 }
                 MdsMethod::SgdDense => {
                     if verbosity.normal_verbosity() {
                         println!(" Running SGD-MDS ...");
                     }
-                    let distances = compute_potential_distances(&potential, &dist);
                     sgd_mds(
                         &distances,
                         phate_params.n_dim,
@@ -3029,17 +3038,19 @@ where
                     " ... landmark potential ({} x {}) in {:.2?}",
                     landmark_potential.shape().0,
                     landmark_potential.shape().1,
-                    start_embed.elapsed()
+                    start_potential.elapsed()
                 );
                 println!(" Computing landmark distances ...");
             }
 
-            let landmark_distances = compute_potential_distances(&landmark_potential, &dist);
+            start_mds = Instant::now();
+            let landmark_distances =
+                compute_potential_distances_with_fill(&landmark_potential, &dist, potential_fill);
 
             let landmark_mds_params = MdsOptimParams::new(
                 landmarks.get_n_landmarks(),
                 phate_params.randomised,
-                None,
+                phate_params.mds_iter,
                 None,
             );
 
@@ -3072,7 +3083,7 @@ where
     };
 
     if verbosity.normal_verbosity() {
-        println!(" ... MDS in {:.2?}", start_embed.elapsed());
+        println!(" ... MDS in {:.2?}", start_mds.elapsed());
         println!("... finished {} in {:.2?}", name, start_run.elapsed());
     }
 

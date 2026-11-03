@@ -20,8 +20,21 @@ use crate::utils::math::*;
 /// Default learning rate for MDS
 pub const DEFAULT_MDS_LR: f64 = 0.001;
 
-/// Default iterations for MDS
+/// Default iterations for MDS on large data
 pub const DEFAULT_MDS_ITER: usize = 800;
+
+/// Below this many points SGD-MDS samples a fixed share of all pairs, since
+/// `n * ln(n)` pairs would be too few to cover the matrix.
+const MDS_SMALL_N: usize = 1000;
+
+/// Below this many points SGD-MDS converges before the full budget is spent.
+const MDS_MEDIUM_N: usize = 5000;
+
+/// Iterations for fewer than [`MDS_SMALL_N`] points
+const MDS_SMALL_ITER: usize = 300;
+
+/// Iterations for fewer than [`MDS_MEDIUM_N`] points
+const MDS_MEDIUM_ITER: usize = 500;
 
 ///////////
 // Enums //
@@ -85,7 +98,7 @@ where
     /// * `randomised` - Shall randomised SVD be used to solve the classical
     ///   MDS.
     /// * `n_iter` - Optional number of iterations to test. If not provided,
-    ///   it will default to 1000.
+    ///   it is 300 below 1000 points, 500 below 5000 points and 800 otherwise.
     /// * `lr` - Optional learning rate.
     ///
     /// ### Returns
@@ -93,8 +106,20 @@ where
     /// Initialised `Self`
     pub fn new(n: usize, randomised: bool, n_iter: Option<usize>, lr: Option<T>) -> Self {
         let lr = lr.unwrap_or(T::from_f64(DEFAULT_MDS_LR).unwrap());
-        let n_iter = n_iter.unwrap_or(DEFAULT_MDS_ITER);
-        let pairs_per_iter = (n as f64 * (n as f64).ln() * 2.0) as usize;
+        let (default_iter, pairs_per_iter) = if n < MDS_SMALL_N {
+            // the floor only bites below 10 points, where a share of the pairs
+            // rounds down to nothing
+            (MDS_SMALL_ITER, (n * n / 10).max(n))
+        } else {
+            let pairs = (n as f64 * (n as f64).ln() * 2.0) as usize;
+            let iter = if n < MDS_MEDIUM_N {
+                MDS_MEDIUM_ITER
+            } else {
+                DEFAULT_MDS_ITER
+            };
+            (iter, pairs)
+        };
+        let n_iter = n_iter.unwrap_or(default_iter);
 
         Self {
             randomised,
@@ -421,6 +446,25 @@ mod test_mds {
     use num_traits::Float;
 
     #[test]
+    fn test_mds_budget_follows_n() {
+        let small = MdsOptimParams::<f64>::new(500, true, None, None);
+        assert_eq!((small.n_iter, small.pairs_per_iter), (300, 25_000));
+
+        let medium = MdsOptimParams::<f64>::new(4096, true, None, None);
+        assert_eq!(medium.n_iter, 500);
+        assert_eq!(
+            medium.pairs_per_iter,
+            (4096.0 * 4096.0_f64.ln() * 2.0) as usize
+        );
+
+        let large = MdsOptimParams::<f64>::new(6000, true, None, None);
+        assert_eq!(large.n_iter, 800);
+
+        let forced = MdsOptimParams::<f64>::new(500, true, Some(7), None);
+        assert_eq!(forced.n_iter, 7);
+    }
+
+    #[test]
     fn test_sgd_mds_identity_distances() {
         // Identity-like distances: all equidistant (equilateral triangle)
         let distances = vec![
@@ -429,7 +473,8 @@ mod test_mds {
             vec![1.0, 1.0, 0.0],
         ];
 
-        let mds_params = MdsOptimParams::new(distances.len(), true, None, None);
+        let mut mds_params = MdsOptimParams::new(distances.len(), true, Some(800), None);
+        mds_params.pairs_per_iter = 6;
 
         let embedding = sgd_mds(&distances, 2, &mds_params, None, 42, 0).unwrap();
 
@@ -466,7 +511,8 @@ mod test_mds {
             vec![1.0, 1.414, 1.0, 0.0],
         ];
 
-        let mds_params = MdsOptimParams::new(distances.len(), true, None, None);
+        let mut mds_params = MdsOptimParams::new(distances.len(), true, Some(800), None);
+        mds_params.pairs_per_iter = 11;
 
         let embedding = sgd_mds(&distances, 2, &mds_params, None, 42, 0).unwrap();
 
