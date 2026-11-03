@@ -37,7 +37,9 @@ pub const PHATE_MAX_T: usize = 100;
 /// Multiple of `k + 1` that PHATE searches. The alpha-decay kernel stays above
 /// its threshold for points just past the `k`-th neighbour, and in high dimensions
 /// there are many of those, so a graph cut at `k` loses a good part of the kernel.
-const PHATE_SEARCH_MULTIPLIER: usize = 3;
+/// Matches the first search pass of the graphtools reference, without its adaptive
+/// extension for rows still inside the kernel radius.
+const PHATE_SEARCH_MULTIPLIER: usize = 6;
 
 /// Default number of landmarks. Full PHATE needs an N x N dense distance matrix,
 /// which stops being practical long before single cell sizes.
