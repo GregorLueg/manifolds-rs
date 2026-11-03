@@ -17,3 +17,5 @@ pub mod traits;
 pub mod fft;
 #[cfg(feature = "gpu")]
 pub mod fft2d_gpu;
+#[cfg(feature = "gpu")]
+pub mod sparse_svd_gpu;

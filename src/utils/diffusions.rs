@@ -2,6 +2,10 @@
 
 use ann_search_rs::cpu::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::cpu::nndescent::{NNDescent, NNDescentQuery};
+#[cfg(feature = "gpu")]
+use ann_search_rs::gpu::k_means_gpu::{k_means_gpu_flat, KMeansGpuParams};
+#[cfg(mlx_available)]
+use ann_search_rs::mlx::k_means_mlx::k_means_clusters_mlx;
 use ann_search_rs::prelude::KMeansTrainingParams;
 use ann_search_rs::utils::dist::{parse_ann_dist, Dist};
 use ann_search_rs::utils::k_means_utils::{assign_all_parallel, train_centroids};
@@ -22,9 +26,13 @@ use std::time::Instant;
 
 use crate::data::graph::phate_alpha_decay_affinities;
 use crate::data::structures::*;
+#[cfg(mlx_available)]
+use crate::mlx::sparse_svd_mlx::symmetric_svd_vectors_mlx;
 use crate::prelude::*;
 use crate::utils::math::*;
 use crate::utils::sparse_ops::*;
+#[cfg(feature = "gpu")]
+use crate::utils::sparse_svd_gpu::{symmetric_svd_vectors_gpu, TSMM_K_MAX};
 
 /////////////
 // Globals //
@@ -53,6 +61,14 @@ pub const PHATE_DEFAULT_N_SVD: usize = 100;
 /// k-means then has little to separate. Each iteration costs two sparse products and
 /// a QR.
 const SPECTRAL_LANDMARK_POWER_ITER: usize = 7;
+
+/// Oversampling of the randomised SVD for spectral landmark selection. Same as
+/// the default of `sparse_randomised_svd`, not tuned.
+const SPECTRAL_LANDMARK_OVERSAMPLING: usize = 10;
+
+/// k-means iterations for spectral landmark selection. Fewer iterations shift the
+/// diffusion time the landmark operator picks.
+const SPECTRAL_LANDMARK_KMEANS_ITERS: usize = 30;
 
 ///////////
 // PHATE //
@@ -397,6 +413,182 @@ pub fn parse_phate_time(t_custom: Option<usize>, t_max: usize) -> PhateTime {
 /////////////
 // Helpers //
 /////////////
+
+/// Where the SVD and k-means of PHATE's spectral landmark selection run.
+#[derive(Clone, Default)]
+pub enum SpectralBackend {
+    /// On the CPU. The SVD runs in `f64`.
+    #[default]
+    Cpu,
+    /// On a cubecl device, in `f32`.
+    #[cfg(feature = "gpu")]
+    Wgpu(cubecl::Device),
+    /// On MLX, in `f32`.
+    #[cfg(mlx_available)]
+    Mlx,
+}
+
+/// Right singular vectors for the spectral landmark selection.
+///
+/// ### Params
+///
+/// * `a_sym` - Symmetrically normalised affinity
+/// * `n_svd` - Target rank
+/// * `seed` - Seed for the sketch
+/// * `backend` - Where to run. The wgpu path falls back to the CPU for a sketch
+///   wider than its shared-memory staging holds.
+///
+/// ### Returns
+///
+/// The vectors, `n x n_svd`
+fn spectral_vectors<T>(
+    a_sym: &CompressedSparseData<T>,
+    n_svd: usize,
+    seed: usize,
+    backend: &SpectralBackend,
+) -> Result<Mat<f64>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let cpu = || {
+        sparse_randomised_svd(
+            a_sym,
+            n_svd,
+            seed as u64,
+            Some(SPECTRAL_LANDMARK_OVERSAMPLING),
+            Some(SPECTRAL_LANDMARK_POWER_ITER),
+        )
+        .map(|svd| svd.v)
+    };
+
+    match backend {
+        SpectralBackend::Cpu => cpu(),
+        #[cfg(feature = "gpu")]
+        SpectralBackend::Wgpu(device) => {
+            if n_svd + SPECTRAL_LANDMARK_OVERSAMPLING > TSMM_K_MAX as usize {
+                return cpu();
+            }
+            symmetric_svd_vectors_gpu(
+                a_sym,
+                n_svd,
+                seed as u64,
+                SPECTRAL_LANDMARK_OVERSAMPLING,
+                SPECTRAL_LANDMARK_POWER_ITER,
+                &device.clone().client(),
+            )
+        }
+        #[cfg(mlx_available)]
+        SpectralBackend::Mlx => symmetric_svd_vectors_mlx(
+            a_sym,
+            n_svd,
+            seed as u64,
+            SPECTRAL_LANDMARK_OVERSAMPLING,
+            SPECTRAL_LANDMARK_POWER_ITER,
+        ),
+    }
+}
+
+/// Cluster the spectral embedding into landmarks.
+///
+/// ### Params
+///
+/// * `embedding` - Row-major spectral embedding, length `n * dim`
+/// * `dim` - Embedding dimensionality
+/// * `n` - Number of samples
+/// * `n_landmarks` - Number of clusters
+/// * `seed` - Seed for the initialisation
+/// * `verbosity` - Verbosity of the k-means
+/// * `backend` - Where to run
+///
+/// ### Returns
+///
+/// Landmark per sample, length `n`
+fn spectral_assignments<T>(
+    embedding: &[T],
+    dim: usize,
+    n: usize,
+    n_landmarks: usize,
+    seed: usize,
+    verbosity: Verbosity,
+    backend: &SpectralBackend,
+) -> Result<Vec<usize>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    // the device paths run in f32 whatever `T` is
+    #[cfg(any(feature = "gpu", mlx_available))]
+    let to_f32 = || -> Vec<f32> { embedding.par_iter().map(|x| x.to_f32().unwrap()).collect() };
+
+    let assignments: Vec<u32> = match backend {
+        SpectralBackend::Cpu => {
+            let centroids = train_centroids(
+                embedding,
+                dim,
+                n,
+                n_landmarks,
+                &Dist::SquaredEuclidean,
+                Some(KMeansTrainingParams::new(
+                    SPECTRAL_LANDMARK_KMEANS_ITERS,
+                    None,
+                    None,
+                )),
+                seed,
+                verbosity,
+            )?;
+            let centroid_norms = vec![T::one(); n_landmarks]; // Euclidean, unused
+            let data_norms = vec![T::one(); n];
+            assign_all_parallel(
+                embedding,
+                &data_norms,
+                dim,
+                n,
+                &centroids,
+                &centroid_norms,
+                n_landmarks,
+                &Dist::SquaredEuclidean,
+            )
+        }
+        #[cfg(feature = "gpu")]
+        SpectralBackend::Wgpu(device) => {
+            let (_, labels) = k_means_gpu_flat::<f32>(
+                &to_f32(),
+                dim,
+                n,
+                n_landmarks,
+                &Dist::SquaredEuclidean,
+                Some(KMeansGpuParams::new(
+                    SPECTRAL_LANDMARK_KMEANS_ITERS,
+                    None,
+                    true,
+                    false,
+                )),
+                seed,
+                &device.clone().client(),
+                verbosity,
+            )?;
+            labels
+        }
+        #[cfg(mlx_available)]
+        SpectralBackend::Mlx => {
+            let data = to_f32();
+            let (_, labels) = k_means_clusters_mlx(
+                (data.as_slice(), n, dim),
+                "euclidean",
+                n_landmarks,
+                Some(KMeansTrainingParams::new(
+                    SPECTRAL_LANDMARK_KMEANS_ITERS,
+                    None,
+                    None,
+                )),
+                seed,
+                verbosity,
+            )?;
+            labels
+        }
+    };
+
+    Ok(assignments.into_iter().map(|c| c as usize).collect())
+}
 
 /// Enum representing different landmark diffusion methods.
 #[derive(Debug, Clone)]
@@ -840,6 +1032,53 @@ where
         n_svd: Option<usize>,
         verbose: usize,
     ) -> Result<Self, ManifoldsError> {
+        Self::build_with_backend(
+            data,
+            affinity,
+            diffusion_op,
+            n_landmarks,
+            method,
+            distance,
+            seed,
+            n_svd,
+            &SpectralBackend::Cpu,
+            verbose,
+        )
+    }
+
+    /// [`PhateLandmarks::build`] with a choice of where the spectral landmark
+    /// selection runs. Other landmark methods ignore `backend`.
+    ///
+    /// ### Params
+    ///
+    /// * `data` - Original data (N × features)
+    /// * `affinity` - Original affinity matrix (N x N) - not yet normalised.
+    /// * `diffusion_op` - The P matrix (N × N) already built and normalised.
+    /// * `n_landmarks` - Number of landmarks to use
+    /// * `method` - Random or Spectral
+    /// * `distance` - Distance metric used
+    /// * `seed` - Seed for random number generator
+    /// * `n_svd` - Number of SVD components to use
+    /// * `backend` - Where the SVD and k-means of the spectral selection run
+    /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for
+    ///   detailed verbosity.
+    ///
+    /// ### Returns
+    ///
+    /// PhateLandmarks structure ready for powering
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_with_backend(
+        data: MatRef<T>,
+        affinity: &CompressedSparseData<T>,
+        diffusion_op: &CompressedSparseData<T>,
+        n_landmarks: usize,
+        method: &str,
+        distance: &str,
+        seed: usize,
+        n_svd: Option<usize>,
+        backend: &SpectralBackend,
+        verbose: usize,
+    ) -> Result<Self, ManifoldsError> {
         let verbosity = parse_verbosity_level(verbose);
 
         let (data, n, dim) = matrix_to_flat(data);
@@ -907,20 +1146,14 @@ where
                     println!("  Using spectral detection of landmarks")
                 }
 
-                let svd = sparse_randomised_svd(
-                    &symmetric_normalise(affinity),
-                    n_svd,
-                    seed as u64,
-                    None,
-                    Some(SPECTRAL_LANDMARK_POWER_ITER),
-                )?;
+                let v = spectral_vectors(&symmetric_normalise(affinity), n_svd, seed, backend)?;
 
                 if verbosity.detailed_verbosity() {
                     println!("  Finished calculation of randomised SVD on the affinity matrix.")
                 }
 
-                let k = svd.v.ncols();
-                let v_rows: Vec<T> = rows_to_flat(svd.v.as_ref());
+                let k = v.ncols();
+                let v_rows: Vec<T> = rows_to_flat(v.as_ref());
                 let mut embedding_flat: Vec<T> = vec![T::zero(); n * k];
 
                 embedding_flat
@@ -937,45 +1170,21 @@ where
                         }
                     });
 
-                // reduce the number of iterations here...
-                // doesn't have to be perfect
-                let k_means_params = KMeansTrainingParams::new(30, None, None);
-
-                // use ann-search-rs k-means-clustering
-                let centroids = train_centroids(
+                let assignments = spectral_assignments(
                     &embedding_flat,
                     k,
                     n,
                     n_landmarks,
-                    &Dist::SquaredEuclidean,
-                    Some(k_means_params),
                     seed,
                     parse_verbosity_level(ann_verbose(verbosity)),
+                    backend,
                 )?;
-
-                if verbosity.detailed_verbosity() {
-                    println!("  Centroids identified.")
-                }
-
-                let centroid_norms = vec![T::one(); n_landmarks]; // Euclidean, unused
-                let data_norms = vec![T::one(); n];
-
-                let assignemnts = assign_all_parallel(
-                    &embedding_flat,
-                    &data_norms,
-                    k,
-                    n,
-                    &centroids,
-                    &centroid_norms,
-                    n_landmarks,
-                    &Dist::SquaredEuclidean,
-                );
 
                 if verbosity.detailed_verbosity() {
                     println!("  Landmark assignments done.")
                 }
 
-                assignemnts.into_iter().map(|c| c as usize).collect()
+                assignments
             }
             LandmarkMethod::Density { seed } => {
                 if verbosity.detailed_verbosity() {

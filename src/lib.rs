@@ -2805,14 +2805,59 @@ where
         }
     };
 
+    phate_diffusion_from_knn(
+        data,
+        &knn_indices,
+        &knn_dist,
+        &nn_params.dist_metric,
+        phate_params,
+        &SpectralBackend::Cpu,
+        seed,
+        verbose,
+    )
+}
+
+/// Build the PHATE diffusion operator from a finished kNN graph.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features
+/// * `knn_indices` - Neighbour indices, excluding self
+/// * `knn_dist` - Neighbour distances, excluding self
+/// * `dist_metric` - Distance metric of the graph
+/// * `phate_params` - Full PHATE parameter struct
+/// * `backend` - Where spectral landmark selection runs
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// See [`construct_phate_diffusion`].
+#[allow(clippy::too_many_arguments)]
+fn phate_diffusion_from_knn<T>(
+    data: MatRef<T>,
+    knn_indices: &[Vec<usize>],
+    knn_dist: &[Vec<T>],
+    dist_metric: &str,
+    phate_params: &PhateParams<T>,
+    backend: &SpectralBackend,
+    seed: usize,
+    verbose: usize,
+) -> Result<PhateDiffusion<T>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let verbosity = parse_verbosity_level(verbose);
+
     if verbosity.normal_verbosity() {
         println!(" Building alpha-decay affinities ...");
     }
     let start_alpha_affinities = Instant::now();
 
     let graph = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
+        knn_indices,
+        knn_dist,
         phate_params.k,
         phate_params.diffusion_params.decay,
         phate_params.diffusion_params.bandwidth_scale,
@@ -2842,13 +2887,13 @@ where
                 println!(" Building {} landmarks ...", n_landmarks);
             }
             let start_landmarks = Instant::now();
-            let landmarks = PhateLandmarks::build(
+            let landmarks = PhateLandmarks::build_with_backend(
                 data,
                 &affinity,
                 &diffusion_op,
                 n_landmarks,
                 &phate_params.diffusion_params.landmark_method,
-                &nn_params.dist_metric,
+                dist_metric,
                 seed,
                 Some(
                     phate_params
@@ -2856,6 +2901,7 @@ where
                         .n_svd
                         .unwrap_or(PHATE_DEFAULT_N_SVD),
                 ),
+                backend,
                 verbose,
             )?;
             if verbosity.normal_verbosity() {
@@ -2947,6 +2993,214 @@ where
         verbose,
     )?;
 
+    phate_from_diffusion(
+        data.nrows(),
+        phate_diffusion,
+        &phate_params,
+        start_run,
+        seed,
+        verbose,
+    )
+}
+
+/// Run PHATE with spectral landmark selection and kNN search on a cubecl device.
+///
+/// Identical to [`phate`] except for where those two stages run: the randomised
+/// SVD and the k-means on the device in `f32`, the rest on the CPU. Only the
+/// spectral landmark method uses the device beyond the kNN search.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Precomputed kNN indices and distances, excluding self,
+///   or `None` to search on the device.
+/// * `phate_params` - PHATE parameters. `ann_type` is read as a GPU key, see
+///   [`run_ann_search_gpu`]; `ann_params` is replaced by `nn_params`.
+/// * `nn_params` - GPU nearest neighbour parameters
+/// * `device` - The GPU device to use
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has length
+/// `n_dim` and each inner vector has length `n_samples`.
+#[cfg(feature = "gpu")]
+pub fn phate_gpu<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    mut phate_params: PhateParams<T>,
+    nn_params: &NearestNeighbourParamsGpu<T>,
+    device: Device,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloatGpu,
+    StandardNormal: Distribution<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    let verbosity = parse_verbosity_level(verbose);
+    let start_run = Instant::now();
+    phate_params.ann_params.dist_metric = nn_params.dist_metric.clone();
+
+    let (knn_indices, knn_dist) = match precomputed_knn {
+        Some(knn) => knn,
+        None => {
+            let start_knn = Instant::now();
+            let result = run_ann_search_gpu::<T>(
+                data,
+                phate_search_width(phate_params.k),
+                phate_params.ann_type.clone(),
+                nn_params,
+                device.clone(),
+                seed,
+                ann_verbose(verbosity),
+            )?;
+            if verbosity.normal_verbosity() {
+                println!(" ... kNN search in {:.2?}", start_knn.elapsed());
+            }
+            result
+        }
+    };
+
+    let phate_diffusion = phate_diffusion_from_knn(
+        data,
+        &knn_indices,
+        &knn_dist,
+        &nn_params.dist_metric,
+        &phate_params,
+        &SpectralBackend::Wgpu(device),
+        seed,
+        verbose,
+    )?;
+
+    phate_from_diffusion(
+        data.nrows(),
+        phate_diffusion,
+        &phate_params,
+        start_run,
+        seed,
+        verbose,
+    )
+}
+
+/// Run PHATE with spectral landmark selection on MLX.
+///
+/// Identical to [`phate`] except that the randomised SVD and the k-means of the
+/// spectral landmark method run on MLX in `f32`. The kNN search follows
+/// `phate_params.ann_type`, so pick an `_mlx` key to run that on MLX too.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Precomputed kNN indices and distances, excluding self,
+///   or `None` to search as `phate_params.ann_type` says.
+/// * `phate_params` - PHATE parameters
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has length
+/// `n_dim` and each inner vector has length `n_samples`.
+#[cfg(mlx_available)]
+pub fn phate_mlx<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    phate_params: PhateParams<T>,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+    StandardNormal: Distribution<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    let verbosity = parse_verbosity_level(verbose);
+    let start_run = Instant::now();
+
+    let (knn_indices, knn_dist) = match precomputed_knn {
+        Some(knn) => knn,
+        None => {
+            let start_knn = Instant::now();
+            let result = run_ann_search(
+                data,
+                phate_search_width(phate_params.k),
+                phate_params.ann_type.clone(),
+                &phate_params.ann_params,
+                seed,
+                ann_verbose(verbosity),
+            )?;
+            if verbosity.normal_verbosity() {
+                println!(" ... kNN search in {:.2?}", start_knn.elapsed());
+            }
+            result
+        }
+    };
+
+    let phate_diffusion = phate_diffusion_from_knn(
+        data,
+        &knn_indices,
+        &knn_dist,
+        &phate_params.ann_params.dist_metric,
+        &phate_params,
+        &SpectralBackend::Mlx,
+        seed,
+        verbose,
+    )?;
+
+    phate_from_diffusion(
+        data.nrows(),
+        phate_diffusion,
+        &phate_params,
+        start_run,
+        seed,
+        verbose,
+    )
+}
+
+/// Everything in PHATE after the diffusion operator: diffusion time, potential,
+/// MDS and, for landmarks, the interpolation back to all samples.
+///
+/// ### Params
+///
+/// * `n_obs` - Number of samples
+/// * `phate_diffusion` - Full or landmark diffusion operator
+/// * `phate_params` - PHATE parameters
+/// * `start_run` - Start of the whole run, for the verbose total
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// See [`phate`].
+fn phate_from_diffusion<T>(
+    n_obs: usize,
+    phate_diffusion: PhateDiffusion<T>,
+    phate_params: &PhateParams<T>,
+    start_run: Instant,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    StandardNormal: Distribution<T>,
+{
+    let verbosity = parse_verbosity_level(verbose);
+    let name = "PHATE";
+
     let start_t = Instant::now();
     let t = match phate_params.diffusion_params.t {
         PhateTime::Auto { t_max } => {
@@ -2969,12 +3223,8 @@ where
 
     let mds_method = parse_mds_method(&phate_params.mds_method).unwrap_or_default();
     let dist = parse_ann_dist(&phate_params.ann_params.dist_metric).unwrap_or_default();
-    let mds_params = MdsOptimParams::new(
-        data.nrows(),
-        phate_params.randomised,
-        phate_params.mds_iter,
-        None,
-    );
+    let mds_params =
+        MdsOptimParams::new(n_obs, phate_params.randomised, phate_params.mds_iter, None);
 
     let start_potential = Instant::now();
     let potential_fill = potential_of_zero(phate_params.diffusion_params.gamma);

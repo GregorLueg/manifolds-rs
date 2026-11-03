@@ -316,6 +316,89 @@ where
     Ok(RandomSvdResults { u, s, v })
 }
 
+/// The sketch of [`sparse_randomised_svd`] for `n` rows, as row-major `f32`.
+///
+/// Drawn in the same order from the same generator, so a device path and the
+/// CPU path start from the same subspace for a given seed.
+///
+/// ### Params
+///
+/// * `n` - Rows of the sketch
+/// * `s` - Columns of the sketch
+/// * `seed` - Seed
+///
+/// ### Returns
+///
+/// The sketch, row-major, length `n * s`
+#[cfg(any(feature = "gpu", mlx_available))]
+pub(crate) fn sketch_row_major_f32(n: usize, s: usize, seed: u64) -> Vec<f32> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let normal = Normal::<f64>::new(0.0, 1.0).unwrap();
+    let col_major: Vec<f32> = (0..n * s).map(|_| normal.sample(&mut rng) as f32).collect();
+
+    let mut out = vec![0.0f32; n * s];
+    out.par_chunks_exact_mut(s)
+        .enumerate()
+        .for_each(|(i, row)| {
+            for (j, v) in row.iter_mut().enumerate() {
+                *v = col_major[j * n + i];
+            }
+        });
+    out
+}
+
+/// `R^-1` for `R^T R = G`, factorised on the host in `f64`.
+///
+/// ### Params
+///
+/// * `g` - Row-major Gram matrix, length `s * s`
+/// * `s` - Side length of `G`
+///
+/// ### Returns
+///
+/// Row-major upper-triangular `R^-1`, or `CholeskyQrFailed` if `G` is not
+/// positive definite
+#[cfg(any(feature = "gpu", mlx_available))]
+pub(crate) fn r_inverse_row_major(g: &[f32], s: usize) -> Result<Vec<f32>, ManifoldsError> {
+    let g = Mat::<f64>::from_fn(s, s, |i, j| g[i * s + j] as f64);
+    let llt = g
+        .llt(Side::Lower)
+        .map_err(|_| ManifoldsError::CholeskyQrFailed)?;
+    let mut l_inv = Mat::<f64>::identity(s, s);
+    llt.L().solve_lower_triangular_in_place(l_inv.as_mut());
+    // R = L^T, so R^-1 is the transpose of L^-1
+    Ok((0..s * s).map(|k| l_inv[(k % s, k / s)] as f32).collect())
+}
+
+/// Leading left singular vectors of the `Z = A Q` a device path reads back.
+///
+/// For a symmetric `A`, these are the right singular vectors of the `B = Q^T A`
+/// that [`sparse_randomised_svd`] factorises. Runs in `f64`: the `f32`
+/// factorisations in faer break at large row counts.
+///
+/// ### Params
+///
+/// * `z` - Row-major `Z`, length `n * s`
+/// * `n` - Rows of `Z`
+/// * `s` - Columns of `Z`
+/// * `rank` - Vectors to keep
+///
+/// ### Returns
+///
+/// The vectors, `n x rank`
+#[cfg(any(feature = "gpu", mlx_available))]
+pub(crate) fn right_vectors_from_sketch(
+    z: &[f32],
+    n: usize,
+    s: usize,
+    rank: usize,
+) -> Result<Mat<f64>, ManifoldsError> {
+    let svd = Mat::<f64>::from_fn(n, s, |i, j| z[i * s + j] as f64)
+        .thin_svd()
+        .map_err(|_| ManifoldsError::FaerSvdError)?;
+    Ok(svd.U().get(.., ..rank).to_owned())
+}
+
 /////////////////////////////////////
 // Lanczos Eigenvalue calculations //
 /////////////////////////////////////
