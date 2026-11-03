@@ -21,12 +21,20 @@ Requires `manifolds-rs` 0.9.0.
 - PaCMAP defaults to learning_rate=1.0 (was 0.01), drops mn_candidate_start and
   mn_candidate_end, and searches n_near neighbours instead of 50. A precomputed
   graph only needs to be that wide. Embeddings differ from 0.5.0.
-- PHATE follows the reference kernel: 3k + 2 neighbours, thresholded by thresh,
+- PHATE follows the reference kernel: 6k + 5 neighbours, thresholded by thresh,
   unit diagonal, landmark operator built from the kernel. All runs differ from
   0.5.0, and a precomputed graph should be that wide.
 - verbose takes 0 (quiet), 1 (timed stages, epochs every 50) or 2 (also
   parameters, landmark selection, index internals). Other values raise
   ValueError.
+
+**Features**
+
+- `PHATEGpu`: PHATE with the neighbour search and, for spectral landmarks, the
+  randomised SVD and the k-means on the device, in float32.
+- `PhateDiffusion(landmark_method="spectral_mlx")` in an `mlx` build: the SVD and
+  the k-means of the landmark selection on MLX, in float32. Works with `PHATE` and
+  `PHATEGpu`.
 
 **Bug fixes**
 

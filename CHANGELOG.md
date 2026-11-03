@@ -23,7 +23,7 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   the data and a metric, and the kNN search size is now `n_near` rather than 50.
   `ManifoldsError::NotEnoughNeighbours` carries `n_near`. Different embeddings at
   the same seed.
-- PHATE follows the reference kernel. The kNN search runs `3k + 2` wide
+- PHATE follows the reference kernel. The kNN search runs `6k + 5` wide
   (`phate_search_width`), neighbours past `k` join the kernel while their affinity
   clears `thresh`, the kernel has a unit diagonal, and the landmark operator sums
   the kernel rather than `P`.
@@ -33,6 +33,17 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   no longer prints inside an embedding. The GPU UMAP gradient norm moved to level 2.
   Warnings about unknown parameters go to stderr. `train_parametric_umap` takes
   `Verbosity` instead of `bool`.
+
+**Features**
+
+- `phate_gpu`: PHATE with the kNN search and, for spectral landmarks, the randomised
+  SVD and the k-means on a cubecl device, in `f32`.
+- `landmark_method = "spectral_mlx"` for `phate` and `phate_gpu`: the SVD and the
+  k-means of the landmark selection on MLX, in `f32`.
+- Both draw the same sketch as the CPU SVD for a given seed, so the singular
+  vectors match it up to `f32` rounding.
+- `PhateLandmarks::build_with_backend` and `SpectralBackend`. `PhateLandmarks::build`
+  stays and runs on the CPU.
 
 **Bug fixes**
 

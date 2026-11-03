@@ -51,7 +51,7 @@ pacmap = mf.PaCMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
 ```
 
 Two things to get right. Give the shared graph the widest `k` any consumer
-needs, which for `PHATE` means `3k + 2`, since its kernel keeps anything just past
+needs, which for `PHATE` means `6k + 5`, since its kernel keeps anything just past
 the `k`-th neighbour. And the graph must be complete: a row
 an approximate backend could not fill is padded with `-1`, and that is refused
 rather than quietly dropped, because a hole in the graph is not something these
