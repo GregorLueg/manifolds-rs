@@ -152,8 +152,8 @@ impl<'a, 'py> Reader<'a, 'py> {
     /// Almost every field treats an absent key and an explicit `None` alike,
     /// because `None` means "use the crate default". Two do not: PHATE's
     /// `decay` and PaCMAP's `range` have non-`None` defaults and a `None` that
-    /// means something (a binary connectivity kernel, and no initialisation
-    /// range). Those two ask this first.
+    /// means something (a binary connectivity kernel, and the initialisation's
+    /// own default range). Those two ask this first.
     ///
     /// ### Params
     ///
@@ -745,8 +745,9 @@ where
     set(&mut p.n_mid_near, r.get::<usize>("n_mid_near")?);
     set(&mut p.n_further, r.get::<usize>("n_further")?);
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
-    // As for PHATE's `decay`: an explicit `None` means no initialisation
-    // range, which is not the same as leaving the default of 0.01 in place.
+    // As for PHATE's `decay`: an explicit `None` hands the range to the
+    // initialisation's own default. For PCA that is 0.01 too; for the others it
+    // is not the same as leaving the default of 0.01 in place.
     let range_given = r.present("range");
     let range = r.float::<T>("range")?;
     if range_given {

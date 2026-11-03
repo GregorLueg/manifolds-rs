@@ -557,8 +557,9 @@ class PaCMAP(BaseEmbedding):
 
     Args:
         n_components: Output dimensionality.
-        n_near: Near (attractive) pairs per point, and the width of the kNN
-            search. A precomputed graph must be at least this wide.
+        n_near: Near (attractive) pairs per point. The search runs ``n_near + 50``
+            wide and picks them from those by locally scaled distance. A precomputed
+            graph needs at least `n_near` neighbours and should be that wide.
         n_mid_near: Mid-near pairs per point.
         n_further: Further (repulsive) pairs per point.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
@@ -567,7 +568,9 @@ class PaCMAP(BaseEmbedding):
         init: ``"pca"``, ``"spectral"`` or ``"random"``.
         ann: Neighbour backend.
         optimiser: ``"adam_parallel"`` or ``"adam"``.
-        range_: Scale of the initial coordinates.
+        range_: Scale of the initial coordinates. For ``"pca"`` the multiplier on
+            the scores, where ``None`` means ``0.01``. For the other initialisations
+            ``None`` lets the core pick.
         seed: Fixes the initialisation and the pair sampling.
         verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
