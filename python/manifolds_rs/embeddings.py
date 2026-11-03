@@ -26,6 +26,7 @@ from ._params import (
     MDS_METHODS,
     METRICS,
     PACMAP_OPTIMISERS,
+    PHATE_LANDMARK_METHODS,
     SYMMETRIES,
     TSNE_APPROX,
     UMAP_OPTIMISERS,
@@ -456,7 +457,7 @@ class PHATE(BaseEmbedding):
     Args:
         n_components: Output dimensionality.
         k: Neighbours that set the kernel bandwidth. Smaller than UMAP's because
-            the diffusion does the smoothing. The search runs ``3k + 2`` wide,
+            the diffusion does the smoothing. The search runs ``6k + 5`` wide,
             since the kernel keeps anything just past the ``k``-th neighbour, so
             give a precomputed graph that width as well.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
@@ -524,7 +525,9 @@ class PHATE(BaseEmbedding):
             )
         if "landmark_method" in diffusion:
             diffusion["landmark_method"] = check_choice(
-                diffusion["landmark_method"], LANDMARK_METHODS, name="landmark_method"
+                diffusion["landmark_method"],
+                PHATE_LANDMARK_METHODS,
+                name="landmark_method",
             )
         return {
             "n_dim": self.n_components,

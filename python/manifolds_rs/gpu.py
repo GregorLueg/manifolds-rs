@@ -13,9 +13,10 @@ backend rather than choices:
 - **Different neighbour backends.** ``"nndescent_gpu"``, ``"ivf_gpu"`` and
   ``"exhaustive_gpu"``, with their own knobs. See `NeighbourParamsGpu`.
 - **Only the search and the optimiser run on the device.** The UMAP Adam update,
-  and the t-SNE optimiser with ``approx="fft_3k_gpu"``. Graph construction and
-  the initialisation stay on the CPU, so a small dataset can easily come out
-  slower than the CPU path once the transfers are paid for. Measure.
+  the t-SNE optimiser with ``approx="fft_3k_gpu"``, and the SVD and k-means of
+  PHATE's spectral landmark selection. Graph construction and the initialisation
+  stay on the CPU, so a small dataset can easily come out slower than the CPU
+  path once the transfers are paid for. Measure.
 - **Reproducible in structure, not in coordinates.** The device searches are not
   always bit-stable at scale, and the optimiser amplifies a small difference in
   the graph into visibly different positions. Cluster structure is preserved
@@ -35,11 +36,15 @@ from ._base import BaseEmbedding, ReferenceEmbedding
 from ._params import (
     ANN_GPU,
     INITS,
+    MDS_METHODS,
     METRICS,
+    PHATE_LANDMARK_METHODS,
+    SYMMETRIES,
     TSNE_APPROX_GPU,
     UMAP_OPTIMISERS_GPU,
     DensParams,
     NeighbourParamsGpu,
+    PhateDiffusion,
     TsneOptim,
     UmapGraph,
     UmapOptim,
@@ -384,4 +389,100 @@ class DREAMSGpu(ReferenceEmbedding):
             "optim_params": merge(
                 self.optim_params, n_epochs=self.n_epochs, lr=self.learning_rate
             ),
+        }
+
+
+class PHATEGpu(BaseEmbedding):
+    """PHATE with the neighbour search and landmark selection on the GPU.
+
+    Same embedding as `PHATE`. The kNN search and, for spectral landmarks, the
+    randomised SVD and the k-means run on the device. The diffusion time, the
+    powering, the MDS and the interpolation stay on the CPU.
+
+    Args:
+        n_components: Output dimensionality.
+        k: Neighbours that set the kernel bandwidth. The search runs ``6k + 5``
+            wide, so give a precomputed graph that width as well.
+        metric: ``"euclidean"``/``"l2"`` or ``"cosine"``.
+        decay: Alpha-decay exponent of the kernel. ``None`` gives a binary
+            connectivity kernel instead.
+        t: Diffusion time. ``None`` picks the VNE knee.
+        gamma: Informational distance constant, in ``[-1, 1]``.
+        mds: ``"sgd_dense"`` (also ``"dense"``) or ``"classic"``.
+        mds_iter: MDS iterations. ``None`` uses the backend default.
+        ann: ``"nndescent_gpu"``, ``"ivf_gpu"`` or ``"exhaustive_gpu"``.
+        randomised: Use randomised SVD for the initialisation.
+        seed: Fixes the sketch, the k-means initialisation and the MDS.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
+        nn_params: See `NeighbourParamsGpu`.
+        diffusion_params: Remaining operator knobs, landmarks included. See
+            `PhateDiffusion`. In an mlx build, ``"spectral_mlx"`` keeps the search
+            on wgpu and runs the landmark selection on MLX.
+    """
+
+    _FN: ClassVar[Callable[..., Any]] = _core.phate_gpu
+    _BASE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
+
+    @beartype
+    def __init__(
+        self,
+        n_components: int = 2,
+        k: int = 5,
+        metric: str = "euclidean",
+        decay: float | None = 40.0,
+        t: int | None = None,
+        gamma: float = 1.0,
+        mds: str = "sgd_dense",
+        mds_iter: int | None = None,
+        ann: str = "nndescent_gpu",
+        randomised: bool = True,
+        seed: int = 42,
+        verbose: int = 0,
+        nn_params: NeighbourParamsGpu | None = None,
+        diffusion_params: PhateDiffusion | None = None,
+    ) -> None:
+        self.n_components = n_components
+        self.k = k
+        self.metric = metric
+        self.decay = decay
+        self.t = t
+        self.gamma = gamma
+        self.mds = mds
+        self.mds_iter = mds_iter
+        self.ann = ann
+        self.randomised = randomised
+        self.seed = seed
+        self.verbose = verbose
+        self.nn_params = nn_params
+        self.diffusion_params = diffusion_params
+
+    def _params(self) -> dict[str, Any]:
+        diffusion = merge(self.diffusion_params, gamma=self.gamma) or {}
+        # `decay` is set rather than merged: `None` selects the binary
+        # connectivity kernel, and `merge` drops nulls as "leave the default".
+        diffusion["decay"] = self.decay
+        if self.t is not None:
+            diffusion["t"] = self.t
+        if "graph_symmetry" in diffusion:
+            diffusion["graph_symmetry"] = check_choice(
+                diffusion["graph_symmetry"], SYMMETRIES, name="graph_symmetry"
+            )
+        if "landmark_method" in diffusion:
+            diffusion["landmark_method"] = check_choice(
+                diffusion["landmark_method"],
+                PHATE_LANDMARK_METHODS,
+                name="landmark_method",
+            )
+        return {
+            "n_dim": self.n_components,
+            "k": self.k,
+            "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
+            "mds_method": check_choice(self.mds, MDS_METHODS, name="mds"),
+            "mds_iter": self.mds_iter,
+            "randomised": self.randomised,
+            "nn_params": merge(
+                self.nn_params,
+                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+            ),
+            "diffusion_params": diffusion,
         }

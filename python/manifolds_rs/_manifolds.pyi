@@ -176,6 +176,15 @@ def tsne_gpu(
     seed: int = ...,
     verbose: int = ...,
 ) -> np.ndarray: ...
+def phate_gpu(
+    x: np.ndarray,
+    params: dict[str, Any],
+    *,
+    knn_indices: np.ndarray | None = ...,
+    knn_distances: np.ndarray | None = ...,
+    seed: int = ...,
+    verbose: int = ...,
+) -> np.ndarray: ...
 def dreams_gpu(
     x: np.ndarray,
     params: dict[str, Any],

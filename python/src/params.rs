@@ -663,21 +663,64 @@ where
 {
     let mut p = PhateParams::<T>::default();
     let mut r = Reader::new(d, "PhateParams");
+    phate_into(&mut r, &mut p)?;
+    nested(&mut r, "nn_params", &mut p.ann_params, fill_nn)?;
+    r.finish()?;
+    Ok(p)
+}
+
+/// Read the PHATE fields shared by `phate` and `phate_gpu`.
+///
+/// ### Params
+///
+/// * `r` - Reader for the enclosing dictionary.
+/// * `p` - Parameter struct to fill.
+///
+/// ### Returns
+///
+/// `Ok(())`, or the first bad key.
+fn phate_into<T>(r: &mut Reader<'_, '_>, p: &mut PhateParams<T>) -> PyResult<()>
+where
+    T: ManifoldsFloat,
+{
     set(&mut p.n_dim, r.get::<usize>("n_dim")?);
     set(&mut p.k, r.get::<usize>("k")?);
     set(&mut p.ann_type, r.get::<String>("ann_type")?);
     set(&mut p.mds_method, r.get::<String>("mds_method")?);
     p.mds_iter = r.get::<usize>("mds_iter")?.or(p.mds_iter);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
-    nested(&mut r, "nn_params", &mut p.ann_params, fill_nn)?;
     nested(
-        &mut r,
+        r,
         "diffusion_params",
         &mut p.diffusion_params,
         fill_phate_diffusion,
-    )?;
+    )
+}
+
+/// Build the parameters of `phate_gpu` from a dictionary.
+///
+/// ### Params
+///
+/// * `d` - The full parameter dictionary sent by the Python layer.
+///
+/// ### Returns
+///
+/// The PHATE parameters and the GPU neighbour parameters, or the first bad or
+/// unknown key.
+#[cfg(feature = "gpu")]
+pub(crate) fn phate_gpu<T>(
+    d: &Bound<'_, PyDict>,
+) -> PyResult<(PhateParams<T>, NearestNeighbourParamsGpu<T>)>
+where
+    T: ManifoldsFloat,
+{
+    let mut p = PhateParams::<T>::default();
+    let mut nn = NearestNeighbourParamsGpu::<T>::default();
+    let mut r = Reader::new(d, "PhateParamsGpu");
+    phate_into(&mut r, &mut p)?;
+    nested(&mut r, "nn_params", &mut nn, fill_nn_gpu)?;
     r.finish()?;
-    Ok(p)
+    Ok((p, nn))
 }
 
 /// Build [`PacmapParams`] from a dictionary.

@@ -26,12 +26,14 @@ crate-type = ["cdylib"]
 ## with `--no-default-features` for a smaller CPU-only wheel.
 default = ["gpu"]
 
-## Bind `umap_gpu`, `densmap_gpu` and `tsne_gpu` alongside the CPU embeddings.
+## Bind `umap_gpu`, `densmap_gpu`, `tsne_gpu`, `dreams_gpu` and `phate_gpu`
+## alongside the CPU embeddings.
 ## Fixed at wheel-build time: a Python extra cannot switch it, since extras only
 ## add Python requirements and never change the compiled artefact.
 gpu = ["manifolds-rs/gpu", "dep:cubecl"]
 
-## Off by default, Apple Silicon only: the MLX kNN backends and optimisers.
+## Off by default, Apple Silicon only: the MLX kNN backends, optimisers and
+## PHATE's `landmark_method="spectral_mlx"`.
 ## Links mlx-c dynamically, so the result only imports on a Mac with
 ## `brew install mlx-c`; that is why no published wheel carries it. Without the
 ## library the core warns at build time and leaves MLX out; `mlx_available()`

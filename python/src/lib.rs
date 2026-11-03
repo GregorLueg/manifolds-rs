@@ -102,6 +102,7 @@ fn _manifolds(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.add_function(wrap_pyfunction!(embed_gpu::densmap_gpu, m)?)?;
         m.add_function(wrap_pyfunction!(embed_gpu::tsne_gpu, m)?)?;
         m.add_function(wrap_pyfunction!(embed_gpu::dreams_gpu, m)?)?;
+        m.add_function(wrap_pyfunction!(embed_gpu::phate_gpu, m)?)?;
     }
 
     Ok(())

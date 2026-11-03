@@ -79,6 +79,12 @@ MDS_METHODS: frozenset[str] = frozenset({"sgd_dense", "dense", "classic"})
 #: Landmark selection, from `parse_landmark_method`.
 LANDMARK_METHODS: frozenset[str] = frozenset({"random", "spectral", "density"})
 
+#: As `LANDMARK_METHODS`, for PHATE: ``"spectral_mlx"`` runs the SVD and the
+#: k-means of the spectral selection on MLX. Diffusion maps have no such path.
+PHATE_LANDMARK_METHODS: frozenset[str] = LANDMARK_METHODS | (
+    frozenset({"spectral_mlx"}) if _MLX else frozenset()
+)
+
 #: Graph symmetrisation, from `parse_phate_symmetrisation`.
 SYMMETRIES: frozenset[str] = frozenset(
     {"additive", "add", "multiplicative", "mult", "multiply", "mnn", "none"}
@@ -321,7 +327,8 @@ class PhateDiffusion:
         graph_symmetry: ``"add"``, ``"multiply"``, ``"mnn"`` or ``"none"``.
         n_landmarks: Landmarks to diffuse on instead of the full graph. Worth
             setting above roughly 50k points.
-        landmark_method: ``"spectral"``, ``"random"`` or ``"density"``.
+        landmark_method: ``"spectral"``, ``"random"`` or ``"density"``. An mlx
+            build adds ``"spectral_mlx"``.
         n_svd: Components for spectral landmark selection.
         t_max: Largest diffusion time the VNE knee search will consider. Ignored
             when `t` is pinned.
