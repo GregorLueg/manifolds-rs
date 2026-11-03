@@ -428,6 +428,37 @@ pub enum SpectralBackend {
     Mlx,
 }
 
+/// Split a PHATE landmark method into the method and where it runs.
+///
+/// `"spectral_mlx"` is `"spectral"` on MLX. Without the MLX backend compiled in it
+/// warns and stays on `backend`, as the other `_mlx` names fall back.
+///
+/// ### Params
+///
+/// * `method` - Landmark method as the caller named it
+/// * `backend` - Backend of the entry point
+///
+/// ### Returns
+///
+/// The method to parse and the backend to run it on
+pub(crate) fn resolve_landmark_backend<'a>(
+    method: &'a str,
+    backend: &SpectralBackend,
+) -> (&'a str, SpectralBackend) {
+    if !method.eq_ignore_ascii_case("spectral_mlx") {
+        return (method, backend.clone());
+    }
+    #[cfg(mlx_available)]
+    {
+        ("spectral", SpectralBackend::Mlx)
+    }
+    #[cfg(not(mlx_available))]
+    {
+        eprintln!("Warning: \"spectral_mlx\" needs the MLX backend, which this build lacks. Using \"spectral\".");
+        ("spectral", backend.clone())
+    }
+}
+
 /// Right singular vectors for the spectral landmark selection.
 ///
 /// ### Params

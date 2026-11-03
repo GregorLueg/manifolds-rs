@@ -2849,6 +2849,8 @@ where
     T: ManifoldsFloat,
 {
     let verbosity = parse_verbosity_level(verbose);
+    let (landmark_method, backend) =
+        resolve_landmark_backend(&phate_params.diffusion_params.landmark_method, backend);
 
     if verbosity.normal_verbosity() {
         println!(" Building alpha-decay affinities ...");
@@ -2892,7 +2894,7 @@ where
                 &affinity,
                 &diffusion_op,
                 n_landmarks,
-                &phate_params.diffusion_params.landmark_method,
+                landmark_method,
                 dist_metric,
                 seed,
                 Some(
@@ -2901,7 +2903,7 @@ where
                         .n_svd
                         .unwrap_or(PHATE_DEFAULT_N_SVD),
                 ),
-                backend,
+                &backend,
                 verbose,
             )?;
             if verbosity.normal_verbosity() {
@@ -3008,6 +3010,8 @@ where
 /// Identical to [`phate`] except for where those two stages run: the randomised
 /// SVD and the k-means on the device in `f32`, the rest on the CPU. Only the
 /// spectral landmark method uses the device beyond the kNN search.
+/// `landmark_method = "spectral_mlx"` keeps the search on wgpu and runs the SVD
+/// and the k-means on MLX.
 ///
 /// ### Params
 ///
@@ -3075,87 +3079,6 @@ where
         &nn_params.dist_metric,
         &phate_params,
         &SpectralBackend::Wgpu(device),
-        seed,
-        verbose,
-    )?;
-
-    phate_from_diffusion(
-        data.nrows(),
-        phate_diffusion,
-        &phate_params,
-        start_run,
-        seed,
-        verbose,
-    )
-}
-
-/// Run PHATE with spectral landmark selection on MLX.
-///
-/// Identical to [`phate`] except that the randomised SVD and the k-means of the
-/// spectral landmark method run on MLX in `f32`. The kNN search follows
-/// `phate_params.ann_type`, so pick an `_mlx` key to run that on MLX too.
-///
-/// ### Params
-///
-/// * `data` - Input data as samples x features. Accepts a faer matrix, an
-///   ndarray 2-D array (with the `ndarray` feature) or a row-major
-///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
-/// * `precomputed_knn` - Precomputed kNN indices and distances, excluding self,
-///   or `None` to search as `phate_params.ann_type` says.
-/// * `phate_params` - PHATE parameters
-/// * `seed` - Random seed for reproducibility
-/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
-///   verbosity.
-///
-/// ### Returns
-///
-/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has length
-/// `n_dim` and each inner vector has length `n_samples`.
-#[cfg(mlx_available)]
-pub fn phate_mlx<T>(
-    data: impl ManifoldsMatrix<T>,
-    precomputed_knn: PreComputedKnn<T>,
-    phate_params: PhateParams<T>,
-    seed: usize,
-    verbose: usize,
-) -> Result<Vec<Vec<T>>, ManifoldsError>
-where
-    T: ManifoldsFloat,
-    HnswIndex<T>: HnswState<T>,
-    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
-    StandardNormal: Distribution<T>,
-{
-    let data_input = data.to_mat_input();
-    let data = data_input.as_mat_ref();
-    let verbosity = parse_verbosity_level(verbose);
-    let start_run = Instant::now();
-
-    let (knn_indices, knn_dist) = match precomputed_knn {
-        Some(knn) => knn,
-        None => {
-            let start_knn = Instant::now();
-            let result = run_ann_search(
-                data,
-                phate_search_width(phate_params.k),
-                phate_params.ann_type.clone(),
-                &phate_params.ann_params,
-                seed,
-                ann_verbose(verbosity),
-            )?;
-            if verbosity.normal_verbosity() {
-                println!(" ... kNN search in {:.2?}", start_knn.elapsed());
-            }
-            result
-        }
-    };
-
-    let phate_diffusion = phate_diffusion_from_knn(
-        data,
-        &knn_indices,
-        &knn_dist,
-        &phate_params.ann_params.dist_metric,
-        &phate_params,
-        &SpectralBackend::Mlx,
         seed,
         verbose,
     )?;

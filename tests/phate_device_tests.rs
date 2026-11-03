@@ -149,13 +149,14 @@ mod mlx_path {
     }
 
     #[test]
-    fn test_phate_mlx_runs_end_to_end() {
+    fn test_phate_spectral_mlx_runs_end_to_end() {
         let (v, n, d) = data_f32();
-        let params = PhateParams {
+        let mut params = PhateParams {
             ann_type: "nndescent_mlx".to_string(),
             ..device_params()
         };
-        let e = phate_mlx((v.as_slice(), n, d), None, params, 42, 0).unwrap();
+        params.diffusion_params.landmark_method = "spectral_mlx".to_string();
+        let e = phate((v.as_slice(), n, d), None, params, 42, 0).unwrap();
         assert_eq!((e.len(), e[0].len()), (2, n));
         assert!(e.iter().flatten().all(|x| x.is_finite()));
     }
