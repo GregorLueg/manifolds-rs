@@ -3117,7 +3117,8 @@ pub struct PacmapParams<T> {
     pub ann_type: String,
     /// Which optimiser to use. Options are `"adam"` and `"adam_parallel"`
     pub optimiser_type: String,
-    /// Near pairs per point (attractive), and the kNN search size. Default 10.
+    /// Near pairs per point (attractive). The kNN search runs 50 wider, and the
+    /// pairs are the best of those by locally scaled distance. Default 10.
     pub n_near: usize,
     /// Mid-near pairs per point (attractive, global structure). Default 5.
     pub n_mid_near: usize,
@@ -3126,7 +3127,7 @@ pub struct PacmapParams<T> {
     /// Embedding initialisation. Default `"pca"`. PCA is strongly recommended
     /// for PaCMAP as random init degrades global structure.
     pub initialisation: String,
-    /// The range of the initial embedding
+    /// Scale of the initial embedding. For PCA, the multiplier on the scores.
     pub range: Option<T>,
     /// Nearest neighbour search parameters.
     pub nn_params: NearestNeighbourParams<T>,
@@ -3141,7 +3142,8 @@ where
     fn default() -> Self {
         Self {
             n_dim: 2,
-            ann_type: "nndescent".to_string(),
+            // the search runs at n_near + 50, where IVF scales better
+            ann_type: "ivf".to_string(),
             optimiser_type: "adam_parallel".to_string(),
             n_near: 10,
             n_mid_near: 5,
@@ -3173,12 +3175,14 @@ where
     ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `optimiser_type` - Which optimiser to use. Options are `"adam"` and
     ///   `"adam_parallel"`.
-    /// * `n_near` - Near pairs per point (attractive), and the kNN search size.
+    /// * `n_near` - Near pairs per point (attractive). The kNN search runs 50
+    ///   wider, and the pairs are the best of those by locally scaled distance.
     /// * `n_mid_near` - Mid-near pairs per point (attractive, global structure).
     /// * `n_further` - Further (random) pairs per point (repulsive).
     /// * `initialisation` - Embedding initialisation. PCA is strongly
     ///   recommended for PaCMAP as random init degrades global structure.
-    /// * `range` - The range for the initial embedding.
+    /// * `range` - Scale of the initial embedding. For PCA, the multiplier on the
+    ///   scores.
     /// * `nn_params` - Nearest neighbour search parameters.
     /// * `optim_params` - Optimiser parameters.
     ///
@@ -3231,6 +3235,75 @@ where
     }
 }
 
+/// Scale of the PaCMAP PCA initialisation. Set by the reference implementation.
+const PACMAP_PCA_SCALE: f64 = 0.01;
+
+/// Above this many features the PaCMAP reference works on this many PCA scores
+/// directly and skips its global min-max normalisation.
+const PACMAP_NORMALISE_MAX_DIM: usize = 100;
+
+/// PCA initialisation for PaCMAP.
+///
+/// Takes the PC scores times a small constant, so the ratio between the
+/// components survives, unlike [`pca_layout`], which sets every component to the
+/// same spread. That ratio is what the mid-near phase starts from.
+///
+/// The layout is sensitive to the accuracy of these PCs: a rank 2 randomised SVD
+/// leaves enough of PC3 in PC2 to end up in a visibly different embedding. So
+/// the scores are exact up to [`PACMAP_NORMALISE_MAX_DIM`] features, and above
+/// that the leading ones of a randomised SVD of that rank.
+///
+/// ### Params
+///
+/// * `data` - Input data, samples x features
+/// * `data_flat` - The same data, row-major
+/// * `n_dim` - Number of embedding dimensions
+/// * `scale` - Multiplier on the scores
+/// * `seed` - Random seed
+///
+/// ### Returns
+///
+/// The initial embedding, shape `[n_samples][n_dim]`.
+fn pacmap_pca_init<T>(
+    data: MatRef<T>,
+    data_flat: &[T],
+    n_dim: usize,
+    scale: T,
+    seed: u64,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let exact = data.ncols() <= PACMAP_NORMALISE_MAX_DIM;
+    let mut scores = if exact {
+        pca_scores(data, n_dim, false, seed)?
+    } else {
+        pca_scores(data, PACMAP_NORMALISE_MAX_DIM, true, seed)?
+    };
+    scores.iter_mut().for_each(|row| row.truncate(n_dim));
+
+    let spread = if exact {
+        let (min, max) = data_flat
+            .iter()
+            .fold((T::infinity(), T::neg_infinity()), |(lo, hi), &x| {
+                (lo.min(x), hi.max(x))
+            });
+        max - min
+    } else {
+        T::one()
+    };
+    let factor = if spread > T::zero() {
+        scale / spread
+    } else {
+        scale
+    };
+
+    scores
+        .iter_mut()
+        .for_each(|row| row.iter_mut().for_each(|v| *v *= factor));
+    Ok(scores)
+}
+
 //////////
 // Main //
 //////////
@@ -3251,7 +3324,9 @@ where
 /// * `data` - Input data as samples x features. Accepts a faer matrix, an
 ///   ndarray 2-D array (with the `ndarray` feature) or a row-major
 ///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
-/// * `precomputed_knn` - Optional precomputed kNN, with k >= `params.n_near`.
+/// * `precomputed_knn` - Optional precomputed kNN, with k >= `params.n_near`,
+///   sorted by distance. The near pairs are ranked from what is given, so make
+///   it `params.n_near + 50` wide, as the internal search is.
 /// * `params` - PaCMAP parameters.
 /// * `seed` - Seed for reproducibility.
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -3288,7 +3363,7 @@ where
         );
     }
 
-    let (knn_indices, _) = match precomputed_knn {
+    let (knn_indices, knn_dists) = match precomputed_knn {
         Some((indices, distances)) => {
             if indices.is_empty() {
                 return Err(ManifoldsError::NoData);
@@ -3305,16 +3380,18 @@ where
             (indices, distances)
         }
         None => {
+            let search_width =
+                (params_pacmap.n_near + PACMAP_EXTRA_NEIGHBOURS).min(n_samples.saturating_sub(1));
             if verbosity.normal_verbosity() {
                 println!(
                     " kNN search via {} (k = {}) ...",
-                    params_pacmap.ann_type, params_pacmap.n_near
+                    params_pacmap.ann_type, search_width
                 );
             }
             let start_knn = Instant::now();
             let result = run_ann_search(
                 data,
-                params_pacmap.n_near,
+                search_width,
                 params_pacmap.ann_type.clone(),
                 &params_pacmap.nn_params,
                 seed,
@@ -3335,11 +3412,12 @@ where
 
     let (data_flat, _, dim) = matrix_to_flat(data);
     let metric = parse_ann_dist(&params_pacmap.nn_params.dist_metric).unwrap_or_default();
+    let near_neighbours = rank_near_neighbours(&knn_indices, &knn_dists, params_pacmap.n_near);
 
     let pairs: PacmapPairs = construct_pacmap_pairs(
         &data_flat,
         dim,
-        &knn_indices,
+        &near_neighbours,
         params_pacmap.n_near,
         params_pacmap.n_mid_near,
         params_pacmap.n_further,
@@ -3377,14 +3455,25 @@ where
 
     let start_init = Instant::now();
 
-    let dummy_graph = knn_to_coo_unweighted(&knn_indices);
-    let mut embd = initialise_embedding(
-        &init_type,
-        params_pacmap.n_dim,
-        seed as u64,
-        &dummy_graph,
-        data,
-    )?;
+    let mut embd = match init_type {
+        EmbdInit::PcaInit { range, .. } => pacmap_pca_init(
+            data,
+            &data_flat,
+            params_pacmap.n_dim,
+            range.unwrap_or_else(|| T::from_f64(PACMAP_PCA_SCALE).unwrap()),
+            seed as u64,
+        )?,
+        _ => {
+            let dummy_graph = knn_to_coo_unweighted(&knn_indices);
+            initialise_embedding(
+                &init_type,
+                params_pacmap.n_dim,
+                seed as u64,
+                &dummy_graph,
+                data,
+            )?
+        }
+    };
 
     if verbosity.normal_verbosity() {
         println!(" ... initialised in {:.2?}", start_init.elapsed());
@@ -3403,11 +3492,10 @@ where
 
     match optimiser {
         PacMapOptimiser::AdamParallel => {
-            let _ =
-                optimise_pacmap_parallel(&mut embd, &pairs, &params_pacmap.optim_params, verbose);
+            optimise_pacmap_parallel(&mut embd, &pairs, &params_pacmap.optim_params, verbose)?;
         }
         PacMapOptimiser::Adam => {
-            let _ = optimise_pacmap(&mut embd, &pairs, &params_pacmap.optim_params, verbose);
+            optimise_pacmap(&mut embd, &pairs, &params_pacmap.optim_params, verbose)?;
         }
     }
 

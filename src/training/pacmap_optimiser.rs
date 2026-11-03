@@ -291,9 +291,7 @@ where
         let (w_nb, w_mn, w_fp) = phase_weights::<T>(epoch, params.phase1_end, params.phase2_end);
 
         // Bias-corrected Adam scale
-        let sqrt_b2t1 = (T::one() - beta2t).sqrt();
-        let ad_scale = params.lr * sqrt_b2t1 / (T::one() - beta1t);
-        let epsc = sqrt_b2t1 * params.eps;
+        let ad_scale = params.lr * (T::one() - beta2t).sqrt() / (T::one() - beta1t);
 
         // Accumulate per-node gradients
         let mut grads = vec![T::zero(); n * n_dim];
@@ -368,7 +366,7 @@ where
             let v_old = v[idx];
             m[idx] = m_old + one_minus_b1 * (g - m_old);
             v[idx] = v_old + one_minus_b2 * (g * g - v_old);
-            embd_flat[idx] += ad_scale * m[idx] / (v[idx].sqrt() + epsc);
+            embd_flat[idx] += ad_scale * m[idx] / (v[idx].sqrt() + params.eps);
         }
 
         beta1t *= params.beta1;
@@ -455,9 +453,7 @@ where
         let (w_nb, w_mn, w_fp) = phase_weights::<T>(epoch, params.phase1_end, params.phase2_end);
 
         // bias-corrected Adam scale
-        let sqrt_b2t1 = (T::one() - beta2t).sqrt();
-        let ad_scale = params.lr * sqrt_b2t1 / (T::one() - beta1t);
-        let epsc = sqrt_b2t1 * params.eps;
+        let ad_scale = params.lr * (T::one() - beta2t).sqrt() / (T::one() - beta1t);
 
         let grads: Vec<T> = (0..n)
             .into_par_iter()
@@ -517,7 +513,7 @@ where
             let v_old = v[idx];
             m[idx] = m_old + one_minus_b1 * (g - m_old);
             v[idx] = v_old + one_minus_b2 * (g * g - v_old);
-            embd_flat[idx] += ad_scale * m[idx] / (v[idx].sqrt() + epsc);
+            embd_flat[idx] += ad_scale * m[idx] / (v[idx].sqrt() + params.eps);
         }
 
         beta1t = beta1t * params.beta1;
