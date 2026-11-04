@@ -2,20 +2,20 @@
 //!
 //! Deliberately thin: one function per entry point in the crate, taking a
 //! design matrix, a parameter dictionary and an optional precomputed kNN graph.
-//! Defaults, argument validation, the string allowlists and the scikit-learn
-//! estimator surface all live in the hand-written `manifolds_rs` Python package
-//! on top.
+//! Argument validation, the string allowlists and the scikit-learn estimator
+//! surface all live in the hand-written `manifolds_rs` Python package on top.
 //!
-//! Three invariants hold throughout, and all three are load-bearing:
+//! Three invariants hold throughout:
 //!
 //! - Everything expensive runs inside `Python::detach`, so the GIL is dropped
 //!   for the whole rayon fan-out. See [`dispatch`] for the nesting rule.
 //! - Nothing generic reaches the crate's entry points. The dispatch macros
 //!   expand to concrete `f32` / `f64` code, which is what discharges each entry
 //!   point's trait bounds without restating any of them.
-//! - No default is written down twice. A parameter the caller did not set is
-//!   simply absent from the dictionary, and the crate's `Default` impl fills
-//!   it. See [`params`].
+//! - The crate owns the defaults. A parameter absent from the dictionary takes
+//!   the value of the crate's `Default` impl, see [`params`]. The estimators write
+//!   their constructor defaults out as literals so a signature is readable, and
+//!   `tests/test_defaults.py` holds the two together.
 
 #![warn(missing_docs)]
 

@@ -181,7 +181,7 @@ def test_fft_3k_gpu_is_refused_on_the_cpu(X: np.ndarray) -> None:
 
 def test_phate_gpu_runs_and_casts_to_float32(X: np.ndarray) -> None:
     embedding = mf.PHATEGpu(
-        diffusion_params=mf.PhateDiffusion(n_landmarks=100, n_svd=20)
+        n_landmarks=100, diffusion_params=mf.PhateDiffusion(n_svd=20)
     ).fit_transform(X)
     assert embedding.shape == (X.shape[0], 2)
     assert embedding.dtype == np.float32

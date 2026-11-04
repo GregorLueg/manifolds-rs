@@ -4,10 +4,10 @@ Hand-written, because maturin does not generate stubs. The signatures here are
 what `src/*.rs` declares; the docstrings live on the Rust side and reach Python
 at runtime.
 
-`umap_gpu`, `densmap_gpu` and `tsne_gpu` exist only in a build with the `gpu`
-feature. They are declared unconditionally, since a stub cannot be conditional
-and `manifolds_rs.gpu` already raises a clear `ImportError` when they are
-missing.
+`umap_gpu`, `densmap_gpu`, `tsne_gpu`, `dreams_gpu` and `phate_gpu` exist only in
+a build with the `gpu` feature. They are declared unconditionally, since a stub
+cannot be conditional and `manifolds_rs.gpu` already raises a clear `ImportError`
+when they are missing.
 """
 
 from typing import Any

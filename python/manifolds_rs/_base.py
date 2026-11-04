@@ -47,7 +47,7 @@ class BaseEmbedding:
     #: estimators pin float32.
     _BASE_DTYPE: ClassVar[np.dtype | None] = None
     #: Extra keyword arguments passed straight through to the core, beyond the
-    #: parameter payload. Only t-SNE uses it, for `approx`.
+    #: parameter payload. The t-SNE family and ForceAtlas2 use it, for `approx`.
     _EXTRA: ClassVar[tuple[str, ...]] = ()
 
     # Every subclass takes these two in its `__init__`. Annotated but not
@@ -97,8 +97,12 @@ class BaseEmbedding:
         """
         return {name: getattr(self, name) for name in self._param_names()}
 
+    @beartype
     def set_params(self, **params: Any) -> BaseEmbedding:
         """Set constructor parameters, discarding any fitted embedding.
+
+        Args:
+            **params: Constructor arguments to replace, by name.
 
         Returns:
             self.
@@ -121,6 +125,7 @@ class BaseEmbedding:
     # Fit #
     #######
 
+    @beartype
     def fit(
         self,
         X: Any,
@@ -149,7 +154,10 @@ class BaseEmbedding:
             self.
 
         Raises:
-            ValueError: If only one of the two kNN arrays was given.
+            TypeError: If `X` or the kNN arrays do not hold numbers.
+            ValueError: If `X` or the kNN arrays have the wrong shape or hold
+                non-finite values, if only one of the two kNN arrays was given,
+                or if `verbose` is not 0, 1 or 2.
         """
         arr = check_matrix(np.asarray(X), dtype=self._BASE_DTYPE)
 
@@ -176,6 +184,7 @@ class BaseEmbedding:
         self.n_samples_fit_, self.n_features_in_ = arr.shape
         return self
 
+    @beartype
     def fit_transform(
         self,
         X: Any,
@@ -199,6 +208,7 @@ class BaseEmbedding:
         self.fit(X, y, knn_indices=knn_indices, knn_distances=knn_distances)
         return self.embedding_
 
+    @beartype
     def transform(self, X: Any) -> np.ndarray:
         """Not available: none of these algorithms projects new points.
 
@@ -241,6 +251,7 @@ class ReferenceEmbedding(BaseEmbedding):
     scikit-learn.
     """
 
+    @beartype
     def fit(
         self,
         X: Any,
@@ -276,6 +287,7 @@ class ReferenceEmbedding(BaseEmbedding):
             self._reference = None
         return self
 
+    @beartype
     def fit_transform(
         self,
         X: Any,

@@ -5,7 +5,7 @@ machine has an adapter, which is the part that varies. The ordinary wheel has
 GPU support compiled in, so importing this module only fails on a build made
 with ``--no-default-features``.
 
-Three things differ from the CPU estimators, all of them consequences of the
+Four things differ from the CPU estimators, all of them consequences of the
 backend rather than choices:
 
 - **float32 at any size.** `fit` casts down to it, the only narrowing this
@@ -330,7 +330,7 @@ class DREAMSGpu(ReferenceEmbedding):
         init: Ignored; accepted so the signature matches `TSNEGpu`.
 
     Everything else is as `TSNEGpu`. The reference is passed to `fit`, see
-    `ReferenceEmbedding.fit`.
+    `fit`.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.dreams_gpu
@@ -408,6 +408,12 @@ class PHATEGpu(BaseEmbedding):
             connectivity kernel instead.
         t: Diffusion time. ``None`` picks the VNE knee.
         gamma: Informational distance constant, in ``[-1, 1]``.
+        n_landmarks: Landmarks to diffuse on. ``None``, or a value at least
+            `n_samples`, runs the full operator, whose dense potential distances
+            grow with the square of `n_samples`.
+        landmark_method: ``"spectral"``, ``"random"`` or ``"density"``. An mlx
+            build adds ``"spectral_mlx"``, which keeps the search on wgpu
+            and runs the landmark selection on MLX.
         mds: ``"sgd_dense"`` (also ``"dense"``) or ``"classic"``.
         mds_iter: MDS iterations. ``None`` uses the backend default.
         ann: ``"nndescent_gpu"``, ``"ivf_gpu"`` or ``"exhaustive_gpu"``.
@@ -415,9 +421,7 @@ class PHATEGpu(BaseEmbedding):
         seed: Fixes the sketch, the k-means initialisation and the MDS.
         verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParamsGpu`.
-        diffusion_params: Remaining operator knobs, landmarks included. See
-            `PhateDiffusion`. In an mlx build, ``"spectral_mlx"`` keeps the search
-            on wgpu and runs the landmark selection on MLX.
+        diffusion_params: Remaining operator knobs. See `PhateDiffusion`.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.phate_gpu
@@ -432,6 +436,8 @@ class PHATEGpu(BaseEmbedding):
         decay: float | None = 40.0,
         t: int | None = None,
         gamma: float = 1.0,
+        n_landmarks: int | None = 2048,
+        landmark_method: str = "spectral",
         mds: str = "sgd_dense",
         mds_iter: int | None = None,
         ann: str = "nndescent_gpu",
@@ -447,6 +453,8 @@ class PHATEGpu(BaseEmbedding):
         self.decay = decay
         self.t = t
         self.gamma = gamma
+        self.n_landmarks = n_landmarks
+        self.landmark_method = landmark_method
         self.mds = mds
         self.mds_iter = mds_iter
         self.ann = ann
@@ -458,21 +466,20 @@ class PHATEGpu(BaseEmbedding):
 
     def _params(self) -> dict[str, Any]:
         diffusion = merge(self.diffusion_params, gamma=self.gamma) or {}
-        # `decay` is set rather than merged: `None` selects the binary
-        # connectivity kernel, and `merge` drops nulls as "leave the default".
+        # `decay` and `n_landmarks` are set rather than merged: `None` selects the
+        # binary kernel and the full operator, and `merge` drops nulls as "leave
+        # the default".
         diffusion["decay"] = self.decay
+        diffusion["n_landmarks"] = self.n_landmarks
         if self.t is not None:
             diffusion["t"] = self.t
         if "graph_symmetry" in diffusion:
             diffusion["graph_symmetry"] = check_choice(
                 diffusion["graph_symmetry"], SYMMETRIES, name="graph_symmetry"
             )
-        if "landmark_method" in diffusion:
-            diffusion["landmark_method"] = check_choice(
-                diffusion["landmark_method"],
-                PHATE_LANDMARK_METHODS,
-                name="landmark_method",
-            )
+        diffusion["landmark_method"] = check_choice(
+            self.landmark_method, PHATE_LANDMARK_METHODS, name="landmark_method"
+        )
         return {
             "n_dim": self.n_components,
             "k": self.k,

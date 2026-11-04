@@ -1,8 +1,9 @@
 """Dimensionality reduction for single-cell and computational biology, in Rust.
 
-UMAP, densMAP, t-SNE, den-SNE, PHATE, PaCMAP, diffusion maps and ForceAtlas2
-behind one estimator surface, with GPU variants of the first three where the neighbour
-search and the Adam update move to the device.
+UMAP, densMAP, t-SNE, den-SNE, DREAMS, PHATE, PaCMAP, diffusion maps and
+ForceAtlas2 behind one estimator surface. UMAP, densMAP, t-SNE, DREAMS and PHATE have
+GPU variants, where the neighbour search and parts of the optimiser move to the
+device.
 
     >>> import manifolds_rs as mf
     >>> X, labels = mf.datasets.clustered(20_000, dim=50, n_clusters=12)

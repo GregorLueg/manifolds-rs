@@ -49,18 +49,17 @@ def test_mlx_estimators_run(name: str, kwargs: dict, X32: np.ndarray) -> None:
 
 @pytest.mark.skipif(mf.mlx_available(), reason="mlx build accepts the name")
 def test_spectral_mlx_points_at_the_build_flag(X32: np.ndarray) -> None:
-    params = mf.PhateDiffusion(landmark_method="spectral_mlx")
     with pytest.raises(ValueError, match="--features mlx"):
-        mf.PHATE(diffusion_params=params).fit_transform(X32)
+        mf.PHATE(landmark_method="spectral_mlx").fit_transform(X32)
 
 
 @needs_mlx
 def test_phate_spectral_mlx_runs(X32: np.ndarray) -> None:
-    params = mf.PhateDiffusion(
-        n_landmarks=100, n_svd=20, landmark_method="spectral_mlx"
-    )
-    embedding = mf.PHATE(ann="nndescent_mlx", diffusion_params=params).fit_transform(
-        X32
-    )
+    embedding = mf.PHATE(
+        n_landmarks=100,
+        landmark_method="spectral_mlx",
+        ann="nndescent_mlx",
+        diffusion_params=mf.PhateDiffusion(n_svd=20),
+    ).fit_transform(X32)
     assert embedding.shape == (X32.shape[0], 2)
     assert np.isfinite(embedding).all()

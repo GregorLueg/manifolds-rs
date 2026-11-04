@@ -4,9 +4,9 @@ Each class stores its constructor arguments verbatim, names the core function it
 drives, and assembles the parameter payload in ``_params``. Everything else
 comes from `BaseEmbedding`.
 
-Defaults are the crate's own, and there is a test asserting exactly that: an
-estimator left alone must produce the same embedding as calling the core with an
-empty payload. A default that drifts here fails it.
+Defaults are written out as literals so a signature tells the reader something,
+and they have to match the crate's: a test asserts that an estimator left alone
+produces the same embedding as calling the core with an empty payload.
 """
 
 from __future__ import annotations
@@ -382,7 +382,7 @@ class DREAMS(ReferenceEmbedding):
         init: Ignored; accepted so the signature matches `TSNE`.
 
     Everything else is as `TSNE`. The reference is passed to `fit`, see
-    `ReferenceEmbedding.fit`.
+    `fit`.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.dreams
@@ -466,6 +466,11 @@ class PHATE(BaseEmbedding):
         t: Diffusion time. ``None`` picks the VNE knee.
         gamma: Informational distance constant, in ``[-1, 1]``. ``1`` is the log
             potential, ``0`` the square-root potential.
+        n_landmarks: Landmarks to diffuse on. ``None``, or a value at least
+            `n_samples`, runs the full operator, whose dense potential distances
+            grow with the square of `n_samples`.
+        landmark_method: ``"spectral"``, ``"random"`` or ``"density"``. An mlx
+            build adds ``"spectral_mlx"``.
         mds: ``"sgd_dense"`` (also ``"dense"``) or ``"classic"``.
         mds_iter: MDS iterations. ``None`` uses the backend default.
         ann: Neighbour backend.
@@ -473,8 +478,7 @@ class PHATE(BaseEmbedding):
         seed: Fixes the initialisation and the landmark sampling.
         verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
-        diffusion_params: Remaining operator knobs, landmarks included. See
-            `PhateDiffusion`.
+        diffusion_params: Remaining operator knobs. See `PhateDiffusion`.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.phate
@@ -488,6 +492,8 @@ class PHATE(BaseEmbedding):
         decay: float | None = 40.0,
         t: int | None = None,
         gamma: float = 1.0,
+        n_landmarks: int | None = 2048,
+        landmark_method: str = "spectral",
         mds: str = "sgd_dense",
         mds_iter: int | None = None,
         ann: str = "nndescent",
@@ -503,6 +509,8 @@ class PHATE(BaseEmbedding):
         self.decay = decay
         self.t = t
         self.gamma = gamma
+        self.n_landmarks = n_landmarks
+        self.landmark_method = landmark_method
         self.mds = mds
         self.mds_iter = mds_iter
         self.ann = ann
@@ -514,21 +522,20 @@ class PHATE(BaseEmbedding):
 
     def _params(self) -> dict[str, Any]:
         diffusion = merge(self.diffusion_params, gamma=self.gamma) or {}
-        # `decay` is set rather than merged: `None` selects the binary
-        # connectivity kernel, and `merge` drops nulls as "leave the default".
+        # `decay` and `n_landmarks` are set rather than merged: `None` selects the
+        # binary kernel and the full operator, and `merge` drops nulls as "leave
+        # the default".
         diffusion["decay"] = self.decay
+        diffusion["n_landmarks"] = self.n_landmarks
         if self.t is not None:
             diffusion["t"] = self.t
         if "graph_symmetry" in diffusion:
             diffusion["graph_symmetry"] = check_choice(
                 diffusion["graph_symmetry"], SYMMETRIES, name="graph_symmetry"
             )
-        if "landmark_method" in diffusion:
-            diffusion["landmark_method"] = check_choice(
-                diffusion["landmark_method"],
-                PHATE_LANDMARK_METHODS,
-                name="landmark_method",
-            )
+        diffusion["landmark_method"] = check_choice(
+            self.landmark_method, PHATE_LANDMARK_METHODS, name="landmark_method"
+        )
         return {
             "n_dim": self.n_components,
             "k": self.k,

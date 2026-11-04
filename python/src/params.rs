@@ -8,8 +8,7 @@
 //! Two rules hold throughout:
 //!
 //! - **A missing key means the crate's own default.** The Rust `Default` impl
-//!   stays the single source of truth for every value the Python layer does not
-//!   deliberately override, so no default is written down twice.
+//!   stays the source of truth for every value the Python layer leaves out.
 //! - **An unknown key is an error, naming the key.** A dictionary is
 //!   stringly-typed, and a silently ignored `min_dst` typo would otherwise cost
 //!   somebody an afternoon.
@@ -150,10 +149,10 @@ impl<'a, 'py> Reader<'a, 'py> {
     /// Whether a key is present at all, an explicit `None` included.
     ///
     /// Almost every field treats an absent key and an explicit `None` alike,
-    /// because `None` means "use the crate default". Two do not: PHATE's
-    /// `decay` and PaCMAP's `range` have non-`None` defaults and a `None` that
-    /// means something (a binary connectivity kernel, and the initialisation's
-    /// own default range). Those two ask this first.
+    /// because `None` means "use the crate default". Three do not: PHATE's `decay`
+    /// and `n_landmarks` and PaCMAP's `range` have non-`None` defaults and a `None`
+    /// that means something (a binary connectivity kernel, the full operator, and
+    /// the initialisation's own default range). Those ask this first.
     ///
     /// ### Params
     ///
@@ -459,7 +458,12 @@ where
     set(&mut p.bandwidth_scale, r.float::<T>("bandwidth_scale")?);
     set(&mut p.thresh, r.float::<T>("thresh")?);
     set(&mut p.graph_symmetry, r.get::<String>("graph_symmetry")?);
-    p.n_landmarks = r.get::<usize>("n_landmarks")?.or(p.n_landmarks);
+    // As for `decay`: an explicit `None` selects the full operator.
+    let landmarks_given = r.present("n_landmarks");
+    let n_landmarks = r.get::<usize>("n_landmarks")?;
+    if landmarks_given {
+        p.n_landmarks = n_landmarks;
+    }
     set(&mut p.landmark_method, r.get::<String>("landmark_method")?);
     p.n_svd = r.get::<usize>("n_svd")?.or(p.n_svd);
     set(&mut p.gamma, r.float::<T>("gamma")?);
@@ -546,12 +550,7 @@ where
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
     nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
-    nested(
-        &mut r,
-        "graph_params",
-        &mut p.graph_params,
-        fill_umap_graph,
-    )?;
+    nested(&mut r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(&mut r, "optim_params", &mut p.optim_params, fill_umap_optim)?;
     r.finish()?;
     Ok(p)
@@ -852,12 +851,7 @@ where
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
     nested(r, "nn_params", &mut p.nn_params, fill_nn)?;
-    nested(
-        r,
-        "graph_params",
-        &mut p.graph_params,
-        fill_umap_graph,
-    )?;
+    nested(r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(r, "optim_params", &mut p.optim_params, fill_umap_optim)?;
     Ok(())
 }
@@ -1066,12 +1060,7 @@ where
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
     nested(r, "nn_params", &mut p.nn_params, fill_nn_gpu)?;
-    nested(
-        r,
-        "graph_params",
-        &mut p.graph_params,
-        fill_umap_graph,
-    )?;
+    nested(r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(r, "optim_params", &mut p.optim_params, fill_umap_optim)?;
     Ok(())
 }

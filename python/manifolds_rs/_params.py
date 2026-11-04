@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from typing import Any
 
+from beartype import beartype
+
 from . import _manifolds
 
 ###########
@@ -48,7 +50,7 @@ ANN_GPU: frozenset[str] = frozenset(
         "ivf",
         "nndescent",
     }
-)
+) | (frozenset({"exhaustive_mlx", "ivf_mlx", "nndescent_mlx"}) if _MLX else frozenset())
 
 #: Distance metrics, from `ann_search_rs::utils::dist::parse_ann_dist`. Note
 #: ``"euclidean"`` and ``"l2"`` are the same metric, as are ``"manhattan"`` and
@@ -58,14 +60,14 @@ METRICS: frozenset[str] = frozenset({"euclidean", "l2", "cosine", "manhattan", "
 #: Embedding initialisations, from `parse_initialisation`.
 INITS: frozenset[str] = frozenset({"spectral", "pca", "random"})
 
-#: The GPU UMAP optimiser. `"adam_gpu"` keeps the update on the device; the CPU
-#: names still work and pull the embedding back each epoch.
+#: GPU UMAP optimisers, from `parse_umap_optimiser_gpu`. `"adam_gpu"` keeps the
+#: update on the device; the CPU names still work and pull the embedding back each
+#: epoch.
 UMAP_OPTIMISERS_GPU: frozenset[str] = frozenset(
     {"adam", "sgd", "adam_parallel", "adam_gpu"}
-)
+) | (frozenset({"adam_mlx"}) if _MLX else frozenset())
 
-#: UMAP optimisers, from `parse_umap_optimiser`. `"adam_mlx"` is CPU `umap` only;
-#: `umap_gpu` does not parse it.
+#: UMAP optimisers, from `parse_umap_optimiser`.
 UMAP_OPTIMISERS: frozenset[str] = frozenset({"adam", "sgd", "adam_parallel"}) | (
     frozenset({"adam_mlx"}) if _MLX else frozenset()
 )
@@ -318,18 +320,14 @@ class DensParams:
 
 @dataclass(frozen=True)
 class PhateDiffusion:
-    """PHATE diffusion operator knobs beyond decay, gamma and t.
+    """PHATE diffusion operator knobs beyond decay, gamma, t and the landmarks.
 
     Attributes:
         bandwidth_scale: Multiplier on the adaptive kernel bandwidth.
         thresh: Affinities below this are zeroed, which is what keeps the
             operator sparse.
         graph_symmetry: ``"add"``, ``"multiply"``, ``"mnn"`` or ``"none"``.
-        n_landmarks: Landmarks to diffuse on instead of the full graph. Worth
-            setting above roughly 50k points.
-        landmark_method: ``"spectral"``, ``"random"`` or ``"density"``. An mlx
-            build adds ``"spectral_mlx"``.
-        n_svd: Components for spectral landmark selection.
+        n_svd: Singular vectors for spectral landmark selection.
         t_max: Largest diffusion time the VNE knee search will consider. Ignored
             when `t` is pinned.
     """
@@ -337,8 +335,6 @@ class PhateDiffusion:
     bandwidth_scale: float | None = None
     thresh: float | None = None
     graph_symmetry: str | None = None
-    n_landmarks: int | None = None
-    landmark_method: str | None = None
     n_svd: int | None = None
     t_max: int | None = None
 
@@ -348,6 +344,7 @@ class PhateDiffusion:
 #############
 
 
+@beartype
 def group_to_dict(group: Any | None) -> dict[str, Any]:
     """Flatten a parameter group into the keys the core reads.
 
@@ -368,6 +365,7 @@ def group_to_dict(group: Any | None) -> dict[str, Any]:
     }
 
 
+@beartype
 def merge(group: Any | None, **overrides: Any) -> dict[str, Any] | None:
     """Flatten a group and fold in the estimator's own arguments.
 
