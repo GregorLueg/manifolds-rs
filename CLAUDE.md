@@ -23,7 +23,9 @@ cargo test --release --features gpu,parametric,fft_tsne     # Full features, Lin
 cargo test --release --features <needed> <test_name>
 cargo test --release --features gpu umap_gpu_integration_01_knn_correctness
 
-# Large-scale diagnostics (dev-only feature, prints scaling metrics)
+# Large-scale diagnostics (dev-only feature, prints scaling metrics).
+# Do not run these routinely: the CI invocations above are enough to validate a
+# change. Run them only when asked, or when a change targets large-scale behaviour.
 cargo test --release --features large_scale_diagnostics --test tsne_large_scale_diag
 cargo test --release --features large_scale_diagnostics --test spectral_bench -- --nocapture
 cargo test --release --features gpu,large_scale_diagnostics --test umap_gpu_bench -- --nocapture
