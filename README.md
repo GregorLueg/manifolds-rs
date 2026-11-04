@@ -51,7 +51,7 @@ with the crate for testing.
 
 ```toml
 [dependencies]
-manifolds-rs = { version = "0.7", features = ["gpu"] }
+manifolds-rs = { version = "0.9", features = ["gpu"] }
 ```
 
 Optional features:

@@ -57,7 +57,7 @@ large_scale_diagnostics = []
 ndarray = ["dep:ndarray"]
 
 [dependencies]
-ann-search-rs = { version = "0.12.0" }
+ann-search-rs = { version = "0.12.2" }
 approx = "0.5.1"
 bincode = { version = "2.0.1", features = ["serde"], optional = true }
 burn = { version = "0.22.0", default-features = false, features = [
