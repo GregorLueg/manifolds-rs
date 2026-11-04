@@ -34,7 +34,7 @@ SVD and the k-means of the landmark selection on the device. The diffusion time,
 the powering, the MDS and the interpolation stay on the CPU.
 
 ```python
-mf.PHATEGpu(k=5, diffusion_params=mf.PhateDiffusion(n_landmarks=4096)).fit_transform(X)
+mf.PHATEGpu(k=5, n_landmarks=4096).fit_transform(X)
 ```
 
 The diffusion time PHATE picks is sensitive to the neighbour graph and to the seed
@@ -132,10 +132,7 @@ mf.UMAP(ann="nndescent_mlx", optimiser="adam_mlx").fit_transform(X)
 mf.DensMAP(optimiser="adam_mlx").fit_transform(X)
 mf.TSNE(ann="nndescent_mlx", approx="fft_3k_mlx").fit_transform(X)
 mf.DREAMS(approx="fft_3k_mlx").fit_transform(X)
-mf.PHATE(
-    ann="nndescent_mlx",
-    diffusion_params=mf.PhateDiffusion(landmark_method="spectral_mlx"),
-).fit_transform(X)
+mf.PHATE(ann="nndescent_mlx", landmark_method="spectral_mlx").fit_transform(X)
 mf.knn_graph(X, k=15, ann="ivf_mlx")
 ```
 

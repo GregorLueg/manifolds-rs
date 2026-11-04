@@ -70,18 +70,22 @@ The neighbour search is most of the runtime on anything large, and every
 estimator accepts a precomputed graph. Build it once:
 
 ```python
-ind, dist = mf.knn_graph(X, k=50, ann="hnsw")
+ind, dist = mf.knn_graph(X, k=90, ann="hnsw")
 
 results = {}
-for name, estimator in [
-    ("umap", mf.UMAP(n_neighbors=15)),
-    ("pacmap", mf.PaCMAP()),
-    ("tsne", mf.TSNE()),
+for name, estimator, width in [
+    ("umap", mf.UMAP(), 15),
+    ("pacmap", mf.PaCMAP(), 60),
+    ("tsne", mf.TSNE(), 90),
 ]:
-    results[name] = estimator.fit_transform(X, knn_indices=ind, knn_distances=dist)
+    results[name] = estimator.fit_transform(
+        X, knn_indices=ind[:, :width], knn_distances=dist[:, :width]
+    )
 ```
 
-Give the shared graph the widest `k` any of your estimators needs.
+Build the graph as wide as the widest estimator needs, then cut it to the width
+each one wants. `UMAP` in particular uses every neighbour it is given, whatever
+`n_neighbors` says. See the [guide](guide.md#reusing-the-neighbour-graph).
 
 ## Trajectories
 

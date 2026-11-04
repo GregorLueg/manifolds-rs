@@ -37,6 +37,8 @@ distances reach you.
 So a graph you build yourself and hand to `fit` should hold true distances too.
 
 Metrics available: `"euclidean"`/`"l2"`, `"cosine"` and `"manhattan"`/`"l1"`.
+`PHATE` and `PHATEGpu` take only the first two, and `DiffusionMaps` raises
+`ValueError` on Manhattan with landmarks.
 
 ## Reusing the neighbour graph
 
@@ -44,15 +46,21 @@ Past a few hundred thousand points the neighbour search is most of the runtime.
 Build it once:
 
 ```python
-ind, dist = mf.knn_graph(X, k=50, ann="hnsw")
+ind, dist = mf.knn_graph(X, k=60, ann="hnsw")
 
-umap = mf.UMAP(n_neighbors=15).fit_transform(X, knn_indices=ind, knn_distances=dist)
+umap = mf.UMAP().fit_transform(X, knn_indices=ind[:, :15], knn_distances=dist[:, :15])
 pacmap = mf.PaCMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
 ```
 
-Two things to get right. Give the shared graph the widest `k` any consumer
-needs, which for `PHATE` means `6k + 5`, since its kernel keeps anything just past
-the `k`-th neighbour. And the graph must be complete: a row
+Three things to get right. Build the graph as wide as the widest consumer needs:
+`3 * perplexity` for the t-SNE family, `n_near + 50` for `PaCMAP` and `6k + 5` for
+`PHATE`, since its kernel keeps anything just past the `k`-th neighbour.
+
+Then cut it down for `UMAP`, `DensMAP` and `ForceAtlas2`, as above. They use every
+neighbour they are given and ignore `n_neighbors`, so a 60-wide graph is
+`n_neighbors=60`, whatever the constructor says.
+
+And the graph must be complete: a row
 an approximate backend could not fill is padded with `-1`, and that is refused
 rather than quietly dropped, because a hole in the graph is not something these
 algorithms can embed.
@@ -63,9 +71,9 @@ bit-identical embedding. It is a shortcut, not a different algorithm.
 ## Choosing a neighbour backend
 
 The default follows `k`. Estimators that ask for a small neighbourhood (UMAP,
-densMAP, PHATE, PaCMAP, diffusion maps, ForceAtlas2) default to `"nndescent"`.
-t-SNE, den-SNE and DREAMS ask for `3 * perplexity` neighbours and default to
-`"ivf"`, which holds up better at that size.
+densMAP, PHATE, diffusion maps, ForceAtlas2) default to `"nndescent"`. t-SNE,
+den-SNE and DREAMS ask for `3 * perplexity` neighbours and PaCMAP for `n_near + 50`,
+and those default to `"ivf"`, which holds up better at that size.
 
 `"kmknn"` is exact and holds up well into the hundreds of thousands, which
 surprises people who assume exact means slow. `"exhaustive"` is for ground
@@ -93,11 +101,12 @@ applies. A misspelled field is a `TypeError` naming the field.
 
 ## Nulls that mean something
 
-Two parameters take `None` as a real value rather than "use the default":
+Three parameters take `None` as a real value rather than "use the default":
 
 - `PHATE(decay=None)` selects a binary connectivity kernel instead of the
   alpha-decay one.
-- `PaCMAP(range_=None)` means no initialisation range.
+- `PHATE(n_landmarks=None)` runs the full operator instead of landmarks.
+- `PaCMAP(range_=None)` hands the range to the initialisation's own default.
 
 Everywhere else `None` means "let the crate decide".
 
@@ -170,11 +179,12 @@ search to float32, so float64 runs differ too.
 
 ## Errors
 
-- `ValueError` for anything you can fix by changing an argument, including
+- `ValueError` for most things you can fix by changing an argument, including
   everything the neighbour search rejects.
 - `ConvergenceError` when a spectral decomposition ran but did not get there,
   which usually means degenerate data: duplicate points, or a disconnected
-  landmark set. Both subclass `ManifoldsRsError`.
+  landmark set. It subclasses `ManifoldsRsError`, which is also what the rest of
+  the core's errors come as, for example `DensNE(approx="fft_3k_mlx")`.
 - `TypeError` for a bad parameter name or type.
 - `NotFittedError` for reading `embedding_` before `fit`. It subclasses both
   `ValueError` and `AttributeError`, matching scikit-learn's.

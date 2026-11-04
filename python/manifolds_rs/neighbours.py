@@ -48,7 +48,8 @@ def knn_graph(
         ann: ``"exhaustive"``, ``"kmknn"``, ``"balltree"``, ``"annoy"``,
             ``"hnsw"``, ``"ivf"`` or ``"nndescent"``. ``"kmknn"`` is exact and
             holds up well into the hundreds of thousands; past that
-            ``"nndescent"`` or ``"hnsw"``.
+            ``"nndescent"`` or ``"hnsw"``. An mlx build adds
+            ``"exhaustive_mlx"``, ``"ivf_mlx"`` and ``"nndescent_mlx"``.
         nn_params: Backend-specific knobs. See `NeighbourParams`.
         seed: Fixes anything randomised in the build.
         verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
@@ -56,11 +57,13 @@ def knn_graph(
     Returns:
         ``(indices, distances)``, both ``(n_samples, k)``. Indices are int64,
         distances come back in the dtype of `X`. Indices first, unlike scikit-learn:
-        it is the order the estimators take them in.
+        it is the order the estimators take them in. A row an approximate
+        backend could not fill is padded with ``-1`` and ``+inf``.
 
     Raises:
-        ValueError: If `ann` or `metric` is not recognised, or `X` is empty or
-            not finite.
+        TypeError: If `X` does not hold numbers.
+        ValueError: If `ann` or `metric` is not recognised, `X` is empty or not
+            finite, or `verbose` is not 0, 1 or 2.
     """
     arr = check_matrix(X)
     group = merge(nn_params, dist_metric=check_choice(metric, METRICS, name="metric"))

@@ -74,14 +74,17 @@ fits them from `min_dist` and `spread` and does not hand them back.
 
 ## Everything else
 
-Any other constructor argument of the estimator goes through as a keyword:
+Other constructor arguments of the estimator go through as keywords:
 
 ```python
 mf.umap(adata, n_epochs=200, init="pca", optim_params=mf.UmapOptim(gamma=1.5))
-mf.tsne(adata, learning_rate=500.0, ann="hnsw", metric="cosine")
+mf.tsne(adata, learning_rate=500.0)
 ```
 
-Unknown names raise, same as the estimator constructors.
+Unknown names raise, same as the estimator constructors. The neighbour graph
+comes from `adata`, which sets two limits: `n_neighbors` is taken from the graph
+and raises `TypeError` if you pass it, and `ann` and `metric` are accepted but do
+nothing, since the search never runs.
 
 ## Benchmark
 

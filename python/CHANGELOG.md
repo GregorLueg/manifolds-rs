@@ -32,6 +32,11 @@ Requires `manifolds-rs` 0.9.0.
   - The log potential of an unreached state is large rather than zero.
   - SGD-MDS scales its budget with the sample count: 300 iterations below 1000
     points, 500 below 5000, 800 otherwise.
+  - n_landmarks and landmark_method moved from PhateDiffusion to the PHATE and
+    PHATEGpu constructors. n_landmarks=None now selects the full operator.
+- randomised_init is randomised on the t-SNE family and ForceAtlas2.
+- DiffusionMaps with spectral landmarks and n_svd=None takes 100 singular vectors
+  (was 10). Embeddings differ from 0.5.0.
 - verbose takes 0 (quiet), 1 (timed stages, epochs every 50) or 2 (also
   parameters, landmark selection, index internals). Other values raise
   ValueError.

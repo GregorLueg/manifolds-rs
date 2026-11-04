@@ -43,7 +43,8 @@ Optimisers and approximations are picked by string:
 | kNN, wgpu | `"nndescent_gpu"` (default), `"ivf_gpu"` (default for t-SNE), `"exhaustive_gpu"` |
 | kNN, MLX | `"nndescent_mlx"`, `"ivf_mlx"`, `"exhaustive_mlx"` |
 
-Distances: Euclidean and cosine. Initialisations: spectral (Lanczos), PCA,
+Distances: Euclidean and cosine. The CPU kNN search also takes Manhattan, which
+PHATE and landmark diffusion maps do not support. Initialisations: spectral (Lanczos), PCA,
 random. Synthetic datasets (swiss roll, clusters, branching trajectories) ship
 with the crate for testing.
 
@@ -86,13 +87,17 @@ let params = UmapParams::new_default_2d(
 let embedding = umap(data.as_ref(), None, &params, 42, 1)?;
 ```
 
-Every entry point follows this shape: data, an optional precomputed kNN, a
+Nearly every entry point follows this shape: data, an optional precomputed kNN, a
 params struct, a seed and a verbosity level, and returns
-`Result<Vec<Vec<T>>, ManifoldsError>`. Inputs can be a faer matrix, an
-`ndarray` view (with the feature) or a flat row-major slice with its shape.
+`Result<Vec<Vec<T>>, ManifoldsError>`. `forceatlas2_from_graph` starts from a graph
+instead, and `train_parametric_umap_model` returns the model too. Inputs can be a
+faer matrix, an `ndarray` view (with the feature) or a flat row-major slice with
+its shape.
 
 Running several embeddings on the same data? Build the kNN graph once with
-`run_ann_search` and hand it to each of them as `Some((indices, distances))`.
+`run_ann_search` and hand it to each of them as `Some((indices, distances))`. UMAP,
+densMAP and ForceAtlas2 use the full width of the graph you give them, so cut it
+to the `k` you want.
 
 Worked examples for every method, including GPU and parametric UMAP, are in
 [docs/examples.md](https://github.com/GregorLueg/manifolds-rs/blob/main/docs/examples.md).
@@ -137,6 +142,7 @@ manifolds-rs = { version = "0.9", features = ["mlx"] }
 MLX is not a separate set of entry points. The CPU ones take the MLX names:
 
 ```rust
+// MLX runs in f32, so data has to be f32 as well
 let params = UmapParams {
     ann_type: "nndescent_mlx".into(),
     optimiser: "adam_mlx".into(),

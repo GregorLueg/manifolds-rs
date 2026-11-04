@@ -42,6 +42,19 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   - The log potential of a zero entry of `P^t` is `-ln(1e-7)` rather than `0`.
   - SGD-MDS scales its budget with `n`: 300 iterations below 1000 points, 500 below
     5000, 800 otherwise.
+- One name per concept across the parameter structs. `ann_params` is `nn_params`
+  (`PhateParams`, `DiffusionMapsParams`), `randomised_init` is `randomised` (t-SNE
+  family, `Fa2Params`), `optimiser_type` is `optimiser` (`PacmapParams`) and
+  `umap_graph_params` is `graph_params` (UMAP family, `ParametricUmapParams`).
+- `parse_initilisation` is `parse_initialisation`, and
+  `ManifoldsError::SpareMatrixMustBeSquare` is `SparseMatrixMustBeSquare`.
+- `PHATE_DEFAULT_N_SVD` is `LANDMARK_DEFAULT_N_SVD`, and diffusion maps use it too:
+  with spectral landmarks and `n_svd = None` they take 100 singular vectors rather
+  than 10. Different embeddings at the same seed.
+- Parametric UMAP has one default curve, fitted to `DEFAULT_MIN_DIST` (0.5) and
+  `DEFAULT_SPREAD`, as for UMAP. `TrainParametricParams::default_2d` was `a = 1.5`,
+  `b = 0.9` and `ParametricUmapParams::new_default_2d` used `min_dist = 0.1`.
+  Different embeddings at the same seed.
 - One verbosity grammar across every embedding. Level 1 prints `Running <name> on
   <n> samples ...`, timed stages, epochs every 50 and `... finished <name> in`.
   Level 2 adds parameters, landmark selection and the kNN internals, which level 1
