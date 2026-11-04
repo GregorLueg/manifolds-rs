@@ -328,7 +328,8 @@ fn pacmap_integration_09_cluster_separation() {
 #[test]
 fn pacmap_integration_10_precomputed_knn() {
     let (data, _) = create_diagnostic_data(50, 10, 42);
-    let k = PacmapParams::<f64>::default().n_near;
+    // the width of the internal search
+    let k = PacmapParams::<f64>::default().n_near + 50;
 
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) =

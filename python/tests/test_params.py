@@ -137,7 +137,22 @@ def test_phate_decay_none_selects_the_binary_kernel(X: np.ndarray) -> None:
 
 
 def test_pacmap_range_none_differs_from_the_default(X: np.ndarray) -> None:
-    """Same shape of question for PaCMAP's initialisation range."""
+    """Same shape of question for PaCMAP's initialisation range. Off PCA, `None`
+    hands the scale to the initialisation's own default."""
+    ranged = mf.PaCMAP(n_epochs=20, seed=5, init="spectral", range_=0.01).fit_transform(
+        X
+    )
+    unranged = mf.PaCMAP(
+        n_epochs=20, seed=5, init="spectral", range_=None
+    ).fit_transform(X)
+    assert not np.array_equal(ranged, unranged)
+
+
+def test_pacmap_pca_range_none_is_the_reference_scale(X: np.ndarray) -> None:
+    """PCA's own default is the reference's 0.01, so there `None` is the default.
+    A different scale must still move the result, or this could not fail."""
     ranged = mf.PaCMAP(n_epochs=20, seed=5, range_=0.01).fit_transform(X)
     unranged = mf.PaCMAP(n_epochs=20, seed=5, range_=None).fit_transform(X)
-    assert not np.array_equal(ranged, unranged)
+    rescaled = mf.PaCMAP(n_epochs=20, seed=5, range_=0.05).fit_transform(X)
+    assert np.array_equal(ranged, unranged)
+    assert not np.array_equal(ranged, rescaled)

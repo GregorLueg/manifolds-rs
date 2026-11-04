@@ -54,6 +54,7 @@ def test_defaults_match_the_core(
             getattr(core, "densmap_gpu", None),
         ),
         ("TSNEGpu", getattr(mf, "TSNEGpu", None), getattr(core, "tsne_gpu", None)),
+        ("PHATEGpu", getattr(mf, "PHATEGpu", None), getattr(core, "phate_gpu", None)),
     ],
 )
 def test_gpu_defaults_match_the_core(

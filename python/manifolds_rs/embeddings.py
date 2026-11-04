@@ -26,6 +26,7 @@ from ._params import (
     MDS_METHODS,
     METRICS,
     PACMAP_OPTIMISERS,
+    PHATE_LANDMARK_METHODS,
     SYMMETRIES,
     TSNE_APPROX,
     UMAP_OPTIMISERS,
@@ -456,7 +457,7 @@ class PHATE(BaseEmbedding):
     Args:
         n_components: Output dimensionality.
         k: Neighbours that set the kernel bandwidth. Smaller than UMAP's because
-            the diffusion does the smoothing. The search runs ``3k + 2`` wide,
+            the diffusion does the smoothing. The search runs ``6k + 5`` wide,
             since the kernel keeps anything just past the ``k``-th neighbour, so
             give a precomputed graph that width as well.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
@@ -524,7 +525,9 @@ class PHATE(BaseEmbedding):
             )
         if "landmark_method" in diffusion:
             diffusion["landmark_method"] = check_choice(
-                diffusion["landmark_method"], LANDMARK_METHODS, name="landmark_method"
+                diffusion["landmark_method"],
+                PHATE_LANDMARK_METHODS,
+                name="landmark_method",
             )
         return {
             "n_dim": self.n_components,
@@ -554,8 +557,9 @@ class PaCMAP(BaseEmbedding):
 
     Args:
         n_components: Output dimensionality.
-        n_near: Near (attractive) pairs per point, and the width of the kNN
-            search. A precomputed graph must be at least this wide.
+        n_near: Near (attractive) pairs per point. The search runs ``n_near + 50``
+            wide and picks them from those by locally scaled distance. A precomputed
+            graph needs at least `n_near` neighbours and should be that wide.
         n_mid_near: Mid-near pairs per point.
         n_further: Further (repulsive) pairs per point.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
@@ -564,7 +568,9 @@ class PaCMAP(BaseEmbedding):
         init: ``"pca"``, ``"spectral"`` or ``"random"``.
         ann: Neighbour backend.
         optimiser: ``"adam_parallel"`` or ``"adam"``.
-        range_: Scale of the initial coordinates.
+        range_: Scale of the initial coordinates. For ``"pca"`` the multiplier on
+            the scores, where ``None`` means ``0.01``. For the other initialisations
+            ``None`` lets the core pick.
         seed: Fixes the initialisation and the pair sampling.
         verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
@@ -584,7 +590,7 @@ class PaCMAP(BaseEmbedding):
         n_epochs: int = 450,
         learning_rate: float = 1.0,
         init: str = "pca",
-        ann: str = "nndescent",
+        ann: str = "ivf",
         optimiser: str = "adam_parallel",
         range_: float | None = 0.01,
         seed: int = 42,

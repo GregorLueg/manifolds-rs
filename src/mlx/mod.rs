@@ -5,5 +5,6 @@
 //! since MLX has no f64 on the GPU.
 
 mod ffi;
+pub mod sparse_svd_mlx;
 pub mod tsne_optimiser_mlx;
 pub mod umap_optimiser_mlx;

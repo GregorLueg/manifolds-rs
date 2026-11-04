@@ -56,8 +56,11 @@ use crate::training::umap_optimisers::*;
 use crate::utils::density::{DENSMAP_LAMBDA, DENSNE_LAMBDA};
 use crate::utils::diffusions::*;
 use crate::utils::dreams::{dreams_setup, DREAMS_LAMBDA};
-use crate::utils::math::compute_largest_eigenpairs_lanczos;
-use crate::utils::potentials::compute_potential_distances;
+use crate::utils::math::{compute_largest_eigenpairs_lanczos, von_neumann_entropy_f64};
+use crate::utils::potentials::{
+    compute_potential_distances_with_fill, dense_potential_rows, pairwise_row_distances,
+    potential_of_zero,
+};
 use crate::utils::sparse_ops::matrix_power;
 
 #[cfg(mlx_available)]
@@ -2616,7 +2619,7 @@ where
             // parser's own default. Same operator either way, but a default
             // that its own parser rejects is a trap for the next reader.
             "add".to_string(),
-            None,
+            Some(PHATE_DEFAULT_LANDMARKS),
             "spectral".to_string(),
             None,
             None,
@@ -2802,14 +2805,61 @@ where
         }
     };
 
+    phate_diffusion_from_knn(
+        data,
+        &knn_indices,
+        &knn_dist,
+        &nn_params.dist_metric,
+        phate_params,
+        &SpectralBackend::Cpu,
+        seed,
+        verbose,
+    )
+}
+
+/// Build the PHATE diffusion operator from a finished kNN graph.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features
+/// * `knn_indices` - Neighbour indices, excluding self
+/// * `knn_dist` - Neighbour distances, excluding self
+/// * `dist_metric` - Distance metric of the graph
+/// * `phate_params` - Full PHATE parameter struct
+/// * `backend` - Where spectral landmark selection runs
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// See [`construct_phate_diffusion`].
+#[allow(clippy::too_many_arguments)]
+fn phate_diffusion_from_knn<T>(
+    data: MatRef<T>,
+    knn_indices: &[Vec<usize>],
+    knn_dist: &[Vec<T>],
+    dist_metric: &str,
+    phate_params: &PhateParams<T>,
+    backend: &SpectralBackend,
+    seed: usize,
+    verbose: usize,
+) -> Result<PhateDiffusion<T>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let verbosity = parse_verbosity_level(verbose);
+    let (landmark_method, backend) =
+        resolve_landmark_backend(&phate_params.diffusion_params.landmark_method, backend);
+
     if verbosity.normal_verbosity() {
         println!(" Building alpha-decay affinities ...");
     }
     let start_alpha_affinities = Instant::now();
 
     let graph = phate_alpha_decay_affinities(
-        &knn_indices,
-        &knn_dist,
+        knn_indices,
+        knn_dist,
         phate_params.k,
         phate_params.diffusion_params.decay,
         phate_params.diffusion_params.bandwidth_scale,
@@ -2839,15 +2889,21 @@ where
                 println!(" Building {} landmarks ...", n_landmarks);
             }
             let start_landmarks = Instant::now();
-            let landmarks = PhateLandmarks::build(
+            let landmarks = PhateLandmarks::build_with_backend(
                 data,
                 &affinity,
                 &diffusion_op,
                 n_landmarks,
-                &phate_params.diffusion_params.landmark_method,
-                &nn_params.dist_metric,
+                landmark_method,
+                dist_metric,
                 seed,
-                Some(100),
+                Some(
+                    phate_params
+                        .diffusion_params
+                        .n_svd
+                        .unwrap_or(PHATE_DEFAULT_N_SVD),
+                ),
+                &backend,
                 verbose,
             )?;
             if verbosity.normal_verbosity() {
@@ -2939,6 +2995,135 @@ where
         verbose,
     )?;
 
+    phate_from_diffusion(
+        data.nrows(),
+        phate_diffusion,
+        &phate_params,
+        start_run,
+        seed,
+        verbose,
+    )
+}
+
+/// Run PHATE with spectral landmark selection and kNN search on a cubecl device.
+///
+/// Identical to [`phate`] except for where those two stages run: the randomised
+/// SVD and the k-means on the device in `f32`, the rest on the CPU. Only the
+/// spectral landmark method uses the device beyond the kNN search.
+/// `landmark_method = "spectral_mlx"` keeps the search on wgpu and runs the SVD
+/// and the k-means on MLX.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Precomputed kNN indices and distances, excluding self,
+///   or `None` to search on the device.
+/// * `phate_params` - PHATE parameters. `ann_type` is read as a GPU key, see
+///   [`run_ann_search_gpu`]; `ann_params` is replaced by `nn_params`.
+/// * `nn_params` - GPU nearest neighbour parameters
+/// * `device` - The GPU device to use
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>` where the outer vector has length
+/// `n_dim` and each inner vector has length `n_samples`.
+#[cfg(feature = "gpu")]
+pub fn phate_gpu<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    mut phate_params: PhateParams<T>,
+    nn_params: &NearestNeighbourParamsGpu<T>,
+    device: Device,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloatGpu,
+    StandardNormal: Distribution<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    let verbosity = parse_verbosity_level(verbose);
+    let start_run = Instant::now();
+    phate_params.ann_params.dist_metric = nn_params.dist_metric.clone();
+
+    let (knn_indices, knn_dist) = match precomputed_knn {
+        Some(knn) => knn,
+        None => {
+            let start_knn = Instant::now();
+            let result = run_ann_search_gpu::<T>(
+                data,
+                phate_search_width(phate_params.k),
+                phate_params.ann_type.clone(),
+                nn_params,
+                device.clone(),
+                seed,
+                ann_verbose(verbosity),
+            )?;
+            if verbosity.normal_verbosity() {
+                println!(" ... kNN search in {:.2?}", start_knn.elapsed());
+            }
+            result
+        }
+    };
+
+    let phate_diffusion = phate_diffusion_from_knn(
+        data,
+        &knn_indices,
+        &knn_dist,
+        &nn_params.dist_metric,
+        &phate_params,
+        &SpectralBackend::Wgpu(device),
+        seed,
+        verbose,
+    )?;
+
+    phate_from_diffusion(
+        data.nrows(),
+        phate_diffusion,
+        &phate_params,
+        start_run,
+        seed,
+        verbose,
+    )
+}
+
+/// Everything in PHATE after the diffusion operator: diffusion time, potential,
+/// MDS and, for landmarks, the interpolation back to all samples.
+///
+/// ### Params
+///
+/// * `n_obs` - Number of samples
+/// * `phate_diffusion` - Full or landmark diffusion operator
+/// * `phate_params` - PHATE parameters
+/// * `start_run` - Start of the whole run, for the verbose total
+/// * `seed` - Random seed for reproducibility
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// See [`phate`].
+fn phate_from_diffusion<T>(
+    n_obs: usize,
+    phate_diffusion: PhateDiffusion<T>,
+    phate_params: &PhateParams<T>,
+    start_run: Instant,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    StandardNormal: Distribution<T>,
+{
+    let verbosity = parse_verbosity_level(verbose);
+    let name = "PHATE";
+
     let start_t = Instant::now();
     let t = match phate_params.diffusion_params.t {
         PhateTime::Auto { t_max } => {
@@ -2948,7 +3133,7 @@ where
             match &phate_diffusion {
                 PhateDiffusion::Landmark { landmarks } => landmarks.find_optimal_t(t_max),
                 PhateDiffusion::Full { operator } => {
-                    let entropy = landmark_von_neumann_entropy(operator, t_max)?;
+                    let entropy = von_neumann_entropy_f64(operator, t_max)?;
                     Ok(find_knee_point(&entropy))
                 }
             }
@@ -2961,14 +3146,12 @@ where
 
     let mds_method = parse_mds_method(&phate_params.mds_method).unwrap_or_default();
     let dist = parse_ann_dist(&phate_params.ann_params.dist_metric).unwrap_or_default();
-    let mds_params = MdsOptimParams::new(
-        data.nrows(),
-        phate_params.randomised,
-        phate_params.mds_iter,
-        None,
-    );
+    let mds_params =
+        MdsOptimParams::new(n_obs, phate_params.randomised, phate_params.mds_iter, None);
 
-    let start_embed = Instant::now();
+    let start_potential = Instant::now();
+    let potential_fill = potential_of_zero(phate_params.diffusion_params.gamma);
+    let start_mds;
 
     let embedding = match phate_diffusion {
         PhateDiffusion::Full { operator } => {
@@ -2983,23 +3166,25 @@ where
                     " ... potential ({} x {}) in {:.2?}",
                     potential.shape().0,
                     potential.shape().1,
-                    start_embed.elapsed()
+                    start_potential.elapsed()
                 );
             }
+
+            start_mds = Instant::now();
+            let distances =
+                compute_potential_distances_with_fill(&potential, &dist, potential_fill);
 
             let res = match mds_method {
                 MdsMethod::ClassicMds => {
                     if verbosity.normal_verbosity() {
                         println!(" Running classic MDS ...");
                     }
-                    let distances = compute_potential_distances(&potential, &dist);
                     classic_mds(&distances, phate_params.n_dim, mds_params.randomised, seed)
                 }
                 MdsMethod::SgdDense => {
                     if verbosity.normal_verbosity() {
                         println!(" Running SGD-MDS ...");
                     }
-                    let distances = compute_potential_distances(&potential, &dist);
                     sgd_mds(
                         &distances,
                         phate_params.n_dim,
@@ -3020,26 +3205,27 @@ where
                     landmarks.get_n_landmarks()
                 );
             }
-            let landmark_powered = landmarks.power(t)?;
-            let landmark_potential =
-                calculate_potential(&landmark_powered, 1, phate_params.diffusion_params.gamma)?;
+            let landmark_potential = dense_potential_rows(
+                &landmarks.power_dense(t)?,
+                phate_params.diffusion_params.gamma,
+            );
 
             if verbosity.normal_verbosity() {
                 println!(
-                    " ... landmark potential ({} x {}) in {:.2?}",
-                    landmark_potential.shape().0,
-                    landmark_potential.shape().1,
-                    start_embed.elapsed()
+                    " ... landmark potential ({0} x {0}) in {1:.2?}",
+                    landmark_potential.len(),
+                    start_potential.elapsed()
                 );
                 println!(" Computing landmark distances ...");
             }
 
-            let landmark_distances = compute_potential_distances(&landmark_potential, &dist);
+            start_mds = Instant::now();
+            let landmark_distances = pairwise_row_distances(&landmark_potential, &dist);
 
             let landmark_mds_params = MdsOptimParams::new(
                 landmarks.get_n_landmarks(),
                 phate_params.randomised,
-                None,
+                phate_params.mds_iter,
                 None,
             );
 
@@ -3072,7 +3258,7 @@ where
     };
 
     if verbosity.normal_verbosity() {
-        println!(" ... MDS in {:.2?}", start_embed.elapsed());
+        println!(" ... MDS in {:.2?}", start_mds.elapsed());
         println!("... finished {} in {:.2?}", name, start_run.elapsed());
     }
 
@@ -3106,7 +3292,8 @@ pub struct PacmapParams<T> {
     pub ann_type: String,
     /// Which optimiser to use. Options are `"adam"` and `"adam_parallel"`
     pub optimiser_type: String,
-    /// Near pairs per point (attractive), and the kNN search size. Default 10.
+    /// Near pairs per point (attractive). The kNN search runs 50 wider, and the
+    /// pairs are the best of those by locally scaled distance. Default 10.
     pub n_near: usize,
     /// Mid-near pairs per point (attractive, global structure). Default 5.
     pub n_mid_near: usize,
@@ -3115,7 +3302,7 @@ pub struct PacmapParams<T> {
     /// Embedding initialisation. Default `"pca"`. PCA is strongly recommended
     /// for PaCMAP as random init degrades global structure.
     pub initialisation: String,
-    /// The range of the initial embedding
+    /// Scale of the initial embedding. For PCA, the multiplier on the scores.
     pub range: Option<T>,
     /// Nearest neighbour search parameters.
     pub nn_params: NearestNeighbourParams<T>,
@@ -3130,7 +3317,8 @@ where
     fn default() -> Self {
         Self {
             n_dim: 2,
-            ann_type: "nndescent".to_string(),
+            // the search runs at n_near + 50, where IVF scales better
+            ann_type: "ivf".to_string(),
             optimiser_type: "adam_parallel".to_string(),
             n_near: 10,
             n_mid_near: 5,
@@ -3162,12 +3350,14 @@ where
     ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `optimiser_type` - Which optimiser to use. Options are `"adam"` and
     ///   `"adam_parallel"`.
-    /// * `n_near` - Near pairs per point (attractive), and the kNN search size.
+    /// * `n_near` - Near pairs per point (attractive). The kNN search runs 50
+    ///   wider, and the pairs are the best of those by locally scaled distance.
     /// * `n_mid_near` - Mid-near pairs per point (attractive, global structure).
     /// * `n_further` - Further (random) pairs per point (repulsive).
     /// * `initialisation` - Embedding initialisation. PCA is strongly
     ///   recommended for PaCMAP as random init degrades global structure.
-    /// * `range` - The range for the initial embedding.
+    /// * `range` - Scale of the initial embedding. For PCA, the multiplier on the
+    ///   scores.
     /// * `nn_params` - Nearest neighbour search parameters.
     /// * `optim_params` - Optimiser parameters.
     ///
@@ -3220,6 +3410,75 @@ where
     }
 }
 
+/// Scale of the PaCMAP PCA initialisation. Set by the reference implementation.
+const PACMAP_PCA_SCALE: f64 = 0.01;
+
+/// Above this many features the PaCMAP reference works on this many PCA scores
+/// directly and skips its global min-max normalisation.
+const PACMAP_NORMALISE_MAX_DIM: usize = 100;
+
+/// PCA initialisation for PaCMAP.
+///
+/// Takes the PC scores times a small constant, so the ratio between the
+/// components survives, unlike [`pca_layout`], which sets every component to the
+/// same spread. That ratio is what the mid-near phase starts from.
+///
+/// The layout is sensitive to the accuracy of these PCs: a rank 2 randomised SVD
+/// leaves enough of PC3 in PC2 to end up in a visibly different embedding. So
+/// the scores are exact up to [`PACMAP_NORMALISE_MAX_DIM`] features, and above
+/// that the leading ones of a randomised SVD of that rank.
+///
+/// ### Params
+///
+/// * `data` - Input data, samples x features
+/// * `data_flat` - The same data, row-major
+/// * `n_dim` - Number of embedding dimensions
+/// * `scale` - Multiplier on the scores
+/// * `seed` - Random seed
+///
+/// ### Returns
+///
+/// The initial embedding, shape `[n_samples][n_dim]`.
+fn pacmap_pca_init<T>(
+    data: MatRef<T>,
+    data_flat: &[T],
+    n_dim: usize,
+    scale: T,
+    seed: u64,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let exact = data.ncols() <= PACMAP_NORMALISE_MAX_DIM;
+    let mut scores = if exact {
+        pca_scores(data, n_dim, false, seed)?
+    } else {
+        pca_scores(data, PACMAP_NORMALISE_MAX_DIM, true, seed)?
+    };
+    scores.iter_mut().for_each(|row| row.truncate(n_dim));
+
+    let spread = if exact {
+        let (min, max) = data_flat
+            .iter()
+            .fold((T::infinity(), T::neg_infinity()), |(lo, hi), &x| {
+                (lo.min(x), hi.max(x))
+            });
+        max - min
+    } else {
+        T::one()
+    };
+    let factor = if spread > T::zero() {
+        scale / spread
+    } else {
+        scale
+    };
+
+    scores
+        .iter_mut()
+        .for_each(|row| row.iter_mut().for_each(|v| *v *= factor));
+    Ok(scores)
+}
+
 //////////
 // Main //
 //////////
@@ -3240,7 +3499,9 @@ where
 /// * `data` - Input data as samples x features. Accepts a faer matrix, an
 ///   ndarray 2-D array (with the `ndarray` feature) or a row-major
 ///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
-/// * `precomputed_knn` - Optional precomputed kNN, with k >= `params.n_near`.
+/// * `precomputed_knn` - Optional precomputed kNN, with k >= `params.n_near`,
+///   sorted by distance. The near pairs are ranked from what is given, so make
+///   it `params.n_near + 50` wide, as the internal search is.
 /// * `params` - PaCMAP parameters.
 /// * `seed` - Seed for reproducibility.
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -3277,7 +3538,7 @@ where
         );
     }
 
-    let (knn_indices, _) = match precomputed_knn {
+    let (knn_indices, knn_dists) = match precomputed_knn {
         Some((indices, distances)) => {
             if indices.is_empty() {
                 return Err(ManifoldsError::NoData);
@@ -3294,16 +3555,18 @@ where
             (indices, distances)
         }
         None => {
+            let search_width =
+                (params_pacmap.n_near + PACMAP_EXTRA_NEIGHBOURS).min(n_samples.saturating_sub(1));
             if verbosity.normal_verbosity() {
                 println!(
                     " kNN search via {} (k = {}) ...",
-                    params_pacmap.ann_type, params_pacmap.n_near
+                    params_pacmap.ann_type, search_width
                 );
             }
             let start_knn = Instant::now();
             let result = run_ann_search(
                 data,
-                params_pacmap.n_near,
+                search_width,
                 params_pacmap.ann_type.clone(),
                 &params_pacmap.nn_params,
                 seed,
@@ -3324,11 +3587,12 @@ where
 
     let (data_flat, _, dim) = matrix_to_flat(data);
     let metric = parse_ann_dist(&params_pacmap.nn_params.dist_metric).unwrap_or_default();
+    let near_neighbours = rank_near_neighbours(&knn_indices, &knn_dists, params_pacmap.n_near);
 
     let pairs: PacmapPairs = construct_pacmap_pairs(
         &data_flat,
         dim,
-        &knn_indices,
+        &near_neighbours,
         params_pacmap.n_near,
         params_pacmap.n_mid_near,
         params_pacmap.n_further,
@@ -3366,14 +3630,25 @@ where
 
     let start_init = Instant::now();
 
-    let dummy_graph = knn_to_coo_unweighted(&knn_indices);
-    let mut embd = initialise_embedding(
-        &init_type,
-        params_pacmap.n_dim,
-        seed as u64,
-        &dummy_graph,
-        data,
-    )?;
+    let mut embd = match init_type {
+        EmbdInit::PcaInit { range, .. } => pacmap_pca_init(
+            data,
+            &data_flat,
+            params_pacmap.n_dim,
+            range.unwrap_or_else(|| T::from_f64(PACMAP_PCA_SCALE).unwrap()),
+            seed as u64,
+        )?,
+        _ => {
+            let dummy_graph = knn_to_coo_unweighted(&knn_indices);
+            initialise_embedding(
+                &init_type,
+                params_pacmap.n_dim,
+                seed as u64,
+                &dummy_graph,
+                data,
+            )?
+        }
+    };
 
     if verbosity.normal_verbosity() {
         println!(" ... initialised in {:.2?}", start_init.elapsed());
@@ -3392,11 +3667,10 @@ where
 
     match optimiser {
         PacMapOptimiser::AdamParallel => {
-            let _ =
-                optimise_pacmap_parallel(&mut embd, &pairs, &params_pacmap.optim_params, verbose);
+            optimise_pacmap_parallel(&mut embd, &pairs, &params_pacmap.optim_params, verbose)?;
         }
         PacMapOptimiser::Adam => {
-            let _ = optimise_pacmap(&mut embd, &pairs, &params_pacmap.optim_params, verbose);
+            optimise_pacmap(&mut embd, &pairs, &params_pacmap.optim_params, verbose)?;
         }
     }
 

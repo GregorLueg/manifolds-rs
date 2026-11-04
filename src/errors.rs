@@ -67,6 +67,10 @@ pub enum ManifoldsError {
     /// Error for SVDs from faer
     #[error("The faer SVD failed - please verify the data")]
     FaerSvdError,
+    /// A CholeskyQR pass of a GPU randomised SVD hit a Gram matrix that is not
+    /// positive definite, i.e. the sketch is numerically rank deficient
+    #[error("CholeskyQR failed: the Gram matrix of the sketch is not positive definite")]
+    CholeskyQrFailed,
     /// Error for Eigen decomposition from faer
     #[error("The faer Eigen decomposition failed - please verify the data")]
     FaerEigenError,

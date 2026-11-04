@@ -42,14 +42,14 @@ Linux GPU tests need Vulkan (`libvulkan1 mesa-vulkan-drivers libgl1-mesa-dri`) a
 
 - `parametric` — parametric UMAP via `burn` (+ `serde`, `bincode` for model I/O).
 - `fft_tsne`: FFT-accelerated tSNE via `rustfft` + `realfft` (pure Rust). `n_fft` is padded to the next `2^a` or `3 * 2^a` (`fft_len` in `utils/fft.rs`).
-- `gpu` — GPU kNN + GPU Adam UMAP via `cubecl` (wgpu/CUDA) and `ann-search-rs/gpu`. GPU code paths run in `f32` only (WGSL has no `f64`). `GpuTensor`, `GpuLimits`, `grid_2d`, `checked_cube_count`, `resolve_workgroup_size` and `CubeclFloat` come from `cubecl-utils-rs`; allocations and grid sizing are fallible and every limit is queried off the device, never assumed.
+- `gpu` — GPU kNN + GPU Adam UMAP + PHATE's spectral landmark selection via `cubecl` (wgpu/CUDA) and `ann-search-rs/gpu`. GPU code paths run in `f32` only (WGSL has no `f64`). `GpuTensor`, `GpuLimits`, `grid_2d`, `checked_cube_count`, `resolve_workgroup_size` and `CubeclFloat` come from `cubecl-utils-rs`; allocations and grid sizing are fallible and every limit is queried off the device, never assumed.
 - `large_scale_diagnostics` — dev-only, gates `tests/tsne_large_scale_diag.rs`, all of `tests/umap_gpu_bench.rs` (which also needs `gpu`), and the timing benchmarks in `tests/spectral_bench.rs`. Put heavy tests here so CI never compiles them.
 
 Feature-gated code, tests, and prelude re-exports are conditional on these; when adding a new symbol, mirror the `#[cfg(feature = "…")]` gating in `src/prelude.rs`.
 
 ## Architecture
 
-`src/lib.rs` is the ~3.4k-line facade. Every user-facing algorithm has three things there: a `<Algo>Params<T>` struct (with `Default` and `new_default_2d`), an optional `construct_<algo>_graph` helper, and the entry-point free function (`umap`, `tsne`, `phate`, `pacmap`, `diffusion_maps`, `forceatlas2`, `parametric_umap`, `umap_gpu`, `tsne_gpu`). Sub-modules hold the implementation:
+`src/lib.rs` is the ~3.4k-line facade. Every user-facing algorithm has three things there: a `<Algo>Params<T>` struct (with `Default` and `new_default_2d`), an optional `construct_<algo>_graph` helper, and the entry-point free function (`umap`, `tsne`, `phate`, `pacmap`, `diffusion_maps`, `forceatlas2`, `parametric_umap`, `umap_gpu`, `tsne_gpu`, `phate_gpu`). Sub-modules hold the implementation:
 
 - `src/data/` — graph construction and neighbour indices.
   - `nearest_neighbours.rs` / `nearest_neighbours_gpu.rs` — thin wrapper over `ann-search-rs`. Backends are picked by **string keys**: CPU = `"exhaustive"`, `"kmknn"`, `"balltree"`, `"annoy"`, `"nndescent"`, `"hnsw"`, `"ivf"`; GPU = `"exhaustive_gpu"`, `"ivf_gpu"`, `"nndescent_gpu"`.
@@ -60,6 +60,7 @@ Feature-gated code, tests, and prelude re-exports are conditional on these; when
   - `synthetic.rs` — swiss roll, clusters, branching trajectories used by tests and README examples.
 - `src/training/` — optimisers. `umap_optimisers.rs` (SGD, Adam, parallel Adam), `umap_optimiser_gpu.rs` (GPU Adam), `tsne_optimiser.rs`, `pacmap_optimiser.rs`, `fa2_optimiser.rs` (ForceAtlas2, mass-weighted BH repulsion), `mds_optimiser.rs` (PHATE MDS). Shared Adam constants (`UMAP_BETA1`, `BETA1`, `EPS`, …) live in `training/mod.rs`.
 - `src/utils/` — `bh_tree.rs` (Barnes-Hut quadtree), `fft.rs` (FFT-accelerated tSNE, `fft_tsne` only), `diffusions.rs` (PHATE + diffusion maps operators, VNE knee), `potentials.rs` (PHATE potential distance), `sparse_ops.rs`, `math.rs` (Lanczos eigenpairs, VNE), `traits.rs` (`ManifoldsFloat`, `ManifoldsFloatGpu`), `macros.rs`.
+- `src/utils/sparse_svd_gpu.rs` (feature `gpu`) and `src/mlx/sparse_svd_mlx.rs` (MLX): randomised SVD of a symmetric sparse matrix, right singular vectors only. They draw the CPU's sketch (`sketch_row_major_f32`) so a seed gives the same subspace on every backend. `SpectralBackend` in `diffusions.rs` picks where PHATE's spectral landmark SVD and k-means run; `phate_gpu` selects wgpu, `landmark_method = "spectral_mlx"` selects MLX. MLX stays a string key rather than an entry point, because the Python crate cannot see `cfg(mlx_available)`.
 - `src/parametric/` (feature `parametric`) — `model.rs` (encoder + `TrainedUmapModel` with serde/bincode I/O), `dataset.rs`, `batch.rs`, `parametric_train.rs`.
 - `src/errors.rs` — `ManifoldsError` (thiserror). Prefer returning errors over panics; recent versions have been migrating panics to variants here.
 - `src/prelude.rs` — re-exports and the `Verbosity` enum (`parse_verbosity_level(0|1|2)`).

@@ -8,3 +8,7 @@ Present only in a build with the `gpu` feature, which is the default. See
 ::: manifolds_rs.DensMAPGpu
 
 ::: manifolds_rs.TSNEGpu
+
+::: manifolds_rs.DREAMSGpu
+
+::: manifolds_rs.PHATEGpu

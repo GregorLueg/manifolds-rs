@@ -1,12 +1,16 @@
 //! Helper functions to calculate potentials for PHATE.
 
 use ann_search_rs::utils::dist::Dist;
+use faer::Mat;
 use rayon::prelude::*;
 
 use crate::data::structures::CompressedSparseData;
 use crate::errors::ManifoldsError;
 use crate::utils::sparse_ops::*;
 use crate::utils::traits::*;
+
+/// Added to `P^t` before the log, so a zero maps to a large finite potential.
+const POTENTIAL_EPS: f64 = 1e-7;
 
 ////////////////////////////
 // Potential calculations //
@@ -110,7 +114,10 @@ where
     // apply transformation
     if (gamma - T::one()).abs() < T::from(1e-10).unwrap() {
         // log transformation
-        Ok(apply_log_potential(&diffused, T::from(1e-7).unwrap()))
+        Ok(apply_log_potential(
+            &diffused,
+            T::from(POTENTIAL_EPS).unwrap(),
+        ))
     } else if (gamma + T::one()).abs() < T::from(1e-10).unwrap() {
         // identity transformation
         Ok(diffused)
@@ -124,22 +131,87 @@ where
 // Dist calculations //
 ///////////////////////
 
+/// Value a zero of `P^t` takes under the potential transform for this `gamma`.
+///
+/// The transforms only touch stored entries, so the distances have to put this
+/// back for everything `P^t` does not store. Only the log potential moves zero.
+///
+/// ### Params
+///
+/// * `gamma` - PHATE gamma parameter
+///
+/// ### Returns
+///
+/// `-ln(POTENTIAL_EPS)` for `gamma = 1`, otherwise zero.
+pub fn potential_of_zero<T>(gamma: T) -> T
+where
+    T: ManifoldsFloat,
+{
+    if (gamma - T::one()).abs() < T::from(1e-10).unwrap() {
+        -T::from(POTENTIAL_EPS).unwrap().ln()
+    } else {
+        T::zero()
+    }
+}
+
+/// Diffusion potential of a dense `P^t`, as rows.
+///
+/// Every entry is transformed, zeros included, so there is no fill to put back.
+///
+/// ### Params
+///
+/// * `powered` - Dense `P^t`
+/// * `gamma` - PHATE gamma parameter. `1` gives the log potential, `-1` the
+///   identity and anything else the power potential.
+///
+/// ### Returns
+///
+/// The potential, one `Vec` per row of `powered`.
+pub fn dense_potential_rows<T>(powered: &Mat<T>, gamma: T) -> Vec<Vec<T>>
+where
+    T: ManifoldsFloat,
+{
+    let tol = T::from(1e-10).unwrap();
+    let eps = T::from(POTENTIAL_EPS).unwrap();
+    let c = (T::one() - gamma) / T::from(2.0).unwrap();
+
+    let transform = |val: T| -> T {
+        if (gamma - T::one()).abs() < tol {
+            -(val.min(T::one()).max(T::zero()) + eps).ln()
+        } else if (gamma + T::one()).abs() < tol {
+            val
+        } else {
+            val.powf(c) / c
+        }
+    };
+
+    (0..powered.nrows())
+        .into_par_iter()
+        .map(|i| {
+            (0..powered.ncols())
+                .map(|j| transform(powered[(i, j)]))
+                .collect()
+        })
+        .collect()
+}
+
 /// Extract a CSR row as a dense vector
 ///
 /// ### Params
 ///
 /// * `matrix` - CSR matrix
 /// * `row_idx` - Row index to extract
+/// * `fill` - Value of the non-stored elements
 ///
 /// ### Returns
 ///
-/// Dense vector of length ncols (zeros for non-stored elements)
-fn csr_row_to_dense<T>(matrix: &CompressedSparseData<T>, row_idx: usize) -> Vec<T>
+/// Dense vector of length ncols
+fn csr_row_to_dense<T>(matrix: &CompressedSparseData<T>, row_idx: usize, fill: T) -> Vec<T>
 where
     T: ManifoldsFloat,
 {
     let ncols = matrix.shape().1;
-    let mut dense = vec![T::zero(); ncols];
+    let mut dense = vec![fill; ncols];
 
     let start = matrix.indptr[row_idx];
     let end = matrix.indptr[row_idx + 1];
@@ -172,14 +244,56 @@ pub fn compute_potential_distances<T>(
 where
     T: ManifoldsFloat,
 {
+    compute_potential_distances_with_fill(potential, metric, T::zero())
+}
+
+/// Compute pairwise distances between rows of a CSR potential, with a chosen
+/// value for the entries the CSR does not store.
+///
+/// ### Params
+///
+/// * `potential` - Diffusion potential matrix (N × N or N × n_landmarks)
+/// * `metric` - Distance metric ("euclidean" or "cosine")
+/// * `fill` - Value of the non-stored entries, see [`potential_of_zero`]
+///
+/// ### Returns
+///
+/// Dense N × N distance matrix (as `Vec<Vec<T>>`)
+pub fn compute_potential_distances_with_fill<T>(
+    potential: &CompressedSparseData<T>,
+    metric: &Dist,
+    fill: T,
+) -> Vec<Vec<T>>
+where
+    T: ManifoldsFloat,
+{
     assert!(potential.cs_type.is_csr(), "Matrix must be CSR format");
 
     let n = potential.shape().0;
 
     let dense_rows: Vec<Vec<T>> = (0..n)
         .into_par_iter()
-        .map(|i| csr_row_to_dense(potential, i))
+        .map(|i| csr_row_to_dense(potential, i, fill))
         .collect();
+
+    pairwise_row_distances(&dense_rows, metric)
+}
+
+/// Compute pairwise distances between dense rows.
+///
+/// ### Params
+///
+/// * `dense_rows` - The rows, all of the same length
+/// * `metric` - Distance metric ("euclidean" or "cosine")
+///
+/// ### Returns
+///
+/// Dense N × N distance matrix (as `Vec<Vec<T>>`)
+pub fn pairwise_row_distances<T>(dense_rows: &[Vec<T>], metric: &Dist) -> Vec<Vec<T>>
+where
+    T: ManifoldsFloat,
+{
+    let n = dense_rows.len();
 
     let norms: Vec<T> = if matches!(metric, Dist::Cosine) {
         dense_rows
@@ -405,11 +519,63 @@ mod test_distance_computation {
         let indptr = vec![0, 2, 3];
         let mat = CompressedSparseData::new_csr(&data, &indices, &indptr, (2, 3));
 
-        let row0 = csr_row_to_dense(&mat, 0);
+        let row0 = csr_row_to_dense(&mat, 0, 0.0);
         assert_eq!(row0, vec![0.5, 0.0, 0.3]);
 
-        let row1 = csr_row_to_dense(&mat, 1);
-        assert_eq!(row1, vec![0.0, 0.7, 0.0]);
+        let row1 = csr_row_to_dense(&mat, 1, 9.0);
+        assert_eq!(row1, vec![9.0, 0.7, 9.0]);
+    }
+
+    #[test]
+    fn test_log_potential_of_zero_is_not_zero() {
+        // P^t row 0 reaches only state 0, row 1 only state 1, row 2 both. The
+        // log potential of the missing entries is the largest one there is, so
+        // rows 0 and 1 end up far apart rather than next to each other.
+        let data = vec![1.0, 1.0, 0.5, 0.5];
+        let indices = vec![0, 1, 0, 1];
+        let indptr = vec![0, 1, 2, 4];
+        let mat = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 2));
+        let potential = calculate_potential(&mat, 1, 1.0).unwrap();
+
+        let fill = potential_of_zero(1.0);
+        assert_relative_eq!(fill, -(1e-7_f64).ln(), epsilon = 1e-10);
+
+        let dist = compute_potential_distances_with_fill(&potential, &Dist::SquaredEuclidean, fill);
+        let eps = 1e-7_f64;
+        let top = -(eps).ln();
+        let one = -(1.0 + eps).ln();
+        let expected = (2.0 * (top - one).powi(2)).sqrt();
+        assert_relative_eq!(dist[0][1], expected, epsilon = 1e-9);
+    }
+
+    #[test]
+    fn test_dense_potential_agrees_with_sparse_path() {
+        let data = vec![1.0, 1.0, 0.5, 0.5];
+        let indices = vec![0, 1, 0, 1];
+        let indptr = vec![0, 1, 2, 4];
+        let mat = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 2));
+
+        for gamma in [1.0_f64, -1.0, 0.0] {
+            let sparse = calculate_potential(&mat, 1, gamma).unwrap();
+            let via_fill = compute_potential_distances_with_fill(
+                &sparse,
+                &Dist::SquaredEuclidean,
+                potential_of_zero(gamma),
+            );
+            let rows = dense_potential_rows(&mat.to_dense(), gamma);
+            let via_dense = pairwise_row_distances(&rows, &Dist::SquaredEuclidean);
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert_relative_eq!(via_fill[i][j], via_dense[i][j], epsilon = 1e-12);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_potential_of_zero_other_gammas() {
+        assert_eq!(potential_of_zero(-1.0_f64), 0.0);
+        assert_eq!(potential_of_zero(0.0_f64), 0.0);
     }
 
     #[test]

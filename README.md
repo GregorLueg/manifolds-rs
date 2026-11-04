@@ -27,7 +27,7 @@ estimators and scanpy-style `mf.umap(adata)`. Changes live in the
 | t-SNE ([Barnes-Hut](https://arxiv.org/abs/1301.3342), [qd](https://github.com/libscran/qdtsne), [FFT](https://www.nature.com/articles/s41592-018-0308-4)) | `tsne`, `tsne_gpu` | default, `fft_tsne`, `gpu` |
 | [den-SNE](https://www.nature.com/articles/s41587-020-00801-7) | `densne` | default |
 | [DREAMS](https://arxiv.org/abs/2508.13747) | `dreams`, `dreams_gpu` | default, `gpu` |
-| [PHATE](https://pmc.ncbi.nlm.nih.gov/articles/PMC7073148/) | `phate` | default |
+| [PHATE](https://pmc.ncbi.nlm.nih.gov/articles/PMC7073148/) | `phate`, `phate_gpu` | default, `gpu` |
 | [PaCMAP](https://arxiv.org/abs/2012.04456) | `pacmap` | default |
 | [ForceAtlas2](https://doi.org/10.1371/journal.pone.0098679) | `forceatlas2`, `forceatlas2_from_graph` | default |
 | [Diffusion maps](https://www.sciencedirect.com/science/article/pii/S1063520306000546) | `diffusion_maps` | default |
@@ -38,6 +38,7 @@ Optimisers and approximations are picked by string:
 |---|---|
 | UMAP optimiser | `"adam_parallel"` (default), `"adam"`, `"sgd"`, `"adam_gpu"`, `"adam_mlx"` |
 | t-SNE repulsion | `"bh"`, `"qd"`, `"fft"`, `"fft_3k"`, `"fft_3k_gpu"`, `"fft_3k_mlx"` |
+| PHATE landmarks | `"spectral"` (default), `"random"`, `"density"`, `"spectral_mlx"` |
 | kNN, CPU | `"nndescent"` (default), `"ivf"` (default for the t-SNE family), `"kmknn"`, `"exhaustive"`, `"hnsw"`, `"annoy"`, `"balltree"` |
 | kNN, wgpu | `"nndescent_gpu"` (default), `"ivf_gpu"` (default for t-SNE), `"exhaustive_gpu"` |
 | kNN, MLX | `"nndescent_mlx"`, `"ivf_mlx"`, `"exhaustive_mlx"` |
@@ -50,7 +51,7 @@ with the crate for testing.
 
 ```toml
 [dependencies]
-manifolds-rs = { version = "0.7", features = ["gpu"] }
+manifolds-rs = { version = "0.9", features = ["gpu"] }
 ```
 
 Optional features:
@@ -102,7 +103,9 @@ The `gpu` feature runs on CubeCL with the wgpu backend by default, so the same
 kernels run on Metal, Vulkan and DX12; pass a `cubecl::Device::Cuda` for CUDA. The
 `*_gpu` entry points move the kNN search to the device, and UMAP's
 `"adam_gpu"` (default) and t-SNE's `"fft_3k_gpu"` move the optimiser too.
-Device limits are queried at runtime, never assumed.
+`phate_gpu` also moves the randomised SVD and the k-means of spectral landmark
+selection; the diffusion time, the powering and the MDS stay on the CPU. Device
+limits are queried at runtime, never assumed.
 
 Everything on the device is `f32`: WGSL has no `f64`, and consumer GPUs run it
 at a crawl anyway. Results are reproducible in structure, not bit for bit,
@@ -128,7 +131,7 @@ brew install mlx-c
 ```
 
 ```toml
-manifolds-rs = { version = "0.7", features = ["mlx"] }
+manifolds-rs = { version = "0.9", features = ["mlx"] }
 ```
 
 MLX is not a separate set of entry points. The CPU ones take the MLX names:
@@ -143,7 +146,10 @@ let embedding = umap(data.as_ref(), None, &params, 42, 0)?;
 ```
 
 `tsne` and `dreams` take `"fft_3k_mlx"`, as do `tsne_gpu` and `dreams_gpu`
-(search on wgpu, optimiser on MLX). den-SNE has no MLX path. If mlx-c lives
+(search on wgpu, optimiser on MLX). `phate` takes `landmark_method =
+"spectral_mlx"` for the SVD and k-means of the landmark selection, and so does
+`phate_gpu` (search on wgpu, landmark selection on MLX). den-SNE has no MLX path,
+and diffusion maps keep their landmark selection on the CPU. If mlx-c lives
 somewhere other than `/opt/homebrew`, set `MLX_C_PREFIX`. If it is not found,
 the build warns and leaves MLX out; `manifolds_rs::MLX_AVAILABLE` tells you
 which one you got.
