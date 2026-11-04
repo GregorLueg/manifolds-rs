@@ -48,7 +48,7 @@ pub struct RandomSvdResults<T> {
     pub u: faer::Mat<T>,
     /// Matrix v of the SVD decomposition
     pub v: faer::Mat<T>,
-    /// Eigen vectors of the SVD decomposition
+    /// Singular values of the SVD decomposition
     pub s: Vec<T>,
 }
 
@@ -64,7 +64,7 @@ pub struct RandomSvdResults<T> {
 ///   vectors to compute).
 /// * `seed` - Random seed for reproducible results.
 /// * `oversampling` - Additional samples beyond the target rank to improve
-///   accuracy. Defaults to 10 if not specified.
+///   accuracy. Defaults to `rank` below a rank of 10, to 10 otherwise.
 /// * `n_power_iter` - Number of power iterations to perform for better
 ///   approximation quality. More iterations generally improve accuracy but
 ///   increase computation time. Defaults to 2 if not specified.
@@ -77,7 +77,7 @@ pub struct RandomSvdResults<T> {
 ///
 /// 1. Generate a random Gaussian matrix Ω of size n × (rank + oversampling)
 /// 2. Compute `Y = X * Ω` to capture the range of X
-/// 3. Orthogonalize Y using QR decomposition to get Q
+/// 3. Orthogonalise Y using QR decomposition to get Q
 /// 4. Apply power iterations: for each iteration, compute `Z = X^T * Q`, then
 ///    `Q = QR(X * Z)`
 /// 5. Form B = Q^T * X and compute its SVD
@@ -1034,8 +1034,8 @@ where
 ///
 /// ### Params
 ///
-/// * `mat`: The matrix for which to calculate the von Neumann entropy.
-/// * `t_max`: The maximum number of powers to consider.
+/// * `operator` - The matrix for which to calculate the von Neumann entropy.
+/// * `t_max` - The maximum number of powers to consider.
 ///
 /// ### Returns
 ///

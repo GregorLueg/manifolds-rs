@@ -6,7 +6,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ManifoldsError {
     // -- tSNE --
-    /// Error when perplexity is set to high
+    /// Error when perplexity is set too high
     #[error("perplexity ({perplexity}) must be strictly less than the kNN size ({k})")]
     PerplexityTooLarge {
         /// Set perplexity parameter
@@ -24,7 +24,6 @@ pub enum ManifoldsError {
     /// Error if the sparse matrix is not of CSR
     #[error("The matrix is not of CSR type. Please double check the inputs")]
     SparseMatrixIsNotCsr,
-    // -- sparse errors --
     /// Error for sparse multiplication dimension mismatches
     #[error("The dimensions of the matrix do not support sparse multiplication (matrix a n_col: {n_col_a}; matrix b n_row: {n_row_b})")]
     SparseMatrixMultiplication {
@@ -106,7 +105,7 @@ pub enum ManifoldsError {
         n_edges: usize,
     },
 
-    /// Error if the data is empty
+    /// Error if the graph to optimise has no edges
     #[error("UMAP: no edges to optimise - upstream error?")]
     NoGraphEdges,
 
@@ -180,7 +179,7 @@ pub enum ManifoldsError {
     #[error("DREAMS: the reference embedding has no spread after centring")]
     DreamsDegenerateReference,
 
-    // -- GPU t-SNE --
+    // -- t-SNE optimisers --
     /// Error when the chosen t-SNE optimiser has no density (den-SNE) term
     #[cfg(mlx_available)]
     #[error("tSNE optimiser '{name}' does not support the den-SNE density term")]

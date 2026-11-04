@@ -61,7 +61,7 @@ pub struct NearestNeighbourParamsGpu<T> {
     /// NNDescent-GPU: Number of trees for the initialisation of the kNN graph
     /// prior to NNDescent.
     pub n_tree: Option<usize>,
-    /// NNDescent-GPU: Termination criterium for the NNDescent iterations
+    /// NNDescent-GPU: Termination criterion for the NNDescent iterations
     pub delta: T,
     /// NNDescent-GPU: Sampling rate for the NNDescent iterations.
     pub rho: Option<T>,

@@ -158,14 +158,16 @@ where
 // MDS methods //
 /////////////////
 
-/// Classic MDS using PCA on centered distance matrix
+/// Classic MDS using PCA on centred distance matrix
 ///
 /// Fast but lower quality than SGD-MDS. Good for initialisation.
 ///
 /// ### Params
 ///
-/// * `distances` - N × N distance matrix
+/// * `dist` - N × N distance matrix
 /// * `n_components` - Embedding dimensions
+/// * `randomised` - Shall randomised SVD be used for the decomposition
+/// * `seed` - Random seed for the randomised SVD
 ///
 /// ### Returns
 ///
@@ -242,7 +244,7 @@ where
 
 /// SGD-MDS
 ///
-/// Leverages SGD under the hood to optimise the SGD.
+/// Minimises the stress of the embedding with SGD over sampled pairs.
 ///
 /// ### Params
 ///
@@ -256,9 +258,7 @@ where
 ///
 /// ### Returns
 ///
-/// Flat N × n_dim embedding (row-major)
-///
-/// N × n_components embedding
+/// N × n_dim embedding as nested vectors, one per sample.
 pub fn sgd_mds<T>(
     dist: &[Vec<T>],
     n_dim: usize,

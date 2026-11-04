@@ -22,9 +22,7 @@ use crate::utils::density::*;
 
 /// Minimum embedding distance the default curve is fitted to.
 ///
-/// The single place the default lives. [`UmapOptimParams::default_2d`] and
-/// [`crate::UmapParams::new_default_2d`] both read it, so the two cannot drift
-/// apart the way they did when each wrote its own.
+/// The single place the default lives, read by every UMAP variant.
 pub const DEFAULT_MIN_DIST: f64 = 0.5;
 
 /// Spread the default curve is fitted to. See [`DEFAULT_MIN_DIST`].
@@ -98,17 +96,18 @@ where
     ///
     /// * `min_dist` - Minimum distance parameter
     /// * `spread` - Effective scale of embedded points
-    /// * `lr` - Initial learning rate
-    /// * `n_epochs` - Number of optimisation epochs (typically 500)
-    /// * `neg_sample_rate` - Number of negative samples per positive edge
-    ///   (typically 5)
-    /// * `beta1` - Optional beta1 parameter for Adam-based optimisations.
-    /// * `beta2` - Optional beta2 parameter for Adam-based optimisations.
-    /// * `eps` - Optional eps parameter for Adam-based optimisations.
+    /// * `lr` - Initial learning rate. Defaults to `1.0`.
+    /// * `gamma` - Weight on the repulsive term. Defaults to `1.0`.
+    /// * `n_epochs` - Number of optimisation epochs. Defaults to `500`.
+    /// * `neg_sample_rate` - Number of negative samples per positive edge.
+    ///   Defaults to `5`.
+    /// * `beta1` - Adam first-moment decay. Defaults to [`UMAP_BETA1`].
+    /// * `beta2` - Adam second-moment decay. Defaults to [`UMAP_BETA2`].
+    /// * `eps` - Adam denominator epsilon. Defaults to [`EPS`].
     ///
-    /// ### Return
+    /// ### Returns
     ///
-    /// Self with calculated `a` and `b` parameter according to the
+    /// Self with `a` and `b` fitted to `min_dist` and `spread`.
     #[allow(clippy::too_many_arguments)]
     pub fn from_min_dist_spread(
         min_dist: T,
@@ -147,15 +146,14 @@ where
 
     /// Fit curve parameters from min_dist and spread
     ///
-    /// Fits the UMAP curve: `f(x) = 1 / (1 + a + x^(2b))` such that
-    /// `f(min_dist) ca. 1.0` and `f(spread) ca. 0.0`.
+    /// Fits the UMAP curve `f(x) = 1 / (1 + a * x^(2b))` to `1` below `min_dist`
+    /// and `exp(-(x - min_dist) / spread)` above it.
     ///
     /// ### Params
     ///
     /// * `min_dist` - Minimum distance parameter
     /// * `spread` - Effective scale of embedded points
-    /// * `lr` - Learning rate for gradient descent (default: 0.1)
-    /// * `n_iter` - Number of optimisation iterations (default: 100)
+    /// * `n_iter` - Number of optimisation iterations (default: 300)
     ///
     /// ### Returns
     ///
@@ -906,7 +904,7 @@ where
 /// - Adaptive edge sampling based on edge weights
 /// - First and second moment estimation (momentum and RMSprop)
 /// - Bias correction for moment estimates
-/// - Per-gradient-step timestep counter for correct bias correction
+/// - Bias correction advanced once per epoch, as in the other Adam paths
 /// - Negative sampling for repulsive forces
 ///
 /// ### Algorithm
@@ -916,7 +914,7 @@ where
 /// 1. Process edges whose `epoch_of_next_sample` has arrived
 /// 2. Compute attractive gradient and apply Adam update to both endpoints
 /// 3. Perform negative sampling and apply repulsive Adam updates
-/// 4. Bias correction applied before each parameter update
+/// 4. Advance the bias correction at the end of the epoch
 ///
 /// ### Params
 ///
@@ -926,16 +924,13 @@ where
 ///   pairs
 /// * `params` - Optimisation parameters including Adam hyperparameters (beta1,
 ///   beta2, eps)
+/// * `dens` - Optional density state. Adds the densMAP term to the attraction.
 /// * `seed` - Random seed for negative sampling
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
 ///
 /// ### Notes
 ///
-/// - Uses per-gradient-step timestep counter (`global_timestep`) for bias
-///   correction
-/// - Pre-computes bias corrections for first 10,000 timesteps (lookup table)
-/// - Each edge processed increments the timestep counter
 /// - Updates are applied immediately (not batched)
 /// - Linear learning rate decay schedule
 pub fn optimise_embedding_adam<T>(

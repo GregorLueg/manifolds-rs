@@ -44,12 +44,12 @@ impl Batcher<(usize, usize, f32), UmapBatch> for UmapBatcher {
     ///
     /// ### Params
     ///
-    /// * `items` -
-    /// * `device` -
+    /// * `items` - Positive edges as `(src, dst, target)`
+    /// * `device` - The device to place the tensors on
     ///
     /// ### Returns
     ///
-    ///
+    /// The batch of positive edges and their sampled negatives.
     fn batch(&self, items: Vec<(usize, usize, f32)>, device: &Device) -> UmapBatch {
         let n_pos = items.len();
         let capacity = n_pos * (1 + self.neg_sample_rate);

@@ -45,7 +45,7 @@ pub enum UmapOptimiserGpu {
 ///   `"sgd"` or `"adam_gpu"` (default), plus `"adam_mlx"` when the MLX
 ///   backend is compiled in.
 ///
-/// ### Return
+/// ### Returns
 ///
 /// Option of Optimiser
 pub fn parse_umap_optimiser_gpu(s: &str) -> Option<UmapOptimiserGpu> {
@@ -72,8 +72,8 @@ pub fn parse_umap_optimiser_gpu(s: &str) -> Option<UmapOptimiserGpu> {
 /// gather latency. It uses no shared memory, so a wider cube costs nothing in
 /// occupancy. The value is a trade-off against the tail waste of a partially
 /// filled cube, and worth retuning per backend.
-// Picked from local benchmarking only: 256 beat both the 32 `ann-search-rs`
-// exports and the wider 512/1024. Treat as indicative, not measured broadly.
+// Differs from the 32 `ann-search-rs` exports on purpose, see above. Not tuned
+// across backends.
 const UMAP_WORKGROUP_SIZE: u32 = 256;
 
 /////////////////////
@@ -727,7 +727,7 @@ pub fn umap_grad_accum<F: Float + CubeElement + LaunchArg>(
 /// Adam moment update and embedding step. One thread per `(node, dim)` pair.
 ///
 /// Skips nodes with `has_update == 0` (no active edge this epoch),
-/// preserving their `m`, `v` and embedding state — matching the CPU
+/// preserving their `m`, `v` and embedding state, matching the CPU
 /// `optimise_embedding_adam_parallel`.
 ///
 /// ### Params

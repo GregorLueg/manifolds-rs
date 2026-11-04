@@ -19,7 +19,6 @@ use crate::prelude::*;
 /////////////
 
 /// Which search algorithm to use for the approximate nearest neighbour search
-/// Default is set to Hnsw
 #[derive(Default, Clone, Copy, Debug)]
 pub enum AnnSearch {
     /// KmKnn
@@ -65,8 +64,8 @@ pub struct NearestNeighbourParams<T> {
     pub ef_construction: usize,
     /// HNSW: search budget
     pub ef_search: usize,
-    /// NNDescent: convergence criterium. If less than these percentage of
-    /// neighbours have been udpated, the algorithm counts as converged.
+    /// NNDescent: convergence criterion. If less than these percentage of
+    /// neighbours have been updated, the algorithm counts as converged.
     pub delta: T,
     /// BallTree: Proportions of N to search in the BallTree
     pub bt_budget: T,
@@ -90,10 +89,10 @@ impl<T> NearestNeighbourParams<T> {
     /// **Annoy**
     ///
     /// * `dist_metric` - One of `"euclidean"` or `"cosine"`
-    /// * `n_trees` - Number of trees to use to build the index. Defaults to `50`
+    /// * `n_tree` - Number of trees to use to build the index. Defaults to `50`
     ///   like the `uwot` package.
     /// * `search_budget` - Optional search budget. The algorithm will set the
-    ///   search budget to `10 * k * n_trees` if not provided.
+    ///   search budget to `k * n_tree * 20` if not provided.
     ///
     /// **HNSW**
     ///
@@ -103,7 +102,7 @@ impl<T> NearestNeighbourParams<T> {
     ///
     /// **NN Descent**
     ///
-    /// * `delta` - Early termination criterium.
+    /// * `delta` - Early termination criterion.
     ///
     /// **BallTree**
     ///
@@ -287,7 +286,7 @@ where
 ///   `"ivf_mlx"` and `"nndescent_mlx"` are only recognised when the MLX
 ///   backend is compiled in.
 ///
-/// ### Return
+/// ### Returns
 ///
 /// Option of AnnSearch
 pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {

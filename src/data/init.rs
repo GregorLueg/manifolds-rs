@@ -50,7 +50,7 @@ const SPECTRAL_LANCZOS_TOL: f64 = 1e-6;
 /// blocks (a component with no spectral gap below the trivial eigenvalue)
 /// never converge and would otherwise burn every cycle on eigenvectors that
 /// carry no layout information anyway. The result after the budget is still
-/// a usable initialisation. Tuned on synthetic graphs only.
+/// a usable initialisation.
 const SPECTRAL_LANCZOS_MAX_RESTARTS: usize = 4;
 
 /// Lanczos parameters for the spectral initialisation.
@@ -95,6 +95,7 @@ pub enum EmbdInit<T> {
 ///
 /// * `s` - String that defines the initialisation method
 /// * `randomised` - Shall randomised SVD be used when initialising via PCA
+/// * `range` - Optional range of the initialisation
 ///
 /// ### Returns
 ///
@@ -972,17 +973,18 @@ where
 /// Random initialisation fallback
 ///
 /// Provides random uniform initialisation matching Python UMAP behaviour.
-/// Uses uniform distribution in [-10, 10] range, NOT Gaussian near origin.
+/// Uses a uniform distribution, NOT Gaussian near origin.
 ///
 /// ### Params
 ///
 /// * `n_samples` - Number of samples to initialise
 /// * `n_comp` - Dimensionality of the embedding
 /// * `seed` - Random seed
+/// * `range` - Half-width of the distribution. Defaults to [`RANDOM_RANGE`].
 ///
 /// ### Returns
 ///
-/// Random embedding coordinates uniformly distributed in [-10, 10] range
+/// Random embedding coordinates uniformly distributed in [-`range`, `range`]
 pub fn random_layout<T>(n_samples: usize, n_comp: usize, seed: u64, range: Option<T>) -> Vec<Vec<T>>
 where
     T: ManifoldsFloat,
@@ -1136,11 +1138,12 @@ where
 ///
 /// ### Params
 ///
-/// * `init_method` - Initialization strategy to use
+/// * `init_method` - Initialisation strategy to use
 /// * `n_comp` - Target embedding dimensionality (typically 2-3)
 /// * `seed` - Random seed for reproducibility
 /// * `graph` - Fuzzy simplicial set graph (required for spectral init)
-/// * `data` - Original input data (required for PCA init)
+/// * `data` - Original input data. PCA projects it, random reads its sample count
+///   and spectral uses it for the meta-layout of disconnected components.
 ///
 /// ### Returns
 ///
@@ -1149,9 +1152,12 @@ where
 ///
 /// ### Notes
 ///
-/// * **Spectral**: Uses graph Laplacian eigenvectors, scaled to [-10, 10]
-/// * **PCA**: Projects onto principal components, scaled to `std_dev = 1e-4`
-/// * **Random**: Gaussian random values in [-10, 10] range
+/// * **Spectral**: Uses graph Laplacian eigenvectors, scaled to `range`,
+///   [`SPECTRAL_RANGE`] by default
+/// * **PCA**: Projects onto principal components, each scaled to a standard
+///   deviation of `range`, [`PCA_RANGE`] by default
+/// * **Random**: Uniform random values in [-`range`, `range`], [`RANDOM_RANGE`] by
+///   default
 pub fn initialise_embedding<T>(
     init_method: &EmbdInit<T>,
     n_comp: usize,

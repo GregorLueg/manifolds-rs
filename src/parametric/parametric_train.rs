@@ -102,15 +102,14 @@ where
 
     /// Fit curve parameters from min_dist and spread
     ///
-    /// Fits the UMAP curve: `f(x) = 1 / (1 + a + x^(2b))` such that
-    /// `f(min_dist) ca. 1.0` and `f(spread) ca. 0.0`.
+    /// Fits the UMAP curve `f(x) = 1 / (1 + a * x^(2b))` to `1` below `min_dist`
+    /// and `exp(-(x - min_dist) / spread)` above it.
     ///
     /// ### Params
     ///
     /// * `min_dist` - Minimum distance parameter
     /// * `spread` - Effective scale of embedded points
-    /// * `lr` - Learning rate for gradient descent (default: 0.1)
-    /// * `n_iter` - Number of optimisation iterations (default: 100)
+    /// * `n_iter` - Number of optimisation iterations (default: 300)
     ///
     /// ### Returns
     ///
@@ -245,7 +244,7 @@ pub fn graph_to_trainings_data<T>(graph_data: &CoordinateList<T>) -> UmapEdgeDat
 // Training //
 //////////////
 
-/// Trainings loop for parametric UMAP
+/// Training loop for parametric UMAP
 ///
 /// ### Params
 ///

@@ -80,38 +80,27 @@ const SPECTRAL_LANDMARK_KMEANS_ITERS: usize = 30;
 ////////////
 
 /// Parameters for the diffusion process
-///
-/// ### Fields
-///
-/// * `decay` - Decay exponent alpha (typical: 40). If None, returns binary
-///   connectivity.
-/// * `bandwidth_scale` - Multiplicative factor for bandwidth (default: 1.0)
-/// * `thresh` - Threshold below which affinities are set to 0 (default: 1e-4,
-///   for sparsity)
-/// * `graph_symmetry` - symmetrisation method: "add" for (K+K^T)/2, "multiply"
-///   for K*K^T, "none" for asymmetric.
-/// * `n_landmarks` - Option to use landmarks. Set to something.
-/// * `landmark_method` - String definining which landmark method to use.
-/// * `n_svd` - Number of SVDs to use for the spectral clustering
 #[derive(Debug, Clone)]
 pub struct PhateDiffusionParams<T> {
-    /// Decay exponent alpha (typical: 40). If None, returns binary
-    /// connectivity.
+    /// Decay exponent alpha (default: 40). If None, returns binary connectivity.
     pub decay: Option<T>,
     /// Multiplicative factor for bandwidth (default: 1.0)
     pub bandwidth_scale: T,
     /// Threshold below which affinities are set to 0 (default: 1e-4, for
     /// sparsity)
     pub thresh: T,
-    /// symmetrisation method: "add" for (K+K^T)/2, "multiply" for K*K^T,
-    /// "none" for asymmetric.
+    /// symmetrisation method: "add" (default) for (K+K^T)/2, "multiply" for the
+    /// element-wise product of K and K^T, "mnn" for the mutual nearest neighbour
+    /// form, "none" for asymmetric.
     pub graph_symmetry: String,
-    /// Option to use landmarks. Recommended to use for larger data sets.
+    /// Number of landmarks, [`PHATE_DEFAULT_LANDMARKS`] by default. `None`, or a
+    /// value of at least the number of samples, runs the full operator.
     pub n_landmarks: Option<usize>,
-    /// String definining which landmark method to use. Option of `"spectral"`,
-    /// `"random"` or `"density"`.
+    /// Which landmark method to use: `"spectral"` (default), `"random"` or
+    /// `"density"`. The `mlx` feature adds `"spectral_mlx"`.
     pub landmark_method: String,
-    /// Number of SVDs to use for the spectral clustering
+    /// Singular vectors for spectral landmark selection. Defaults to
+    /// [`LANDMARK_DEFAULT_N_SVD`].
     pub n_svd: Option<usize>,
     /// Enum describing how to power the matrix. Auto or user-defined.
     pub t: PhateTime,
@@ -146,19 +135,22 @@ impl<T> PhateDiffusionParams<T> {
     ///
     /// ### Params
     ///
-    /// * `decay` - Decay exponent alpha (typical: 40). If None, returns binary
-    ///   connectivity.
-    /// * `bandwidth_scale` - Multiplicative factor for bandwidth (default: 1.0)
-    /// * `thresh` - Threshold below which affinities are set to 0 (default: 1e-4,
-    ///   for sparsity)
-    /// * `graph_symmetry` - symmetrisation method: "add" for (K+K^T)/2,
-    ///   "multiply"
-    ///   for K*K^T, "none" for asymmetric.
-    /// * `n_landmarks` - Option to use landmarks. Set to something.
-    /// * `landmark_method` - String definining which landmark method to use.
-    /// * `n_svd` - Number of SVDs to use for the spectral clustering.
-    /// * `gamma` - To be written
-    /// * `t_detection` -
+    /// * `decay` - Decay exponent alpha. If None, returns binary connectivity.
+    /// * `bandwidth_scale` - Multiplicative factor for bandwidth.
+    /// * `thresh` - Threshold below which affinities are set to 0, for sparsity.
+    /// * `graph_symmetry` - symmetrisation method: "add" for (K+K^T)/2, "multiply"
+    ///   for the element-wise product of K and K^T, "mnn" for the mutual nearest
+    ///   neighbour form, "none" for asymmetric.
+    /// * `n_landmarks` - Number of landmarks. `None`, or a value of at least the
+    ///   number of samples, runs the full operator.
+    /// * `landmark_method` - Which landmark method to use.
+    /// * `n_svd` - Singular vectors for spectral landmark selection. `None` gives
+    ///   [`LANDMARK_DEFAULT_N_SVD`].
+    /// * `t_max` - Largest diffusion time the VNE knee search considers. `None`
+    ///   gives [`PHATE_MAX_T`].
+    /// * `t_custom` - Fixed diffusion time. `None` picks the VNE knee.
+    /// * `gamma` - Informational distance constant, in `[-1.0, 1.0]`. `1.0` is the
+    ///   log potential.
     ///
     /// ### Returns
     ///
@@ -653,7 +645,7 @@ pub enum LandmarkMethod {
     },
     /// Use spectral clustering to select landmarks.
     Spectral {
-        /// Number of PCs to use for spectral clustering
+        /// Rank of the SVD the k-means runs on
         n_svd: usize,
     },
     /// Density - leverage node degree
@@ -777,6 +769,9 @@ fn random_sample(range: Range<usize>, n: usize, seed: u64) -> Vec<usize> {
 /// * `landmark_data` - Landmark data.
 /// * `n_landmark` - Number of landmarks.
 /// * `dim` - Dimensionality of the data.
+/// * `norm_data` - Norm of the data point, read by the cosine metric.
+/// * `norm_landmark` - Norms of the landmarks, read by the cosine metric.
+/// * `dist` - Distance metric. Euclidean or cosine; Manhattan panics.
 ///
 /// ### Returns
 ///
@@ -819,10 +814,9 @@ where
 ///
 /// ### Params
 ///
-/// * `kernel`: The kernel, not yet normalised, so a point weighs in by its degree.
-/// * `assignments`: The assignments of points to landmarks.
-/// * `n_landmarks`: The number of landmarks.
-/// * `n`: The number of points.
+/// * `kernel` - The kernel, not yet normalised, so a point weighs in by its degree.
+/// * `assignments` - The assignments of points to landmarks.
+/// * `n_landmarks` - The number of landmarks.
 ///
 /// ### Returns
 ///

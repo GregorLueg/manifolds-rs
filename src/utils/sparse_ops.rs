@@ -352,7 +352,7 @@ where
 ///
 /// Examples:
 /// - P^8 = ((P^2)^2)^2 (3 multiplications vs 7)
-/// - P^15 = P × ((P^2)^2)^2 × P (5 multiplications vs 14)
+/// - P^15 = P × P^2 × (P^2)^2 × ((P^2)^2)^2 (6 multiplications vs 14)
 ///
 /// ### Params
 ///

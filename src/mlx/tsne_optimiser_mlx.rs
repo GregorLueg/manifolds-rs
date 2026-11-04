@@ -3,8 +3,7 @@
 //! `training::tsne_optimiser_gpu`: atomic box counting, a single-threadgroup
 //! scan and a scatter, and per-threadgroup partials for `Z`, the recentring
 //! mean, the DREAMS norm and the extent. The splat differs: one SIMD group
-//! per box instead of one thread per grid node, 1.4 s faster over 1000
-//! epochs at 100k points.
+//! per box instead of one thread per grid node.
 //!
 //! The atomic ranks make the in-box point order, and so the splat summation
 //! order, vary between runs: results are not bit-reproducible, as on cubecl.

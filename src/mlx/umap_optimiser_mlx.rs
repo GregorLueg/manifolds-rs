@@ -4,9 +4,8 @@
 //!
 //! One epoch is three kernels, as on the cubecl path: gradient per node, Adam
 //! step per coordinate, schedule advance per edge. MLX kernels write fresh
-//! output buffers, so fusing all three into one per-node kernel is race-free,
-//! but it measured about 20% slower than the split at 100k and 1M nodes and
-//! was dropped.
+//! output buffers, so fusing all three into one per-node kernel would be race-free,
+//! but it runs slower than the split.
 //!
 //! The host stays at most one epoch ahead of the device: it submits epoch
 //! `t` asynchronously, then waits on epoch `t - 1`. Unbounded, it would queue

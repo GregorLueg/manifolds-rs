@@ -47,7 +47,7 @@ pub enum PacMapOptimiser {
 /// * `s` - String defining the optimiser. Choice of `"adam"` or
 ///   `"adam_parallel"`
 ///
-/// ### Return
+/// ### Returns
 ///
 /// Option of Optimiser
 pub fn parse_pacmap_optimiser(s: &str) -> Option<PacMapOptimiser> {
@@ -190,9 +190,10 @@ where
 
 /// Attractive loss gradient coefficient for near and mid-near pairs.
 ///
-/// Loss: d / (d + c)  where c=10 for near, c=10000 for mid-near
-/// dLoss/dd = c / (d + c)^2
-/// Gradient w.r.t. embedding coord: (dLoss/dd) * (y_i - y_j) / d  [chain rule]
+/// Loss: d' / (d' + c) with d' = 1 + d and d the squared embedding distance, where
+/// c=10 for near and c=10000 for mid-near.
+/// dLoss/dd = c / (d' + c)^2
+/// Gradient w.r.t. embedding coord: 2 * (dLoss/dd) * (y_i - y_j)  [chain rule]
 ///
 /// ### Params
 ///
@@ -296,7 +297,7 @@ where
         // Accumulate per-node gradients
         let mut grads = vec![T::zero(); n * n_dim];
 
-        // Near pairs — attractive
+        // Near pairs: attractive
         for &(i, j) in &pairs.near {
             let base_i = i * n_dim;
             let base_j = j * n_dim;
@@ -316,7 +317,7 @@ where
             }
         }
 
-        // Mid-near pairs — attractive (skipped in phase 3 when w_mn == 0)
+        // Mid-near pairs: attractive (skipped in phase 3 when w_mn == 0)
         if w_mn > T::zero() {
             for &(i, j) in &pairs.mid_near {
                 let base_i = i * n_dim;
@@ -338,7 +339,7 @@ where
             }
         }
 
-        // Further pairs — repulsive
+        // Further pairs: repulsive
         for &(i, j) in &pairs.further {
             let base_i = i * n_dim;
             let base_j = j * n_dim;

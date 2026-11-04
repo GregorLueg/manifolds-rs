@@ -39,7 +39,7 @@ const MIN_LOCAL_SCALE: f64 = 1e-10;
 
 /// The three pair types used in PaCMAP optimisation.
 ///
-/// All pairs are stored as flat `(i, j)` index tuples with no weights —
+/// All pairs are stored as flat `(i, j)` index tuples with no weights:
 /// unlike UMAP, tSNE or PHATE there is no graph symmetrisation or edge
 /// weighting.
 pub struct PacmapPairs {

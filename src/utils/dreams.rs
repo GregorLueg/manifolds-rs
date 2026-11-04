@@ -12,9 +12,8 @@
 //! form, so it is kept as is.
 //!
 //! The regulariser's `lr` is openTSNE's automatic `n / exaggeration`, not the
-//! t-SNE learning rate in use. Our t-SNE runs at `n / 12` throughout, so with
-//! the shared `lr` the pull was 12x weaker after early exaggeration and
-//! `lambda = 0.5` behaved like the reference's 0.15 (Tasic, n = 23,822).
+//! t-SNE learning rate in use: sharing the t-SNE rate, which does not drop when
+//! early exaggeration ends, would leave the pull too weak after that point.
 //!
 //! ### References
 //!

@@ -1,12 +1,11 @@
-//! Dimensionality reduction algorithms including UMAP, t-SNE, PHATE, Diffusion
-//! Maps, PacMAP and ForceAtlas2.
+//! Dimensionality reduction algorithms: UMAP, densMAP, t-SNE, den-SNE, DREAMS,
+//! PHATE, diffusion maps, PaCMAP and ForceAtlas2, plus parametric UMAP via a
+//! neural network encoder with the `parametric` feature.
 //!
-//! Provides both standard and approximate nearest-neighbour-based graph
-//! construction, multiple optimisers, and (optionally) parametric UMAP via a
-//! neural network encoder.
-//!
-//! Additionally, optional GPU-accelerated versions (in terms of kNN search)
-//! can be used when the right feature flags are active.
+//! The `gpu` feature adds `*_gpu` entry points: kNN search on the device for all
+//! of them, with the UMAP Adam update, the three-kernel FFT t-SNE and PHATE's
+//! spectral landmark selection there as well. The `mlx` feature adds the same
+//! stages on MLX through string keys on the existing entry points.
 
 #![allow(clippy::needless_range_loop)] // I like loops ... !
 #![warn(missing_docs)]
@@ -125,8 +124,10 @@ pub type TsneGraph<T> = Result<(CoordinateList<T>, Vec<Vec<usize>>, Vec<Vec<T>>)
 #[derive(Debug, Clone)]
 pub struct UmapParams<T> {
     /// How many dimensions to return
+    /// Defaults to `2`.
     pub n_dim: usize,
     /// Number of neighbours
+    /// Defaults to `15`.
     pub k: usize,
     /// Which optimiser to use: `"adam_parallel"` (default), `"adam"`, `"sgd"`,
     /// or `"adam_mlx"` with the `mlx` feature.
@@ -134,8 +135,10 @@ pub struct UmapParams<T> {
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
     /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
+    /// Defaults to `"nndescent"`.
     pub ann_type: String,
-    /// Which embedding initialisation to use. Defaults to spectral clustering.
+    /// Which embedding initialisation to use: `"spectral"` (default), `"pca"`
+    /// or `"random"`.
     pub initialisation: String,
     /// Optional initialisation range to use
     pub init_range: Option<T>,
@@ -145,7 +148,8 @@ pub struct UmapParams<T> {
     pub graph_params: UmapGraphParams<T>,
     /// Parameters to use for the UMAP optimiser.
     pub optim_params: UmapOptimParams<T>,
-    /// Shall randomised SVC be used for PCA-based embedding
+    /// Shall randomised SVD be used for PCA-based embedding
+    /// Defaults to `false`.
     pub randomised: bool,
 }
 
@@ -353,7 +357,7 @@ where
 /// 2. Construct fuzzy simplicial set via smooth kNN distances
 /// 3. Symmetrise the graph using fuzzy set union
 /// 4. Initialise embedding via spectral decomposition
-/// 5. Optimise embedding using stochastic gradient descent
+/// 5. Optimise embedding with the chosen optimiser, parallel Adam by default
 ///
 /// ### Params
 ///
@@ -373,6 +377,11 @@ where
 /// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
 /// `n_dim` and inner vectors have length `n_samples`. Each outer element
 /// represents one embedding dimension.
+///
+/// ### References
+///
+/// McInnes, Healy & Melville (2018): "UMAP: Uniform Manifold Approximation and
+/// Projection for Dimension Reduction", arXiv
 pub fn umap<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
@@ -476,9 +485,8 @@ where
         verbose,
     )?;
 
-    // density state, while the kNN results are still around. The ANN backends
-    // return squared euclidean distances, which is exactly what the local radii
-    // want - do not square again.
+    // density state, while the kNN results are still around. `DensState::new` takes
+    // true distances and squares them itself.
     let dens_state = match dens_params {
         Some(dens_params) => {
             if verbosity.normal_verbosity() {
@@ -604,15 +612,19 @@ where
 /// Main configuration for t-SNE dimensionality reduction
 #[derive(Debug, Clone)]
 pub struct TsneParams<T> {
-    ///  Number of output dimensions (typically 2)
+    /// Number of output dimensions. Anything but 2 returns
+    /// [`ManifoldsError::IncorrectDim`].
     pub n_dim: usize,
     /// Perplexity parameter controlling neighbourhood size (typical: 5-50)
+    /// Defaults to `30.0`.
     pub perplexity: T,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
     /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
+    /// Defaults to `"ivf"`.
     pub ann_type: String,
     /// Embedding initialisation method: `"pca"`, `"random"`, or `"spectral"`
+    /// Defaults to `"pca"`.
     pub initialisation: String,
     /// Optional initialisation range
     pub init_range: Option<T>,
@@ -621,6 +633,7 @@ pub struct TsneParams<T> {
     /// tSNE optimisation parameters
     pub optim_params: TsneOptimParams<T>,
     /// Use randomised SVD for PCA initialisation
+    /// Defaults to `true`.
     pub randomised: bool,
 }
 
@@ -755,7 +768,7 @@ where
 /// - `Vec<Vec<usize>>` k-nearest neighbour indices for each point
 /// - `Vec<Vec<T>>` k-nearest neighbour distances for each point
 ///
-/// # Notes
+/// ### Notes
 ///
 /// The k value is automatically set to `3 × perplexity`, clamped between 5 and
 /// n-1. This is standard practice in t-SNE implementations.
@@ -845,7 +858,7 @@ where
 ///    - Attractive forces: exact computation from graph
 ///    - Repulsive forces: Barnes-Hut approximation or FFT-accelerated
 ///      interpolation.
-///    - Early exaggeration (first 250 iterations)
+///    - Early exaggeration for `optim_params.early_exag_iter` iterations
 ///    - Momentum switching at iteration 250
 ///
 /// ### Params
@@ -870,11 +883,18 @@ where
 /// `n_dim` and inner vectors have length `n_samples`. Each outer element
 /// represents one embedding dimension.
 ///
+/// ### Errors
+///
+/// [`ManifoldsError::IncorrectDim`] if `n_dim` is not 2 and
+/// [`ManifoldsError::TsneOptimiserNeedsGpu`] for `"fft_3k_gpu"`, which only
+/// [`tsne_gpu`] can run. Without the `fft_tsne` feature, `"fft"` and `"fft_3k"`
+/// panic.
+///
 /// ### References
 ///
 /// - van der Maaten & Hinton (2008): "Visualizing Data using t-SNE"
 /// - van der Maaten (2014): "Accelerating t-SNE using Tree-Based Algorithms"
-/// - Linderman et al. (2019): " Fast interpolation-based t-SNE for improved
+/// - Linderman et al. (2019): "Fast interpolation-based t-SNE for improved
 ///   visualization of single-cell RNA-seq data"
 #[cfg(feature = "fft_tsne")]
 pub fn tsne<T>(
@@ -982,9 +1002,8 @@ where
         verbose,
     )?;
 
-    // 1b. density state, while the kNN results are still around. The ANN
-    // backends return squared euclidean distances, which is exactly what the
-    // local radii want - do not square again.
+    // 1b. density state, while the kNN results are still around. `DensState::new` takes
+    // true distances and squares them itself.
     let dens_state = match dens_params {
         Some(dens_params) => {
             if verbosity.normal_verbosity() {
@@ -1192,7 +1211,7 @@ where
 ///    - Attractive forces: exact computation from graph
 ///    - Repulsive forces: Barnes-Hut approximation or FFT-accelerated
 ///      interpolation.
-///    - Early exaggeration (first 250 iterations)
+///    - Early exaggeration for `optim_params.early_exag_iter` iterations
 ///    - Momentum switching at iteration 250
 ///
 /// ### Params
@@ -1217,11 +1236,18 @@ where
 /// `n_dim` and inner vectors have length `n_samples`. Each outer element
 /// represents one embedding dimension.
 ///
+/// ### Errors
+///
+/// [`ManifoldsError::IncorrectDim`] if `n_dim` is not 2 and
+/// [`ManifoldsError::TsneOptimiserNeedsGpu`] for `"fft_3k_gpu"`, which only
+/// [`tsne_gpu`] can run. Without the `fft_tsne` feature, `"fft"` and `"fft_3k"`
+/// panic.
+///
 /// ### References
 ///
 /// - van der Maaten & Hinton (2008): "Visualizing Data using t-SNE"
 /// - van der Maaten (2014): "Accelerating t-SNE using Tree-Based Algorithms"
-/// - Linderman et al. (2019): " Fast interpolation-based t-SNE for improved
+/// - Linderman et al. (2019): "Fast interpolation-based t-SNE for improved
 ///   visualization of single-cell RNA-seq data"
 #[cfg(not(feature = "fft_tsne"))]
 pub fn tsne<T>(
@@ -1329,9 +1355,8 @@ where
         verbose,
     )?;
 
-    // 1b. density state, while the kNN results are still around. The ANN
-    // backends return squared euclidean distances, which is exactly what the
-    // local radii want - do not square again.
+    // 1b. density state, while the kNN results are still around. `DensState::new` takes
+    // true distances and squares them itself.
     let dens_state = match dens_params {
         Some(dens_params) => {
             if verbosity.normal_verbosity() {
@@ -2145,16 +2170,20 @@ where
 #[derive(Debug, Clone)]
 pub struct Fa2Params<T> {
     /// Number of neighbours
+    /// Defaults to `15`.
     pub k: usize,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
     /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
+    /// Defaults to `"nndescent"`.
     pub ann_type: String,
     /// Embedding initialisation method: `"spectral"`, `"pca"` or `"random"`
+    /// Defaults to `"spectral"`.
     pub initialisation: String,
     /// Optional initialisation range
     pub init_range: Option<T>,
     /// Use randomised SVD for PCA initialisation
+    /// Defaults to `false`.
     pub randomised: bool,
     /// Nearest neighbour parameters
     pub nn_params: NearestNeighbourParams<T>,
@@ -2425,6 +2454,11 @@ where
 ///
 /// Embedding coordinates as `Vec<Vec<T>>`, `[2][n_samples]`.
 ///
+/// ### Errors
+///
+/// [`ManifoldsError::Fa2InvalidParam`] if `graph_params.mix_weight` is not 1, since
+/// the layout needs a symmetric graph.
+///
 /// ### References
 ///
 /// Jacomy et al., PLoS ONE, 2014 (ForceAtlas2)
@@ -2572,20 +2606,24 @@ pub struct PhateParams<T> {
     pub n_dim: usize,
     /// Neighbours that set the kernel bandwidth. The kNN search runs wider, see
     /// [`phate_search_width`].
+    /// Defaults to `5`.
     pub k: usize,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"`, or `"balltree"`.
     /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
+    /// Defaults to `"nndescent"`.
     pub ann_type: String,
     /// Nearest neighbour search parameters to use
     pub nn_params: NearestNeighbourParams<T>,
     /// Diffusion parameters to use
     pub diffusion_params: PhateDiffusionParams<T>,
-    /// Which MDS implementation to use
+    /// Which MDS implementation to use: `"sgd_dense"` (default, also `"dense"`) or
+    /// `"classic"`.
     pub mds_method: String,
     /// Optional number of iterations for MDS fitting
     pub mds_iter: Option<usize>,
     /// Shall randomised SVD be used for PCA-based initialisation
+    /// Defaults to `true`.
     pub randomised: bool,
 }
 
@@ -2709,9 +2747,8 @@ where
 ///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
 ///   provide a weird string, the function will default to `"kmknn"`
 /// * `nn_params` - Nearest neighbour search parameters
-/// * `phate_params` - Full PHATE parameter struct (uses `k`, `decay`,
-///   `bandwidth_scale`, `thresh`, `symmetrise`, `n_landmarks`,
-///   `landmark_mode`)
+/// * `phate_params` - Full PHATE parameter struct. Reads `k` and every field of
+///   `diffusion_params` bar `t` and `gamma`.
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -2890,11 +2927,11 @@ where
 /// 4. Compute diffusion potential: log transformation of P^t by default
 /// 5. Embed via MDS on pairwise potential distances
 ///
-/// Steps 2–4 optionally operate on a compressed landmark representation
-/// (N × L instead of N × N) when `phate_params.n_landmarks` is set.
-/// Pairwise distances and MDS (step 5) always run in the full N × N space;
-/// however, to avoid holding the full N x N matrix in memory, you can
-/// use a streaming version of MDS that computes the distances on the fly.
+/// By default steps 3 to 5 run on a compressed landmark operator, with
+/// [`PHATE_DEFAULT_LANDMARKS`] landmarks: the potential distances and the MDS are
+/// L x L and the result is interpolated back to all samples. Setting
+/// `diffusion_params.n_landmarks` to `None`, or to at least the number of samples,
+/// runs the full operator instead, whose distance matrix is a dense N x N.
 ///
 /// ### Params
 ///
@@ -2905,7 +2942,8 @@ where
 ///   `Some((Vec<Vec<usize>>, Vec<Vec<T>>))`, or `None` to run search
 ///   internally. Indices and distances must exclude self.
 /// * `phate_params` - PHATE parameters. See `PhateParams` for full
-///   documentation of each field.
+///   documentation of each field. `nn_params.dist_metric` has to be Euclidean or
+///   cosine; Manhattan panics.
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -2983,7 +3021,8 @@ where
 /// * `precomputed_knn` - Precomputed kNN indices and distances, excluding self,
 ///   or `None` to search on the device.
 /// * `phate_params` - PHATE parameters. `ann_type` is read as a GPU key, see
-///   [`run_ann_search_gpu`]; `nn_params` is replaced by `nn_params`.
+///   [`run_ann_search_gpu`]; its `nn_params` are not used, bar the `dist_metric`,
+///   which is overwritten by the one of the `nn_params` argument.
 /// * `nn_params` - GPU nearest neighbour parameters
 /// * `device` - The GPU device to use
 /// * `seed` - Random seed for reproducibility
@@ -3247,10 +3286,12 @@ where
 #[derive(Debug, Clone)]
 pub struct PacmapParams<T> {
     /// Output dimensionality. Default 2.
+    /// Defaults to `2`.
     pub n_dim: usize,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
     /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
+    /// Defaults to `"ivf"`.
     pub ann_type: String,
     /// Which optimiser to use. Options are `"adam"` and `"adam_parallel"`
     pub optimiser: String,
@@ -3263,6 +3304,7 @@ pub struct PacmapParams<T> {
     pub n_further: usize,
     /// Embedding initialisation. Default `"pca"`. PCA is strongly recommended
     /// for PaCMAP as random init degrades global structure.
+    /// Defaults to `"pca"`.
     pub initialisation: String,
     /// Scale of the initial embedding. For PCA, the multiplier on the scores.
     pub range: Option<T>,
@@ -3472,6 +3514,17 @@ where
 /// ### Returns
 ///
 /// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+///
+/// ### Errors
+///
+/// [`ManifoldsError::NoData`] on an empty precomputed graph and
+/// [`ManifoldsError::NotEnoughNeighbours`] if it is narrower than `params.n_near`.
+///
+/// ### References
+///
+/// Wang et al. (2021): "Understanding How Dimension Reduction Tools Work: An
+/// Empirical Approach to Deciphering t-SNE, UMAP, TriMap, and PaCMAP for Data
+/// Visualization", JMLR
 pub fn pacmap<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
@@ -3664,26 +3717,35 @@ pub struct DiffusionMapsParams<T> {
     /// Output embedding dimensionality (default: 2)
     pub n_dim: usize,
     /// Number of nearest neighbours used to build the graph
+    /// Defaults to `5`.
     pub k: usize,
-    /// ANN algorithm name (see `NearestNeighbourParams`)
+    /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
+    /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
+    /// Defaults to `"nndescent"`.
     pub ann_type: String,
     /// Nearest neighbour search parameters
     pub nn_params: NearestNeighbourParams<T>,
     /// Multiplicative factor applied to the adaptive kernel bandwidth
+    /// Defaults to `1.0`.
     pub bandwidth_scale: T,
     /// Sparsity threshold applied to kernel entries
+    /// Defaults to `1e-4`.
     pub thresh: T,
     /// Graph symmetrisation: `"add"`, `"multiply"`, `"mnn"` or `"none"`
+    /// Defaults to `"add"`.
     pub graph_symmetry: String,
     /// Anisotropic density-correction exponent in [0, 1]. 0 gives the
     /// normalised graph Laplacian, 0.5 the Fokker-Planck operator, 1 the
     /// Laplace-Beltrami operator.
+    /// Defaults to `1.0`.
     pub alpha_norm: T,
     /// Diffusion time: `Auto` picks the VNE knee, `Fixed(t)` uses `t` directly.
     pub t: PhateTime,
     /// Landmark count. `None` or `>= n` runs full DM.
     pub n_landmarks: Option<usize>,
     /// `"random"`, `"spectral"` or `"density"`
+    /// Defaults to `"spectral"`.
     pub landmark_method: String,
     /// Components for spectral landmark selection (ignored otherwise)
     pub n_svd: Option<usize>,
@@ -3994,6 +4056,11 @@ where
 /// ### Returns
 ///
 /// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`
+///
+/// ### References
+///
+/// Coifman & Lafon (2006): "Diffusion maps", Applied and Computational Harmonic
+/// Analysis
 pub fn diffusion_maps<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
@@ -4048,10 +4115,12 @@ where
             };
             if verbosity.normal_verbosity() {
                 println!(" ... t = {} in {:.2?}", t, start_t.elapsed());
-                println!(" Computing top {} eigenpairs ...", dm_params.n_dim + 1);
+            }
+            let n_ask = (dm_params.n_dim + 5).min(sqrt_degrees.len() - 1);
+            if verbosity.normal_verbosity() {
+                println!(" Computing top {} eigenpairs ...", n_ask);
             }
             let start_eig = Instant::now();
-            let n_ask = (dm_params.n_dim + 5).min(sqrt_degrees.len() - 1);
             let (evals, evecs) = compute_largest_eigenpairs_lanczos(&p_sym, n_ask, seed as u64)?;
 
             // Lanczos can converge fewer pairs than asked for on a degenerate
@@ -4155,13 +4224,16 @@ where
 #[derive(Debug, Clone)]
 pub struct ParametricUmapParams<T> {
     /// How many dimensions to return
+    /// Defaults to `2`.
     pub n_dim: usize,
     /// Number of neighbours
+    /// Defaults to `15`.
     pub k: usize,
     /// Which of the possible approximate nearest neighbour searches to use.
     /// Defaults to `"nndescent"`.
     pub ann_type: String,
     /// Vector of usizes for the hidden layers in the MLP.
+    /// Defaults to `[128, 128, 128]`.
     pub hidden_layers: Vec<usize>,
     /// Nearest neighbour parameters.
     pub nn_params: NearestNeighbourParams<T>,
@@ -4307,6 +4379,11 @@ where
 /// Embedding coordinates as `Vec<Vec<T>>` where outer vector has length
 /// `n_dim` and inner vectors have length `n_samples`. Each outer element
 /// represents one embedding dimension.
+///
+/// ### References
+///
+/// Sainburg, McInnes & Gentner (2021): "Parametric UMAP Embeddings for
+/// Representation and Semisupervised Learning", Neural Computation
 pub fn parametric_umap<T>(
     data: impl ManifoldsMatrix<T>,
     precomputed_knn: PreComputedKnn<T>,
@@ -4493,15 +4570,19 @@ where
 #[derive(Debug, Clone)]
 pub struct UmapParamsGpu<T> {
     /// How many dimensions to return
+    /// Defaults to `2`.
     pub n_dim: usize,
     /// Number of neighbours
+    /// Defaults to `15`.
     pub k: usize,
-    /// Which optimiser to use. Defaults to `"adam_gpu"`.
+    /// Which optimiser to use: `"adam_gpu"` (default), `"adam"`, `"sgd"`,
+    /// `"adam_parallel"`, or `"adam_mlx"` with the `mlx` feature.
     pub optimiser: String,
     /// Which GPU nearest neighbour search to use. One of `"exhaustive_gpu"`,
     /// `"ivf_gpu"` or `"nndescent_gpu"`. Defaults to `"nndescent_gpu"`.
     pub ann_type: String,
-    /// Which embedding initialisation to use. Defaults to spectral clustering.
+    /// Which embedding initialisation to use: `"spectral"` (default), `"pca"`
+    /// or `"random"`.
     pub initialisation: String,
     /// Optional initialisation range
     pub init_range: Option<T>,
@@ -4512,6 +4593,7 @@ pub struct UmapParamsGpu<T> {
     /// Parameters for the UMAP optimiser
     pub optim_params: UmapOptimParams<T>,
     /// Use randomised SVD for PCA-based initialisation
+    /// Defaults to `false`.
     pub randomised: bool,
 }
 
@@ -4725,9 +4807,9 @@ where
 
 /// Run UMAP with GPU-accelerated nearest neighbour search
 ///
-/// Identical to `umap` except the kNN graph is constructed on the GPU.
-/// Embedding initialisation and optimisation remain on the CPU (the parallel
-/// Adam optimiser is already extremely fast for the 2D embedding updates).
+/// Identical to `umap` except the kNN graph is constructed on the GPU and, with
+/// the default `"adam_gpu"` optimiser, the Adam update runs there too. Graph
+/// construction and the initialisation stay on the CPU.
 ///
 /// ### Params
 ///
@@ -4864,9 +4946,8 @@ where
         verbose,
     )?;
 
-    // density state, while the kNN results are still around. The ANN backends
-    // return squared euclidean distances, which is exactly what the local radii
-    // want - do not square again.
+    // density state, while the kNN results are still around. `DensState::new` takes
+    // true distances and squares them itself.
     let dens_state = match dens_params {
         Some(dens_params) => {
             if verbosity.normal_verbosity() {
@@ -5171,14 +5252,17 @@ where
 #[cfg(feature = "gpu")]
 #[derive(Debug, Clone)]
 pub struct TsneParamsGpu<T> {
-    /// Number of output dimensions (typically 2)
+    /// Number of output dimensions. Anything but 2 returns
+    /// [`ManifoldsError::IncorrectDim`].
     pub n_dim: usize,
     /// Perplexity parameter controlling neighbourhood size (typical: 5-50)
+    /// Defaults to `30.0`.
     pub perplexity: T,
     /// Which GPU ANN search to use. One of `"exhaustive_gpu"`, `"ivf_gpu"` or
     /// `"nndescent_gpu"`. Defaults to `"ivf_gpu"`.
     pub ann_type: String,
     /// Embedding initialisation method: `"pca"`, `"random"`, or `"spectral"`
+    /// Defaults to `"pca"`.
     pub initialisation: String,
     /// Optional initialisation range
     pub init_range: Option<T>,
@@ -5187,6 +5271,7 @@ pub struct TsneParamsGpu<T> {
     /// tSNE optimisation parameters
     pub optim_params: TsneOptimParams<T>,
     /// Use randomised SVD for PCA initialisation
+    /// Defaults to `true`.
     pub randomised: bool,
 }
 
@@ -5459,8 +5544,8 @@ where
 
 /// Run t-SNE with GPU-accelerated nearest neighbour search (FFT build)
 ///
-/// Identical to `tsne` except the kNN graph is constructed on the GPU.
-/// Optimisation (Barnes-Hut or FFT) stays on CPU.
+/// Identical to `tsne` except the kNN graph is constructed on the GPU. The
+/// optimiser stays on the CPU unless `approx_type` is `"fft_3k_gpu"`.
 ///
 /// ### Params
 ///

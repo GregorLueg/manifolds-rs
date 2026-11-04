@@ -460,7 +460,7 @@ class PHATE(BaseEmbedding):
             the diffusion does the smoothing. The search runs ``6k + 5`` wide,
             since the kernel keeps anything just past the ``k``-th neighbour, so
             give a precomputed graph that width as well.
-        metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
+        metric: ``"euclidean"``/``"l2"`` or ``"cosine"``.
         decay: Alpha-decay exponent of the kernel. ``None`` gives a binary
             connectivity kernel instead.
         t: Diffusion time. ``None`` picks the VNE knee.
@@ -656,6 +656,7 @@ class DiffusionMaps(BaseEmbedding):
         n_components: Output dimensionality, meaning eigenvectors kept.
         k: Neighbours used to build the kernel.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
+            Landmarks take the first two only.
         alpha: Anisotropic density-correction exponent in ``[0, 1]``.
         t: Diffusion time. ``None`` picks the VNE knee.
         bandwidth_scale: Multiplier on the adaptive kernel bandwidth.

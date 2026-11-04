@@ -54,9 +54,7 @@ const TSNE_LR_DIVISOR: f64 = 12.0;
 const TSNE_LR_FLOOR: f64 = 200.0;
 
 /// Default tree depth cap for the quick-and-dirty Barnes-Hut optimiser.
-/// qdtsne recommends 7 to 10. At n = 20k (five clusters, f32) depth 7 halved
-/// the full pipeline time against plain Barnes-Hut (4.0 s vs 8.0 s) with
-/// kNN15 preservation 0.223 vs 0.231.
+/// qdtsne recommends 7 to 10. A shallower tree is faster and coarser.
 pub(crate) const TSNE_QD_MAX_DEPTH: usize = 7;
 
 /// Cap on `n_boxes` per dimension in the FFT grid. FFT cost per epoch is
@@ -83,7 +81,7 @@ pub(crate) const TSNE_FFT_GRID_MARGIN: f64 = 0.3;
 // Structures //
 ////////////////
 
-/// t-SNE specific optimization parameters
+/// t-SNE specific optimisation parameters
 #[derive(Clone, Debug)]
 pub struct TsneOptimParams<T> {
     /// Number of epochs

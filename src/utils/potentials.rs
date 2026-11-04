@@ -51,7 +51,7 @@ where
 
 /// Apply power potential transformation: (P^t)^c / c
 ///
-/// Used for gamma != 1 and gamma != -1 in PHATE.
+/// Used for gamma != 1 and gamma != -1 in PHATE, with `c = (1 - gamma) / 2`.
 /// When gamma = -1, just return the matrix unchanged (identity transform).
 ///
 /// ### Params
@@ -232,7 +232,7 @@ where
 /// ### Params
 ///
 /// * `potential` - Diffusion potential matrix (N × N or N × n_landmarks)
-/// * `metric` - Distance metric ("euclidean" or "cosine")
+/// * `metric` - Distance metric
 ///
 /// ### Returns
 ///
@@ -253,7 +253,7 @@ where
 /// ### Params
 ///
 /// * `potential` - Diffusion potential matrix (N × N or N × n_landmarks)
-/// * `metric` - Distance metric ("euclidean" or "cosine")
+/// * `metric` - Distance metric
 /// * `fill` - Value of the non-stored entries, see [`potential_of_zero`]
 ///
 /// ### Returns
@@ -284,7 +284,7 @@ where
 /// ### Params
 ///
 /// * `dense_rows` - The rows, all of the same length
-/// * `metric` - Distance metric ("euclidean" or "cosine")
+/// * `metric` - Distance metric
 ///
 /// ### Returns
 ///

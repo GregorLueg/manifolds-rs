@@ -36,7 +36,6 @@ where
 {
     // compute squared distances
     let diff: Tensor<2> = src_embed - dst_embed;
-    // use ::<1> turbofish syntax <- important!
     let dist_sq: Tensor<1> = diff.clone().powf_scalar(2.0).sum_dim(1).squeeze_dims(&[1]);
 
     let epsilon = T::from_f32(1e-6).unwrap();
@@ -162,7 +161,7 @@ pub struct UmapBatch {
 
 /// UmapEdgeDataset
 pub struct UmapEdgeDataset {
-    /// Vector of edges with `(src, dist, target)`
+    /// Vector of edges with `(src, dst, target)`
     pub edges: Vec<(usize, usize, f32)>,
 }
 

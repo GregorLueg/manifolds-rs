@@ -571,7 +571,7 @@ pub fn generate_hierarchical_clusters(
     let total_subclusters = n_supergroups * n_subclusts;
     let n_per_subcluster = n_samples / total_subclusters;
 
-    // supergroup centres — spread far apart
+    // supergroup centres, spread far apart
     let supergroup_centres: Vec<Vec<f64>> = (0..n_supergroups)
         .map(|_| {
             (0..dim)
@@ -580,7 +580,7 @@ pub fn generate_hierarchical_clusters(
         })
         .collect();
 
-    // subcluster centres — tight around their supergroup centre
+    // subcluster centres, tight around their supergroup centre
     let mut subcluster_centres: Vec<(usize, Vec<f64>)> = Vec::with_capacity(total_subclusters);
     for sg in 0..n_supergroups {
         let sc = &supergroup_centres[sg];

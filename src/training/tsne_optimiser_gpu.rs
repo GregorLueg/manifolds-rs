@@ -6,8 +6,7 @@
 //!
 //! 1. bucket points by grid box (`u32` atomics, then a scan and a scatter)
 //! 2. splat a unit charge onto the zero-padded grid, one plane per box with
-//!    `plane_sum` where the device has a fixed plane size (2.7 s against
-//!    4.1 s for one unit per node, 1000 epochs at 100k), else one unit per
+//!    `plane_sum` where the device has a fixed plane size, else one unit per
 //!    node
 //! 3. forward 2D FFT, multiply by the three kernel spectra (`q`, `q^2 dx`,
 //!    `q^2 dy`), inverse 2D FFT with two real outputs packed per complex grid

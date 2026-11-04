@@ -49,7 +49,7 @@ const TSMM_ROWS: u32 = 8;
 /// Output columns per workgroup in [`tall_skinny_mm`].
 const TSMM_COLS: u32 = 32;
 
-/// Largest inner dimension the [`tall_skinny_mm`] staging holds, sized so two
+/// Largest inner dimension the [`fn@tall_skinny_mm`] staging holds, sized so two
 /// workgroups stay resident in a 32 KiB shared-memory budget.
 pub const TSMM_K_MAX: u32 = 512;
 
