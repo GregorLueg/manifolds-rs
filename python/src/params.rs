@@ -1010,11 +1010,9 @@ where
     T: ManifoldsFloat,
 {
     let mut r = Reader::new(d, "DreamsParamsGpu");
-    let mut p = DreamsParamsGpu {
-        tsne_params: TsneParamsGpu::new_default_2d(r.float::<T>("perplexity")?),
-        ..Default::default()
-    };
-    set(&mut p.lambda, r.float::<T>("lambda")?);
+    let perplexity = r.float::<T>("perplexity")?;
+    let lambda = r.float::<T>("lambda")?;
+    let mut p = DreamsParamsGpu::new_default_2d(perplexity, lambda);
     tsne_gpu_into(&mut r, &mut p.tsne_params)?;
     r.finish()?;
     Ok(p)

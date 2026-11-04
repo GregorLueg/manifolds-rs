@@ -234,11 +234,7 @@ where
 ///
 /// `(indptr, entries)` of the transpose, rows sorted ascending by index. Row `i`
 /// holds the incoming edges of vertex `i` as `(source, weight)` pairs.
-fn transpose_csr<T>(
-    indptr: &[usize],
-    entries: &[(u32, T)],
-    n: usize,
-) -> (Vec<usize>, Vec<(u32, T)>)
+fn transpose_csr<T>(indptr: &[usize], entries: &[(u32, T)], n: usize) -> (Vec<usize>, Vec<(u32, T)>)
 where
     T: ManifoldsFloat,
 {

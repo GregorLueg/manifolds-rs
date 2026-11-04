@@ -14,6 +14,7 @@ use crate::parametric::batch::*;
 use crate::parametric::dataset::*;
 use crate::parametric::model::*;
 use crate::prelude::Verbosity;
+use crate::training::umap_optimisers::{DEFAULT_MIN_DIST, DEFAULT_SPREAD};
 
 ////////////
 // Params //
@@ -22,9 +23,9 @@ use crate::prelude::Verbosity;
 /// Parameters for parametric UMAP training
 #[derive(Clone, Debug)]
 pub struct TrainParametricParams<T> {
-    /// Curve parameter for attractive force (typically ~1.5 for 2D)
+    /// Curve parameter for attractive force. Fitted from `min_dist` and `spread`.
     pub a: T,
-    /// Curve parameter for repulsive force (typically ~0.9 for 2D)
+    /// Curve parameter for repulsive force. Fitted from `min_dist` and `spread`.
     pub b: T,
     /// Learning rate for the optimiser
     pub lr: T,
@@ -46,19 +47,21 @@ where
 {
     /// Default parameters for 2D embedding
     ///
+    /// The curve is fitted to the same `min_dist` and `spread` as standard UMAP.
+    ///
     /// ### Returns
     ///
     /// Sensible default parameters for 2D embeddings
     pub fn default_2d() -> Self {
-        Self {
-            a: T::from_f64(1.5).unwrap(),
-            b: T::from_f64(0.9).unwrap(),
-            lr: T::from_f64(0.001).unwrap(),
-            n_epochs: 500,
-            batch_size: 256,
-            neg_sample_rate: 5,
-            corr_weight: T::from_f64(0.0).unwrap(),
-        }
+        Self::from_min_dist_spread(
+            T::from_f64(DEFAULT_MIN_DIST).unwrap(),
+            T::from_f64(DEFAULT_SPREAD).unwrap(),
+            T::zero(),
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
     /// Parameters from specified minimum distance, spread and correlation loss

@@ -53,8 +53,9 @@ const PHATE_SEARCH_MULTIPLIER: usize = 6;
 /// which stops being practical long before single cell sizes.
 pub const PHATE_DEFAULT_LANDMARKS: usize = 2048;
 
-/// Default number of singular vectors for spectral landmark selection.
-pub const PHATE_DEFAULT_N_SVD: usize = 100;
+/// Default number of singular vectors for spectral landmark selection, in PHATE
+/// and diffusion maps alike.
+pub const LANDMARK_DEFAULT_N_SVD: usize = 100;
 
 /// Power iterations for spectral landmark selection. The spectrum of a kNN affinity
 /// is close to flat, so two iterations leave the leading subspace unconverged, and
@@ -117,6 +118,27 @@ pub struct PhateDiffusionParams<T> {
     /// Gamma parameter to control the informational distance between data
     /// points. Between `[-1.0, 1.0]`
     pub gamma: T,
+}
+
+impl<T> Default for PhateDiffusionParams<T>
+where
+    T: ManifoldsFloat,
+{
+    /// The graphtools kernel on [`PHATE_DEFAULT_LANDMARKS`] spectral landmarks,
+    /// with the diffusion time from the VNE knee.
+    fn default() -> Self {
+        Self {
+            decay: Some(T::from_f64(40.0).unwrap()),
+            bandwidth_scale: T::one(),
+            thresh: T::from_f64(1e-4).unwrap(),
+            graph_symmetry: "add".to_string(),
+            n_landmarks: Some(PHATE_DEFAULT_LANDMARKS),
+            landmark_method: "spectral".to_string(),
+            n_svd: None,
+            t: PhateTime::default(),
+            gamma: T::one(),
+        }
+    }
 }
 
 impl<T> PhateDiffusionParams<T> {
@@ -389,7 +411,7 @@ pub enum PhateTime {
 /// Default implementation for PhateTime.
 impl Default for PhateTime {
     fn default() -> Self {
-        PhateTime::Auto { t_max: 100 }
+        PhateTime::Auto { t_max: PHATE_MAX_T }
     }
 }
 
@@ -642,9 +664,11 @@ pub enum LandmarkMethod {
 }
 
 impl Default for LandmarkMethod {
-    /// Default to spectral with 100 PCs to calculate
+    /// Spectral selection on [`LANDMARK_DEFAULT_N_SVD`] singular vectors.
     fn default() -> Self {
-        LandmarkMethod::Spectral { n_svd: 100 }
+        LandmarkMethod::Spectral {
+            n_svd: LANDMARK_DEFAULT_N_SVD,
+        }
     }
 }
 
@@ -669,7 +693,7 @@ pub fn parse_landmark_method(
     n_svd: Option<usize>,
 ) -> Option<LandmarkMethod> {
     let seed = seed.unwrap_or(42);
-    let n_svd = n_svd.unwrap_or(10);
+    let n_svd = n_svd.unwrap_or(LANDMARK_DEFAULT_N_SVD);
 
     match s.to_lowercase().as_str() {
         "random" => Some(LandmarkMethod::Random { seed: seed as u64 }),

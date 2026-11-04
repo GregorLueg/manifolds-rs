@@ -636,16 +636,7 @@ where
             initialisation: "pca".to_string(),
             init_range: None,
             nn_params: NearestNeighbourParams::default(),
-            optim_params: TsneOptimParams {
-                n_epochs: 1000,
-                lr: None,
-                early_exag_iter: 250,
-                early_exag_factor: T::from_f64(12.0).unwrap(),
-                late_exag_factor: None,
-                theta: T::from_f64(0.5).unwrap(),
-                n_interp_points: 3,
-                max_depth: TSNE_QD_MAX_DEPTH,
-            },
+            optim_params: TsneOptimParams::default(),
             randomised_init: true,
         }
     }
@@ -721,11 +712,11 @@ where
     ///
     /// Hopefully sensible standard parameters for 2D visualisation.
     pub fn new_default_2d(perplexity: Option<T>) -> Self {
-        let perplexity = perplexity.unwrap_or_else(|| T::from_f64(30.0).unwrap());
+        let default = Self::default();
 
         Self {
-            perplexity,
-            ..Self::default()
+            perplexity: perplexity.unwrap_or(default.perplexity),
+            ..default
         }
     }
 }
@@ -2256,9 +2247,11 @@ where
     ///
     /// Hopefully sensible standard parameters for 2D visualisation.
     pub fn new_default_2d(k: Option<usize>) -> Self {
+        let default = Self::default();
+
         Self {
-            k: k.unwrap_or(15),
-            ..Self::default()
+            k: k.unwrap_or(default.k),
+            ..default
         }
     }
 }
@@ -2610,29 +2603,12 @@ where
     T: ManifoldsFloat,
 {
     fn default() -> Self {
-        let diffusion_params = PhateDiffusionParams::new(
-            Some(T::from_f64(40.0).unwrap()),
-            T::from_f64(1.0).unwrap(),
-            T::from_f64(1e-4).unwrap(),
-            // `"add"`, not `"average"`: the latter is not a name
-            // `parse_phate_symmetrisation` knows, so it fell through to the
-            // parser's own default. Same operator either way, but a default
-            // that its own parser rejects is a trap for the next reader.
-            "add".to_string(),
-            Some(PHATE_DEFAULT_LANDMARKS),
-            "spectral".to_string(),
-            None,
-            None,
-            None,
-            T::from_f64(1.0).unwrap(),
-        );
-
         Self {
             n_dim: 2,
             k: 5,
             ann_type: "nndescent".to_string(),
             ann_params: NearestNeighbourParams::default(),
-            diffusion_params,
+            diffusion_params: PhateDiffusionParams::default(),
             mds_method: "sgd_dense".to_string(),
             mds_iter: None,
             randomised: true,
@@ -2708,11 +2684,11 @@ where
     ///
     /// Hopefully sensible standard parameters for 2D visualisation.
     pub fn new_default_2d(k: Option<usize>) -> Self {
-        let k = k.unwrap_or(5);
+        let default = Self::default();
 
         Self {
-            k,
-            ..Self::default()
+            k: k.unwrap_or(default.k),
+            ..default
         }
     }
 }
@@ -2897,12 +2873,7 @@ where
                 landmark_method,
                 dist_metric,
                 seed,
-                Some(
-                    phate_params
-                        .diffusion_params
-                        .n_svd
-                        .unwrap_or(PHATE_DEFAULT_N_SVD),
-                ),
+                phate_params.diffusion_params.n_svd,
                 &backend,
                 verbose,
             )?;
@@ -3324,7 +3295,7 @@ where
             n_mid_near: 5,
             n_further: 20,
             initialisation: "pca".to_string(),
-            range: Some(T::from_f64(0.01).unwrap()),
+            range: Some(T::from_f64(PACMAP_PCA_SCALE).unwrap()),
             nn_params: NearestNeighbourParams::default(),
             optim_params: PacmapOptimParams::default(),
         }
@@ -3619,7 +3590,7 @@ where
                 params_pacmap.initialisation,
             );
             EmbdInit::PcaInit {
-                range: Some(T::from_f64(0.01).unwrap()),
+                range: Some(T::from_f64(PACMAP_PCA_SCALE).unwrap()),
                 randomised: true,
             }
         });
@@ -3828,11 +3799,11 @@ where
     ///
     /// Hopefully sensible standard parameters for 2D visualisation.
     pub fn new_default_2d(k: Option<usize>) -> Self {
-        let k = k.unwrap_or(5);
+        let default = Self::default();
 
         Self {
-            k,
-            ..Self::default()
+            k: k.unwrap_or(default.k),
+            ..default
         }
     }
 }
@@ -4290,8 +4261,8 @@ where
     ///
     /// Hopefully sensible standard parameters for 2D visualisation.
     pub fn new_default_2d(min_dist: Option<T>, spread: Option<T>, corr_weight: Option<T>) -> Self {
-        let min_dist = min_dist.unwrap_or(T::from_f64(0.1).unwrap());
-        let spread = spread.unwrap_or(T::from_f64(1.0).unwrap());
+        let min_dist = min_dist.unwrap_or(T::from_f64(DEFAULT_MIN_DIST).unwrap());
+        let spread = spread.unwrap_or(T::from_f64(DEFAULT_SPREAD).unwrap());
         let corr_weight = corr_weight.unwrap_or(T::from_f64(0.0).unwrap());
 
         Self {
@@ -5241,16 +5212,7 @@ where
             initialisation: "pca".to_string(),
             init_range: None,
             nn_params: NearestNeighbourParamsGpu::default(),
-            optim_params: TsneOptimParams {
-                n_epochs: 1000,
-                lr: None,
-                early_exag_iter: 250,
-                early_exag_factor: T::from_f64(12.0).unwrap(),
-                late_exag_factor: None,
-                theta: T::from_f64(0.5).unwrap(),
-                n_interp_points: 3,
-                max_depth: TSNE_QD_MAX_DEPTH,
-            },
+            optim_params: TsneOptimParams::default(),
             randomised_init: true,
         }
     }
@@ -5325,11 +5287,11 @@ where
     /// Hopefully sensible standard parameters for 2D visualisation with GPU
     /// kNN search.
     pub fn new_default_2d(perplexity: Option<T>) -> Self {
-        let perplexity = perplexity.unwrap_or_else(|| T::from_f64(30.0).unwrap());
+        let default = Self::default();
 
         Self {
-            perplexity,
-            ..Self::default()
+            perplexity: perplexity.unwrap_or(default.perplexity),
+            ..default
         }
     }
 }
@@ -5453,6 +5415,30 @@ where
         Self {
             tsne_params: TsneParamsGpu::default(),
             lambda: T::from_f64(DREAMS_LAMBDA).unwrap(),
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl<T> DreamsParamsGpu<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Default parameters for standard 2D visualisation.
+    ///
+    /// ### Params
+    ///
+    /// * `perplexity` - Perplexity of the underlying t-SNE. Defaults to `30.0`.
+    /// * `lambda` - Regularisation strength in `[0, 1]`. Defaults to
+    ///   [`DREAMS_LAMBDA`].
+    ///
+    /// ### Returns
+    ///
+    /// The parameter set.
+    pub fn new_default_2d(perplexity: Option<T>, lambda: Option<T>) -> Self {
+        Self {
+            tsne_params: TsneParamsGpu::new_default_2d(perplexity),
+            lambda: lambda.unwrap_or_else(|| T::from_f64(DREAMS_LAMBDA).unwrap()),
         }
     }
 }
