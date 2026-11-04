@@ -87,6 +87,15 @@ pub enum ManifoldsError {
     #[error("The matrix needs to be square")]
     NotSquareMatrix,
 
+    /// Error when a method cannot run with the chosen distance metric
+    #[error("{method} does not support the '{metric}' distance metric")]
+    MetricNotSupported {
+        /// Name of the method
+        method: &'static str,
+        /// The metric asked for
+        metric: String,
+    },
+
     /// Error if the data is empty
     #[error("Empty data was parsed through - upstream error?")]
     NoData,
@@ -191,6 +200,15 @@ pub enum ManifoldsError {
     /// point
     #[error("tSNE optimiser '{name}' runs only through tsne_gpu()")]
     TsneOptimiserNeedsGpu {
+        /// Name of the requested optimiser
+        name: String,
+    },
+    /// Error when an FFT t-SNE optimiser is requested from a build without the
+    /// `fft_tsne` feature
+    #[error(
+        "tSNE optimiser '{name}' needs the fft_tsne feature; recompile with it or use 'barnes_hut'"
+    )]
+    TsneOptimiserNeedsFft {
         /// Name of the requested optimiser
         name: String,
     },

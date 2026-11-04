@@ -68,6 +68,8 @@ impl From<ManErr> for PyErr {
             | ManifoldsError::DreamsInvalidLambda { .. }
             | ManifoldsError::DreamsReferenceMismatch { .. }
             | ManifoldsError::DreamsDegenerateReference
+            | ManifoldsError::MetricNotSupported { .. }
+            | ManifoldsError::TsneOptimiserNeedsFft { .. }
             | ManifoldsError::AnnSearchRsError(_) => PyValueError::new_err(msg),
 
             // Numerical routines that ran but did not get there. Usually

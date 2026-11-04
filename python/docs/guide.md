@@ -37,8 +37,8 @@ distances reach you.
 So a graph you build yourself and hand to `fit` should hold true distances too.
 
 Metrics available: `"euclidean"`/`"l2"`, `"cosine"` and `"manhattan"`/`"l1"`.
-`PHATE` and `PHATEGpu` take only the first two, and `DiffusionMaps` raises
-`ValueError` on Manhattan with landmarks.
+Manhattan needs `"nndescent"`, `"hnsw"` or `"exhaustive"` as the backend. `PHATE`,
+`PHATEGpu` and `DiffusionMaps` with landmarks raise `ValueError` on it.
 
 ## Reusing the neighbour graph
 
@@ -48,7 +48,7 @@ Build it once:
 ```python
 ind, dist = mf.knn_graph(X, k=60, ann="hnsw")
 
-umap = mf.UMAP().fit_transform(X, knn_indices=ind[:, :15], knn_distances=dist[:, :15])
+umap = mf.UMAP(n_neighbors=15).fit_transform(X, knn_indices=ind, knn_distances=dist)
 pacmap = mf.PaCMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
 ```
 
@@ -56,9 +56,9 @@ Three things to get right. Build the graph as wide as the widest consumer needs:
 `3 * perplexity` for the t-SNE family, `n_near + 50` for `PaCMAP` and `6k + 5` for
 `PHATE`, since its kernel keeps anything just past the `k`-th neighbour.
 
-Then cut it down for `UMAP`, `DensMAP` and `ForceAtlas2`, as above. They use every
-neighbour they are given and ignore `n_neighbors`, so a 60-wide graph is
-`n_neighbors=60`, whatever the constructor says.
+`UMAP`, `DensMAP` and `ForceAtlas2` cut a wider graph to `n_neighbors`, keeping the
+nearest, and print a warning to stderr saying so. A graph you build yourself has to
+be sorted by distance for that to mean anything.
 
 And the graph must be complete: a row
 an approximate backend could not fill is padded with `-1`, and that is refused

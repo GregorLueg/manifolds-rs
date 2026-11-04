@@ -46,6 +46,13 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   (`PhateParams`, `DiffusionMapsParams`), `randomised_init` is `randomised` (t-SNE
   family, `Fa2Params`), `optimiser_type` is `optimiser` (`PacmapParams`) and
   `umap_graph_params` is `graph_params` (UMAP family, `ParametricUmapParams`).
+- `umap`, `densmap`, `forceatlas2`, `parametric_umap`, `umap_gpu`, `densmap_gpu` and
+  their `construct_*_graph` helpers cut a precomputed kNN graph wider than `k` to `k`,
+  with a warning on stderr. They used every neighbour given, whatever `k` said.
+- PHATE and landmark diffusion maps return `ManifoldsError::MetricNotSupported` for
+  Manhattan distance. PHATE panicked.
+- Without `fft_tsne`, `"fft"` and `"fft_3k"` return
+  `ManifoldsError::TsneOptimiserNeedsFft` rather than panicking.
 - `parse_initilisation` is `parse_initialisation`, and
   `ManifoldsError::SpareMatrixMustBeSquare` is `SparseMatrixMustBeSquare`.
 - `PHATE_DEFAULT_N_SVD` is `LANDMARK_DEFAULT_N_SVD`, and diffusion maps use it too:

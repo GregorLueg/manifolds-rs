@@ -72,7 +72,7 @@ Feature-gated code, tests, and prelude re-exports are conditional on these; when
 
 Numeric generics: everything flows through `T: ManifoldsFloat` (CPU) or `T: ManifoldsFloatGpu` (GPU-side). GPU functions take a `cubecl::Device`, which picks the runtime at run time. Linear algebra is `faer`; parallelism is `rayon`. When a fix requires wider precision, the existing convention (see tSNE) is to cast to `f64` at the numerically sensitive step, not to widen the whole pipeline. PCA initialisation and both randomised SVDs always run in `f64`, because the `f32` factorisations break at large sample counts. The reverse holds for the CPU kNN search: `run_ann_search` always runs in `f32` and casts the distances up to `T`, bar `"exhaustive"`, which stays in `T`.
 
-Pre-computed kNN is a first-class shortcut: every entry point bar `forceatlas2_from_graph` and `train_parametric_umap_model` accepts `Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>` so callers running many embeddings can compute the graph once via `run_ann_search`. UMAP, densMAP and ForceAtlas2 use the full width of the graph they are given, whatever `k` says.
+Pre-computed kNN is a first-class shortcut: every entry point bar `forceatlas2_from_graph` and `train_parametric_umap_model` accepts `Option<(Vec<Vec<usize>>, Vec<Vec<T>>)>` so callers running many embeddings can compute the graph once via `run_ann_search`. UMAP, densMAP and ForceAtlas2 cut a wider graph to `k` (`truncate_knn`) and warn on stderr.
 
 ## Tests
 

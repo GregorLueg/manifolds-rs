@@ -308,6 +308,41 @@ pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
     }
 }
 
+/// Cut a precomputed kNN graph down to `k` neighbours per point.
+///
+/// A graph wider than asked for would otherwise count in full, so a shared graph
+/// would quietly override `k`. Warns on stderr at every verbosity level, since the
+/// caller handed in more than gets used.
+///
+/// ### Params
+///
+/// * `indices` - Neighbour indices, excluding self, sorted by distance
+/// * `distances` - Neighbour distances, aligned with `indices`
+/// * `k` - Neighbours to keep per point
+///
+/// ### Returns
+///
+/// The graph with at most `k` neighbours per point. A narrower graph is left alone.
+pub(crate) fn truncate_knn<T>(
+    mut indices: Vec<Vec<usize>>,
+    mut distances: Vec<Vec<T>>,
+    k: usize,
+) -> (Vec<Vec<usize>>, Vec<Vec<T>>)
+where
+    T: Send,
+{
+    let width = indices.iter().map(Vec::len).max().unwrap_or(0);
+    if width > k {
+        eprintln!(
+            "Warning: precomputed kNN graph has {} neighbours per point, using the nearest {}.",
+            width, k
+        );
+        indices.par_iter_mut().for_each(|row| row.truncate(k));
+        distances.par_iter_mut().for_each(|row| row.truncate(k));
+    }
+    (indices, distances)
+}
+
 //////////
 // Main //
 //////////

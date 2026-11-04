@@ -57,6 +57,9 @@ ANN_GPU: frozenset[str] = frozenset(
 #: ``"l1"``. Distances reaching a caller are true distances in every case.
 METRICS: frozenset[str] = frozenset({"euclidean", "l2", "cosine", "manhattan", "l1"})
 
+#: As `METRICS`, for PHATE: the potential distances have no Manhattan path.
+PHATE_METRICS: frozenset[str] = METRICS - {"manhattan", "l1"}
+
 #: Embedding initialisations, from `parse_initialisation`.
 INITS: frozenset[str] = frozenset({"spectral", "pca", "random"})
 

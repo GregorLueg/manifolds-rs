@@ -43,8 +43,9 @@ Optimisers and approximations are picked by string:
 | kNN, wgpu | `"nndescent_gpu"` (default), `"ivf_gpu"` (default for t-SNE), `"exhaustive_gpu"` |
 | kNN, MLX | `"nndescent_mlx"`, `"ivf_mlx"`, `"exhaustive_mlx"` |
 
-Distances: Euclidean and cosine. The CPU kNN search also takes Manhattan, which
-PHATE and landmark diffusion maps do not support. Initialisations: spectral (Lanczos), PCA,
+Distances: Euclidean and cosine. The `"nndescent"`, `"hnsw"` and `"exhaustive"` CPU
+searches also take Manhattan, which PHATE and landmark diffusion maps do not
+support. Initialisations: spectral (Lanczos), PCA,
 random. Synthetic datasets (swiss roll, clusters, branching trajectories) ship
 with the crate for testing.
 
@@ -96,8 +97,7 @@ its shape.
 
 Running several embeddings on the same data? Build the kNN graph once with
 `run_ann_search` and hand it to each of them as `Some((indices, distances))`. UMAP,
-densMAP and ForceAtlas2 use the full width of the graph you give them, so cut it
-to the `k` you want.
+densMAP and ForceAtlas2 cut a wider graph to their `k`, with a warning.
 
 Worked examples for every method, including GPU and parametric UMAP, are in
 [docs/examples.md](https://github.com/GregorLueg/manifolds-rs/blob/main/docs/examples.md).

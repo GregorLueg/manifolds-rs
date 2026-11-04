@@ -23,7 +23,7 @@ pub mod parametric;
 
 use ann_search_rs::cpu::hnsw::{HnswIndex, HnswState};
 use ann_search_rs::cpu::nndescent::{NNDescent, NNDescentQuery};
-use ann_search_rs::utils::dist::parse_ann_dist;
+use ann_search_rs::utils::dist::{parse_ann_dist, Dist};
 use ann_search_rs::utils::matrix_to_flat;
 use ann_search_rs::utils::nndescent_utils::ApplySortedUpdates;
 use faer::MatRef;
@@ -265,7 +265,8 @@ where
 ///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
-///   distances excluding self.
+///   distances excluding self, sorted by distance. A wider graph is cut to `k`,
+///   with a warning on stderr.
 /// * `k` - Number of nearest neighbours (typically 15-50).
 /// * `ann_type` - (Approximate) Nearest neighbour method: `"exhaustive"`,
 ///   `"kmknn"`, `"balltree"`, `"annoy"`, `"hnsw"`, or `"nndescent"`. If you
@@ -306,7 +307,7 @@ where
             if verbosity.normal_verbosity() {
                 println!(" Using precomputed kNN graph");
             }
-            (indices, distances)
+            truncate_knn(indices, distances, k)
         }
         None => {
             if verbosity.normal_verbosity() {
@@ -888,7 +889,7 @@ where
 /// [`ManifoldsError::IncorrectDim`] if `n_dim` is not 2 and
 /// [`ManifoldsError::TsneOptimiserNeedsGpu`] for `"fft_3k_gpu"`, which only
 /// [`tsne_gpu`] can run. Without the `fft_tsne` feature, `"fft"` and `"fft_3k"`
-/// panic.
+/// return [`ManifoldsError::TsneOptimiserNeedsFft`].
 ///
 /// ### References
 ///
@@ -1241,7 +1242,7 @@ where
 /// [`ManifoldsError::IncorrectDim`] if `n_dim` is not 2 and
 /// [`ManifoldsError::TsneOptimiserNeedsGpu`] for `"fft_3k_gpu"`, which only
 /// [`tsne_gpu`] can run. Without the `fft_tsne` feature, `"fft"` and `"fft_3k"`
-/// panic.
+/// return [`ManifoldsError::TsneOptimiserNeedsFft`].
 ///
 /// ### References
 ///
@@ -1290,8 +1291,8 @@ where
 /// * `data` - Input data matrix (samples × features)
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances
 /// * `params` - t-SNE parameters
-/// * `approx_type` - `"barnes_hut" | "bh"`; `"fft"` and `"fft_3k"` panic
-///   without the `fft_tsne` feature
+/// * `approx_type` - `"barnes_hut" | "bh"`; `"fft"` and `"fft_3k"` return
+///   [`ManifoldsError::TsneOptimiserNeedsFft`] without the `fft_tsne` feature
 /// * `dens_params` - Density knobs for den-SNE, or `None` for plain t-SNE
 /// * `dreams_lambda` - DREAMS regularisation strength, or `None` for no
 ///   regulariser. When set, the embedding is initialised from the reference
@@ -1468,7 +1469,9 @@ where
         }
         #[cfg(not(feature = "fft_tsne"))]
         TsneOpt::Fft | TsneOpt::Fft3Kernel => {
-            panic!("FFT-accelerated t-SNE not available. Recompile with 'fft_tsne' feature or use 'barnes_hut' approximation.");
+            return Err(ManifoldsError::TsneOptimiserNeedsFft {
+                name: approx_type.to_string(),
+            });
         }
         TsneOpt::Fft3KernelGpu => {
             return Err(ManifoldsError::TsneOptimiserNeedsGpu {
@@ -2292,7 +2295,8 @@ where
 ///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
 ///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
-///   distances excluding self.
+///   distances excluding self, sorted by distance. A wider graph is cut to `k`,
+///   with a warning on stderr.
 /// * `k` - Number of nearest neighbours.
 /// * `ann_type` - (Approximate) nearest neighbour method.
 /// * `graph_params` - Fuzzy simplicial set parameters.
@@ -2329,7 +2333,7 @@ where
             if verbosity.normal_verbosity() {
                 println!(" Using precomputed kNN graph");
             }
-            (indices, distances)
+            truncate_knn(indices, distances, k)
         }
         None => {
             if verbosity.normal_verbosity() {
@@ -2726,6 +2730,29 @@ where
 // PHATE diffusion //
 /////////////////////
 
+/// Reject a metric the potential distances and the landmark selection cannot use.
+///
+/// Some kNN backends do search in Manhattan distance, so without this the run only
+/// fails after the search.
+///
+/// ### Params
+///
+/// * `method` - Name of the method, for the error message
+/// * `metric` - The distance metric asked for
+///
+/// ### Returns
+///
+/// Nothing, or [`ManifoldsError::MetricNotSupported`] for Manhattan.
+fn check_diffusion_metric(method: &'static str, metric: &str) -> Result<(), ManifoldsError> {
+    match parse_ann_dist(metric) {
+        Some(Dist::Manhattan) => Err(ManifoldsError::MetricNotSupported {
+            method,
+            metric: metric.to_string(),
+        }),
+        _ => Ok(()),
+    }
+}
+
 /// Build the PHATE diffusion operator from high-dimensional data
 ///
 /// Runs kNN search (or uses precomputed results), computes alpha decay
@@ -2774,6 +2801,8 @@ where
     HnswIndex<T>: HnswState<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    check_diffusion_metric("PHATE", &nn_params.dist_metric)?;
+
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
     let verbosity = parse_verbosity_level(verbose);
@@ -2943,7 +2972,7 @@ where
 ///   internally. Indices and distances must exclude self.
 /// * `phate_params` - PHATE parameters. See `PhateParams` for full
 ///   documentation of each field. `nn_params.dist_metric` has to be Euclidean or
-///   cosine; Manhattan panics.
+///   cosine; Manhattan returns [`ManifoldsError::MetricNotSupported`].
 /// * `seed` - Random seed for reproducibility
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
@@ -3047,6 +3076,8 @@ where
     T: ManifoldsFloatGpu,
     StandardNormal: Distribution<T>,
 {
+    check_diffusion_metric("PHATE", &nn_params.dist_metric)?;
+
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
     let verbosity = parse_verbosity_level(verbose);
@@ -3931,6 +3962,9 @@ where
         None => true,
         Some(n) => n >= data.nrows(),
     };
+    if !use_full {
+        check_diffusion_metric("Landmark diffusion maps", &nn_params.dist_metric)?;
+    }
 
     let verbosity = parse_verbosity_level(verbose);
 
@@ -4757,7 +4791,7 @@ where
             if verbosity.normal_verbosity() {
                 println!(" Using precomputed kNN graph");
             }
-            (indices, distances)
+            truncate_knn(indices, distances, k)
         }
         None => {
             if verbosity.normal_verbosity() {
@@ -5906,8 +5940,8 @@ where
 /// Identical to `tsne` except the kNN graph is constructed on the GPU.
 /// Barnes-Hut optimisation stays on CPU; `"fft_3k_gpu"` runs the optimiser on
 /// the GPU and needs no `fft_tsne`. Calling with `approx_type = "fft"` or
-/// `"fft_3k"` panics; recompile with the `fft_tsne` feature for CPU FFT
-/// support.
+/// `"fft_3k"` returns [`ManifoldsError::TsneOptimiserNeedsFft`]; recompile with the
+/// `fft_tsne` feature for CPU FFT support.
 ///
 /// ### Params
 ///
@@ -6113,7 +6147,9 @@ where
             );
         }
         TsneOpt::Fft | TsneOpt::Fft3Kernel => {
-            panic!("FFT-accelerated t-SNE not available. Recompile with 'fft_tsne' feature or use 'barnes_hut' approximation.");
+            return Err(ManifoldsError::TsneOptimiserNeedsFft {
+                name: approx_type.to_string(),
+            });
         }
         TsneOpt::Fft3KernelGpu => {
             if verbosity.normal_verbosity() {

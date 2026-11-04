@@ -39,6 +39,7 @@ from ._params import (
     MDS_METHODS,
     METRICS,
     PHATE_LANDMARK_METHODS,
+    PHATE_METRICS,
     SYMMETRIES,
     TSNE_APPROX_GPU,
     UMAP_OPTIMISERS_GPU,
@@ -489,7 +490,7 @@ class PHATEGpu(BaseEmbedding):
             "randomised": self.randomised,
             "nn_params": merge(
                 self.nn_params,
-                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+                dist_metric=check_choice(self.metric, PHATE_METRICS, name="metric"),
             ),
             "diffusion_params": diffusion,
         }

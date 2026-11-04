@@ -771,7 +771,8 @@ fn random_sample(range: Range<usize>, n: usize, seed: u64) -> Vec<usize> {
 /// * `dim` - Dimensionality of the data.
 /// * `norm_data` - Norm of the data point, read by the cosine metric.
 /// * `norm_landmark` - Norms of the landmarks, read by the cosine metric.
-/// * `dist` - Distance metric. Euclidean or cosine; Manhattan panics.
+/// * `dist` - Distance metric. Euclidean or cosine; the entry points reject
+///   Manhattan before it gets here.
 ///
 /// ### Returns
 ///

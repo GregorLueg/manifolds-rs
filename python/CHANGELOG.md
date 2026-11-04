@@ -34,6 +34,10 @@ Requires `manifolds-rs` 0.9.0.
     points, 500 below 5000, 800 otherwise.
   - n_landmarks and landmark_method moved from PhateDiffusion to the PHATE and
     PHATEGpu constructors. n_landmarks=None now selects the full operator.
+- PHATE and PHATEGpu raise ValueError on metric="manhattan". They panicked.
+- UMAP, DensMAP, ForceAtlas2 and the GPU variants cut a precomputed graph wider than
+  n_neighbors to n_neighbors, with a warning on stderr. They used every neighbour
+  given and ignored n_neighbors.
 - randomised_init is randomised on the t-SNE family and ForceAtlas2.
 - DiffusionMaps with spectral landmarks and n_svd=None takes 100 singular vectors
   (was 10). Embeddings differ from 0.5.0.

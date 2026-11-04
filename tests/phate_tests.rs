@@ -703,3 +703,22 @@ fn phate_integration_13_bandwidth_scale_effect() {
     );
     println!("Wider bandwidth produces higher affinities as expected");
 }
+
+/// Manhattan comes back as an error, before the kNN search runs
+#[test]
+fn phate_integration_manhattan_is_an_error() {
+    let (data, _) = create_diagnostic_data(30, 10, 42);
+    let params = PhateParams::<f64> {
+        nn_params: NearestNeighbourParams {
+            dist_metric: "manhattan".to_string(),
+            ..NearestNeighbourParams::default()
+        },
+        ..PhateParams::default()
+    };
+
+    let res = phate(data.as_ref(), None, params, 42, 0);
+    assert!(matches!(
+        res,
+        Err(ManifoldsError::MetricNotSupported { .. })
+    ));
+}

@@ -220,9 +220,9 @@ let embedding = umap(
 ```
 
 The indices and distances must exclude the point itself, which is what
-`run_ann_search` gives you. The graph is taken as-is, no `k` check: UMAP, densMAP
-and ForceAtlas2 use every neighbour they are given, whatever `k` in the parameter
-struct says, so cut a wider graph down first. PHATE wants `6k + 5` neighbours
+`run_ann_search` gives you, sorted by distance. UMAP, densMAP and ForceAtlas2 cut
+a wider graph to the `k` in the parameter struct and warn on stderr. PHATE wants
+`6k + 5` neighbours
 (`utils::diffusions::phate_search_width`) and PaCMAP `n_near + 50`, and PaCMAP checks
 for at least `n_near`.
 

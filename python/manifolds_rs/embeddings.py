@@ -27,6 +27,7 @@ from ._params import (
     METRICS,
     PACMAP_OPTIMISERS,
     PHATE_LANDMARK_METHODS,
+    PHATE_METRICS,
     SYMMETRIES,
     TSNE_APPROX,
     UMAP_OPTIMISERS,
@@ -55,8 +56,11 @@ class UMAP(BaseEmbedding):
     Args:
         n_components: Output dimensionality.
         n_neighbors: Neighbours per point. The locality knob: small values chase
-            fine structure, large ones preserve more of the global picture.
+            fine structure, large ones preserve more of the global picture. A wider
+            precomputed graph is cut to this, with a warning on stderr.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
+            The last needs ``ann`` to be ``"nndescent"``, ``"hnsw"`` or
+            ``"exhaustive"``.
         min_dist: How tightly points may pack in the embedding. Together with
             `spread` it fits the repulsion curve; neither is used for anything
             else.
@@ -545,7 +549,7 @@ class PHATE(BaseEmbedding):
             "randomised": self.randomised,
             "nn_params": merge(
                 self.nn_params,
-                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+                dist_metric=check_choice(self.metric, PHATE_METRICS, name="metric"),
             ),
             "diffusion_params": diffusion,
         }
@@ -745,7 +749,8 @@ class ForceAtlas2(BaseEmbedding):
     Two-dimensional only, which is the core's restriction.
 
     Args:
-        n_neighbors: Neighbours per point used to build the graph.
+        n_neighbors: Neighbours per point used to build the graph. A wider
+            precomputed graph is cut to this, with a warning on stderr.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
         n_epochs: Optimisation epochs.
         scaling_ratio: Repulsion strength. Larger values spread the layout.
