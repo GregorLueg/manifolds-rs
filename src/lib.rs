@@ -142,7 +142,7 @@ pub struct UmapParams<T> {
     /// Nearest neighbour parameters.
     pub nn_params: NearestNeighbourParams<T>,
     /// Parameters for the UMAP graph generation.
-    pub umap_graph_params: UmapGraphParams<T>,
+    pub graph_params: UmapGraphParams<T>,
     /// Parameters to use for the UMAP optimiser.
     pub optim_params: UmapOptimParams<T>,
     /// Shall randomised SVC be used for PCA-based embedding
@@ -163,7 +163,7 @@ where
             init_range: None,
             nn_params: NearestNeighbourParams::default(),
             optim_params: UmapOptimParams::default(),
-            umap_graph_params: UmapGraphParams::default(),
+            graph_params: UmapGraphParams::default(),
             randomised: false,
         }
     }
@@ -192,7 +192,7 @@ where
     /// * `init_range` - Optional initialisation range.
     /// * `nn_params` - Nearest neighbour parameters.
     /// * `optim_params` - Parameters for the UMAP optimiser.
-    /// * `umap_graph_params` - Parameters for the UMAP graph generation.
+    /// * `graph_params` - Parameters for the UMAP graph generation.
     /// * `randomised` - Whether randomised SVD is used for PCA-based embedding.
     ///
     /// ### Returns
@@ -208,7 +208,7 @@ where
         init_range: Option<T>,
         nn_params: NearestNeighbourParams<T>,
         optim_params: UmapOptimParams<T>,
-        umap_graph_params: UmapGraphParams<T>,
+        graph_params: UmapGraphParams<T>,
         randomised: bool,
     ) -> Self {
         Self {
@@ -220,7 +220,7 @@ where
             init_range,
             nn_params,
             optim_params,
-            umap_graph_params,
+            graph_params,
             randomised,
         }
     }
@@ -440,7 +440,7 @@ where
     }
 
     // parse various parameters
-    let init_type = parse_initilisation(
+    let init_type = parse_initialisation(
         &umap_params.initialisation,
         umap_params.randomised,
         umap_params.init_range,
@@ -469,7 +469,7 @@ where
         precomputed_knn,
         umap_params.k,
         umap_params.ann_type.clone(),
-        &umap_params.umap_graph_params,
+        &umap_params.graph_params,
         &umap_params.nn_params,
         umap_params.optim_params.n_epochs,
         seed,
@@ -621,7 +621,7 @@ pub struct TsneParams<T> {
     /// tSNE optimisation parameters
     pub optim_params: TsneOptimParams<T>,
     /// Use randomised SVD for PCA initialisation
-    pub randomised_init: bool,
+    pub randomised: bool,
 }
 
 impl<T> Default for TsneParams<T>
@@ -637,7 +637,7 @@ where
             init_range: None,
             nn_params: NearestNeighbourParams::default(),
             optim_params: TsneOptimParams::default(),
-            randomised_init: true,
+            randomised: true,
         }
     }
 }
@@ -669,7 +669,7 @@ where
     /// * `optim_params` - t-SNE optimisation parameters. These cover the
     ///   learning rate, number of epochs, early/late exaggeration, the
     ///   Barnes-Hut `theta`, and the number of FFT interpolation points.
-    /// * `randomised_init` - Whether randomised SVD is used for PCA
+    /// * `randomised` - Whether randomised SVD is used for PCA
     ///   initialisation.
     ///
     /// ### Returns
@@ -684,7 +684,7 @@ where
         init_range: Option<T>,
         nn_params: NearestNeighbourParams<T>,
         optim_params: TsneOptimParams<T>,
-        randomised_init: bool,
+        randomised: bool,
     ) -> Self {
         Self {
             n_dim,
@@ -694,7 +694,7 @@ where
             init_range,
             nn_params,
             optim_params,
-            randomised_init,
+            randomised,
         }
     }
 
@@ -1012,21 +1012,18 @@ where
     }
 
     // 2. initialise embedding
-    let init_type = parse_initilisation(
-        &params.initialisation,
-        params.randomised_init,
-        params.init_range,
-    )
-    .unwrap_or_else(|| {
-        eprintln!(
-            "Warning: unknown initialisation provided: {:?}. Defaulting to PCA.",
-            params.initialisation,
-        );
-        EmbdInit::PcaInit {
-            range: Some(T::from_f64(1e-2).unwrap()),
-            randomised: true,
-        }
-    });
+    let init_type =
+        parse_initialisation(&params.initialisation, params.randomised, params.init_range)
+            .unwrap_or_else(|| {
+                eprintln!(
+                    "Warning: unknown initialisation provided: {:?}. Defaulting to PCA.",
+                    params.initialisation,
+                );
+                EmbdInit::PcaInit {
+                    range: Some(T::from_f64(1e-2).unwrap()),
+                    randomised: true,
+                }
+            });
 
     let start_init = Instant::now();
 
@@ -1038,7 +1035,7 @@ where
                 data,
                 dreams_reference,
                 lambda,
-                params.randomised_init,
+                params.randomised,
                 seed as u64,
             )?;
             (embd, Some(state))
@@ -1362,21 +1359,18 @@ where
         println!(" Initialising via {} ...", &params.initialisation);
     }
 
-    let init_type = parse_initilisation(
-        &params.initialisation,
-        params.randomised_init,
-        params.init_range,
-    )
-    .unwrap_or_else(|| {
-        eprintln!(
-            "Warning: unknown initialisation provided: {:?}. Defaulting to PCA.",
-            params.initialisation,
-        );
-        EmbdInit::PcaInit {
-            range: Some(T::from_f64(1e-2).unwrap()),
-            randomised: true,
-        }
-    });
+    let init_type =
+        parse_initialisation(&params.initialisation, params.randomised, params.init_range)
+            .unwrap_or_else(|| {
+                eprintln!(
+                    "Warning: unknown initialisation provided: {:?}. Defaulting to PCA.",
+                    params.initialisation,
+                );
+                EmbdInit::PcaInit {
+                    range: Some(T::from_f64(1e-2).unwrap()),
+                    randomised: true,
+                }
+            });
 
     let start_init = Instant::now();
 
@@ -1388,7 +1382,7 @@ where
                 data,
                 dreams_reference,
                 lambda,
-                params.randomised_init,
+                params.randomised,
                 seed as u64,
             )?;
             (embd, Some(state))
@@ -2161,7 +2155,7 @@ pub struct Fa2Params<T> {
     /// Optional initialisation range
     pub init_range: Option<T>,
     /// Use randomised SVD for PCA initialisation
-    pub randomised_init: bool,
+    pub randomised: bool,
     /// Nearest neighbour parameters
     pub nn_params: NearestNeighbourParams<T>,
     /// Parameters for the fuzzy simplicial set the layout runs on.
@@ -2181,7 +2175,7 @@ where
             ann_type: "nndescent".to_string(),
             initialisation: "spectral".to_string(),
             init_range: None,
-            randomised_init: false,
+            randomised: false,
             nn_params: NearestNeighbourParams::default(),
             graph_params: UmapGraphParams::default(),
             optim_params: Fa2OptimParams::default(),
@@ -2205,7 +2199,7 @@ where
     /// * `initialisation` - Embedding initialisation method: `"spectral"`,
     ///   `"pca"` or `"random"`.
     /// * `init_range` - Optional initialisation range.
-    /// * `randomised_init` - Whether randomised SVD is used for PCA
+    /// * `randomised` - Whether randomised SVD is used for PCA
     ///   initialisation.
     /// * `nn_params` - Nearest neighbour parameters.
     /// * `graph_params` - Parameters for the fuzzy simplicial set.
@@ -2220,7 +2214,7 @@ where
         ann_type: String,
         initialisation: String,
         init_range: Option<T>,
-        randomised_init: bool,
+        randomised: bool,
         nn_params: NearestNeighbourParams<T>,
         graph_params: UmapGraphParams<T>,
         optim_params: Fa2OptimParams<T>,
@@ -2230,7 +2224,7 @@ where
             ann_type,
             initialisation,
             init_range,
-            randomised_init,
+            randomised,
             nn_params,
             graph_params,
             optim_params,
@@ -2486,18 +2480,15 @@ where
         println!(" Initialising via {} ...", params.initialisation);
     }
 
-    let init_type = parse_initilisation(
-        &params.initialisation,
-        params.randomised_init,
-        params.init_range,
-    )
-    .unwrap_or_else(|| {
-        eprintln!(
-            "Warning: unknown initialisation provided: {:?}. Defaulting to spectral.",
-            params.initialisation,
-        );
-        EmbdInit::SpectralInit { range: None }
-    });
+    let init_type =
+        parse_initialisation(&params.initialisation, params.randomised, params.init_range)
+            .unwrap_or_else(|| {
+                eprintln!(
+                    "Warning: unknown initialisation provided: {:?}. Defaulting to spectral.",
+                    params.initialisation,
+                );
+                EmbdInit::SpectralInit { range: None }
+            });
 
     let start_init = Instant::now();
     let embd = initialise_embedding(&init_type, 2, seed as u64, &graph, data)?;
@@ -2587,7 +2578,7 @@ pub struct PhateParams<T> {
     /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     pub ann_type: String,
     /// Nearest neighbour search parameters to use
-    pub ann_params: NearestNeighbourParams<T>,
+    pub nn_params: NearestNeighbourParams<T>,
     /// Diffusion parameters to use
     pub diffusion_params: PhateDiffusionParams<T>,
     /// Which MDS implementation to use
@@ -2607,7 +2598,7 @@ where
             n_dim: 2,
             k: 5,
             ann_type: "nndescent".to_string(),
-            ann_params: NearestNeighbourParams::default(),
+            nn_params: NearestNeighbourParams::default(),
             diffusion_params: PhateDiffusionParams::default(),
             mds_method: "sgd_dense".to_string(),
             mds_iter: None,
@@ -2634,7 +2625,7 @@ where
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
     ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
-    /// * `ann_params` - Nearest neighbour search parameters.
+    /// * `nn_params` - Nearest neighbour search parameters.
     /// * `diffusion_params` - Diffusion parameters. These cover the alpha
     ///   decay, kernel bandwidth scaling, graph symmetry, landmarks, SVD
     ///   components, diffusion time selection, and the informational distance
@@ -2653,7 +2644,7 @@ where
         n_dim: usize,
         k: usize,
         ann_type: String,
-        ann_params: NearestNeighbourParams<T>,
+        nn_params: NearestNeighbourParams<T>,
         diffusion_params: PhateDiffusionParams<T>,
         mds_method: String,
         mds_iter: Option<usize>,
@@ -2663,7 +2654,7 @@ where
             n_dim,
             k,
             ann_type,
-            ann_params,
+            nn_params,
             diffusion_params,
             mds_method,
             mds_iter,
@@ -2960,7 +2951,7 @@ where
         phate_params.k,
         precomputed_knn,
         &phate_params.ann_type,
-        &phate_params.ann_params,
+        &phate_params.nn_params,
         &phate_params,
         seed,
         verbose,
@@ -2992,7 +2983,7 @@ where
 /// * `precomputed_knn` - Precomputed kNN indices and distances, excluding self,
 ///   or `None` to search on the device.
 /// * `phate_params` - PHATE parameters. `ann_type` is read as a GPU key, see
-///   [`run_ann_search_gpu`]; `ann_params` is replaced by `nn_params`.
+///   [`run_ann_search_gpu`]; `nn_params` is replaced by `nn_params`.
 /// * `nn_params` - GPU nearest neighbour parameters
 /// * `device` - The GPU device to use
 /// * `seed` - Random seed for reproducibility
@@ -3021,7 +3012,7 @@ where
     let data = data_input.as_mat_ref();
     let verbosity = parse_verbosity_level(verbose);
     let start_run = Instant::now();
-    phate_params.ann_params.dist_metric = nn_params.dist_metric.clone();
+    phate_params.nn_params.dist_metric = nn_params.dist_metric.clone();
 
     let (knn_indices, knn_dist) = match precomputed_knn {
         Some(knn) => knn,
@@ -3116,7 +3107,7 @@ where
     }
 
     let mds_method = parse_mds_method(&phate_params.mds_method).unwrap_or_default();
-    let dist = parse_ann_dist(&phate_params.ann_params.dist_metric).unwrap_or_default();
+    let dist = parse_ann_dist(&phate_params.nn_params.dist_metric).unwrap_or_default();
     let mds_params =
         MdsOptimParams::new(n_obs, phate_params.randomised, phate_params.mds_iter, None);
 
@@ -3262,7 +3253,7 @@ pub struct PacmapParams<T> {
     /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     pub ann_type: String,
     /// Which optimiser to use. Options are `"adam"` and `"adam_parallel"`
-    pub optimiser_type: String,
+    pub optimiser: String,
     /// Near pairs per point (attractive). The kNN search runs 50 wider, and the
     /// pairs are the best of those by locally scaled distance. Default 10.
     pub n_near: usize,
@@ -3290,7 +3281,7 @@ where
             n_dim: 2,
             // the search runs at n_near + 50, where IVF scales better
             ann_type: "ivf".to_string(),
-            optimiser_type: "adam_parallel".to_string(),
+            optimiser: "adam_parallel".to_string(),
             n_near: 10,
             n_mid_near: 5,
             n_further: 20,
@@ -3319,7 +3310,7 @@ where
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
     ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
-    /// * `optimiser_type` - Which optimiser to use. Options are `"adam"` and
+    /// * `optimiser` - Which optimiser to use. Options are `"adam"` and
     ///   `"adam_parallel"`.
     /// * `n_near` - Near pairs per point (attractive). The kNN search runs 50
     ///   wider, and the pairs are the best of those by locally scaled distance.
@@ -3339,7 +3330,7 @@ where
     pub fn new(
         n_dim: usize,
         ann_type: String,
-        optimiser_type: String,
+        optimiser: String,
         n_near: usize,
         n_mid_near: usize,
         n_further: usize,
@@ -3351,7 +3342,7 @@ where
         Self {
             n_dim,
             ann_type,
-            optimiser_type,
+            optimiser,
             n_near,
             n_mid_near,
             n_further,
@@ -3583,7 +3574,7 @@ where
         );
     }
 
-    let init_type = parse_initilisation(&params_pacmap.initialisation, true, params_pacmap.range)
+    let init_type = parse_initialisation(&params_pacmap.initialisation, true, params_pacmap.range)
         .unwrap_or_else(|| {
             eprintln!(
                 "Warning: unknown initialisation provided: {:?}. Defaulting to PCA.",
@@ -3625,7 +3616,7 @@ where
         println!(" ... initialised in {:.2?}", start_init.elapsed());
     }
 
-    let optimiser = parse_pacmap_optimiser(&params_pacmap.optimiser_type).unwrap_or_default();
+    let optimiser = parse_pacmap_optimiser(&params_pacmap.optimiser).unwrap_or_default();
 
     if verbosity.normal_verbosity() {
         println!(
@@ -3677,7 +3668,7 @@ pub struct DiffusionMapsParams<T> {
     /// ANN algorithm name (see `NearestNeighbourParams`)
     pub ann_type: String,
     /// Nearest neighbour search parameters
-    pub ann_params: NearestNeighbourParams<T>,
+    pub nn_params: NearestNeighbourParams<T>,
     /// Multiplicative factor applied to the adaptive kernel bandwidth
     pub bandwidth_scale: T,
     /// Sparsity threshold applied to kernel entries
@@ -3707,7 +3698,7 @@ where
             n_dim: 2,
             k: 5,
             ann_type: "nndescent".to_string(),
-            ann_params: NearestNeighbourParams::default(),
+            nn_params: NearestNeighbourParams::default(),
             bandwidth_scale: T::from_f64(1.0).unwrap(),
             thresh: T::from_f64(1e-4).unwrap(),
             graph_symmetry: "add".to_string(),
@@ -3736,7 +3727,7 @@ where
     /// * `k` - Number of nearest neighbours for graph construction.
     /// * `ann_type` - ANN algorithm: `"exhaustive"`, `"kmknn"`, `"balltree"`,
     ///   `"annoy"`, `"hnsw"`, or `"nndescent"`.
-    /// * `ann_params` - Nearest neighbour search parameters.
+    /// * `nn_params` - Nearest neighbour search parameters.
     /// * `bandwidth_scale` - Multiplicative factor on the adaptive kernel
     ///   bandwidth.
     /// * `thresh` - Kernel entries below this value are set to zero.
@@ -3760,7 +3751,7 @@ where
         n_dim: usize,
         k: usize,
         ann_type: String,
-        ann_params: NearestNeighbourParams<T>,
+        nn_params: NearestNeighbourParams<T>,
         bandwidth_scale: T,
         thresh: T,
         graph_symmetry: String,
@@ -3774,7 +3765,7 @@ where
             n_dim,
             k,
             ann_type,
-            ann_params,
+            nn_params,
             bandwidth_scale,
             thresh,
             graph_symmetry,
@@ -4033,7 +4024,7 @@ where
         dm_params.k,
         precomputed_knn,
         &dm_params.ann_type,
-        &dm_params.ann_params,
+        &dm_params.nn_params,
         &dm_params,
         seed,
         verbose,
@@ -4175,7 +4166,7 @@ pub struct ParametricUmapParams<T> {
     /// Nearest neighbour parameters.
     pub nn_params: NearestNeighbourParams<T>,
     /// The graph parameters for the generation of the graph structure.
-    pub umap_graph_params: UmapGraphParams<T>,
+    pub graph_params: UmapGraphParams<T>,
     /// Train parameters for the neural network.
     pub train_param: TrainParametricParams<T>,
 }
@@ -4192,7 +4183,7 @@ where
             ann_type: "nndescent".to_string(),
             hidden_layers: vec![128, 128, 128],
             nn_params: NearestNeighbourParams::default(),
-            umap_graph_params: UmapGraphParams::default(),
+            graph_params: UmapGraphParams::default(),
             train_param: TrainParametricParams::default(),
         }
     }
@@ -4219,7 +4210,7 @@ where
     ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// * `hidden_layers` - Hidden layer sizes for the MLP encoder.
     /// * `nn_params` - Nearest neighbour parameters.
-    /// * `umap_graph_params` - UMAP graph generation parameters.
+    /// * `graph_params` - UMAP graph generation parameters.
     /// * `train_param` - Training parameters for the neural network.
     ///
     /// ### Returns
@@ -4231,7 +4222,7 @@ where
         ann_type: String,
         hidden_layers: Vec<usize>,
         nn_params: NearestNeighbourParams<T>,
-        umap_graph_params: UmapGraphParams<T>,
+        graph_params: UmapGraphParams<T>,
         train_param: TrainParametricParams<T>,
     ) -> Self {
         Self {
@@ -4240,7 +4231,7 @@ where
             ann_type,
             hidden_layers,
             nn_params,
-            umap_graph_params,
+            graph_params,
             train_param,
         }
     }
@@ -4358,7 +4349,7 @@ where
         precomputed_knn,
         umap_params.k,
         umap_params.ann_type.clone(),
-        &umap_params.umap_graph_params,
+        &umap_params.graph_params,
         &nn_params,
         umap_params.train_param.n_epochs,
         seed,
@@ -4459,7 +4450,7 @@ where
         None,
         umap_params.k,
         umap_params.ann_type.clone(),
-        &umap_params.umap_graph_params,
+        &umap_params.graph_params,
         &nn_params,
         umap_params.train_param.n_epochs,
         seed,
@@ -4517,7 +4508,7 @@ pub struct UmapParamsGpu<T> {
     /// GPU nearest neighbour parameters
     pub nn_params: NearestNeighbourParamsGpu<T>,
     /// Parameters for UMAP graph generation
-    pub umap_graph_params: UmapGraphParams<T>,
+    pub graph_params: UmapGraphParams<T>,
     /// Parameters for the UMAP optimiser
     pub optim_params: UmapOptimParams<T>,
     /// Use randomised SVD for PCA-based initialisation
@@ -4538,7 +4529,7 @@ where
             initialisation: "spectral".to_string(),
             init_range: None,
             nn_params: NearestNeighbourParamsGpu::default(),
-            umap_graph_params: UmapGraphParams::default(),
+            graph_params: UmapGraphParams::default(),
             optim_params: UmapOptimParams::default(),
             randomised: false,
         }
@@ -4567,7 +4558,7 @@ where
     ///   `"spectral"`.
     /// * `init_range` - Optional initialisation range.
     /// * `nn_params` - GPU nearest neighbour parameters.
-    /// * `umap_graph_params` - Parameters for the UMAP graph generation.
+    /// * `graph_params` - Parameters for the UMAP graph generation.
     /// * `optim_params` - Parameters for the UMAP optimiser.
     /// * `randomised` - Whether randomised SVD is used for PCA-based
     ///   initialisation.
@@ -4584,7 +4575,7 @@ where
         initialisation: String,
         init_range: Option<T>,
         nn_params: NearestNeighbourParamsGpu<T>,
-        umap_graph_params: UmapGraphParams<T>,
+        graph_params: UmapGraphParams<T>,
         optim_params: UmapOptimParams<T>,
         randomised: bool,
     ) -> Self {
@@ -4596,7 +4587,7 @@ where
             initialisation,
             init_range,
             nn_params,
-            umap_graph_params,
+            graph_params,
             optim_params,
             randomised,
         }
@@ -4830,7 +4821,7 @@ where
         );
     }
 
-    let init_type = parse_initilisation(
+    let init_type = parse_initialisation(
         &umap_params.initialisation,
         umap_params.randomised,
         umap_params.init_range,
@@ -4865,7 +4856,7 @@ where
         precomputed_knn,
         umap_params.k,
         umap_params.ann_type.clone(),
-        &umap_params.umap_graph_params,
+        &umap_params.graph_params,
         &umap_params.nn_params,
         umap_params.optim_params.n_epochs,
         device.clone(),
@@ -5196,7 +5187,7 @@ pub struct TsneParamsGpu<T> {
     /// tSNE optimisation parameters
     pub optim_params: TsneOptimParams<T>,
     /// Use randomised SVD for PCA initialisation
-    pub randomised_init: bool,
+    pub randomised: bool,
 }
 
 #[cfg(feature = "gpu")]
@@ -5213,7 +5204,7 @@ where
             init_range: None,
             nn_params: NearestNeighbourParamsGpu::default(),
             optim_params: TsneOptimParams::default(),
-            randomised_init: true,
+            randomised: true,
         }
     }
 }
@@ -5243,7 +5234,7 @@ where
     /// * `optim_params` - t-SNE optimisation parameters. These cover the
     ///   learning rate, number of epochs, early/late exaggeration, the
     ///   Barnes-Hut `theta`, and the number of FFT interpolation points.
-    /// * `randomised_init` - Whether randomised SVD is used for PCA
+    /// * `randomised` - Whether randomised SVD is used for PCA
     ///   initialisation.
     ///
     /// ### Returns
@@ -5258,7 +5249,7 @@ where
         init_range: Option<T>,
         nn_params: NearestNeighbourParamsGpu<T>,
         optim_params: TsneOptimParams<T>,
-        randomised_init: bool,
+        randomised: bool,
     ) -> Self {
         Self {
             n_dim,
@@ -5268,7 +5259,7 @@ where
             init_range,
             nn_params,
             optim_params,
-            randomised_init,
+            randomised,
         }
     }
 
@@ -5595,21 +5586,18 @@ where
         println!(" Initialising via {} ...", params.initialisation);
     }
 
-    let init_type = parse_initilisation(
-        &params.initialisation,
-        params.randomised_init,
-        params.init_range,
-    )
-    .unwrap_or_else(|| {
-        eprintln!(
-            "Warning: unknown initialisation provided: {:?}. Defaulting to PCA.",
-            params.initialisation,
-        );
-        EmbdInit::PcaInit {
-            range: Some(T::from_f64(1e-2).unwrap()),
-            randomised: true,
-        }
-    });
+    let init_type =
+        parse_initialisation(&params.initialisation, params.randomised, params.init_range)
+            .unwrap_or_else(|| {
+                eprintln!(
+                    "Warning: unknown initialisation provided: {:?}. Defaulting to PCA.",
+                    params.initialisation,
+                );
+                EmbdInit::PcaInit {
+                    range: Some(T::from_f64(1e-2).unwrap()),
+                    randomised: true,
+                }
+            });
 
     let start_init = Instant::now();
 
@@ -5621,7 +5609,7 @@ where
                 data,
                 dreams_reference,
                 lambda,
-                params.randomised_init,
+                params.randomised,
                 seed as u64,
             )?;
             (embd, Some(state))
@@ -5959,21 +5947,18 @@ where
         println!(" Initialising via {} ...", &params.initialisation);
     }
 
-    let init_type = parse_initilisation(
-        &params.initialisation,
-        params.randomised_init,
-        params.init_range,
-    )
-    .unwrap_or_else(|| {
-        eprintln!(
-            "Warning: unknown initialisation provided: {:?}. Defaulting to PCA.",
-            params.initialisation,
-        );
-        EmbdInit::PcaInit {
-            range: Some(T::from_f64(1e-2).unwrap()),
-            randomised: true,
-        }
-    });
+    let init_type =
+        parse_initialisation(&params.initialisation, params.randomised, params.init_range)
+            .unwrap_or_else(|| {
+                eprintln!(
+                    "Warning: unknown initialisation provided: {:?}. Defaulting to PCA.",
+                    params.initialisation,
+                );
+                EmbdInit::PcaInit {
+                    range: Some(T::from_f64(1e-2).unwrap()),
+                    randomised: true,
+                }
+            });
 
     let start_init = Instant::now();
 
@@ -5985,7 +5970,7 @@ where
                 data,
                 dreams_reference,
                 lambda,
-                params.randomised_init,
+                params.randomised,
                 seed as u64,
             )?;
             (embd, Some(state))

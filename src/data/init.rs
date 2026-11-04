@@ -99,7 +99,7 @@ pub enum EmbdInit<T> {
 /// ### Returns
 ///
 /// The Option of a EmbdInit
-pub fn parse_initilisation<T>(s: &str, randomised: bool, range: Option<T>) -> Option<EmbdInit<T>>
+pub fn parse_initialisation<T>(s: &str, randomised: bool, range: Option<T>) -> Option<EmbdInit<T>>
 where
     T: ManifoldsFloat,
 {
@@ -1190,50 +1190,50 @@ mod test_init {
     fn test_parse_initialisation() {
         // spectral
         assert!(matches!(
-            parse_initilisation::<f32>("spectral", false, None),
+            parse_initialisation::<f32>("spectral", false, None),
             Some(EmbdInit::SpectralInit { range: None })
         ));
         assert!(matches!(
-            parse_initilisation::<f32>("SPECTRAL", false, None),
+            parse_initialisation::<f32>("SPECTRAL", false, None),
             Some(EmbdInit::SpectralInit { range: None })
         ));
         assert!(matches!(
-            parse_initilisation::<f32>("spectral", false, Some(0.01)),
+            parse_initialisation::<f32>("spectral", false, Some(0.01)),
             Some(EmbdInit::SpectralInit { range: Some(0.01) })
         ));
         // random
         assert!(matches!(
-            parse_initilisation::<f32>("random", false, None),
+            parse_initialisation::<f32>("random", false, None),
             Some(EmbdInit::RandomInit { range: None })
         ));
         assert!(matches!(
-            parse_initilisation::<f32>("random", false, Some(0.01)),
+            parse_initialisation::<f32>("random", false, Some(0.01)),
             Some(EmbdInit::RandomInit { range: Some(0.01) })
         ));
         //
         assert!(matches!(
-            parse_initilisation::<f32>("pca", false, None),
+            parse_initialisation::<f32>("pca", false, None),
             Some(EmbdInit::PcaInit {
                 randomised: false,
                 range: None
             })
         ));
         assert!(matches!(
-            parse_initilisation::<f32>("pca", true, None),
+            parse_initialisation::<f32>("pca", true, None),
             Some(EmbdInit::PcaInit {
                 randomised: true,
                 range: None
             })
         ));
         assert!(matches!(
-            parse_initilisation::<f32>("pca", false, Some(0.01)),
+            parse_initialisation::<f32>("pca", false, Some(0.01)),
             Some(EmbdInit::PcaInit {
                 randomised: false,
                 range: Some(0.01)
             })
         ));
         // error
-        assert!(parse_initilisation::<f32>("invalid", false, None).is_none());
+        assert!(parse_initialisation::<f32>("invalid", false, None).is_none());
     }
 
     #[test]

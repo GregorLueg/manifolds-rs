@@ -138,7 +138,7 @@ class UMAP(BaseEmbedding):
                 self.nn_params,
                 dist_metric=check_choice(self.metric, METRICS, name="metric"),
             ),
-            "umap_graph_params": merge(self.graph_params),
+            "graph_params": merge(self.graph_params),
             "optim_params": merge(
                 self.optim_params, n_epochs=self.n_epochs, lr=self.learning_rate
             ),
@@ -242,7 +242,7 @@ class TSNE(BaseEmbedding):
             FFT-interpolated repulsion with four terms or three kernels. The
             FFT variants scale best to large N. See `TSNEGpu` for
             ``"fft_3k_gpu"``.
-        randomised_init: Use randomised SVD for the PCA initialisation.
+        randomised: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation.
         verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
@@ -264,7 +264,7 @@ class TSNE(BaseEmbedding):
         init: str = "pca",
         ann: str = "ivf",
         approx: str = "barnes_hut",
-        randomised_init: bool = True,
+        randomised: bool = True,
         init_range: float | None = None,
         seed: int = 42,
         verbose: int = 0,
@@ -279,7 +279,7 @@ class TSNE(BaseEmbedding):
         self.init = init
         self.ann = ann
         self.approx = approx
-        self.randomised_init = randomised_init
+        self.randomised = randomised
         self.init_range = init_range
         self.seed = seed
         self.verbose = verbose
@@ -293,7 +293,7 @@ class TSNE(BaseEmbedding):
             "perplexity": self.perplexity,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
-            "randomised_init": self.randomised_init,
+            "randomised": self.randomised,
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,
@@ -333,7 +333,7 @@ class DensNE(TSNE):
         init: str = "pca",
         ann: str = "ivf",
         approx: str = "barnes_hut",
-        randomised_init: bool = True,
+        randomised: bool = True,
         init_range: float | None = None,
         seed: int = 42,
         verbose: int = 0,
@@ -350,7 +350,7 @@ class DensNE(TSNE):
             init=init,
             ann=ann,
             approx=approx,
-            randomised_init=randomised_init,
+            randomised=randomised,
             init_range=init_range,
             seed=seed,
             verbose=verbose,
@@ -400,7 +400,7 @@ class DREAMS(ReferenceEmbedding):
         init: str = "pca",
         ann: str = "ivf",
         approx: str = "barnes_hut",
-        randomised_init: bool = True,
+        randomised: bool = True,
         init_range: float | None = None,
         seed: int = 42,
         verbose: int = 0,
@@ -416,7 +416,7 @@ class DREAMS(ReferenceEmbedding):
         self.init = init
         self.ann = ann
         self.approx = approx
-        self.randomised_init = randomised_init
+        self.randomised = randomised
         self.init_range = init_range
         self.seed = seed
         self.verbose = verbose
@@ -431,7 +431,7 @@ class DREAMS(ReferenceEmbedding):
             "lambda": self.lambda_,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
-            "randomised_init": self.randomised_init,
+            "randomised": self.randomised,
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,
@@ -622,7 +622,7 @@ class PaCMAP(BaseEmbedding):
             "n_further": self.n_further,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
-            "optimiser_type": check_choice(
+            "optimiser": check_choice(
                 self.optimiser, PACMAP_OPTIMISERS, name="optimiser"
             ),
             "range": self.range_,
@@ -747,7 +747,7 @@ class ForceAtlas2(BaseEmbedding):
         init: ``"spectral"``, ``"pca"`` or ``"random"``.
         ann: Neighbour backend.
         approx: Repulsion approximation. ``"barnes_hut"`` is the only one.
-        randomised_init: Use randomised SVD for the PCA initialisation.
+        randomised: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates. ``None`` lets the core
             pick per initialisation.
         seed: Fixes the initialisation.
@@ -774,7 +774,7 @@ class ForceAtlas2(BaseEmbedding):
         init: str = "spectral",
         ann: str = "nndescent",
         approx: str = "barnes_hut",
-        randomised_init: bool = False,
+        randomised: bool = False,
         init_range: float | None = None,
         seed: int = 42,
         verbose: int = 0,
@@ -791,7 +791,7 @@ class ForceAtlas2(BaseEmbedding):
         self.init = init
         self.ann = ann
         self.approx = approx
-        self.randomised_init = randomised_init
+        self.randomised = randomised
         self.init_range = init_range
         self.seed = seed
         self.verbose = verbose
@@ -805,7 +805,7 @@ class ForceAtlas2(BaseEmbedding):
             "k": self.n_neighbors,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
-            "randomised_init": self.randomised_init,
+            "randomised": self.randomised,
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,

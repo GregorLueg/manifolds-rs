@@ -161,7 +161,7 @@ fn run_one(
         init_range,
         nn_params: NearestNeighbourParams::default(),
         optim_params,
-        randomised_init: true,
+        randomised: true,
     };
 
     let embd_flat = tsne(data.as_ref(), None, &params, approx, seed, 0).unwrap();

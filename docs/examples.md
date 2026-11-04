@@ -366,7 +366,7 @@ let params = ParametricUmapParams::new(
     "hnsw".into(),                       // ann_type
     vec![128, 64],                       // hidden_layers (encoder architecture)
     NearestNeighbourParams::default(),   // nn_params
-    UmapGraphParams::default(),          // umap_graph_params
+    UmapGraphParams::default(),          // graph_params
     fit_params,                          // training parameters
 );
 
@@ -426,7 +426,7 @@ let params = PhateParams::new(
     2,                                   // n_dim (output dimensions)
     5,                                   // k (number of neighbours)
     "kmknn".to_string(),                 // ann_type
-    NearestNeighbourParams::default(),   // ann_params
+    NearestNeighbourParams::default(),   // nn_params
     diffusion_params,
     "sgd_dense".to_string(),             // mds_method
     None,                                // mds_iter
@@ -560,7 +560,7 @@ let params = DiffusionMapsParams::new(
     2,                                   // n_dim (output dimensions)
     5,                                   // k (number of neighbours)
     "kmknn".to_string(),                 // ann_type
-    NearestNeighbourParams::default(),   // ann_params
+    NearestNeighbourParams::default(),   // nn_params
     1.0,                                 // bandwidth_scale
     1e-4,                                // thresh
     "add".to_string(),                   // graph_symmetry

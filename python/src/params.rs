@@ -548,8 +548,8 @@ where
     nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
     nested(
         &mut r,
-        "umap_graph_params",
-        &mut p.umap_graph_params,
+        "graph_params",
+        &mut p.graph_params,
         fill_umap_graph,
     )?;
     nested(&mut r, "optim_params", &mut p.optim_params, fill_umap_optim)?;
@@ -664,7 +664,7 @@ where
     let mut p = PhateParams::<T>::default();
     let mut r = Reader::new(d, "PhateParams");
     phate_into(&mut r, &mut p)?;
-    nested(&mut r, "nn_params", &mut p.ann_params, fill_nn)?;
+    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
     r.finish()?;
     Ok(p)
 }
@@ -740,7 +740,7 @@ where
     let mut r = Reader::new(d, "PacmapParams");
     set(&mut p.n_dim, r.get::<usize>("n_dim")?);
     set(&mut p.ann_type, r.get::<String>("ann_type")?);
-    set(&mut p.optimiser_type, r.get::<String>("optimiser_type")?);
+    set(&mut p.optimiser, r.get::<String>("optimiser")?);
     set(&mut p.n_near, r.get::<usize>("n_near")?);
     set(&mut p.n_mid_near, r.get::<usize>("n_mid_near")?);
     set(&mut p.n_further, r.get::<usize>("n_further")?);
@@ -790,7 +790,7 @@ where
     set(&mut p.landmark_method, r.get::<String>("landmark_method")?);
     p.n_svd = r.get::<usize>("n_svd")?.or(p.n_svd);
     p.t = read_time(&mut r, &p.t)?;
-    nested(&mut r, "nn_params", &mut p.ann_params, fill_nn)?;
+    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
     r.finish()?;
     Ok(p)
 }
@@ -814,7 +814,7 @@ where
     set(&mut p.ann_type, r.get::<String>("ann_type")?);
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
-    set(&mut p.randomised_init, r.get::<bool>("randomised_init")?);
+    set(&mut p.randomised, r.get::<bool>("randomised")?);
     nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
     nested(&mut r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(&mut r, "optim_params", &mut p.optim_params, fill_fa2_optim)?;
@@ -854,8 +854,8 @@ where
     nested(r, "nn_params", &mut p.nn_params, fill_nn)?;
     nested(
         r,
-        "umap_graph_params",
-        &mut p.umap_graph_params,
+        "graph_params",
+        &mut p.graph_params,
         fill_umap_graph,
     )?;
     nested(r, "optim_params", &mut p.optim_params, fill_umap_optim)?;
@@ -884,7 +884,7 @@ where
     set(&mut p.ann_type, r.get::<String>("ann_type")?);
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
-    set(&mut p.randomised_init, r.get::<bool>("randomised_init")?);
+    set(&mut p.randomised, r.get::<bool>("randomised")?);
     nested(r, "nn_params", &mut p.nn_params, fill_nn)?;
     nested(r, "optim_params", &mut p.optim_params, fill_tsne_optim)?;
     Ok(())
@@ -1037,7 +1037,7 @@ where
     set(&mut p.ann_type, r.get::<String>("ann_type")?);
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
-    set(&mut p.randomised_init, r.get::<bool>("randomised_init")?);
+    set(&mut p.randomised, r.get::<bool>("randomised")?);
     nested(r, "nn_params", &mut p.nn_params, fill_nn_gpu)?;
     nested(r, "optim_params", &mut p.optim_params, fill_tsne_optim)?;
     Ok(())
@@ -1068,8 +1068,8 @@ where
     nested(r, "nn_params", &mut p.nn_params, fill_nn_gpu)?;
     nested(
         r,
-        "umap_graph_params",
-        &mut p.umap_graph_params,
+        "graph_params",
+        &mut p.graph_params,
         fill_umap_graph,
     )?;
     nested(r, "optim_params", &mut p.optim_params, fill_umap_optim)?;

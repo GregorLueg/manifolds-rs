@@ -428,7 +428,7 @@ fn tsne_integration_05_initialisation() {
 
     for init_name in &["pca", "random", "spectral"] {
         let range = Some(1e-4); // t-SNE standard
-        let init_type = parse_initilisation(init_name, false, range).unwrap();
+        let init_type = parse_initialisation(init_name, false, range).unwrap();
         let embd = initialise_embedding(&init_type, 2, 42, &graph, data.as_ref()).unwrap();
 
         println!("\n{} initialisation:", init_name);

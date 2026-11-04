@@ -35,7 +35,7 @@ pub enum ManifoldsError {
     },
     /// The matrix is not square, but should be.
     #[error("The sparse matrix must be square")]
-    SpareMatrixMustBeSquare,
+    SparseMatrixMustBeSquare,
     /// Power value is not positive
     #[error("The chosen power must be positive, but is {power}.")]
     PowerMustBePositive {

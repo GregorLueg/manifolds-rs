@@ -55,7 +55,7 @@ ANN_GPU: frozenset[str] = frozenset(
 #: ``"l1"``. Distances reaching a caller are true distances in every case.
 METRICS: frozenset[str] = frozenset({"euclidean", "l2", "cosine", "manhattan", "l1"})
 
-#: Embedding initialisations, from `parse_initilisation`.
+#: Embedding initialisations, from `parse_initialisation`.
 INITS: frozenset[str] = frozenset({"spectral", "pca", "random"})
 
 #: The GPU UMAP optimiser. `"adam_gpu"` keeps the update on the device; the CPU

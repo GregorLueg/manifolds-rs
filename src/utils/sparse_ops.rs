@@ -335,7 +335,7 @@ where
     }
 
     if matrix.shape.0 != matrix.shape.1 {
-        return Err(ManifoldsError::SpareMatrixMustBeSquare);
+        return Err(ManifoldsError::SparseMatrixMustBeSquare);
     }
 
     let mut result = matrix.clone();
@@ -381,7 +381,7 @@ where
     }
 
     if matrix.shape.0 != matrix.shape.1 {
-        return Err(ManifoldsError::SpareMatrixMustBeSquare);
+        return Err(ManifoldsError::SparseMatrixMustBeSquare);
     }
 
     // binary exponentiation
@@ -435,7 +435,7 @@ where
         return Err(ManifoldsError::PowerMustBePositive { power: t });
     }
     if matrix.shape.0 != matrix.shape.1 {
-        return Err(ManifoldsError::SpareMatrixMustBeSquare);
+        return Err(ManifoldsError::SparseMatrixMustBeSquare);
     }
 
     let n = matrix.shape.0;
@@ -661,7 +661,7 @@ mod test_matrix_power {
 
         assert!(matches!(
             matrix_power(&mat, 2),
-            Err(ManifoldsError::SpareMatrixMustBeSquare)
+            Err(ManifoldsError::SparseMatrixMustBeSquare)
         ));
     }
 }

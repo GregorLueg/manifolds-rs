@@ -166,7 +166,7 @@ fn densmap_integration_01_original_radii_are_informative() {
         Some((knn_indices.clone(), knn_dist.clone())),
         params.k,
         "kmknn".to_string(),
-        &params.umap_graph_params,
+        &params.graph_params,
         &nn_params,
         params.optim_params.n_epochs,
         42,

@@ -316,7 +316,7 @@ fn umap_integration_04_initialisation() {
 
     // Test each initialisation method including PCA
     for init_name in &["spectral", "random", "pca"] {
-        let init_type = parse_initilisation(init_name, false, None).unwrap();
+        let init_type = parse_initialisation(init_name, false, None).unwrap();
 
         println!("What is this: {:?}", init_type);
 

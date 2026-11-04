@@ -158,7 +158,7 @@ class UMAPGpu(BaseEmbedding):
                 self.nn_params,
                 dist_metric=check_choice(self.metric, METRICS, name="metric"),
             ),
-            "umap_graph_params": merge(self.graph_params),
+            "graph_params": merge(self.graph_params),
             "optim_params": merge(
                 self.optim_params, n_epochs=self.n_epochs, lr=self.learning_rate
             ),
@@ -254,7 +254,7 @@ class TSNEGpu(BaseEmbedding):
         ann: ``"nndescent_gpu"``, ``"ivf_gpu"`` or ``"exhaustive_gpu"``.
         approx: ``"barnes_hut"``, ``"qd"``, ``"fft"`` or ``"fft_3k"`` (CPU
             optimisers, see `TSNE`), or ``"fft_3k_gpu"`` (GPU optimiser).
-        randomised_init: Use randomised SVD for the PCA initialisation.
+        randomised: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation.
         verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
@@ -277,7 +277,7 @@ class TSNEGpu(BaseEmbedding):
         init: str = "pca",
         ann: str = "ivf_gpu",
         approx: str = "barnes_hut",
-        randomised_init: bool = True,
+        randomised: bool = True,
         init_range: float | None = None,
         seed: int = 42,
         verbose: int = 0,
@@ -292,7 +292,7 @@ class TSNEGpu(BaseEmbedding):
         self.init = init
         self.ann = ann
         self.approx = approx
-        self.randomised_init = randomised_init
+        self.randomised = randomised
         self.init_range = init_range
         self.seed = seed
         self.verbose = verbose
@@ -306,7 +306,7 @@ class TSNEGpu(BaseEmbedding):
             "perplexity": self.perplexity,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
-            "randomised_init": self.randomised_init,
+            "randomised": self.randomised,
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,
@@ -349,7 +349,7 @@ class DREAMSGpu(ReferenceEmbedding):
         init: str = "pca",
         ann: str = "ivf_gpu",
         approx: str = "barnes_hut",
-        randomised_init: bool = True,
+        randomised: bool = True,
         init_range: float | None = None,
         seed: int = 42,
         verbose: int = 0,
@@ -365,7 +365,7 @@ class DREAMSGpu(ReferenceEmbedding):
         self.init = init
         self.ann = ann
         self.approx = approx
-        self.randomised_init = randomised_init
+        self.randomised = randomised
         self.init_range = init_range
         self.seed = seed
         self.verbose = verbose
@@ -380,7 +380,7 @@ class DREAMSGpu(ReferenceEmbedding):
             "lambda": self.lambda_,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
-            "randomised_init": self.randomised_init,
+            "randomised": self.randomised,
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,

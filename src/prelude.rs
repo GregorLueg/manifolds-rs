@@ -5,7 +5,7 @@
 //! ```
 
 pub use crate::data::graph::UmapGraphParams;
-pub use crate::data::init::{initialise_embedding, parse_initilisation};
+pub use crate::data::init::{initialise_embedding, parse_initialisation};
 pub use crate::data::nearest_neighbours::{
     metric_returns_squared, parse_ann_search, run_ann_search, NearestNeighbourParams,
 };

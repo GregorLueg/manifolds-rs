@@ -337,7 +337,7 @@ fn pacmap_integration_10_precomputed_knn() {
 
     let params = PacmapParams {
         ann_type: "nndescent".to_string(),
-        optimiser_type: "adam".to_string(),
+        optimiser: "adam".to_string(),
         ..PacmapParams::default()
     };
 
@@ -372,11 +372,11 @@ fn pacmap_integration_11_sequential_parallel_identical() {
     let (data, _) = create_diagnostic_data(50, 10, 42);
 
     let params_seq = PacmapParams {
-        optimiser_type: "adam".to_string(),
+        optimiser: "adam".to_string(),
         ..PacmapParams::default()
     };
     let params_par = PacmapParams {
-        optimiser_type: "adam_parallel".to_string(),
+        optimiser: "adam_parallel".to_string(),
         ..PacmapParams::default()
     };
 
@@ -454,10 +454,10 @@ fn pacmap_integration_13_pca_init_range() {
     println!("\n=== PaCMAP DIAGNOSTIC 13: PCA vs Random Init ===");
 
     for (name, init_type) in &[
-        ("pca", parse_initilisation("pca", true, None).unwrap()),
+        ("pca", parse_initialisation("pca", true, None).unwrap()),
         (
             "random",
-            parse_initilisation("random", true, Some(1e-4)).unwrap(),
+            parse_initialisation("random", true, Some(1e-4)).unwrap(),
         ),
     ] {
         let embd = initialise_embedding(init_type, 2, 42, &dummy_graph, data.as_ref()).unwrap();
