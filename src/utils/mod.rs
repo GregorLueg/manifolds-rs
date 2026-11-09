@@ -10,6 +10,7 @@ pub mod input;
 pub mod macros;
 pub mod math;
 pub mod potentials;
+pub(crate) mod prefetch;
 pub mod sparse_ops;
 pub mod traits;
 

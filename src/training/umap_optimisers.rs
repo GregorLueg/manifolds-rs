@@ -11,6 +11,7 @@ use crate::prelude::*;
 use crate::training::umap_csr::*;
 use crate::training::*;
 use crate::utils::density::*;
+use crate::utils::prefetch::prefetch_read;
 
 //////////
 // UMAP //
@@ -499,31 +500,6 @@ where
             self.far.get(x)
         }
     }
-}
-
-/// Hint the CPU to pull the cache line holding `x` into L1.
-///
-/// Only emitted on aarch64, where it was measured to help the scattered
-/// negative-sample loads once the embedding outgrows the caches; a no-op
-/// elsewhere.
-///
-/// ### Params
-///
-/// * `x` - Any reference into the data that will be read soon
-#[inline(always)]
-fn prefetch_read<A>(x: &A) {
-    #[cfg(target_arch = "aarch64")]
-    // SAFETY: `prfm` is a hint; it never faults and writes nothing, and the
-    // address comes from a live reference.
-    unsafe {
-        std::arch::asm!(
-            "prfm pldl1keep, [{0}]",
-            in(reg) x as *const A,
-            options(nostack, readonly, preserves_flags)
-        );
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    let _ = x;
 }
 
 ///////////////////////
