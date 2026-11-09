@@ -50,6 +50,7 @@ from ._params import (
     UmapGraph,
     UmapOptim,
     merge,
+    umap_epochs,
 )
 from ._validate import check_choice
 
@@ -83,7 +84,8 @@ class UMAPGpu(BaseEmbedding):
         min_dist: How tightly points may pack. Fits the repulsion curve with
             `spread`.
         spread: Scale of the embedding relative to `min_dist`.
-        n_epochs: Optimisation epochs.
+        n_epochs: Optimisation epochs. ``None`` means 500, or 200 for the SGD
+            optimisers above 10,000 samples, as umap-learn does.
         learning_rate: Initial learning rate.
         init: ``"spectral"``, ``"pca"`` or ``"random"``. Computed on the CPU
             either way.
@@ -111,7 +113,7 @@ class UMAPGpu(BaseEmbedding):
         metric: str = "euclidean",
         min_dist: float = 0.5,
         spread: float = 1.0,
-        n_epochs: int = 500,
+        n_epochs: int | None = None,
         learning_rate: float = 1.0,
         init: str = "spectral",
         ann: str = "nndescent_gpu",
@@ -142,7 +144,7 @@ class UMAPGpu(BaseEmbedding):
         self.graph_params = graph_params
         self.optim_params = optim_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         return {
             "n_dim": self.n_components,
             "k": self.n_neighbors,
@@ -161,7 +163,9 @@ class UMAPGpu(BaseEmbedding):
             ),
             "graph_params": merge(self.graph_params),
             "optim_params": merge(
-                self.optim_params, n_epochs=self.n_epochs, lr=self.learning_rate
+                self.optim_params,
+                n_epochs=umap_epochs(self.n_epochs, self.optimiser, n_samples),
+                lr=self.learning_rate,
             ),
         }
 
@@ -190,7 +194,7 @@ class DensMAPGpu(UMAPGpu):
         min_dist: float = 0.5,
         spread: float = 1.0,
         lambda_: float = 2.0,
-        n_epochs: int = 500,
+        n_epochs: int | None = None,
         learning_rate: float = 1.0,
         init: str = "spectral",
         ann: str = "nndescent_gpu",
@@ -226,9 +230,9 @@ class DensMAPGpu(UMAPGpu):
         self.lambda_ = lambda_
         self.dens_params = dens_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         return {
-            **super()._params(),
+            **super()._params(n_samples),
             "lambda": self.lambda_,
             "dens_params": merge(self.dens_params),
         }
@@ -300,7 +304,7 @@ class TSNEGpu(BaseEmbedding):
         self.nn_params = nn_params
         self.optim_params = optim_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         check_choice(self.approx, TSNE_APPROX_GPU, name="approx")
         return {
             "n_dim": self.n_components,
@@ -373,7 +377,7 @@ class DREAMSGpu(ReferenceEmbedding):
         self.nn_params = nn_params
         self.optim_params = optim_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         check_choice(self.approx, TSNE_APPROX_GPU, name="approx")
         return {
             "n_dim": self.n_components,
@@ -465,7 +469,7 @@ class PHATEGpu(BaseEmbedding):
         self.nn_params = nn_params
         self.diffusion_params = diffusion_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         diffusion = merge(self.diffusion_params, gamma=self.gamma) or {}
         # `decay` and `n_landmarks` are set rather than merged: `None` selects the
         # binary kernel and the full operator, and `merge` drops nulls as "leave

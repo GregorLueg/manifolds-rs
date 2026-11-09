@@ -107,6 +107,7 @@ means the clusters sit further apart than they are wide.
 
 Mean ± sd over the three repeats. Run on an Apple M1 Max (10 cores), scanpy
 1.11.5. Defaults on both sides, with two things worth knowing: scanpy runs UMAP
-for 200 epochs above 10,000 cells where `mf.umap` runs 500, and `sc.tl.tsne`
+for 200 epochs above 10,000 cells where `mf.umap` runs 500 with its default Adam
+optimiser (the SGD optimisers drop to 200 there too), and `sc.tl.tsne`
 was given `n_jobs=10` since its default is single-threaded. One synthetic
 dataset on one machine; measure on your own data before relying on it.

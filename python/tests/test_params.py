@@ -156,3 +156,28 @@ def test_pacmap_pca_range_none_is_the_reference_scale(X: np.ndarray) -> None:
     rescaled = mf.PaCMAP(n_epochs=20, seed=5, range_=0.05).fit_transform(X)
     assert np.array_equal(ranged, unranged)
     assert not np.array_equal(ranged, rescaled)
+
+
+##########
+# Epochs #
+##########
+
+
+def _umap_epochs(est: mf.UMAP, n_samples: int) -> int | None:
+    return (est._params(n_samples)["optim_params"] or {}).get("n_epochs")
+
+
+@pytest.mark.parametrize("cls", [mf.UMAP, mf.DensMAP])
+@pytest.mark.parametrize("optimiser", ["sgd", "sgd_parallel"])
+def test_sgd_drops_to_200_epochs_above_10k(cls: type[mf.UMAP], optimiser: str) -> None:
+    est = cls(optimiser=optimiser)
+    assert _umap_epochs(est, 10_000) is None
+    assert _umap_epochs(est, 10_001) == 200
+
+
+def test_adam_keeps_the_crate_default_at_any_size() -> None:
+    assert _umap_epochs(mf.UMAP(), 1_000_000) is None
+
+
+def test_explicit_epochs_beat_the_size_rule() -> None:
+    assert _umap_epochs(mf.UMAP(optimiser="sgd", n_epochs=500), 1_000_000) == 500

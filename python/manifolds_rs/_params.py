@@ -75,6 +75,16 @@ UMAP_OPTIMISERS: frozenset[str] = frozenset(
     {"adam", "sgd", "sgd_parallel", "adam_parallel"}
 ) | (frozenset({"adam_mlx"}) if _MLX else frozenset())
 
+#: The SGD optimisers, which drop to `SGD_EPOCHS_LARGE` epochs on large data.
+SGD_OPTIMISERS: frozenset[str] = frozenset({"sgd", "sgd_parallel"})
+
+#: Above this many samples `n_epochs=None` gives the SGD optimisers
+#: `SGD_EPOCHS_LARGE` epochs instead of the crate's 500, as umap-learn does.
+SGD_SMALL_N: int = 10_000
+
+#: Epochs for the SGD optimisers above `SGD_SMALL_N` samples.
+SGD_EPOCHS_LARGE: int = 200
+
 #: PaCMAP optimisers, from `parse_pacmap_optimiser`.
 PACMAP_OPTIMISERS: frozenset[str] = frozenset({"adam", "adam_parallel"})
 
@@ -366,6 +376,24 @@ def group_to_dict(group: Any | None) -> dict[str, Any]:
         for f in fields(group)
         if (value := getattr(group, f.name)) is not None
     }
+
+
+@beartype
+def umap_epochs(n_epochs: int | None, optimiser: str, n_samples: int) -> int | None:
+    """Resolve the UMAP epoch count.
+
+    Args:
+        n_epochs: What the caller passed. Anything but ``None`` wins.
+        optimiser: The optimiser name.
+        n_samples: Rows of the data being embedded.
+
+    Returns:
+        `SGD_EPOCHS_LARGE` for an SGD optimiser above `SGD_SMALL_N` samples,
+        otherwise `n_epochs`; ``None`` leaves the crate default of 500.
+    """
+    if n_epochs is None and optimiser in SGD_OPTIMISERS and n_samples > SGD_SMALL_N:
+        return SGD_EPOCHS_LARGE
+    return n_epochs
 
 
 @beartype

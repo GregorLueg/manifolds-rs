@@ -48,6 +48,9 @@ approximate neighbour search.
   `ValueError`.
 - `optimiser="sgd"` applies an edge's negative samples as one step and uses a
   lookup table for the power in the gradient, so its layouts differ from 0.5.0.
+- `n_epochs` defaults to `None`: 500, or 200 for `"sgd"` and `"sgd_parallel"`
+  above 10,000 samples, as umap-learn does. Applies to `UMAP`, `DensMAP` and the
+  GPU variants. Pass `n_epochs=500` for the old behaviour.
 
 **Features**
 

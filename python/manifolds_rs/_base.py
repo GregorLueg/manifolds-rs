@@ -68,8 +68,13 @@ class BaseEmbedding:
     # Subclass #
     ############
 
-    def _params(self) -> dict[str, Any]:
-        """The parameter payload for this algorithm."""
+    def _params(self, n_samples: int) -> dict[str, Any]:
+        """The parameter payload for this algorithm.
+
+        Args:
+            n_samples: Rows of the data being embedded, for defaults that
+                depend on it.
+        """
         raise NotImplementedError
 
     ##########
@@ -175,7 +180,7 @@ class BaseEmbedding:
             )
         self._embedding = type(self)._FN(
             arr,
-            self._params(),
+            self._params(arr.shape[0]),
             seed=self.seed,
             verbose=check_verbose(self.verbose),
             **extra,
