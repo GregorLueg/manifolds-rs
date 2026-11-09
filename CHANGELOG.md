@@ -64,12 +64,10 @@ approximate kNN backend.
   parameters, landmark selection, kNN internals and the GPU UMAP gradient norm.
   Unknown-parameter warnings go to stderr. `train_parametric_umap` takes
   `Verbosity`, not `bool`.
-- The `"sgd"` UMAP optimiser evaluates an edge's negative samples against the
-  same source position and applies them as one step, instead of moving the
-  source after each, and takes `x^b` from a lookup table instead of `powf`.
-- `ManifoldsFloat` gains the supertrait `AtomicFloat` (relaxed atomic
-  load and store of `f32`/`f64`). Only matters if you implement
-  `ManifoldsFloat` yourself.
+- `"sgd"` applies an edge's negative samples as one step and takes `x^b` from
+  a lookup table.
+- `ManifoldsFloat` requires `AtomicFloat`. Only matters if you implement it
+  yourself.
 
 **Features**
 
@@ -80,18 +78,17 @@ approximate kNN backend.
   singular vectors match the CPU up to `f32` rounding.
 - `PhateLandmarks::build_with_backend` and `SpectralBackend`. `build` stays on
   the CPU.
-- `"sgd_parallel"` UMAP optimiser (`optimise_embedding_sgd_parallel`): the
-  `"sgd"` update run lock-free (hogwild) over all threads. With one thread it
-  matches `"sgd"` exactly; with more, a fixed seed no longer gives the same
-  embedding twice. Works with densMAP and as a CPU fallback in `umap_gpu`.
+- `"sgd_parallel"` (`optimise_embedding_sgd_parallel`): `"sgd"` run lock-free
+  over all threads. Not reproducible run to run.
 
 **Performance**
 
 - PHATE powers the landmark operator as a dense matrix (`dense_matrix_power`,
   `PhateLandmarks::power_dense`). The sparse randomised SVD uses Cholesky QR for
   all but the last power iteration.
-- `"sgd"` is about 2.4x faster, from the batched negative samples, the `x^b`
-  lookup table and, on aarch64, prefetching the negative samples.
+- `"sgd"` is about 2.4x faster.
+- Software prefetch on aarch64 for scattered reads: SGD and parallel Adam
+  negative samples, FFT t-SNE charge spreading, den-SNE attraction.
 
 **Bug fixes**
 

@@ -46,11 +46,8 @@ approximate neighbour search.
 - `verbose` takes 0 (quiet), 1 (timed stages, epochs every 50) or 2 (also
   parameters, landmark selection, index internals). Anything else raises
   `ValueError`.
-- `optimiser="sgd"` applies an edge's negative samples as one step and uses a
-  lookup table for the power in the gradient, so its layouts differ from 0.5.0.
-- `n_epochs` defaults to `None`: 500, or 200 for `"sgd"` and `"sgd_parallel"`
-  above 10,000 samples, as umap-learn does. Applies to `UMAP`, `DensMAP` and the
-  GPU variants. Pass `n_epochs=500` for the old behaviour.
+- `n_epochs` defaults to `None`: 500, or 200 for the SGD optimisers above
+  10,000 samples, as umap-learn does. `n_epochs=500` restores the old default.
 
 **Features**
 
@@ -58,12 +55,13 @@ approximate neighbour search.
   randomised SVD and k-means on the device, in `float32`.
 - `PHATE(landmark_method="spectral_mlx")` in an `mlx` build: the landmark SVD
   and k-means on MLX, in `float32`. Works with `PHATEGpu` too.
-- `optimiser="sgd_parallel"` for `UMAP`, `DensMAP` and the GPU variants: the
-  SGD update run lock-free over all threads. Not reproducible run to run.
+- `optimiser="sgd_parallel"`: SGD run lock-free over all threads. Not
+  reproducible run to run.
 
 **Performance**
 
-- `optimiser="sgd"` is about 2.4x faster.
+- `optimiser="sgd"` is about 2.4x faster; FFT t-SNE and parallel Adam UMAP are
+  faster on large data on Apple Silicon.
 
 **Bug fixes**
 
