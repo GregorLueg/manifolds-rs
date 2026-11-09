@@ -13,6 +13,7 @@ use crate::utils::density::*;
 use crate::utils::dreams::*;
 #[cfg(any(feature = "fft_tsne", feature = "gpu", mlx_available))]
 use crate::utils::math::choose_grid_size;
+use crate::utils::prefetch::prefetch_read;
 
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::*;
@@ -52,6 +53,13 @@ const TSNE_LR_DIVISOR: f64 = 12.0;
 
 /// Floor for the default learning rate heuristic.
 const TSNE_LR_FLOOR: f64 = 200.0;
+
+/// How many neighbours ahead the den-SNE attraction sweep prefetches.
+///
+/// Neighbour positions are scattered gathers that miss once the embedding
+/// outgrows the caches. Only the radii sweep uses it: the plain attractive
+/// sweeps were not faster with it.
+const ATTR_PREFETCH_DIST: usize = 8;
 
 /// Default tree depth cap for the quick-and-dirty Barnes-Hut optimiser.
 /// qdtsne recommends 7 to 10. A shallower tree is faster and coarser.
@@ -521,7 +529,10 @@ fn accumulate_attractive_and_radii<T>(
             let mut sum_phi = T::zero();
 
             let (nbrs, p_vals) = csr.row(i);
-            for (&j, &p_val) in nbrs.iter().zip(p_vals) {
+            for (t, (&j, &p_val)) in nbrs.iter().zip(p_vals).enumerate() {
+                if let Some(&ja) = nbrs.get(t + ATTR_PREFETCH_DIST) {
+                    prefetch_read(&pos[2 * ja as usize]);
+                }
                 let j = j as usize;
                 let dx = px - pos[2 * j];
                 let dy = py - pos[2 * j + 1];
