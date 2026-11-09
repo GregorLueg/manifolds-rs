@@ -130,7 +130,9 @@ pub struct UmapParams<T> {
     /// Defaults to `15`.
     pub k: usize,
     /// Which optimiser to use: `"adam_parallel"` (default), `"adam"`, `"sgd"`,
-    /// or `"adam_mlx"` with the `mlx` feature.
+    /// `"sgd_parallel"`, or `"adam_mlx"` with the `mlx` feature.
+    /// `"sgd_parallel"` is lock-free (hogwild) and so not reproducible run to
+    /// run with more than one thread.
     pub optimiser: String,
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
@@ -535,6 +537,7 @@ where
             match optimiser {
                 UmapOptimiser::Adam => "Adam",
                 UmapOptimiser::Sgd => "SGD",
+                UmapOptimiser::SgdParallel => "SGD (multi-threaded, lock-free)",
                 UmapOptimiser::AdamParallel => "Adam (multi-threaded)",
                 #[cfg(mlx_available)]
                 UmapOptimiser::AdamMlx => "Adam (MLX)",
@@ -555,6 +558,16 @@ where
         )?,
         UmapOptimiser::Sgd => {
             optimise_embedding_sgd(
+                &mut embd,
+                &graph_adj,
+                &umap_params.optim_params,
+                dens_state.as_ref(),
+                seed as u64,
+                verbose,
+            )?;
+        }
+        UmapOptimiser::SgdParallel => {
+            optimise_embedding_sgd_parallel(
                 &mut embd,
                 &graph_adj,
                 &umap_params.optim_params,
@@ -1617,8 +1630,8 @@ where
 ///    kernel `1 / (1 + a d^2b)`) and add `-lambda * dCorr/dy` to the gradient
 ///
 /// The density term touches only the attractive part of the gradient; negative
-/// sampling is untouched. Works with all three CPU optimisers (`"sgd"`,
-/// `"adam"`, `"adam_parallel"`).
+/// sampling is untouched. Works with all four CPU optimisers (`"sgd"`,
+/// `"sgd_parallel"`, `"adam"`, `"adam_parallel"`).
 ///
 /// ### Params
 ///
@@ -4626,7 +4639,8 @@ pub struct UmapParamsGpu<T> {
     /// Defaults to `15`.
     pub k: usize,
     /// Which optimiser to use: `"adam_gpu"` (default), `"adam"`, `"sgd"`,
-    /// `"adam_parallel"`, or `"adam_mlx"` with the `mlx` feature.
+    /// `"sgd_parallel"`, `"adam_parallel"`, or `"adam_mlx"` with the `mlx`
+    /// feature.
     pub optimiser: String,
     /// Which GPU nearest neighbour search to use. One of `"exhaustive_gpu"`,
     /// `"ivf_gpu"` or `"nndescent_gpu"`. Defaults to `"nndescent_gpu"`.
@@ -5045,6 +5059,7 @@ where
             match optimiser {
                 UmapOptimiserGpu::Adam => "Adam",
                 UmapOptimiserGpu::Sgd => "SGD",
+                UmapOptimiserGpu::SgdParallel => "SGD (multi-threaded, lock-free)",
                 UmapOptimiserGpu::AdamParallel => "Adam (multi-threaded)",
                 UmapOptimiserGpu::AdamGpu => "Adam (GPU-accelerated)",
                 #[cfg(mlx_available)]
@@ -5066,6 +5081,16 @@ where
         )?,
         UmapOptimiserGpu::Sgd => {
             optimise_embedding_sgd(
+                &mut embd,
+                &graph_adj,
+                &umap_params.optim_params,
+                dens_state.as_ref(),
+                seed as u64,
+                verbose,
+            )?;
+        }
+        UmapOptimiserGpu::SgdParallel => {
+            optimise_embedding_sgd_parallel(
                 &mut embd,
                 &graph_adj,
                 &umap_params.optim_params,
@@ -5236,8 +5261,9 @@ where
 /// loses its significant digits. That readback is a sync point, but it only
 /// happens over the final `dens_params.frac` of the epochs.
 ///
-/// The other optimiser choices (`"sgd"`, `"adam"`, `"adam_parallel"`) run the
-/// CPU density path; only the kNN search is GPU-accelerated for those.
+/// The other optimiser choices (`"sgd"`, `"sgd_parallel"`, `"adam"`,
+/// `"adam_parallel"`) run the CPU density path; only the kNN search is
+/// GPU-accelerated for those.
 ///
 /// ### Params
 ///

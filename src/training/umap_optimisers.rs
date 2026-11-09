@@ -1,5 +1,5 @@
-//! Optimisers for UMAP fitting. Contains the SGD, Adam and a parallel Adam
-//! variant
+//! Optimisers for UMAP fitting. Contains the SGD, a lock-free parallel SGD,
+//! Adam and a parallel Adam variant
 
 use rand::{
     rngs::SmallRng,
@@ -275,6 +275,8 @@ pub enum UmapOptimiser {
     Adam,
     /// Stochastic gradient descent
     Sgd,
+    /// Lock-free parallel stochastic gradient descent (hogwild)
+    SgdParallel,
     /// Adam on the GPU via MLX (Apple Silicon, `mlx` feature)
     #[cfg(mlx_available)]
     AdamMlx,
@@ -284,8 +286,9 @@ pub enum UmapOptimiser {
 ///
 /// ### Params
 ///
-/// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`
-///   or `"sgd"`, plus `"adam_mlx"` when the MLX backend is compiled in.
+/// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`,
+///   `"sgd"` or `"sgd_parallel"`, plus `"adam_mlx"` when the MLX backend is
+///   compiled in.
 ///
 /// ### Return
 ///
@@ -294,6 +297,7 @@ pub fn parse_umap_optimiser(s: &str) -> Option<UmapOptimiser> {
     match s.to_lowercase().as_str() {
         "adam" => Some(UmapOptimiser::Adam),
         "sgd" => Some(UmapOptimiser::Sgd),
+        "sgd_parallel" => Some(UmapOptimiser::SgdParallel),
         "adam_parallel" => Some(UmapOptimiser::AdamParallel),
         #[cfg(mlx_available)]
         "adam_mlx" => Some(UmapOptimiser::AdamMlx),
@@ -478,7 +482,7 @@ where
 /// are a property of the whole graph, and the reference recomputes them over the
 /// full edge list every epoch regardless of which edges fire.
 ///
-/// Takes the adjacency list rather than the CSR view so all three CPU
+/// Takes the adjacency list rather than the CSR view so all four CPU
 /// optimisers can share it. This runs once per epoch and only over the final
 /// `frac` of the run, so the pointer chasing is not worth specialising away.
 ///
@@ -891,6 +895,322 @@ where
     for (i, point) in embd.iter_mut().enumerate() {
         let base = i * n_dim;
         point.copy_from_slice(&embd_flat[base..base + n_dim]);
+    }
+
+    Ok(())
+}
+
+/// Sampling schedule of one directed edge, owned by its source node.
+#[derive(Clone, Copy)]
+struct EdgeSchedule<T> {
+    /// Epoch at which the edge next fires.
+    next: T,
+    /// Epoch up to which negative samples have been drawn for this edge.
+    next_neg: T,
+}
+
+/// Optimise UMAP embedding using lock-free parallel SGD (hogwild)
+///
+/// Same schedule, gradients, clipping and learning-rate decay as
+/// [`optimise_embedding_sgd`], but parallel over source nodes with Rayon. Each
+/// node owns its outgoing edges, their schedules and its RNG, so those need no
+/// synchronisation. The embedding is shared and written without locks: the
+/// source node's coordinates are held locally for the whole row and written
+/// back once, the neighbour's are written per edge. Concurrent writes to the
+/// same point can overwrite each other, the usual hogwild trade, which the
+/// sparse UMAP objective tolerates.
+///
+/// With one Rayon thread the result is identical to [`optimise_embedding_sgd`].
+/// With more, it is not reproducible run to run for a fixed seed: the RNG
+/// streams are fixed, the write interleaving is not.
+///
+/// ### Params
+///
+/// * `embd` - Initial embedding coordinates (modified in place), shape
+///   `[n_samples][n_dim]`
+/// * `graph` - Adjacency list where `graph[i]` contains (neighbour_idx, weight)
+///   pairs
+/// * `params` - Optimisation parameters (n_epochs, lr, a, b, gamma,
+///   neg_sample_rate)
+/// * `dens` - Optional densMAP state. When set, the density gradient is
+///   applied over the final `dens.params.frac` of the epochs.
+/// * `seed` - Random seed for negative sampling
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// `Ok(())` on success, the embedding updated in place. `NoData` for an empty
+/// embedding, `NoGraphEdges` for a graph without edges, `TooManyVertices` if
+/// the node count does not fit `u32`.
+///
+/// ### References
+///
+/// Recht et al., NeurIPS, 2011 (Hogwild!); McInnes, Healy & Melville, arXiv,
+/// 2018 (UMAP).
+pub fn optimise_embedding_sgd_parallel<T>(
+    embd: &mut [Vec<T>],
+    graph: &[Vec<(usize, T)>],
+    params: &UmapOptimParams<T>,
+    dens: Option<&DensState<T>>,
+    seed: u64,
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let n = embd.len();
+    if n == 0 {
+        return Err(ManifoldsError::NoData);
+    }
+    if n > u32::MAX as usize {
+        return Err(ManifoldsError::TooManyVertices { n });
+    }
+    let n_dim = embd[0].len();
+    let verbosity = parse_verbosity_level(verbose);
+
+    let consts = OptimConstants::new(params.a, params.b, params.gamma);
+
+    let zero = T::zero();
+    let one = T::one();
+    let two = T::from(2.0).unwrap();
+    let half = T::from(0.5).unwrap();
+    let dist_sq_threshold = T::from(GRAD_DIST_SQ_THRESHOLD).unwrap();
+    let large_epoch = T::from(1e8).unwrap();
+    let rep_eps = T::from(GRAD_REP_EPS).unwrap();
+
+    let b_is_one = (consts.b - one).abs() < T::from(1e-10).unwrap();
+    let b_is_half = (consts.b - half).abs() < T::from(1e-10).unwrap();
+
+    // directed edges grouped by source node, as in `graph`
+    let n_edges: usize = graph.iter().map(|row| row.len()).sum();
+    if n_edges == 0 {
+        return Err(ManifoldsError::NoGraphEdges);
+    }
+    let mut row_ptr: Vec<usize> = Vec::with_capacity(n + 1);
+    let mut targets: Vec<u32> = Vec::with_capacity(n_edges);
+    let mut weights: Vec<T> = Vec::with_capacity(n_edges);
+    row_ptr.push(0);
+    for row in graph {
+        for &(j, w) in row {
+            targets.push(j as u32);
+            weights.push(w);
+        }
+        row_ptr.push(targets.len());
+    }
+
+    let max_weight = weights
+        .iter()
+        .fold(zero, |acc, &w| if w > acc { w } else { acc });
+
+    let neg_sample_rate_t = T::from(params.neg_sample_rate).unwrap();
+    let epochs_per_sample: Vec<T> = weights
+        .iter()
+        .map(|&w| {
+            let norm = w / max_weight;
+            if norm > zero {
+                one / norm
+            } else {
+                large_epoch
+            }
+        })
+        .collect();
+
+    let mut schedule: Vec<EdgeSchedule<T>> = epochs_per_sample
+        .iter()
+        .map(|&eps| EdgeSchedule {
+            next: eps,
+            next_neg: eps / neg_sample_rate_t,
+        })
+        .collect();
+
+    // one disjoint schedule slice per node, so the owner mutates it lock-free
+    let mut node_schedules: Vec<&mut [EdgeSchedule<T>]> = Vec::with_capacity(n);
+    let mut rest = schedule.as_mut_slice();
+    for i in 0..n {
+        let (head, tail) = rest.split_at_mut(row_ptr[i + 1] - row_ptr[i]);
+        node_schedules.push(head);
+        rest = tail;
+    }
+
+    let mut rng_states: Vec<SmallRng> = (0..n)
+        .map(|i| SmallRng::seed_from_u64(seed + i as u64))
+        .collect();
+
+    let embd_shared: Vec<T::Atomic> = embd
+        .iter()
+        .flat_map(|point| point.iter().map(|&v| T::new_atomic(v)))
+        .collect();
+
+    let mut dens_scratch = dens.map(|_| UmapDensScratch::<T>::new(n));
+    let mut dens_snapshot: Vec<T> = if dens.is_some() {
+        vec![zero; n * n_dim]
+    } else {
+        Vec::new()
+    };
+
+    let n_epochs_f = T::from(params.n_epochs).unwrap();
+
+    for epoch in 0..params.n_epochs {
+        let lr = params.lr * (one - T::from(epoch).unwrap() / n_epochs_f);
+        let epoch_t = T::from(epoch).unwrap();
+
+        // densMAP radii from a snapshot at the start of the epoch, as in the
+        // sequential SGD
+        let dens_ctx = match (dens, dens_scratch.as_mut()) {
+            (Some(state), Some(scratch)) if state.is_active(epoch, params.n_epochs) => {
+                dens_snapshot
+                    .par_iter_mut()
+                    .zip(embd_shared.par_iter())
+                    .for_each(|(dst, src)| *dst = T::load_relaxed(src));
+                accumulate_umap_radii(
+                    graph,
+                    &dens_snapshot,
+                    n_dim,
+                    &consts,
+                    |x| fast_pow(x, consts.b, b_is_one, b_is_half),
+                    scratch,
+                );
+                update_density_weights(scratch, state);
+                Some(&*scratch)
+            }
+            _ => None,
+        };
+
+        node_schedules
+            .par_iter_mut()
+            .zip(rng_states.par_iter_mut())
+            .enumerate()
+            .for_each_init(
+                || vec![zero; 2 * n_dim],
+                |buf, (i, (sched, rng))| {
+                    let (y_i, y_other) = buf.split_at_mut(n_dim);
+                    let base_i = i * n_dim;
+                    let row_start = row_ptr[i];
+                    let mut moved = false;
+
+                    for d in 0..n_dim {
+                        y_i[d] = T::load_relaxed(&embd_shared[base_i + d]);
+                    }
+
+                    for (e, st) in sched.iter_mut().enumerate() {
+                        if st.next > epoch_t {
+                            continue;
+                        }
+                        moved = true;
+
+                        let edge_idx = row_start + e;
+                        let j = targets[edge_idx] as usize;
+                        let base_j = j * n_dim;
+                        let per_neg = epochs_per_sample[edge_idx] / neg_sample_rate_t;
+
+                        let mut dist_sq = zero;
+                        for d in 0..n_dim {
+                            y_other[d] = T::load_relaxed(&embd_shared[base_j + d]);
+                            let diff = y_i[d] - y_other[d];
+                            dist_sq += diff * diff;
+                        }
+
+                        // attractive
+                        if dist_sq >= dist_sq_threshold {
+                            let dist_sq_b = fast_pow(dist_sq, consts.b, b_is_one, b_is_half);
+                            let denom = one + consts.a * dist_sq_b;
+                            let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
+
+                            // directed edge list, so no extra factor; see the
+                            // sequential SGD
+                            let two_cor = match dens_ctx {
+                                Some(scratch) => {
+                                    two * density_edge_coeff(
+                                        i,
+                                        j,
+                                        weights[edge_idx],
+                                        dist_sq,
+                                        dist_sq_b,
+                                        denom,
+                                        &consts,
+                                        scratch,
+                                    )
+                                }
+                                None => zero,
+                            };
+
+                            for d in 0..n_dim {
+                                let delta = y_other[d] - y_i[d];
+                                let mut grad_d = (grad_coeff * delta)
+                                    .max(-consts.clip_val)
+                                    .min(consts.clip_val);
+
+                                if dens_ctx.is_some() {
+                                    grad_d += (two_cor * -delta)
+                                        .max(-consts.clip_val)
+                                        .min(consts.clip_val);
+                                }
+
+                                y_i[d] += grad_d * lr;
+                                T::store_relaxed(
+                                    &embd_shared[base_j + d],
+                                    y_other[d] - grad_d * lr,
+                                );
+                            }
+                        }
+
+                        st.next += epochs_per_sample[edge_idx];
+
+                        // repulsive, via negative sampling
+                        let n_neg_samples = ((epoch_t - st.next_neg) / per_neg)
+                            .floor()
+                            .to_usize()
+                            .unwrap_or(0);
+
+                        for _ in 0..n_neg_samples {
+                            let k = rng.random_range(0..n);
+                            if k == i {
+                                continue;
+                            }
+                            let base_k = k * n_dim;
+
+                            let mut dist_sq = zero;
+                            for d in 0..n_dim {
+                                y_other[d] = T::load_relaxed(&embd_shared[base_k + d]);
+                                let diff = y_i[d] - y_other[d];
+                                dist_sq += diff * diff;
+                            }
+
+                            let dist_sq_safe = dist_sq + rep_eps;
+                            let dist_sq_b = fast_pow(dist_sq_safe, consts.b, b_is_one, b_is_half);
+                            let denom = dist_sq_safe * (one + consts.a * dist_sq_b);
+                            let grad_coeff = (consts.two_gamma_b / denom)
+                                .max(-consts.clip_val)
+                                .min(consts.clip_val);
+
+                            for d in 0..n_dim {
+                                y_i[d] += grad_coeff * (y_i[d] - y_other[d]) * lr;
+                            }
+                        }
+
+                        st.next_neg += T::from(n_neg_samples).unwrap() * per_neg;
+                    }
+
+                    // skip the write-back when nothing fired, so a stale copy
+                    // never clobbers updates other threads made to this point
+                    if moved {
+                        for d in 0..n_dim {
+                            T::store_relaxed(&embd_shared[base_i + d], y_i[d]);
+                        }
+                    }
+                },
+            );
+
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
+            println!("  Epoch {}/{}", epoch + 1, params.n_epochs);
+        }
+    }
+
+    for (i, point) in embd.iter_mut().enumerate() {
+        for (d, v) in point.iter_mut().enumerate() {
+            *v = T::load_relaxed(&embd_shared[i * n_dim + d]);
+        }
     }
 
     Ok(())
@@ -2088,6 +2408,220 @@ mod test_umap_optimiser {
             dist(&embd[1], &embd[5]),
         ];
         let avg_inter: f64 = inter_distances.iter().sum::<f64>() / inter_distances.len() as f64;
+
+        assert!(
+            avg_inter > avg_intra * 1.5,
+            "Inter-clique dist ({:.2}) should be > 1.5x intra-clique dist ({:.2})",
+            avg_inter,
+            avg_intra
+        );
+    }
+
+    /// Random symmetric kNN-like graph and random 2D initialisation.
+    ///
+    /// ### Params
+    ///
+    /// * `n` - Number of points
+    /// * `k` - Out-neighbours drawn per point before symmetrisation
+    /// * `seed` - RNG seed
+    ///
+    /// ### Returns
+    ///
+    /// `(graph, embedding)` with distinct weights so the edge schedule varies.
+    #[allow(clippy::type_complexity)]
+    fn random_graph_and_embedding(
+        n: usize,
+        k: usize,
+        seed: u64,
+    ) -> (Vec<Vec<(usize, f64)>>, Vec<Vec<f64>>) {
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut graph: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+        for i in 0..n {
+            for _ in 0..k {
+                let j = rng.random_range(0..n);
+                if j == i || graph[i].iter().any(|&(o, _)| o == j) {
+                    continue;
+                }
+                let w: f64 = rng.random_range(0.05..1.0);
+                graph[i].push((j, w));
+                graph[j].push((i, w));
+            }
+        }
+        let embd = (0..n)
+            .map(|_| vec![rng.random_range(-10.0..10.0), rng.random_range(-10.0..10.0)])
+            .collect();
+        (graph, embd)
+    }
+
+    /// Run a closure inside a one-thread Rayon pool.
+    ///
+    /// ### Params
+    ///
+    /// * `f` - The work to run
+    ///
+    /// ### Returns
+    ///
+    /// Whatever `f` returns.
+    fn single_threaded<R: Send>(f: impl FnOnce() -> R + Send) -> R {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("one-thread pool")
+            .install(f)
+    }
+
+    #[test]
+    fn test_sgd_parallel_one_thread_matches_sgd() {
+        let (graph, embd0) = random_graph_and_embedding(200, 8, 7);
+        let params = UmapOptimParams {
+            n_epochs: 100,
+            ..UmapOptimParams::default_2d()
+        };
+
+        let mut embd_seq = embd0.clone();
+        optimise_embedding_sgd(&mut embd_seq, &graph, &params, None, 42, 0).unwrap();
+
+        let mut embd_par = embd0.clone();
+        single_threaded(|| {
+            optimise_embedding_sgd_parallel(&mut embd_par, &graph, &params, None, 42, 0)
+        })
+        .unwrap();
+
+        assert_eq!(embd_seq, embd_par);
+    }
+
+    #[test]
+    fn test_sgd_parallel_one_thread_matches_sgd_densmap() {
+        let (graph, embd0) = random_graph_and_embedding(200, 8, 11);
+        let n = graph.len();
+        let mut rng = SmallRng::seed_from_u64(3);
+        // z-scored-ish radii; exact values do not matter, only that both paths
+        // see the same state
+        let r: Vec<f64> = (0..n).map(|_| rng.random_range(-1.5..1.5)).collect();
+        let mu_sum: Vec<f64> = graph
+            .iter()
+            .map(|row| row.iter().map(|e| e.1).sum())
+            .collect();
+        let mu_tot = mu_sum.iter().sum();
+        let state = DensState {
+            params: DensParams::new(None, None, None),
+            r,
+            mu_sum,
+            mu_tot,
+        };
+        let params = UmapOptimParams {
+            n_epochs: 60,
+            ..UmapOptimParams::default_2d()
+        };
+
+        let mut embd_seq = embd0.clone();
+        optimise_embedding_sgd(&mut embd_seq, &graph, &params, Some(&state), 42, 0).unwrap();
+
+        let mut embd_par = embd0.clone();
+        single_threaded(|| {
+            optimise_embedding_sgd_parallel(&mut embd_par, &graph, &params, Some(&state), 42, 0)
+        })
+        .unwrap();
+
+        assert_eq!(embd_seq, embd_par);
+    }
+
+    #[test]
+    fn test_sgd_parallel_multi_thread_finite() {
+        let (graph, mut embd) = random_graph_and_embedding(2_000, 10, 5);
+        let params = UmapOptimParams {
+            n_epochs: 100,
+            ..UmapOptimParams::default_2d()
+        };
+
+        optimise_embedding_sgd_parallel(&mut embd, &graph, &params, None, 42, 0).unwrap();
+
+        assert!(embd.iter().flatten().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_sgd_parallel_errors() {
+        let params = UmapOptimParams::<f64>::default_2d();
+
+        let mut empty: Vec<Vec<f64>> = Vec::new();
+        assert!(matches!(
+            optimise_embedding_sgd_parallel(&mut empty, &[], &params, None, 42, 0),
+            Err(ManifoldsError::NoData)
+        ));
+
+        let graph: Vec<Vec<(usize, f64)>> = vec![vec![], vec![]];
+        let mut embd = vec![vec![0.0, 0.0], vec![1.0, 0.0]];
+        assert!(matches!(
+            optimise_embedding_sgd_parallel(&mut embd, &graph, &params, None, 42, 0),
+            Err(ManifoldsError::NoGraphEdges)
+        ));
+    }
+
+    #[test]
+    fn test_sgd_parallel_f32() {
+        let (graph, embd) = random_graph_and_embedding(300, 8, 9);
+        let graph: Vec<Vec<(usize, f32)>> = graph
+            .into_iter()
+            .map(|row| row.into_iter().map(|(j, w)| (j, w as f32)).collect())
+            .collect();
+        let mut embd: Vec<Vec<f32>> = embd
+            .into_iter()
+            .map(|p| p.into_iter().map(|v| v as f32).collect())
+            .collect();
+        let params = UmapOptimParams::<f32> {
+            n_epochs: 50,
+            ..UmapOptimParams::default_2d()
+        };
+
+        optimise_embedding_sgd_parallel(&mut embd, &graph, &params, None, 42, 0).unwrap();
+
+        assert!(embd.iter().flatten().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn test_optimisation_preserves_graph_structure_sgd_parallel() {
+        let graph = vec![
+            vec![(1, 1.0), (2, 1.0)],
+            vec![(0, 1.0), (2, 1.0)],
+            vec![(0, 1.0), (1, 1.0), (3, 0.1)],
+            vec![(2, 0.1), (4, 1.0), (5, 1.0)],
+            vec![(3, 1.0), (5, 1.0)],
+            vec![(3, 1.0), (4, 1.0)],
+        ];
+
+        let mut embd = vec![
+            vec![0.0, 0.0],
+            vec![10.0, 0.0],
+            vec![0.0, 10.0],
+            vec![10.0, 10.0],
+            vec![-5.0, -5.0],
+            vec![15.0, 15.0],
+        ];
+
+        let params = UmapOptimParams {
+            n_epochs: 200,
+            ..UmapOptimParams::default_2d()
+        };
+
+        optimise_embedding_sgd_parallel(&mut embd, &graph, &params, None, 42, 0).unwrap();
+
+        let dist = |a: &[f64], b: &[f64]| -> f64 {
+            ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+        };
+
+        let intra_clique1 =
+            (dist(&embd[0], &embd[1]) + dist(&embd[0], &embd[2]) + dist(&embd[1], &embd[2])) / 3.0;
+        let intra_clique2 =
+            (dist(&embd[3], &embd[4]) + dist(&embd[3], &embd[5]) + dist(&embd[4], &embd[5])) / 3.0;
+        let avg_intra = (intra_clique1 + intra_clique2) / 2.0;
+
+        let mut inter = 0.0;
+        for &a in &[0, 1] {
+            for &b in &[3, 4, 5] {
+                inter += dist(&embd[a], &embd[b]);
+            }
+        }
+        let avg_inter = inter / 6.0;
 
         assert!(
             avg_inter > avg_intra * 1.5,

@@ -82,6 +82,8 @@ Rough ordering on the same data, dominated by different things:
   an interpolation grid, linear in the number of points.
 - `UMAP`, `DensMAP` and `PaCMAP` pay for the neighbour search and then a cheap
   per-edge update. The parallel Adam optimiser is the default.
+  `optimiser="sgd_parallel"` runs the reference SGD lock-free over all
+  threads, at the price of a different embedding on every run.
 - `PHATE` pays for the powering, the potential distances and the MDS, which is
   why it runs on 2048 landmarks by default. `n_landmarks=None` runs the full
   operator, whose dense distance matrix grows with the square of the sample count.

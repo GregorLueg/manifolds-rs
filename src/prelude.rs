@@ -25,7 +25,7 @@ pub use crate::utils::dreams::DreamsState;
 pub use crate::utils::input::{ManifoldsMatrix, MatInput};
 pub use crate::utils::math::landmark_von_neumann_entropy;
 pub use crate::utils::potentials::calculate_potential;
-pub use crate::utils::traits::ManifoldsFloat;
+pub use crate::utils::traits::{AtomicFloat, ManifoldsFloat};
 
 #[cfg(feature = "gpu")]
 pub use crate::data::nearest_neighbours_gpu::*;

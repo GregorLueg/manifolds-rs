@@ -49,7 +49,9 @@ class UMAP(BaseEmbedding):
 
     The default optimiser is the multi-threaded Adam one, which is where most of
     the speed comes from; `"sgd"` reproduces the original reference behaviour
-    more closely and is slower. Spectral initialisation is the default and is
+    more closely and is slower. `"sgd_parallel"` is the same SGD run lock-free
+    (hogwild) over all threads, so a fixed seed no longer gives the same
+    embedding twice. Spectral initialisation is the default and is
     worth keeping: PCA is the fallback when the Laplacian will not converge, and
     random init throws away the global structure spectral gives you for free.
 
@@ -70,7 +72,8 @@ class UMAP(BaseEmbedding):
         init: ``"spectral"``, ``"pca"`` or ``"random"``.
         ann: Neighbour backend. ``"nndescent"`` suits the small `k` here;
             ``"kmknn"`` is exact and fast up to a few hundred thousand points.
-        optimiser: ``"adam_parallel"``, ``"adam"`` or ``"sgd"``.
+        optimiser: ``"adam_parallel"``, ``"adam"``, ``"sgd"`` or
+            ``"sgd_parallel"``. The last is not reproducible run to run.
         randomised: Use randomised SVD for the PCA initialisation. No effect
             under spectral or random init.
         init_range: Scale of the initial coordinates. ``None`` lets the core

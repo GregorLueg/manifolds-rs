@@ -330,7 +330,7 @@ correlation sensitivities. The radii are read back in between so the
 correlation statistics can be accumulated in `f64` on the host, since summing
 `n` log-radii in `f32` loses its significant digits. That readback is a sync
 point, but it only happens over the final 30% of the epochs. Pick any of the
-other optimisers (`"sgd"`, `"adam"`, `"adam_parallel"`) and the density path
+other optimisers (`"sgd"`, `"sgd_parallel"`, `"adam"`, `"adam_parallel"`) and the density path
 falls back to CPU, with only the kNN search on the GPU.
 
 The GPU entry points take a `cubecl::Device`, which picks the runtime at run

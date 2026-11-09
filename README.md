@@ -36,7 +36,7 @@ Optimisers and approximations are picked by string:
 
 | What | Options |
 |---|---|
-| UMAP optimiser | `"adam_parallel"` (default), `"adam"`, `"sgd"`, `"adam_gpu"`, `"adam_mlx"` |
+| UMAP optimiser | `"adam_parallel"` (default), `"adam"`, `"sgd"`, `"sgd_parallel"`, `"adam_gpu"`, `"adam_mlx"` |
 | t-SNE repulsion | `"bh"`, `"qd"`, `"fft"`, `"fft_3k"`, `"fft_3k_gpu"`, `"fft_3k_mlx"` |
 | PHATE landmarks | `"spectral"` (default), `"random"`, `"density"`, `"spectral_mlx"` |
 | kNN, CPU | `"nndescent"` (default), `"ivf"` (default for the t-SNE family), `"kmknn"`, `"exhaustive"`, `"hnsw"`, `"annoy"`, `"balltree"` |

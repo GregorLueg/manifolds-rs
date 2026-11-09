@@ -422,12 +422,15 @@ fn umap_integration_05_optimisation_quality() {
         ("spectral", "adam"),
         ("spectral", "sgd"),
         ("spectral", "adam_parallel"),
+        ("spectral", "sgd_parallel"),
         ("pca", "adam"),
         ("pca", "sgd"),
         ("pca", "adam_parallel"),
+        ("pca", "sgd_parallel"),
         ("random", "adam"),
         ("random", "sgd"),
         ("random", "adam_parallel"),
+        ("random", "sgd_parallel"),
     ];
 
     for (init, opt) in configs {
