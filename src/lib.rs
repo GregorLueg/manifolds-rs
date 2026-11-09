@@ -3774,6 +3774,12 @@ pub struct DiffusionMapsParams<T> {
     /// Diffusion time: `Auto` picks the VNE knee, `Fixed(t)` uses `t` directly.
     pub t: PhateTime,
     /// Landmark count. `None` or `>= n` runs full DM.
+    ///
+    /// Keep `k` a small fraction of the landmark count. The landmark kernel
+    /// connects each landmark to its `k` nearest landmarks, so when `k` covers a
+    /// large share of them the kernel turns broad, the eigenvalues drop, and
+    /// `lambda^t` shrinks the later coordinates towards a line. On small data,
+    /// prefer the full operator.
     pub n_landmarks: Option<usize>,
     /// `"random"`, `"spectral"` or `"density"`
     /// Defaults to `"spectral"`.
@@ -3832,6 +3838,7 @@ where
     /// * `t` - Diffusion time: `Auto` picks the VNE knee, `Fixed(t)` uses `t`
     ///   directly.
     /// * `n_landmarks` - Number of landmarks. `None` or `>= n` runs full DM.
+    ///   Keep `k` a small fraction of it, see [`DiffusionMapsParams::n_landmarks`].
     /// * `landmark_method` - `"random"`, `"spectral"`, or `"density"`.
     /// * `n_svd` - SVD components for spectral landmark selection. Ignored
     ///   otherwise.

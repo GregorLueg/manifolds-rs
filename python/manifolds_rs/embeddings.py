@@ -667,7 +667,11 @@ class DiffusionMaps(BaseEmbedding):
         thresh: Kernel entries below this are zeroed.
         graph_symmetry: ``"add"``, ``"multiply"``, ``"mnn"`` or ``"none"``.
         n_landmarks: Landmarks to diffuse on instead of the full graph. ``None``
-            or a value at least `n_samples` runs the full operator.
+            or a value at least `n_samples` runs the full operator. Keep `k` a
+            small fraction of it: when `k` covers a large share of the
+            landmarks the landmark kernel turns broad and the later
+            coordinates shrink towards a line. On small data, prefer the full
+            operator.
         landmark_method: ``"spectral"``, ``"random"`` or ``"density"``.
         n_svd: Components for spectral landmark selection.
         ann: Neighbour backend.

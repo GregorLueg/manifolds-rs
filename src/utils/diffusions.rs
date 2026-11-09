@@ -893,7 +893,7 @@ fn compact_assignments(assignments: &mut [usize], n_landmarks: usize) -> usize {
 /// ### Returns
 ///
 /// Index of the knee point, or [`ManifoldsError::TMaxTooSmall`] if the curve
-/// has fewer than [`MIN_KNEE_CURVE_LEN`] values.
+/// has fewer than three values.
 pub fn find_knee_point<T>(y: &[T]) -> Result<usize, ManifoldsError>
 where
     T: Float,
