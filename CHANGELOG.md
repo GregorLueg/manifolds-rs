@@ -7,97 +7,89 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
 **Breaking changes**
 
-- `compute_largest_eigenpairs_lanczos`, `compute_smallest_eigenpairs_lanczos` and
-  `eigendecompose` return `f64` eigenpairs instead of narrowing them to `f32`, and
-  `compute_landmark_embedding` takes `f64`.
-- `randomised_svd` takes and returns `f64`, and `sparse_randomised_svd` returns
-  `f64` whatever `T` is. `f32` runs of classic MDS with `randomised` give different
-  coordinates than 0.8.0 at the same seed.
-- `run_ann_search` searches in `f32` whatever `T` is, on every CPU backend bar
-  `"exhaustive"`, and casts the distances back up to `T`. `"exhaustive"` stays in
-  `T`, so `f64` runs still give ground truth. `f64` runs give different coordinates
-  than 0.8.0 at the same seed.
-- PaCMAP follows the reference. Different embeddings at the same seed.
-  - The default learning rate is `1.0` rather than `0.01`, and the default `ann_type`
-    is `"ivf"` rather than `"nndescent"`.
-  - The kNN search runs `n_near + 50` wide rather than 50, and the near pairs are the
-    best of those by locally scaled distance. A precomputed graph needs at least
-    `n_near` neighbours and should be `n_near + 50` wide.
-  - Mid-near pairs are the second closest of six random points. `PacmapParams` loses
-    `mn_candidate_start` and `mn_candidate_end`, `construct_pacmap_pairs` takes the
-    data and a metric, and `ManifoldsError::NotEnoughNeighbours` carries `n_near`.
-  - Further pairs exclude the near pairs.
-  - PCA initialisation is the PC scores times `range`, so the ratio between the
-    components survives, with `None` meaning `0.01`. It no longer goes through
-    `pca_layout`, which gave every component the same spread.
+Different coordinates than 0.8.0 at the same seed: PaCMAP, PHATE, parametric
+UMAP, diffusion maps with spectral landmarks, `f32` classic MDS, `f32` PCA
+initialisation and every `f64` run on an approximate kNN backend.
+
+- Linear algebra runs in `f64`. `compute_largest_eigenpairs_lanczos`,
+  `compute_smallest_eigenpairs_lanczos`, `eigendecompose`, `randomised_svd` and
+  `sparse_randomised_svd` return `f64`, and `randomised_svd` and
+  `compute_landmark_embedding` take it.
+- `run_ann_search` searches in `f32` on every CPU backend bar `"exhaustive"`,
+  which stays in `T` for ground truth. Distances come back as `T`.
+- PaCMAP follows the reference.
+  - `learning_rate` defaults to `1.0` (was `0.01`), `ann_type` to `"ivf"` (was
+    `"nndescent"`).
+  - Near pairs are the best `n_near` of an `n_near + 50` wide search by locally
+    scaled distance. A precomputed graph needs at least `n_near` neighbours and
+    should be `n_near + 50` wide.
+  - Mid-near pairs are the second closest of six random points. Further pairs
+    exclude the near pairs.
+  - PCA initialisation is the PC scores times `range` (`None` means `0.01`), so
+    the ratio between components survives.
   - The Adam epsilon is no longer scaled by the bias correction.
-- PHATE follows the reference. Different embeddings at the same seed.
-  - `n_landmarks` defaults to `PHATE_DEFAULT_LANDMARKS` (2048) rather than `None`,
-    so default runs use landmarks.
-  - The kNN search runs `6k + 5` wide (`phate_search_width`) rather than `k`, and
-    neighbours past `k` join the kernel while their affinity clears `thresh`. Make a
-    precomputed graph that wide as well.
-  - The kernel has a unit diagonal, and the landmark operator sums the kernel rather
-    than `P`.
-  - The log potential of a zero entry of `P^t` is `-ln(1e-7)` rather than `0`.
-  - SGD-MDS scales its budget with `n`: 300 iterations below 1000 points, 500 below
-    5000, 800 otherwise.
-- One name per concept across the parameter structs. `ann_params` is `nn_params`
-  (`PhateParams`, `DiffusionMapsParams`), `randomised_init` is `randomised` (t-SNE
-  family, `Fa2Params`), `optimiser_type` is `optimiser` (`PacmapParams`) and
-  `umap_graph_params` is `graph_params` (UMAP family, `ParametricUmapParams`).
-- `umap`, `densmap`, `forceatlas2`, `parametric_umap`, `umap_gpu`, `densmap_gpu` and
-  their `construct_*_graph` helpers cut a precomputed kNN graph wider than `k` to `k`,
-  with a warning on stderr. They used every neighbour given, whatever `k` said.
-- PHATE and landmark diffusion maps return `ManifoldsError::MetricNotSupported` for
-  Manhattan distance. PHATE panicked.
-- Without `fft_tsne`, `"fft"` and `"fft_3k"` return
-  `ManifoldsError::TsneOptimiserNeedsFft` rather than panicking.
-- `parse_initilisation` is `parse_initialisation`, and
-  `ManifoldsError::SpareMatrixMustBeSquare` is `SparseMatrixMustBeSquare`.
-- `PHATE_DEFAULT_N_SVD` is `LANDMARK_DEFAULT_N_SVD`, and diffusion maps use it too:
-  with spectral landmarks and `n_svd = None` they take 100 singular vectors rather
-  than 10. Different embeddings at the same seed.
+  - `PacmapParams` drops `mn_candidate_start` and `mn_candidate_end`,
+    `construct_pacmap_pairs` takes the data and a metric, and
+    `NotEnoughNeighbours` carries `n_near`.
+- PHATE follows the reference.
+  - `n_landmarks` defaults to `PHATE_DEFAULT_LANDMARKS` (2048), was `None`.
+  - The kNN search is `6k + 5` wide (`phate_search_width`), and neighbours past
+    `k` join the kernel while their affinity clears `thresh`. Build a
+    precomputed graph that wide.
+  - The kernel has a unit diagonal, and the landmark operator sums the kernel,
+    not `P`.
+  - A zero entry of `P^t` has log potential `-ln(1e-7)`, not `0`.
+  - SGD-MDS runs 300 iterations below 1000 points, 500 below 5000, 800 otherwise.
+- Renames: `ann_params` is `nn_params` (`PhateParams`, `DiffusionMapsParams`),
+  `randomised_init` is `randomised` (t-SNE family, `Fa2Params`), `optimiser_type`
+  is `optimiser` (`PacmapParams`), `umap_graph_params` is `graph_params` (UMAP
+  family, `ParametricUmapParams`), `parse_initilisation` is
+  `parse_initialisation`, `SpareMatrixMustBeSquare` is `SparseMatrixMustBeSquare`
+  and `PHATE_DEFAULT_N_SVD` is `LANDMARK_DEFAULT_N_SVD`.
+- Diffusion maps use `LANDMARK_DEFAULT_N_SVD` too: spectral landmarks with
+  `n_svd = None` take 100 singular vectors, was 10.
 - Parametric UMAP has one default curve, fitted to `DEFAULT_MIN_DIST` (0.5) and
-  `DEFAULT_SPREAD`, as for UMAP. `TrainParametricParams::default_2d` was `a = 1.5`,
-  `b = 0.9` and `ParametricUmapParams::new_default_2d` used `min_dist = 0.1`.
-  Different embeddings at the same seed.
-- One verbosity grammar across every embedding. Level 1 prints `Running <name> on
-  <n> samples ...`, timed stages, epochs every 50 and `... finished <name> in`.
-  Level 2 adds parameters, landmark selection and the kNN internals, which level 1
-  no longer prints inside an embedding. The GPU UMAP gradient norm moved to level 2.
-  Warnings about unknown parameters go to stderr. `train_parametric_umap` takes
-  `Verbosity` instead of `bool`.
+  `DEFAULT_SPREAD` as for UMAP. It was `a = 1.5, b = 0.9` in
+  `TrainParametricParams::default_2d` and `min_dist = 0.1` in
+  `ParametricUmapParams::new_default_2d`.
+- UMAP, densMAP, ForceAtlas2, parametric UMAP, their GPU variants and
+  `construct_*_graph` helpers cut a precomputed kNN graph wider than `k` to `k`,
+  with a warning on stderr. They used every neighbour given.
+- Errors, not panics: Manhattan distance in PHATE and landmark diffusion maps
+  (`MetricNotSupported`), `"fft"` and `"fft_3k"` without `fft_tsne`
+  (`TsneOptimiserNeedsFft`).
+- One verbosity grammar. Level 1 prints `Running <name> on <n> samples ...`,
+  timed stages, epochs every 50 and `... finished <name> in`. Level 2 adds
+  parameters, landmark selection, kNN internals and the GPU UMAP gradient norm.
+  Unknown-parameter warnings go to stderr. `train_parametric_umap` takes
+  `Verbosity`, not `bool`.
 
 **Features**
 
-- `phate_gpu`: PHATE with the kNN search and, for spectral landmarks, the randomised
-  SVD and the k-means on a cubecl device, in `f32`.
-- `landmark_method = "spectral_mlx"` for `phate` and `phate_gpu`: the SVD and the
-  k-means of the landmark selection on MLX, in `f32`.
-- Both draw the same sketch as the CPU SVD for a given seed, so the singular
-  vectors match it up to `f32` rounding.
-- `PhateLandmarks::build_with_backend` and `SpectralBackend`. `PhateLandmarks::build`
-  runs on the CPU.
+- `phate_gpu`: PHATE with the kNN search and, for spectral landmarks, the
+  randomised SVD and k-means on a cubecl device, in `f32`.
+- `landmark_method = "spectral_mlx"` for `phate` and `phate_gpu`: the landmark
+  SVD and k-means on MLX, in `f32`. Both backends draw the CPU sketch, so the
+  singular vectors match the CPU up to `f32` rounding.
+- `PhateLandmarks::build_with_backend` and `SpectralBackend`. `build` stays on
+  the CPU.
 
 **Performance**
 
 - PHATE powers the landmark operator as a dense matrix (`dense_matrix_power`,
-  `PhateLandmarks::power_dense`), and the power iterations of the sparse randomised
-  SVD use Cholesky QR for all but the last basis.
+  `PhateLandmarks::power_dense`). The sparse randomised SVD uses Cholesky QR for
+  all but the last power iteration.
 
 **Bug fixes**
 
-- PCA initialisation always runs its centring and SVD in `f64`, whatever `T` is.
-  In `f32` the SVD collapsed the layout onto a few points in larger data sets,
-  if the upstream supplied values were `f32`.
-- PaCMAP no longer compresses the layout: mid-near pairs are mid-near. They were
-  kNN slots 4 to 8, so all of them were already near pairs.
-- Spectral landmark selection works at scale. It ran two power iterations on the
-  raw kernel and now runs seven on the symmetrically normalised one. PHATE and
-  diffusion maps with spectral landmarks give different coordinates than 0.8.0.
-- PHATE honours `n_svd` and, with landmarks, `mds_iter`. Both were ignored.
-- PHATE drops empty landmarks instead of keeping them as zero rows of the operator.
+- PCA initialisation centres and decomposes in `f64`. In `f32` it collapsed large
+  layouts onto a few points.
+- PaCMAP no longer compresses the layout. Mid-near pairs were kNN slots 4 to 8,
+  so already near pairs.
+- Spectral landmark selection works at scale: seven power iterations on the
+  symmetrically normalised kernel, was two on the raw one.
+- PHATE honours `n_svd` and, with landmarks, `mds_iter`.
+- PHATE drops empty landmarks instead of keeping them as zero rows.
 
 ## 0.8.0
 

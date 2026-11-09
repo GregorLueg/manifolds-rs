@@ -9,63 +9,61 @@ Requires `manifolds-rs` 0.9.0.
 
 **Breaking changes**
 
-- `float32` runs of `PHATE(mds="classic")` give different coordinates than 0.5.0 at
-  the same seed. The randomised SVDs run in float64.
-- The neighbour search runs in `float32` on every backend except "exhaustive",
-  which keeps your dtype. This is faster with recall unchanged.
-  `float64` runs give different coordinates than 0.5.0, and knn_graph values have
-  float32 precision.
-- PaCMAP follows the reference. Embeddings differ from 0.5.0.
-  - It defaults to learning_rate=1.0 (was 0.01) and ann="ivf" (was "nndescent"),
-    and drops mn_candidate_start and mn_candidate_end.
-  - The search runs n_near + 50 neighbours wide (was 50) and picks the near pairs
-    from those by locally scaled distance. A precomputed graph needs at least
-    n_near neighbours and should be n_near + 50 wide.
+Different coordinates than 0.5.0 at the same seed: `PaCMAP`, `PHATE`,
+`DiffusionMaps` with spectral landmarks, `float32` PCA initialisation and every
+`float64` run on an approximate neighbour search.
+
+- The neighbour search runs in `float32` on every backend bar `"exhaustive"`,
+  which keeps your dtype. Same recall, faster. `knn_graph` values have `float32`
+  precision.
+- `PaCMAP` follows the reference.
+  - `learning_rate` defaults to `1.0` (was `0.01`), `ann` to `"ivf"` (was
+    `"nndescent"`). `mn_candidate_start` and `mn_candidate_end` are gone.
+  - Near pairs are the best `n_near` of an `n_near + 50` wide search by locally
+    scaled distance. A precomputed graph needs at least `n_near` neighbours and
+    should be `n_near + 50` wide.
   - Further pairs exclude the near pairs.
-  - PCA initialisation is the PC scores times range_, so the ratio between the
-    components survives, with range_=None meaning 0.01.
-- PHATE follows the reference. All runs differ from 0.5.0.
-  - It uses 2048 landmarks by default (was none).
-  - The search runs 6k + 5 neighbours wide (was k), thresholded by thresh, with a
-    unit diagonal and a landmark operator built from the kernel. A precomputed
-    graph should be that wide.
-  - The log potential of an unreached state is large rather than zero.
-  - SGD-MDS scales its budget with the sample count: 300 iterations below 1000
-    points, 500 below 5000, 800 otherwise.
-  - n_landmarks and landmark_method moved from PhateDiffusion to the PHATE and
-    PHATEGpu constructors. n_landmarks=None now selects the full operator.
-- PHATE and PHATEGpu raise ValueError on metric="manhattan". They panicked.
-- UMAP, DensMAP, ForceAtlas2 and the GPU variants cut a precomputed graph wider than
-  n_neighbors to n_neighbors, with a warning on stderr. They used every neighbour
-  given and ignored n_neighbors.
-- randomised_init is randomised on the t-SNE family and ForceAtlas2.
-- DiffusionMaps with spectral landmarks and n_svd=None takes 100 singular vectors
-  (was 10). Embeddings differ from 0.5.0.
-- verbose takes 0 (quiet), 1 (timed stages, epochs every 50) or 2 (also
-  parameters, landmark selection, index internals). Other values raise
-  ValueError.
+  - PCA initialisation is the PC scores times `range_` (`None` means `0.01`), so
+    the ratio between components survives.
+- `PHATE` follows the reference.
+  - 2048 landmarks by default (was none). `n_landmarks` and `landmark_method`
+    moved from `PhateDiffusion` to the `PHATE` and `PHATEGpu` constructors, and
+    `n_landmarks=None` selects the full operator.
+  - The search is `6k + 5` wide, thresholded by `thresh`. A precomputed graph
+    should be that wide.
+  - The kernel has a unit diagonal, the landmark operator is built from it, and
+    an unreached state has a large log potential rather than zero.
+  - SGD-MDS runs 300 iterations below 1000 points, 500 below 5000, 800 otherwise.
+  - `mds="classic"` runs its randomised SVDs in `float64`.
+- `PHATE` and `PHATEGpu` raise `ValueError` on `metric="manhattan"`. They
+  panicked.
+- `UMAP`, `DensMAP`, `ForceAtlas2` and the GPU variants cut a precomputed graph
+  wider than `n_neighbors` to `n_neighbors`, with a warning on stderr. They used
+  every neighbour given.
+- `DiffusionMaps` with spectral landmarks and `n_svd=None` takes 100 singular
+  vectors, was 10.
+- `verbose` takes 0 (quiet), 1 (timed stages, epochs every 50) or 2 (also
+  parameters, landmark selection, index internals). Anything else raises
+  `ValueError`.
 
 **Features**
 
 - `PHATEGpu`: PHATE with the neighbour search and, for spectral landmarks, the
-  randomised SVD and the k-means on the device, in float32.
-- `PhateDiffusion(landmark_method="spectral_mlx")` in an `mlx` build: the SVD and
-  the k-means of the landmark selection on MLX, in float32. Works with `PHATE` and
-  `PHATEGpu`.
+  randomised SVD and k-means on the device, in `float32`.
+- `PHATE(landmark_method="spectral_mlx")` in an `mlx` build: the landmark SVD
+  and k-means on MLX, in `float32`. Works with `PHATEGpu` too.
 
 **Bug fixes**
 
-- PCA initialisation always runs in `float64`. In `float32` the SVD collapsed
-  the layout from about 520k samples. float32 runs differ from 0.5.0.
-- PaCMAP no longer compresses the layout: mid-near pairs are the second closest of
-  six random points, not neighbours.
-- Spectral landmark selection works at scale (seven power iterations on the
-  normalised kernel instead of two on the raw one). DiffusionMaps with spectral
-  landmarks gets the same change and projects with P, so its coordinates differ too.
-- Spectral landmark selection no longer fails on `float32` input on large data
-  sets (≥ 500,000 samples).
-- `PHATE` honours `n_svd` and, with landmarks, `mds_iter`. Both were ignored.
-- `PHATE` drops empty landmarks instead of keeping them as zero rows of the operator.
+- PCA initialisation runs in `float64`. In `float32` it collapsed the layout
+  from about 520k samples.
+- `PaCMAP` no longer compresses the layout: mid-near pairs are the second
+  closest of six random points, not neighbours.
+- Spectral landmark selection works at scale and no longer fails on `float32`
+  input from 500k samples. `DiffusionMaps` with spectral landmarks also projects
+  with `P` now.
+- `PHATE` honours `n_svd` and, with landmarks, `mds_iter`, and drops empty
+  landmarks instead of keeping them as zero rows.
 
 ## 0.5.0
 
