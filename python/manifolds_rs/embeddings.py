@@ -48,8 +48,8 @@ class UMAP(BaseEmbedding):
     """Uniform manifold approximation and projection.
 
     The default optimiser is the multi-threaded Adam one, which is where most of
-    the speed comes from; `"sgd"` reproduces the original reference behaviour
-    more closely and is slower. `"sgd_parallel"` is the same SGD run lock-free
+    the speed comes from; `"sgd"` follows umap-learn's edge sampling schedule
+    and is slower. `"sgd_parallel"` is the same SGD run lock-free
     (hogwild) over all threads, so a fixed seed no longer gives the same
     embedding twice. Spectral initialisation is the default and is
     worth keeping: PCA is the fallback when the Laplacian will not converge, and

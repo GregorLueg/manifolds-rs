@@ -28,6 +28,19 @@ pub const DEFAULT_MIN_DIST: f64 = 0.5;
 /// Spread the default curve is fitted to. See [`DEFAULT_MIN_DIST`].
 pub const DEFAULT_SPREAD: f64 = 1.0;
 
+/// Upper end of the fine `x^b` table in [`SplitPowLut`]. Squared distances of
+/// connected points sit well inside it.
+const POW_LUT_NEAR_MAX: f64 = 25.0;
+
+/// Upper end of the coarse `x^b` table in [`SplitPowLut`]. Covers the squared
+/// distances of random negative samples in a typical 2D layout; anything
+/// further falls back to `powf`. Not tuned beyond checking that widening it
+/// further does not change the run time.
+const POW_LUT_FAR_MAX: f64 = 10_000.0;
+
+/// Entries per `x^b` table. Two tables of this size stay within L2.
+const POW_LUT_SIZE: usize = 65_536;
+
 //////////////////////////
 // Structures and Enums //
 //////////////////////////
@@ -427,6 +440,92 @@ where
     }
 }
 
+/// Two-range lookup table for `x^b` covering the repulsive distances too.
+///
+/// [`FastPowLut`] alone spans `[0, POW_LUT_NEAR_MAX]`, where attraction lives,
+/// but negative samples land mostly far beyond it and fell back to `powf`. The
+/// second, coarser table covers `[POW_LUT_NEAR_MAX, POW_LUT_FAR_MAX]`; its step
+/// is wide in absolute terms but small relative to `x` there, so the linear
+/// interpolation stays accurate. Beyond that, `powf`.
+struct SplitPowLut<T> {
+    /// Table over `[0, POW_LUT_NEAR_MAX]`.
+    near: FastPowLut<T>,
+    /// Table over `[0, POW_LUT_FAR_MAX]`, only read above `POW_LUT_NEAR_MAX`.
+    far: FastPowLut<T>,
+    /// `POW_LUT_NEAR_MAX` in `T`.
+    split: T,
+    /// `b == 1`, where `x^b` is `x` and no table is needed.
+    b_is_one: bool,
+}
+
+impl<T> SplitPowLut<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Build both tables for `x^b`.
+    ///
+    /// ### Params
+    ///
+    /// * `b` - The exponent
+    ///
+    /// ### Returns
+    ///
+    /// The two-range table.
+    fn new(b: T) -> Self {
+        Self {
+            near: FastPowLut::new(b, POW_LUT_NEAR_MAX, POW_LUT_SIZE),
+            far: FastPowLut::new(b, POW_LUT_FAR_MAX, POW_LUT_SIZE),
+            split: T::from(POW_LUT_NEAR_MAX).unwrap(),
+            b_is_one: (b - T::one()).abs() < T::from(1e-10).unwrap(),
+        }
+    }
+
+    /// Approximate `x^b`.
+    ///
+    /// ### Params
+    ///
+    /// * `x` - Non-negative input, a squared distance
+    ///
+    /// ### Returns
+    ///
+    /// `x^b`, interpolated from the matching table.
+    #[inline(always)]
+    fn get(&self, x: T) -> T {
+        if self.b_is_one {
+            x
+        } else if x < self.split {
+            self.near.get(x)
+        } else {
+            self.far.get(x)
+        }
+    }
+}
+
+/// Hint the CPU to pull the cache line holding `x` into L1.
+///
+/// Only emitted on aarch64, where it was measured to help the scattered
+/// negative-sample loads once the embedding outgrows the caches; a no-op
+/// elsewhere.
+///
+/// ### Params
+///
+/// * `x` - Any reference into the data that will be read soon
+#[inline(always)]
+fn prefetch_read<A>(x: &A) {
+    #[cfg(target_arch = "aarch64")]
+    // SAFETY: `prfm` is a hint; it never faults and writes nothing, and the
+    // address comes from a live reference.
+    unsafe {
+        std::arch::asm!(
+            "prfm pldl1keep, [{0}]",
+            in(reg) x as *const A,
+            options(nostack, readonly, preserves_flags)
+        );
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    let _ = x;
+}
+
 ///////////////////////
 // Density (densMAP) //
 ///////////////////////
@@ -644,25 +743,20 @@ fn fast_pow<T: ManifoldsFloat>(x: T, b: T, b_is_one: bool, b_is_half: bool) -> T
 // Optimisers //
 ////////////////
 
+/// Sampling schedule of one directed edge, owned by its source node.
+#[derive(Clone, Copy)]
+struct EdgeSchedule<T> {
+    /// Epoch at which the edge next fires.
+    next: T,
+    /// Epoch up to which negative samples have been drawn for this edge.
+    next_neg: T,
+}
+
 /// Optimise UMAP embedding using Stochastic Gradient Descent (SGD)
 ///
-/// Implements the standard UMAP optimisation procedure using SGD with:
-///
-/// - Adaptive edge sampling based on edge weights (higher weights sampled more
-///   frequently)
-/// - Negative sampling for repulsive forces
-/// - Linear learning rate decay schedule
-/// - Per-vertex RNG state for reproducible negative sampling
-///
-/// ### Algorithm
-///
-/// For each epoch:
-///
-/// 1. Process edges whose `epoch_of_next_sample` has arrived
-/// 2. Apply attractive force between connected vertices
-/// 3. Perform negative sampling: randomly select vertices and apply repulsive
-///    forces
-/// 4. Update sampling schedules
+/// Sequential version of [`optimise_embedding_sgd_parallel`]: same code, run
+/// over the nodes in order on the calling thread, so it is reproducible for a
+/// fixed seed. See there for the algorithm.
 ///
 /// ### Params
 ///
@@ -672,15 +766,17 @@ fn fast_pow<T: ManifoldsFloat>(x: T, b: T, b_is_one: bool, b_is_half: bool) -> T
 ///   pairs
 /// * `params` - Optimisation parameters (n_epochs, lr, a, b, gamma,
 ///   neg_sample_rate)
-/// * `seed` - Random seed for negative sampling reproducibility
+/// * `dens` - Optional densMAP state. When set, the density gradient is
+///   applied over the final `dens.params.frac` of the epochs.
+/// * `seed` - Random seed for negative sampling
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
 ///
-/// ### Notes
+/// ### Returns
 ///
-/// - Embedding is flattened internally for cache locality
-/// - Edge weights are normalised to determine sampling frequency
-/// - Higher edge weights result in more frequent sampling
+/// `Ok(())` on success, the embedding updated in place. `NoData` for an empty
+/// embedding, `NoGraphEdges` for a graph without edges, `TooManyVertices` if
+/// the node count does not fit `u32`.
 pub fn optimise_embedding_sgd<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
@@ -692,233 +788,31 @@ pub fn optimise_embedding_sgd<T>(
 where
     T: ManifoldsFloat,
 {
-    let n = embd.len();
-    if n == 0 {
-        return Err(ManifoldsError::NoData);
-    }
-    let n_dim = embd[0].len();
-    let verbosity = parse_verbosity_level(verbose);
-    let mut dens_scratch = dens.map(|_| UmapDensScratch::<T>::new(n));
-
-    let mut embd_flat: Vec<T> = Vec::with_capacity(n * n_dim);
-    for point in embd.iter() {
-        embd_flat.extend_from_slice(point);
-    }
-
-    let consts = OptimConstants::new(params.a, params.b, params.gamma);
-
-    let zero = T::zero();
-    let one = T::one();
-    let half = T::from(0.5).unwrap();
-    let dist_sq_threshold = T::from(1e-8).unwrap();
-    let large_epoch = T::from(1e8).unwrap();
-    let rep_eps = T::from(0.001).unwrap();
-
-    // fast paths for common b values
-    let b_is_one = (consts.b - one).abs() < T::from(1e-10).unwrap();
-    let b_is_half = (consts.b - half).abs() < T::from(1e-10).unwrap();
-
-    if n > u32::MAX as usize {
-        return Err(ManifoldsError::TooManyVertices { n });
-    }
-
-    let mut edges: Vec<(u32, u32, T)> =
-        Vec::with_capacity(graph.iter().map(|neighbours| neighbours.len()).sum());
-    for (i, neighbours) in graph.iter().enumerate() {
-        for &(j, w) in neighbours {
-            edges.push((i as u32, j as u32, w));
-        }
-    }
-
-    if edges.is_empty() {
-        return Err(ManifoldsError::NoGraphEdges);
-    }
-
-    let max_weight = edges
-        .iter()
-        .map(|(_, _, w)| *w)
-        .fold(zero, |acc, w| if w > acc { w } else { acc });
-
-    let epochs_per_sample: Vec<T> = edges
-        .iter()
-        .map(|(_, _, w)| {
-            let norm = *w / max_weight;
-            if norm > zero {
-                one / norm
-            } else {
-                large_epoch
-            }
-        })
-        .collect();
-
-    let mut epoch_of_next_sample: Vec<T> = epochs_per_sample.clone();
-
-    let neg_sample_rate_t = T::from(params.neg_sample_rate).unwrap();
-    let mut epoch_of_next_neg_sample: Vec<T> = epochs_per_sample
-        .iter()
-        .map(|eps| *eps / neg_sample_rate_t)
-        .collect();
-
-    let n_epochs_f = T::from(params.n_epochs).unwrap();
-    let lr_schedule: Vec<T> = (0..params.n_epochs)
-        .map(|e| params.lr * (one - T::from(e).unwrap() / n_epochs_f))
-        .collect();
-
-    let mut rng_states: Vec<SmallRng> = (0..n)
-        .map(|i| SmallRng::seed_from_u64(seed + i as u64))
-        .collect();
-
-    for epoch in 0..params.n_epochs {
-        let lr = lr_schedule[epoch];
-        let epoch_t = T::from(epoch).unwrap();
-
-        // pass 0: embedding local radii from the positions at the start of the
-        // epoch, as the reference does. The edge loop below mutates in place.
-        let dens_ctx = match (dens, dens_scratch.as_mut()) {
-            (Some(state), Some(scratch)) if state.is_active(epoch, params.n_epochs) => {
-                accumulate_umap_radii(
-                    graph,
-                    &embd_flat,
-                    n_dim,
-                    &consts,
-                    |x| fast_pow(x, consts.b, b_is_one, b_is_half),
-                    scratch,
-                );
-                update_density_weights(scratch, state);
-                Some(&*scratch)
-            }
-            _ => None,
-        };
-
-        for (edge_idx, &(i, j, _weight)) in edges.iter().enumerate() {
-            if epoch_of_next_sample[edge_idx] > epoch_t {
-                continue;
-            }
-
-            let (i, j) = (i as usize, j as usize);
-            let per_neg = epochs_per_sample[edge_idx] / neg_sample_rate_t;
-
-            let base_i = i * n_dim;
-            let base_j = j * n_dim;
-
-            // Compute distance squared
-            let mut dist_sq = zero;
-            for d in 0..n_dim {
-                let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
-                dist_sq += diff * diff;
-            }
-
-            // Attractive force - inlined
-            if dist_sq >= dist_sq_threshold {
-                // C++ trick: compute d^(2b) once, then divide by d^2 to get d^(2b-2)
-                // This avoids computing powf twice
-                let dist_sq_b = fast_pow(dist_sq, consts.b, b_is_one, b_is_half);
-                let denom = one + consts.a * dist_sq_b;
-                let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
-
-                // densMAP. This edge list is directed, so each undirected edge
-                // is visited from both sides and both endpoints move on each
-                // visit - exactly the reference's layout, hence no extra
-                // factor here (unlike the CSR-based parallel variant).
-                let two_cor = match dens_ctx {
-                    Some(scratch) => {
-                        let cor = density_edge_coeff(
-                            i, j, _weight, dist_sq, dist_sq_b, denom, &consts, scratch,
-                        );
-                        T::from(2.0).unwrap() * cor
-                    }
-                    None => zero,
-                };
-
-                for d in 0..n_dim {
-                    let delta = embd_flat[base_j + d] - embd_flat[base_i + d];
-                    let mut grad_d = (grad_coeff * delta)
-                        .max(-consts.clip_val)
-                        .min(consts.clip_val);
-
-                    if dens_ctx.is_some() {
-                        grad_d += (two_cor * -delta)
-                            .max(-consts.clip_val)
-                            .min(consts.clip_val);
-                    }
-
-                    embd_flat[base_i + d] += grad_d * lr;
-                    embd_flat[base_j + d] -= grad_d * lr;
-                }
-            }
-
-            epoch_of_next_sample[edge_idx] += epochs_per_sample[edge_idx];
-
-            // Negative sampling
-            let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx]) / per_neg)
-                .floor()
-                .to_usize()
-                .unwrap_or(0);
-
-            for _ in 0..n_neg_samples {
-                let k = rng_states[i].random_range(0..n);
-                if k == i {
-                    continue;
-                }
-
-                let base_k = k * n_dim;
-
-                let mut dist_sq = zero;
-                for d in 0..n_dim {
-                    let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
-                    dist_sq += diff * diff;
-                }
-
-                // Repulsive force - inlined
-                let dist_sq_safe = dist_sq + rep_eps;
-                let dist_sq_b = fast_pow(dist_sq_safe, consts.b, b_is_one, b_is_half);
-                let denom = dist_sq_safe * (one + consts.a * dist_sq_b);
-                let grad_coeff = (consts.two_gamma_b / denom)
-                    .max(-consts.clip_val)
-                    .min(consts.clip_val);
-
-                for d in 0..n_dim {
-                    let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
-                    let grad_d = grad_coeff * delta;
-                    embd_flat[base_i + d] += grad_d * lr;
-                }
-            }
-
-            epoch_of_next_neg_sample[edge_idx] += T::from(n_neg_samples).unwrap() * per_neg;
-        }
-
-        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
-            println!("  Epoch {}/{}", epoch + 1, params.n_epochs);
-        }
-    }
-
-    for (i, point) in embd.iter_mut().enumerate() {
-        let base = i * n_dim;
-        point.copy_from_slice(&embd_flat[base..base + n_dim]);
-    }
-
-    Ok(())
-}
-
-/// Sampling schedule of one directed edge, owned by its source node.
-#[derive(Clone, Copy)]
-struct EdgeSchedule<T> {
-    /// Epoch at which the edge next fires.
-    next: T,
-    /// Epoch up to which negative samples have been drawn for this edge.
-    next_neg: T,
+    sgd_impl(embd, graph, params, dens, seed, verbose, false)
 }
 
 /// Optimise UMAP embedding using lock-free parallel SGD (hogwild)
 ///
-/// Same schedule, gradients, clipping and learning-rate decay as
-/// [`optimise_embedding_sgd`], but parallel over source nodes with Rayon. Each
-/// node owns its outgoing edges, their schedules and its RNG, so those need no
-/// synchronisation. The embedding is shared and written without locks: the
-/// source node's coordinates are held locally for the whole row and written
-/// back once, the neighbour's are written per edge. Concurrent writes to the
-/// same point can overwrite each other, the usual hogwild trade, which the
-/// sparse UMAP objective tolerates.
+/// The umap-learn schedule: every directed edge fires at a rate proportional
+/// to its weight, moves both endpoints together, and draws its share of
+/// negative samples to push the source away from. Learning rate decays
+/// linearly.
+///
+/// Runs parallel over source nodes with Rayon. Each node owns its outgoing
+/// edges, their schedules and its RNG, so those need no synchronisation. The
+/// embedding is shared and written without locks: the source node's
+/// coordinates are held locally for the whole row and written back once, the
+/// neighbour's are written per edge. Concurrent writes to the same point can
+/// overwrite each other, the usual hogwild trade, which the sparse UMAP
+/// objective tolerates.
+///
+/// Two departures from umap-learn, both for speed:
+///
+/// - An edge's negative samples are all evaluated against the same source
+///   position and applied as one summed step, instead of moving the source
+///   after each. This breaks the serial dependency between samples, so their
+///   loads and arithmetic overlap.
+/// - `x^b` comes from a lookup table ([`SplitPowLut`]) rather than `powf`.
 ///
 /// With one Rayon thread the result is identical to [`optimise_embedding_sgd`].
 /// With more, it is not reproducible run to run for a fixed seed: the RNG
@@ -959,6 +853,37 @@ pub fn optimise_embedding_sgd_parallel<T>(
 where
     T: ManifoldsFloat,
 {
+    sgd_impl(embd, graph, params, dens, seed, verbose, true)
+}
+
+/// Shared body of the sequential and the hogwild SGD optimisers.
+///
+/// ### Params
+///
+/// * `embd` - Initial embedding coordinates (modified in place)
+/// * `graph` - Adjacency list, `graph[i]` holding `(neighbour, weight)`
+/// * `params` - Optimisation parameters
+/// * `dens` - Optional densMAP state
+/// * `seed` - Random seed for negative sampling
+/// * `verbose` - Verbosity level
+/// * `parallel` - Walk the nodes with Rayon (hogwild) or in order on the
+///   calling thread
+///
+/// ### Returns
+///
+/// See [`optimise_embedding_sgd_parallel`].
+fn sgd_impl<T>(
+    embd: &mut [Vec<T>],
+    graph: &[Vec<(usize, T)>],
+    params: &UmapOptimParams<T>,
+    dens: Option<&DensState<T>>,
+    seed: u64,
+    verbose: usize,
+    parallel: bool,
+) -> Result<(), ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
     let n = embd.len();
     if n == 0 {
         return Err(ManifoldsError::NoData);
@@ -970,17 +895,14 @@ where
     let verbosity = parse_verbosity_level(verbose);
 
     let consts = OptimConstants::new(params.a, params.b, params.gamma);
+    let pow_lut = SplitPowLut::new(consts.b);
 
     let zero = T::zero();
     let one = T::one();
     let two = T::from(2.0).unwrap();
-    let half = T::from(0.5).unwrap();
     let dist_sq_threshold = T::from(GRAD_DIST_SQ_THRESHOLD).unwrap();
     let large_epoch = T::from(1e8).unwrap();
     let rep_eps = T::from(GRAD_REP_EPS).unwrap();
-
-    let b_is_one = (consts.b - one).abs() < T::from(1e-10).unwrap();
-    let b_is_half = (consts.b - half).abs() < T::from(1e-10).unwrap();
 
     // directed edges grouped by source node, as in `graph`
     let n_edges: usize = graph.iter().map(|row| row.len()).sum();
@@ -1055,8 +977,8 @@ where
         let lr = params.lr * (one - T::from(epoch).unwrap() / n_epochs_f);
         let epoch_t = T::from(epoch).unwrap();
 
-        // densMAP radii from a snapshot at the start of the epoch, as in the
-        // sequential SGD
+        // densMAP radii from a snapshot at the start of the epoch, as the
+        // reference does
         let dens_ctx = match (dens, dens_scratch.as_mut()) {
             (Some(state), Some(scratch)) if state.is_active(epoch, params.n_epochs) => {
                 dens_snapshot
@@ -1068,7 +990,7 @@ where
                     &dens_snapshot,
                     n_dim,
                     &consts,
-                    |x| fast_pow(x, consts.b, b_is_one, b_is_half),
+                    |x| pow_lut.get(x),
                     scratch,
                 );
                 update_density_weights(scratch, state);
@@ -1077,130 +999,161 @@ where
             _ => None,
         };
 
-        node_schedules
-            .par_iter_mut()
-            .zip(rng_states.par_iter_mut())
-            .enumerate()
-            .for_each_init(
-                || vec![zero; 2 * n_dim],
-                |buf, (i, (sched, rng))| {
-                    let (y_i, y_other) = buf.split_at_mut(n_dim);
-                    let base_i = i * n_dim;
-                    let row_start = row_ptr[i];
-                    let mut moved = false;
+        // scratch: `buf` holds y_i, the other endpoint and the summed
+        // repulsive gradient, `negs` the current edge's negative samples
+        let new_scratch = || (vec![zero; 3 * n_dim], Vec::<usize>::new());
+
+        let update_node = |(buf, negs): &mut (Vec<T>, Vec<usize>),
+                           i: usize,
+                           sched: &mut [EdgeSchedule<T>],
+                           rng: &mut SmallRng| {
+            let (y_i, rest) = buf.split_at_mut(n_dim);
+            let (y_other, rep_grad) = rest.split_at_mut(n_dim);
+            let base_i = i * n_dim;
+            let row_start = row_ptr[i];
+            let mut moved = false;
+
+            for d in 0..n_dim {
+                y_i[d] = T::load_relaxed(&embd_shared[base_i + d]);
+            }
+
+            for (e, st) in sched.iter_mut().enumerate() {
+                if st.next > epoch_t {
+                    continue;
+                }
+                moved = true;
+
+                let edge_idx = row_start + e;
+                let j = targets[edge_idx] as usize;
+                let base_j = j * n_dim;
+                let per_neg = epochs_per_sample[edge_idx] / neg_sample_rate_t;
+
+                let mut dist_sq = zero;
+                for d in 0..n_dim {
+                    y_other[d] = T::load_relaxed(&embd_shared[base_j + d]);
+                    let diff = y_i[d] - y_other[d];
+                    dist_sq += diff * diff;
+                }
+
+                // attractive
+                if dist_sq >= dist_sq_threshold {
+                    let dist_sq_b = pow_lut.get(dist_sq);
+                    let denom = one + consts.a * dist_sq_b;
+                    let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
+
+                    // the edge list is directed, so each undirected edge is
+                    // visited from both sides and both endpoints move on each
+                    // visit, exactly the reference's layout: no extra factor
+                    // here, unlike the CSR-based parallel Adam
+                    let two_cor = match dens_ctx {
+                        Some(scratch) => {
+                            two * density_edge_coeff(
+                                i,
+                                j,
+                                weights[edge_idx],
+                                dist_sq,
+                                dist_sq_b,
+                                denom,
+                                &consts,
+                                scratch,
+                            )
+                        }
+                        None => zero,
+                    };
 
                     for d in 0..n_dim {
-                        y_i[d] = T::load_relaxed(&embd_shared[base_i + d]);
-                    }
+                        let delta = y_other[d] - y_i[d];
+                        let mut grad_d = (grad_coeff * delta)
+                            .max(-consts.clip_val)
+                            .min(consts.clip_val);
 
-                    for (e, st) in sched.iter_mut().enumerate() {
-                        if st.next > epoch_t {
-                            continue;
-                        }
-                        moved = true;
-
-                        let edge_idx = row_start + e;
-                        let j = targets[edge_idx] as usize;
-                        let base_j = j * n_dim;
-                        let per_neg = epochs_per_sample[edge_idx] / neg_sample_rate_t;
-
-                        let mut dist_sq = zero;
-                        for d in 0..n_dim {
-                            y_other[d] = T::load_relaxed(&embd_shared[base_j + d]);
-                            let diff = y_i[d] - y_other[d];
-                            dist_sq += diff * diff;
-                        }
-
-                        // attractive
-                        if dist_sq >= dist_sq_threshold {
-                            let dist_sq_b = fast_pow(dist_sq, consts.b, b_is_one, b_is_half);
-                            let denom = one + consts.a * dist_sq_b;
-                            let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
-
-                            // directed edge list, so no extra factor; see the
-                            // sequential SGD
-                            let two_cor = match dens_ctx {
-                                Some(scratch) => {
-                                    two * density_edge_coeff(
-                                        i,
-                                        j,
-                                        weights[edge_idx],
-                                        dist_sq,
-                                        dist_sq_b,
-                                        denom,
-                                        &consts,
-                                        scratch,
-                                    )
-                                }
-                                None => zero,
-                            };
-
-                            for d in 0..n_dim {
-                                let delta = y_other[d] - y_i[d];
-                                let mut grad_d = (grad_coeff * delta)
-                                    .max(-consts.clip_val)
-                                    .min(consts.clip_val);
-
-                                if dens_ctx.is_some() {
-                                    grad_d += (two_cor * -delta)
-                                        .max(-consts.clip_val)
-                                        .min(consts.clip_val);
-                                }
-
-                                y_i[d] += grad_d * lr;
-                                T::store_relaxed(
-                                    &embd_shared[base_j + d],
-                                    y_other[d] - grad_d * lr,
-                                );
-                            }
-                        }
-
-                        st.next += epochs_per_sample[edge_idx];
-
-                        // repulsive, via negative sampling
-                        let n_neg_samples = ((epoch_t - st.next_neg) / per_neg)
-                            .floor()
-                            .to_usize()
-                            .unwrap_or(0);
-
-                        for _ in 0..n_neg_samples {
-                            let k = rng.random_range(0..n);
-                            if k == i {
-                                continue;
-                            }
-                            let base_k = k * n_dim;
-
-                            let mut dist_sq = zero;
-                            for d in 0..n_dim {
-                                y_other[d] = T::load_relaxed(&embd_shared[base_k + d]);
-                                let diff = y_i[d] - y_other[d];
-                                dist_sq += diff * diff;
-                            }
-
-                            let dist_sq_safe = dist_sq + rep_eps;
-                            let dist_sq_b = fast_pow(dist_sq_safe, consts.b, b_is_one, b_is_half);
-                            let denom = dist_sq_safe * (one + consts.a * dist_sq_b);
-                            let grad_coeff = (consts.two_gamma_b / denom)
+                        if dens_ctx.is_some() {
+                            grad_d += (two_cor * -delta)
                                 .max(-consts.clip_val)
                                 .min(consts.clip_val);
-
-                            for d in 0..n_dim {
-                                y_i[d] += grad_coeff * (y_i[d] - y_other[d]) * lr;
-                            }
                         }
 
-                        st.next_neg += T::from(n_neg_samples).unwrap() * per_neg;
+                        y_i[d] += grad_d * lr;
+                        T::store_relaxed(&embd_shared[base_j + d], y_other[d] - grad_d * lr);
+                    }
+                }
+
+                st.next += epochs_per_sample[edge_idx];
+
+                // repulsive, via negative sampling. Draw and prefetch all
+                // samples first, then evaluate them against the same y_i so
+                // they are independent of each other.
+                let n_neg_samples = ((epoch_t - st.next_neg) / per_neg)
+                    .floor()
+                    .to_usize()
+                    .unwrap_or(0);
+
+                negs.clear();
+                for _ in 0..n_neg_samples {
+                    let k = rng.random_range(0..n);
+                    prefetch_read(&embd_shared[k * n_dim]);
+                    negs.push(k);
+                }
+
+                rep_grad.fill(zero);
+                for &k in negs.iter() {
+                    if k == i {
+                        continue;
+                    }
+                    let base_k = k * n_dim;
+
+                    let mut dist_sq = zero;
+                    for d in 0..n_dim {
+                        y_other[d] = T::load_relaxed(&embd_shared[base_k + d]);
+                        let diff = y_i[d] - y_other[d];
+                        dist_sq += diff * diff;
                     }
 
-                    // skip the write-back when nothing fired, so a stale copy
-                    // never clobbers updates other threads made to this point
-                    if moved {
-                        for d in 0..n_dim {
-                            T::store_relaxed(&embd_shared[base_i + d], y_i[d]);
-                        }
+                    let dist_sq_safe = dist_sq + rep_eps;
+                    let dist_sq_b = pow_lut.get(dist_sq_safe);
+                    let denom = dist_sq_safe * (one + consts.a * dist_sq_b);
+                    let grad_coeff = (consts.two_gamma_b / denom)
+                        .max(-consts.clip_val)
+                        .min(consts.clip_val);
+
+                    for d in 0..n_dim {
+                        rep_grad[d] += grad_coeff * (y_i[d] - y_other[d]);
                     }
-                },
-            );
+                }
+                for d in 0..n_dim {
+                    y_i[d] += rep_grad[d] * lr;
+                }
+
+                st.next_neg += T::from(n_neg_samples).unwrap() * per_neg;
+            }
+
+            // skip the write-back when nothing fired, so a stale copy never
+            // clobbers updates other threads made to this point
+            if moved {
+                for d in 0..n_dim {
+                    T::store_relaxed(&embd_shared[base_i + d], y_i[d]);
+                }
+            }
+        };
+
+        if parallel {
+            node_schedules
+                .par_iter_mut()
+                .zip(rng_states.par_iter_mut())
+                .enumerate()
+                .for_each_init(new_scratch, |scratch, (i, (sched, rng))| {
+                    update_node(scratch, i, sched, rng)
+                });
+        } else {
+            let mut scratch = new_scratch();
+            for (i, (sched, rng)) in node_schedules
+                .iter_mut()
+                .zip(rng_states.iter_mut())
+                .enumerate()
+            {
+                update_node(&mut scratch, i, sched, rng);
+            }
+        }
 
         if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!("  Epoch {}/{}", epoch + 1, params.n_epochs);
