@@ -2628,7 +2628,7 @@ pub struct PhateParams<T> {
     /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
     /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"`, or `"balltree"`.
     /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
-    /// Defaults to `"nndescent"`.
+    /// Defaults to `"ivf"`.
     pub ann_type: String,
     /// Nearest neighbour search parameters to use
     pub nn_params: NearestNeighbourParams<T>,
@@ -2652,7 +2652,7 @@ where
         Self {
             n_dim: 2,
             k: 5,
-            ann_type: "nndescent".to_string(),
+            ann_type: "ivf".to_string(),
             nn_params: NearestNeighbourParams::default(),
             diffusion_params: PhateDiffusionParams::default(),
             mds_method: "sgd_dense".to_string(),
