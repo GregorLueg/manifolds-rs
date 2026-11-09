@@ -54,8 +54,8 @@ mf.umap(adata, device="gpu")
 mf.tsne(adata, device="gpu", approx="fft_3k_gpu")
 ```
 
-`device="gpu"` swaps in `UMAPGpu` / `TSNEGpu`, float32 throughout. See
-[GPU](gpu.md) for what runs on the device.
+`device="gpu"` swaps in `UMAPGpu` / `TSNEGpu`. See [GPU](gpu.md) for what runs on
+the device and in which precision.
 
 ## What gets written
 
@@ -74,14 +74,17 @@ fits them from `min_dist` and `spread` and does not hand them back.
 
 ## Everything else
 
-Any other constructor argument of the estimator goes through as a keyword:
+Other constructor arguments of the estimator go through as keywords:
 
 ```python
 mf.umap(adata, n_epochs=200, init="pca", optim_params=mf.UmapOptim(gamma=1.5))
-mf.tsne(adata, learning_rate=500.0, ann="hnsw", metric="cosine")
+mf.tsne(adata, learning_rate=500.0)
 ```
 
-Unknown names raise, same as the estimator constructors.
+Unknown names raise, same as the estimator constructors. The neighbour graph
+comes from `adata`, which sets two limits: `n_neighbors` is taken from the graph
+and raises `TypeError` if you pass it, and `ann` and `metric` are accepted but do
+nothing, since the search never runs.
 
 ## Benchmark
 
@@ -104,6 +107,7 @@ means the clusters sit further apart than they are wide.
 
 Mean ± sd over the three repeats. Run on an Apple M1 Max (10 cores), scanpy
 1.11.5. Defaults on both sides, with two things worth knowing: scanpy runs UMAP
-for 200 epochs above 10,000 cells where `mf.umap` runs 500, and `sc.tl.tsne`
+for 200 epochs above 10,000 cells where `mf.umap` runs 500 with its default Adam
+optimiser (the SGD optimisers drop to 200 there too), and `sc.tl.tsne`
 was given `n_jobs=10` since its default is single-threaded. One synthetic
 dataset on one machine; measure on your own data before relying on it.

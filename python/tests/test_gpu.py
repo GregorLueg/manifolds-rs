@@ -177,3 +177,17 @@ def test_gpu_knn_with_cpu_fft_optimiser(
 def test_fft_3k_gpu_is_refused_on_the_cpu(X: np.ndarray) -> None:
     with pytest.raises(ValueError, match="approx"):
         mf.TSNE(n_epochs=20, approx="fft_3k_gpu").fit_transform(X)
+
+
+def test_phate_gpu_runs_and_casts_to_float32(X: np.ndarray) -> None:
+    embedding = mf.PHATEGpu(
+        n_landmarks=100, diffusion_params=mf.PhateDiffusion(n_svd=20)
+    ).fit_transform(X)
+    assert embedding.shape == (X.shape[0], 2)
+    assert embedding.dtype == np.float32
+    assert np.isfinite(embedding).all()
+
+
+def test_phate_gpu_refuses_cpu_backend_names(X32: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="ann"):
+        mf.PHATEGpu(ann="hnsw").fit_transform(X32)

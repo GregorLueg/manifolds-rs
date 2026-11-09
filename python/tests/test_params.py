@@ -137,7 +137,47 @@ def test_phate_decay_none_selects_the_binary_kernel(X: np.ndarray) -> None:
 
 
 def test_pacmap_range_none_differs_from_the_default(X: np.ndarray) -> None:
-    """Same shape of question for PaCMAP's initialisation range."""
+    """Same shape of question for PaCMAP's initialisation range. Off PCA, `None`
+    hands the scale to the initialisation's own default."""
+    ranged = mf.PaCMAP(n_epochs=20, seed=5, init="spectral", range_=0.01).fit_transform(
+        X
+    )
+    unranged = mf.PaCMAP(
+        n_epochs=20, seed=5, init="spectral", range_=None
+    ).fit_transform(X)
+    assert not np.array_equal(ranged, unranged)
+
+
+def test_pacmap_pca_range_none_is_the_reference_scale(X: np.ndarray) -> None:
+    """PCA's own default is the reference's 0.01, so there `None` is the default.
+    A different scale must still move the result, or this could not fail."""
     ranged = mf.PaCMAP(n_epochs=20, seed=5, range_=0.01).fit_transform(X)
     unranged = mf.PaCMAP(n_epochs=20, seed=5, range_=None).fit_transform(X)
-    assert not np.array_equal(ranged, unranged)
+    rescaled = mf.PaCMAP(n_epochs=20, seed=5, range_=0.05).fit_transform(X)
+    assert np.array_equal(ranged, unranged)
+    assert not np.array_equal(ranged, rescaled)
+
+
+##########
+# Epochs #
+##########
+
+
+def _umap_epochs(est: mf.UMAP, n_samples: int) -> int | None:
+    return (est._params(n_samples)["optim_params"] or {}).get("n_epochs")
+
+
+@pytest.mark.parametrize("cls", [mf.UMAP, mf.DensMAP])
+@pytest.mark.parametrize("optimiser", ["sgd", "sgd_parallel"])
+def test_sgd_drops_to_200_epochs_above_10k(cls: type[mf.UMAP], optimiser: str) -> None:
+    est = cls(optimiser=optimiser)
+    assert _umap_epochs(est, 10_000) is None
+    assert _umap_epochs(est, 10_001) == 200
+
+
+def test_adam_keeps_the_crate_default_at_any_size() -> None:
+    assert _umap_epochs(mf.UMAP(), 1_000_000) is None
+
+
+def test_explicit_epochs_beat_the_size_rule() -> None:
+    assert _umap_epochs(mf.UMAP(optimiser="sgd", n_epochs=500), 1_000_000) == 500

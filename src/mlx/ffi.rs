@@ -389,6 +389,8 @@ const MLX_FFT_NORM_BACKWARD: c_int = 0;
 
 unsafe extern "C" {
     fn mlx_multiply(res: *mut mlx_array, a: mlx_array, b: mlx_array, s: mlx_stream) -> c_int;
+    fn mlx_matmul(res: *mut mlx_array, a: mlx_array, b: mlx_array, s: mlx_stream) -> c_int;
+    fn mlx_transpose(res: *mut mlx_array, a: mlx_array, s: mlx_stream) -> c_int;
     fn mlx_fft_rfft2(
         res: *mut mlx_array,
         a: mlx_array,
@@ -448,6 +450,37 @@ impl Array {
     pub fn multiply(&self, b: &Array, s: &Stream) -> Result<Array, ManifoldsError> {
         op_into("mlx_multiply", |out| unsafe {
             mlx_multiply(out, self.raw, b.raw, s.raw)
+        })
+    }
+
+    /// Matrix product `self @ b`.
+    ///
+    /// ### Params
+    ///
+    /// * `b` - Right operand
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The (lazy) result
+    pub fn matmul(&self, b: &Array, s: &Stream) -> Result<Array, ManifoldsError> {
+        op_into("mlx_matmul", |out| unsafe {
+            mlx_matmul(out, self.raw, b.raw, s.raw)
+        })
+    }
+
+    /// Transpose, a lazy view until evaluated.
+    ///
+    /// ### Params
+    ///
+    /// * `s` - Stream to run on
+    ///
+    /// ### Returns
+    ///
+    /// The (lazy) result
+    pub fn transpose(&self, s: &Stream) -> Result<Array, ManifoldsError> {
+        op_into("mlx_transpose", |out| unsafe {
+            mlx_transpose(out, self.raw, s.raw)
         })
     }
 

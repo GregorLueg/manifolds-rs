@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from typing import Any
 
+from beartype import beartype
+
 from . import _manifolds
 
 ###########
@@ -48,27 +50,40 @@ ANN_GPU: frozenset[str] = frozenset(
         "ivf",
         "nndescent",
     }
-)
+) | (frozenset({"exhaustive_mlx", "ivf_mlx", "nndescent_mlx"}) if _MLX else frozenset())
 
 #: Distance metrics, from `ann_search_rs::utils::dist::parse_ann_dist`. Note
 #: ``"euclidean"`` and ``"l2"`` are the same metric, as are ``"manhattan"`` and
 #: ``"l1"``. Distances reaching a caller are true distances in every case.
 METRICS: frozenset[str] = frozenset({"euclidean", "l2", "cosine", "manhattan", "l1"})
 
-#: Embedding initialisations, from `parse_initilisation`.
+#: As `METRICS`, for PHATE: the potential distances have no Manhattan path.
+PHATE_METRICS: frozenset[str] = METRICS - {"manhattan", "l1"}
+
+#: Embedding initialisations, from `parse_initialisation`.
 INITS: frozenset[str] = frozenset({"spectral", "pca", "random"})
 
-#: The GPU UMAP optimiser. `"adam_gpu"` keeps the update on the device; the CPU
-#: names still work and pull the embedding back each epoch.
+#: GPU UMAP optimisers, from `parse_umap_optimiser_gpu`. `"adam_gpu"` keeps the
+#: update on the device; the CPU names still work and pull the embedding back each
+#: epoch.
 UMAP_OPTIMISERS_GPU: frozenset[str] = frozenset(
-    {"adam", "sgd", "adam_parallel", "adam_gpu"}
-)
+    {"adam", "sgd", "sgd_parallel", "adam_parallel", "adam_gpu"}
+) | (frozenset({"adam_mlx"}) if _MLX else frozenset())
 
-#: UMAP optimisers, from `parse_umap_optimiser`. `"adam_mlx"` is CPU `umap` only;
-#: `umap_gpu` does not parse it.
-UMAP_OPTIMISERS: frozenset[str] = frozenset({"adam", "sgd", "adam_parallel"}) | (
-    frozenset({"adam_mlx"}) if _MLX else frozenset()
-)
+#: UMAP optimisers, from `parse_umap_optimiser`.
+UMAP_OPTIMISERS: frozenset[str] = frozenset(
+    {"adam", "sgd", "sgd_parallel", "adam_parallel"}
+) | (frozenset({"adam_mlx"}) if _MLX else frozenset())
+
+#: The SGD optimisers, which drop to `SGD_EPOCHS_LARGE` epochs on large data.
+SGD_OPTIMISERS: frozenset[str] = frozenset({"sgd", "sgd_parallel"})
+
+#: Above this many samples `n_epochs=None` gives the SGD optimisers
+#: `SGD_EPOCHS_LARGE` epochs instead of the crate's 500, as umap-learn does.
+SGD_SMALL_N: int = 10_000
+
+#: Epochs for the SGD optimisers above `SGD_SMALL_N` samples.
+SGD_EPOCHS_LARGE: int = 200
 
 #: PaCMAP optimisers, from `parse_pacmap_optimiser`.
 PACMAP_OPTIMISERS: frozenset[str] = frozenset({"adam", "adam_parallel"})
@@ -78,6 +93,12 @@ MDS_METHODS: frozenset[str] = frozenset({"sgd_dense", "dense", "classic"})
 
 #: Landmark selection, from `parse_landmark_method`.
 LANDMARK_METHODS: frozenset[str] = frozenset({"random", "spectral", "density"})
+
+#: As `LANDMARK_METHODS`, for PHATE: ``"spectral_mlx"`` runs the SVD and the
+#: k-means of the spectral selection on MLX. Diffusion maps have no such path.
+PHATE_LANDMARK_METHODS: frozenset[str] = LANDMARK_METHODS | (
+    frozenset({"spectral_mlx"}) if _MLX else frozenset()
+)
 
 #: Graph symmetrisation, from `parse_phate_symmetrisation`.
 SYMMETRIES: frozenset[str] = frozenset(
@@ -251,8 +272,8 @@ class PacmapOptim:
     """PaCMAP optimiser knobs beyond the epochs and learning rate.
 
     The three phases are what PaCMAP does instead of early exaggeration: the
-    mid-near weight starts high, decays to zero across phase 2, and phase 3 is
-    near pairs and repulsion alone.
+    mid-near weight starts high, decays across phase 1, holds low through phase 2,
+    and phase 3 is near pairs and repulsion alone.
 
     Attributes:
         beta1: Adam first-moment decay.
@@ -312,17 +333,14 @@ class DensParams:
 
 @dataclass(frozen=True)
 class PhateDiffusion:
-    """PHATE diffusion operator knobs beyond decay, gamma and t.
+    """PHATE diffusion operator knobs beyond decay, gamma, t and the landmarks.
 
     Attributes:
         bandwidth_scale: Multiplier on the adaptive kernel bandwidth.
         thresh: Affinities below this are zeroed, which is what keeps the
             operator sparse.
         graph_symmetry: ``"add"``, ``"multiply"``, ``"mnn"`` or ``"none"``.
-        n_landmarks: Landmarks to diffuse on instead of the full graph. Worth
-            setting above roughly 50k points.
-        landmark_method: ``"spectral"``, ``"random"`` or ``"density"``.
-        n_svd: Components for spectral landmark selection.
+        n_svd: Singular vectors for spectral landmark selection.
         t_max: Largest diffusion time the VNE knee search will consider. Ignored
             when `t` is pinned.
     """
@@ -330,8 +348,6 @@ class PhateDiffusion:
     bandwidth_scale: float | None = None
     thresh: float | None = None
     graph_symmetry: str | None = None
-    n_landmarks: int | None = None
-    landmark_method: str | None = None
     n_svd: int | None = None
     t_max: int | None = None
 
@@ -341,6 +357,7 @@ class PhateDiffusion:
 #############
 
 
+@beartype
 def group_to_dict(group: Any | None) -> dict[str, Any]:
     """Flatten a parameter group into the keys the core reads.
 
@@ -361,6 +378,25 @@ def group_to_dict(group: Any | None) -> dict[str, Any]:
     }
 
 
+@beartype
+def umap_epochs(n_epochs: int | None, optimiser: str, n_samples: int) -> int | None:
+    """Resolve the UMAP epoch count.
+
+    Args:
+        n_epochs: What the caller passed. Anything but ``None`` wins.
+        optimiser: The optimiser name.
+        n_samples: Rows of the data being embedded.
+
+    Returns:
+        `SGD_EPOCHS_LARGE` for an SGD optimiser above `SGD_SMALL_N` samples,
+        otherwise `n_epochs`; ``None`` leaves the crate default of 500.
+    """
+    if n_epochs is None and optimiser in SGD_OPTIMISERS and n_samples > SGD_SMALL_N:
+        return SGD_EPOCHS_LARGE
+    return n_epochs
+
+
+@beartype
 def merge(group: Any | None, **overrides: Any) -> dict[str, Any] | None:
     """Flatten a group and fold in the estimator's own arguments.
 

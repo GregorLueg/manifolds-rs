@@ -22,7 +22,7 @@ from typing import Any, ClassVar
 import numpy as np
 from beartype import beartype
 
-from ._validate import check_knn, check_matrix, check_reference
+from ._validate import check_knn, check_matrix, check_reference, check_verbose
 
 
 class NotFittedError(ValueError, AttributeError):
@@ -43,11 +43,11 @@ class BaseEmbedding:
 
     #: The `_manifolds` function this estimator drives.
     _FN: ClassVar[Callable[..., Any]]
-    #: Element type to force on `fit`, or ``None`` to keep the caller's. The GPU
-    #: estimators pin float32: WGSL has no float64.
-    _FORCE_DTYPE: ClassVar[np.dtype | None] = None
+    #: Element type `fit` runs in, or ``None`` to keep the caller's. The GPU
+    #: estimators pin float32.
+    _BASE_DTYPE: ClassVar[np.dtype | None] = None
     #: Extra keyword arguments passed straight through to the core, beyond the
-    #: parameter payload. Only t-SNE uses it, for `approx`.
+    #: parameter payload. The t-SNE family and ForceAtlas2 use it, for `approx`.
     _EXTRA: ClassVar[tuple[str, ...]] = ()
 
     # Every subclass takes these two in its `__init__`. Annotated but not
@@ -68,8 +68,13 @@ class BaseEmbedding:
     # Subclass #
     ############
 
-    def _params(self) -> dict[str, Any]:
-        """The parameter payload for this algorithm."""
+    def _params(self, n_samples: int) -> dict[str, Any]:
+        """The parameter payload for this algorithm.
+
+        Args:
+            n_samples: Rows of the data being embedded, for defaults that
+                depend on it.
+        """
         raise NotImplementedError
 
     ##########
@@ -97,8 +102,12 @@ class BaseEmbedding:
         """
         return {name: getattr(self, name) for name in self._param_names()}
 
+    @beartype
     def set_params(self, **params: Any) -> BaseEmbedding:
         """Set constructor parameters, discarding any fitted embedding.
+
+        Args:
+            **params: Constructor arguments to replace, by name.
 
         Returns:
             self.
@@ -121,6 +130,7 @@ class BaseEmbedding:
     # Fit #
     #######
 
+    @beartype
     def fit(
         self,
         X: Any,
@@ -134,8 +144,9 @@ class BaseEmbedding:
         Args:
             X: Array-like of shape ``(n_samples, n_features)``. float32 and
                 float64 are used as-is; other numeric types are promoted to
-                float64. The element type picks the precision the whole
-                pipeline runs in.
+                float64. The element type picks the precision the pipeline runs
+                in, apart from the neighbour search, which is float32 on every
+                backend bar ``"exhaustive"``.
             y: Ignored, present for scikit-learn pipeline compatibility.
             knn_indices: Optional ``(n_samples, k)`` precomputed neighbour
                 indices, excluding self. Skips the neighbour search, which on
@@ -148,9 +159,12 @@ class BaseEmbedding:
             self.
 
         Raises:
-            ValueError: If only one of the two kNN arrays was given.
+            TypeError: If `X` or the kNN arrays do not hold numbers.
+            ValueError: If `X` or the kNN arrays have the wrong shape or hold
+                non-finite values, if only one of the two kNN arrays was given,
+                or if `verbose` is not 0, 1 or 2.
         """
-        arr = check_matrix(X, dtype=self._FORCE_DTYPE)
+        arr = check_matrix(np.asarray(X), dtype=self._BASE_DTYPE)
 
         if (knn_indices is None) != (knn_distances is None):
             raise ValueError("knn_indices and knn_distances must be given together")
@@ -166,15 +180,16 @@ class BaseEmbedding:
             )
         self._embedding = type(self)._FN(
             arr,
-            self._params(),
+            self._params(arr.shape[0]),
             seed=self.seed,
-            verbose=self.verbose,
+            verbose=check_verbose(self.verbose),
             **extra,
             **knn,
         )
         self.n_samples_fit_, self.n_features_in_ = arr.shape
         return self
 
+    @beartype
     def fit_transform(
         self,
         X: Any,
@@ -192,12 +207,13 @@ class BaseEmbedding:
             knn_distances: Distances matching `knn_indices`.
 
         Returns:
-            The embedding, ``(n_samples, n_components)``, in the same float type
-            as the input.
+            The embedding, ``(n_samples, n_components)``, in the float type the
+            pipeline ran in. See `fit`.
         """
         self.fit(X, y, knn_indices=knn_indices, knn_distances=knn_distances)
         return self.embedding_
 
+    @beartype
     def transform(self, X: Any) -> np.ndarray:
         """Not available: none of these algorithms projects new points.
 
@@ -240,6 +256,7 @@ class ReferenceEmbedding(BaseEmbedding):
     scikit-learn.
     """
 
+    @beartype
     def fit(
         self,
         X: Any,
@@ -275,6 +292,7 @@ class ReferenceEmbedding(BaseEmbedding):
             self._reference = None
         return self
 
+    @beartype
     def fit_transform(
         self,
         X: Any,

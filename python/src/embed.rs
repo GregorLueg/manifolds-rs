@@ -278,8 +278,8 @@ pub fn phate<'py>(
 /// * `params` - Parameters, as built by the Python layer. See
 ///   [`crate::params::pacmap`].
 /// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices. Must hold
-///   at least `mn_candidate_end` neighbours, since the mid-near window indexes
-///   into it.
+///   at least `n_near` neighbours and should hold `n_near + 50`, as the internal
+///   search does.
 /// * `knn_distances` - Optional `(n, k)` distances, same dtype as `x`.
 /// * `seed` - Fixes the initialisation and the pair sampling.
 /// * `verbose` - `0` silent, `1` normal, `2` detailed.

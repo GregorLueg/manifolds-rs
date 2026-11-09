@@ -1,7 +1,7 @@
 //! Module containing functions to initialise embeddings. This ranges from
 //! random initialisation, PCA-based initialisation and spectral initialisation.
 
-use faer::MatRef;
+use faer::{Mat, MatRef};
 use rand::{
     rngs::StdRng,
     {Rng, SeedableRng},
@@ -50,7 +50,7 @@ const SPECTRAL_LANCZOS_TOL: f64 = 1e-6;
 /// blocks (a component with no spectral gap below the trivial eigenvalue)
 /// never converge and would otherwise burn every cycle on eigenvectors that
 /// carry no layout information anyway. The result after the budget is still
-/// a usable initialisation. Tuned on synthetic graphs only.
+/// a usable initialisation.
 const SPECTRAL_LANCZOS_MAX_RESTARTS: usize = 4;
 
 /// Lanczos parameters for the spectral initialisation.
@@ -95,11 +95,12 @@ pub enum EmbdInit<T> {
 ///
 /// * `s` - String that defines the initialisation method
 /// * `randomised` - Shall randomised SVD be used when initialising via PCA
+/// * `range` - Optional range of the initialisation
 ///
 /// ### Returns
 ///
 /// The Option of a EmbdInit
-pub fn parse_initilisation<T>(s: &str, randomised: bool, range: Option<T>) -> Option<EmbdInit<T>>
+pub fn parse_initialisation<T>(s: &str, randomised: bool, range: Option<T>) -> Option<EmbdInit<T>>
 where
     T: ManifoldsFloat,
 {
@@ -972,17 +973,18 @@ where
 /// Random initialisation fallback
 ///
 /// Provides random uniform initialisation matching Python UMAP behaviour.
-/// Uses uniform distribution in [-10, 10] range, NOT Gaussian near origin.
+/// Uses a uniform distribution, NOT Gaussian near origin.
 ///
 /// ### Params
 ///
 /// * `n_samples` - Number of samples to initialise
 /// * `n_comp` - Dimensionality of the embedding
 /// * `seed` - Random seed
+/// * `range` - Half-width of the distribution. Defaults to [`RANDOM_RANGE`].
 ///
 /// ### Returns
 ///
-/// Random embedding coordinates uniformly distributed in [-10, 10] range
+/// Random embedding coordinates uniformly distributed in [-`range`, `range`]
 pub fn random_layout<T>(n_samples: usize, n_comp: usize, seed: u64, range: Option<T>) -> Vec<Vec<T>>
 where
     T: ManifoldsFloat,
@@ -1013,6 +1015,10 @@ where
 /// Component ratios are preserved, which is what a global reference embedding
 /// (DREAMS) needs; [`pca_layout`] rescales each component on top of this.
 ///
+/// Centring and the SVD always run in `f64`, whatever `T` is: the `f32` SVD
+/// returns garbage at large sample counts, collapsing the scores onto a few
+/// rows.
+///
 /// ### Params
 ///
 /// * `data` - Input data matrix (samples × features)
@@ -1031,14 +1037,14 @@ pub fn pca_scores<T>(
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
-    StandardNormal: Distribution<T>,
 {
     let (n_samples, n_features) = (data.nrows(), data.ncols());
 
     // Centre the data
-    let mut centred = data.to_owned();
+    let mut centred =
+        Mat::<f64>::from_fn(n_samples, n_features, |i, j| data[(i, j)].to_f64().unwrap());
     for j in 0..n_features {
-        let mean = (0..n_samples).map(|i| data[(i, j)]).sum::<T>() / T::from(n_samples).unwrap();
+        let mean = centred.col(j).iter().sum::<f64>() / n_samples as f64;
         for i in 0..n_samples {
             centred[(i, j)] -= mean;
         }
@@ -1062,7 +1068,7 @@ where
     Ok((0..n_samples)
         .map(|i| {
             (0..n_comp)
-                .map(|c| svd_result.u[(i, c)] * svd_result.s[c])
+                .map(|c| T::from_f64(svd_result.u[(i, c)] * svd_result.s[c]).unwrap())
                 .collect()
         })
         .collect())
@@ -1093,7 +1099,6 @@ pub fn pca_layout<T>(
 ) -> Result<Vec<Vec<T>>, ManifoldsError>
 where
     T: ManifoldsFloat,
-    StandardNormal: Distribution<T>,
 {
     let target_std = range.unwrap_or(T::from_f64(PCA_RANGE).unwrap());
     let mut embedding = pca_scores(data, n_comp, randomised, seed)?;
@@ -1133,11 +1138,12 @@ where
 ///
 /// ### Params
 ///
-/// * `init_method` - Initialization strategy to use
+/// * `init_method` - Initialisation strategy to use
 /// * `n_comp` - Target embedding dimensionality (typically 2-3)
 /// * `seed` - Random seed for reproducibility
 /// * `graph` - Fuzzy simplicial set graph (required for spectral init)
-/// * `data` - Original input data (required for PCA init)
+/// * `data` - Original input data. PCA projects it, random reads its sample count
+///   and spectral uses it for the meta-layout of disconnected components.
 ///
 /// ### Returns
 ///
@@ -1146,9 +1152,12 @@ where
 ///
 /// ### Notes
 ///
-/// * **Spectral**: Uses graph Laplacian eigenvectors, scaled to [-10, 10]
-/// * **PCA**: Projects onto principal components, scaled to `std_dev = 1e-4`
-/// * **Random**: Gaussian random values in [-10, 10] range
+/// * **Spectral**: Uses graph Laplacian eigenvectors, scaled to `range`,
+///   [`SPECTRAL_RANGE`] by default
+/// * **PCA**: Projects onto principal components, each scaled to a standard
+///   deviation of `range`, [`PCA_RANGE`] by default
+/// * **Random**: Uniform random values in [-`range`, `range`], [`RANDOM_RANGE`] by
+///   default
 pub fn initialise_embedding<T>(
     init_method: &EmbdInit<T>,
     n_comp: usize,
@@ -1187,50 +1196,50 @@ mod test_init {
     fn test_parse_initialisation() {
         // spectral
         assert!(matches!(
-            parse_initilisation::<f32>("spectral", false, None),
+            parse_initialisation::<f32>("spectral", false, None),
             Some(EmbdInit::SpectralInit { range: None })
         ));
         assert!(matches!(
-            parse_initilisation::<f32>("SPECTRAL", false, None),
+            parse_initialisation::<f32>("SPECTRAL", false, None),
             Some(EmbdInit::SpectralInit { range: None })
         ));
         assert!(matches!(
-            parse_initilisation::<f32>("spectral", false, Some(0.01)),
+            parse_initialisation::<f32>("spectral", false, Some(0.01)),
             Some(EmbdInit::SpectralInit { range: Some(0.01) })
         ));
         // random
         assert!(matches!(
-            parse_initilisation::<f32>("random", false, None),
+            parse_initialisation::<f32>("random", false, None),
             Some(EmbdInit::RandomInit { range: None })
         ));
         assert!(matches!(
-            parse_initilisation::<f32>("random", false, Some(0.01)),
+            parse_initialisation::<f32>("random", false, Some(0.01)),
             Some(EmbdInit::RandomInit { range: Some(0.01) })
         ));
         //
         assert!(matches!(
-            parse_initilisation::<f32>("pca", false, None),
+            parse_initialisation::<f32>("pca", false, None),
             Some(EmbdInit::PcaInit {
                 randomised: false,
                 range: None
             })
         ));
         assert!(matches!(
-            parse_initilisation::<f32>("pca", true, None),
+            parse_initialisation::<f32>("pca", true, None),
             Some(EmbdInit::PcaInit {
                 randomised: true,
                 range: None
             })
         ));
         assert!(matches!(
-            parse_initilisation::<f32>("pca", false, Some(0.01)),
+            parse_initialisation::<f32>("pca", false, Some(0.01)),
             Some(EmbdInit::PcaInit {
                 randomised: false,
                 range: Some(0.01)
             })
         ));
         // error
-        assert!(parse_initilisation::<f32>("invalid", false, None).is_none());
+        assert!(parse_initialisation::<f32>("invalid", false, None).is_none());
     }
 
     #[test]

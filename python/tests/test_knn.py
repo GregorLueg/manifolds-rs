@@ -114,3 +114,31 @@ def test_unknown_backend_is_refused(X: np.ndarray) -> None:
 def test_empty_input_is_refused() -> None:
     with pytest.raises(ValueError, match="non-empty"):
         mf.knn_graph(np.zeros((0, 5)), k=10)
+
+
+@pytest.mark.parametrize("cls", [mf.UMAP, mf.DensMAP, mf.ForceAtlas2])
+def test_wider_graph_is_cut_to_n_neighbors(
+    cls: type, X: np.ndarray, knn: tuple[np.ndarray, np.ndarray]
+) -> None:
+    ind, dist = knn
+    wide = cls(n_neighbors=15, n_epochs=20).fit_transform(
+        X, knn_indices=ind, knn_distances=dist
+    )
+    cut = cls(n_neighbors=15, n_epochs=20).fit_transform(
+        X, knn_indices=ind[:, :15], knn_distances=dist[:, :15]
+    )
+    other = cls(n_neighbors=30, n_epochs=20).fit_transform(
+        X, knn_indices=ind, knn_distances=dist
+    )
+    assert np.array_equal(wide, cut)
+    assert not np.array_equal(wide, other)
+
+
+def test_phate_refuses_manhattan(X: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="metric"):
+        mf.PHATE(metric="manhattan").fit_transform(X)
+
+
+def test_landmark_diffusion_maps_refuse_manhattan(X: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="manhattan"):
+        mf.DiffusionMaps(metric="manhattan", n_landmarks=50).fit_transform(X)

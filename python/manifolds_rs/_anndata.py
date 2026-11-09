@@ -179,7 +179,7 @@ def umap(
         device: ``"cpu"`` for `manifolds_rs.UMAP`, ``"gpu"`` for
             `manifolds_rs.UMAPGpu`.
         seed: Fixes the initialisation and the negative sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         copy: Return a modified copy instead of writing into `adata`.
         **kwargs: Any other constructor argument of the chosen estimator, e.g.
             ``n_epochs``, ``init``, ``optim_params``. Unknown names raise.
@@ -262,7 +262,7 @@ def tsne(
         device: ``"cpu"`` for `manifolds_rs.TSNE`, ``"gpu"`` for
             `manifolds_rs.TSNEGpu`.
         seed: Fixes the initialisation.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         copy: Return a modified copy instead of writing into `adata`.
         **kwargs: Any other constructor argument of the chosen estimator, e.g.
             ``n_epochs``, ``learning_rate``, ``ann``, ``metric``. Unknown names

@@ -25,7 +25,7 @@ const W_NB_PHASE2: f64 = 3.0;
 const W_MN_PHASE2_END: f64 = 3.0;
 /// Weight for nearest points during the third phase (local structure refinement)
 const W_NB_PHASE3: f64 = 1.0;
-/// Starting point of the medium-near points that decreases then during second phase
+/// Starting weight of the mid-near pairs, decaying across the first phase
 const W_MN_PHASE1: f64 = 1000.0;
 /// Weight for the far-away points (kept constant during training)
 const W_FP: f64 = 1.0;
@@ -47,7 +47,7 @@ pub enum PacMapOptimiser {
 /// * `s` - String defining the optimiser. Choice of `"adam"` or
 ///   `"adam_parallel"`
 ///
-/// ### Return
+/// ### Returns
 ///
 /// Option of Optimiser
 pub fn parse_pacmap_optimiser(s: &str) -> Option<PacMapOptimiser> {
@@ -77,7 +77,7 @@ pub struct PacmapOptimParams<T> {
     pub eps: T,
     /// End of phase 1 (mid-near dominant). Default 100.
     pub phase1_end: usize,
-    /// End of phase 2 (mid-near weight decays to 0). Default 200.
+    /// End of phase 2 (mid-near weight held low). Default 200.
     pub phase2_end: usize,
 }
 
@@ -93,20 +93,20 @@ where
     ///
     /// * `n_epochs` - Total number of optimisation epochs across all three
     ///   phases. Default `450` (100 + 100 + 250).
-    /// * `lr` - Adam learning rate. Default `0.01`. PaCMAP is less sensitive to
-    ///   this than UMAP since all pairs are processed every epoch.
+    /// * `lr` - Adam learning rate. Default `1.0`. Adam moves a coordinate by
+    ///   about `lr` per epoch at most, so `lr * n_epochs` caps the layout's size.
+    ///   Much smaller values leave it compressed, and more so as `n` grows.
     /// * `beta1` - Adam first moment decay. Default `0.9` (standard Adam).
     ///   Unlike UMAP's uwot implementation which uses `0.5`, PaCMAP processes
     ///   all pairs every epoch so standard momentum is appropriate.
     /// * `beta2` - Adam second moment decay. Default `0.999` (standard Adam).
     /// * `eps` - Adam numerical stability constant. Default `1e-7`.
     /// * `phase1_end` - Epoch at which phase 1 ends and phase 2 begins. During
-    ///   phase 1 mid-near weight is dominant (`w_mn=1000`), anchoring global
+    ///   phase 1 the mid-near weight decays from `1000` to `3`, anchoring global
     ///   structure. Default `100`.
     /// * `phase2_end` - Epoch at which phase 2 ends and phase 3 begins. During
-    ///   phase 2 the mid-near weight decays linearly to zero and near pair
-    ///   weight.
-    ///   increases (`w_nb=3`). Default `200`.
+    ///   phase 2 the mid-near weight holds at `3` and the near pair weight rises
+    ///   to `3`. Default `200`.
     ///
     /// ### Returns
     ///
@@ -123,7 +123,7 @@ where
     ) -> Self {
         Self {
             n_epochs: n_epochs.unwrap_or(PHASE3_END),
-            lr: lr.unwrap_or(T::from_f64(0.01).unwrap()),
+            lr: lr.unwrap_or(T::from_f64(1.0).unwrap()),
             beta1: beta1.unwrap_or(T::from_f64(BETA1).unwrap()),
             beta2: beta2.unwrap_or(T::from_f64(BETA2).unwrap()),
             eps: eps.unwrap_or(T::from_f64(EPS).unwrap()),
@@ -153,12 +153,9 @@ where
 ///
 /// | Phase | Epochs                    | w_near | w_mid_near      | w_further |
 /// |-------|---------------------------|--------|-----------------|-----------|
-/// | 1     | `0..phase1_end`           | 1.0    | 1000.0          | 1.0       |
-/// | 2     | `phase1_end..phase2_end`  | 3.0    | 1000.0 → 0.0    | 1.0       |
+/// | 1     | `0..phase1_end`           | 2.0    | 1000.0 → 3.0    | 1.0       |
+/// | 2     | `phase1_end..phase2_end`  | 3.0    | 3.0             | 1.0       |
 /// | 3     | `phase2_end..`            | 1.0    | 0.0             | 1.0       |
-///
-/// In phase 2 `w_mid_near` decays linearly from `1000.0` to `0.0`, handing
-/// off global structure responsibility to the near pairs.
 ///
 /// ### Params
 ///
@@ -193,9 +190,10 @@ where
 
 /// Attractive loss gradient coefficient for near and mid-near pairs.
 ///
-/// Loss: d / (d + c)  where c=10 for near, c=10000 for mid-near
-/// dLoss/dd = c / (d + c)^2
-/// Gradient w.r.t. embedding coord: (dLoss/dd) * (y_i - y_j) / d  [chain rule]
+/// Loss: d' / (d' + c) with d' = 1 + d and d the squared embedding distance, where
+/// c=10 for near and c=10000 for mid-near.
+/// dLoss/dd = c / (d' + c)^2
+/// Gradient w.r.t. embedding coord: 2 * (dLoss/dd) * (y_i - y_j)  [chain rule]
 ///
 /// ### Params
 ///
@@ -294,14 +292,12 @@ where
         let (w_nb, w_mn, w_fp) = phase_weights::<T>(epoch, params.phase1_end, params.phase2_end);
 
         // Bias-corrected Adam scale
-        let sqrt_b2t1 = (T::one() - beta2t).sqrt();
-        let ad_scale = params.lr * sqrt_b2t1 / (T::one() - beta1t);
-        let epsc = sqrt_b2t1 * params.eps;
+        let ad_scale = params.lr * (T::one() - beta2t).sqrt() / (T::one() - beta1t);
 
         // Accumulate per-node gradients
         let mut grads = vec![T::zero(); n * n_dim];
 
-        // Near pairs — attractive
+        // Near pairs: attractive
         for &(i, j) in &pairs.near {
             let base_i = i * n_dim;
             let base_j = j * n_dim;
@@ -321,7 +317,7 @@ where
             }
         }
 
-        // Mid-near pairs — attractive (skipped in phase 3 when w_mn == 0)
+        // Mid-near pairs: attractive (skipped in phase 3 when w_mn == 0)
         if w_mn > T::zero() {
             for &(i, j) in &pairs.mid_near {
                 let base_i = i * n_dim;
@@ -343,7 +339,7 @@ where
             }
         }
 
-        // Further pairs — repulsive
+        // Further pairs: repulsive
         for &(i, j) in &pairs.further {
             let base_i = i * n_dim;
             let base_j = j * n_dim;
@@ -371,14 +367,14 @@ where
             let v_old = v[idx];
             m[idx] = m_old + one_minus_b1 * (g - m_old);
             v[idx] = v_old + one_minus_b2 * (g * g - v_old);
-            embd_flat[idx] += ad_scale * m[idx] / (v[idx].sqrt() + epsc);
+            embd_flat[idx] += ad_scale * m[idx] / (v[idx].sqrt() + params.eps);
         }
 
         beta1t *= params.beta1;
         beta2t *= params.beta2;
 
         if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
-            println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
+            println!("  Epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
 
@@ -458,9 +454,7 @@ where
         let (w_nb, w_mn, w_fp) = phase_weights::<T>(epoch, params.phase1_end, params.phase2_end);
 
         // bias-corrected Adam scale
-        let sqrt_b2t1 = (T::one() - beta2t).sqrt();
-        let ad_scale = params.lr * sqrt_b2t1 / (T::one() - beta1t);
-        let epsc = sqrt_b2t1 * params.eps;
+        let ad_scale = params.lr * (T::one() - beta2t).sqrt() / (T::one() - beta1t);
 
         let grads: Vec<T> = (0..n)
             .into_par_iter()
@@ -520,14 +514,14 @@ where
             let v_old = v[idx];
             m[idx] = m_old + one_minus_b1 * (g - m_old);
             v[idx] = v_old + one_minus_b2 * (g * g - v_old);
-            embd_flat[idx] += ad_scale * m[idx] / (v[idx].sqrt() + epsc);
+            embd_flat[idx] += ad_scale * m[idx] / (v[idx].sqrt() + params.eps);
         }
 
         beta1t = beta1t * params.beta1;
         beta2t = beta2t * params.beta2;
 
         if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
-            println!(" Completed epoch {}/{}", epoch + 1, params.n_epochs);
+            println!("  Epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
 

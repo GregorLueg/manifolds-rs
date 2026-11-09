@@ -555,7 +555,7 @@ fn phate_integration_11_precomputed_knn() {
     let nn_params = NearestNeighbourParams::default();
     let (knn_indices, knn_dist) = run_ann_search(
         data.as_ref(),
-        k,
+        manifolds_rs::utils::diffusions::phate_search_width(k),
         PhateParams::<f64>::default().ann_type,
         &nn_params,
         42,
@@ -702,4 +702,23 @@ fn phate_integration_13_bandwidth_scale_effect() {
         mean_wide
     );
     println!("Wider bandwidth produces higher affinities as expected");
+}
+
+/// Manhattan comes back as an error, before the kNN search runs
+#[test]
+fn phate_integration_manhattan_is_an_error() {
+    let (data, _) = create_diagnostic_data(30, 10, 42);
+    let params = PhateParams::<f64> {
+        nn_params: NearestNeighbourParams {
+            dist_metric: "manhattan".to_string(),
+            ..NearestNeighbourParams::default()
+        },
+        ..PhateParams::default()
+    };
+
+    let res = phate(data.as_ref(), None, params, 42, 0);
+    assert!(matches!(
+        res,
+        Err(ManifoldsError::MetricNotSupported { .. })
+    ));
 }

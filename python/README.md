@@ -8,7 +8,7 @@ Dimensionality reduction for single-cell and computational biology. The
 [Rust crate](https://github.com/GregorLueg/manifolds-rs) does the work; this is
 a scikit-learn shaped layer over it.
 
-Nine algorithms on the CPU, four of them with GPU variants where the neighbour
+Nine algorithms on the CPU, five of them with GPU variants where the neighbour
 search and the optimiser (UMAP's Adam, t-SNE's three-kernel FFT) move to the
 device. Scanpy-style `mf.umap(adata)` and `mf.tsne(adata)` for `AnnData`. No
 CUDA runtime to install: the GPU backend is wgpu, so it runs on Metal, Vulkan or
@@ -58,7 +58,7 @@ requirement.
 | `PaCMAP` | Global structure without leaning on a spectral init. Three pair types. |
 | `DiffusionMaps` | The spectral embedding PHATE is built on. |
 | `ForceAtlas2` | Gephi's force-directed layout on the kNN graph, as in scanpy's `draw_graph`. 2-D only. |
-| `UMAPGpu`, `DensMAPGpu`, `TSNEGpu`, `DREAMSGpu` | The same, with the neighbour search on the device. `TSNEGpu(approx="fft_3k_gpu")` runs the optimiser there too. |
+| `UMAPGpu`, `DensMAPGpu`, `TSNEGpu`, `DREAMSGpu`, `PHATEGpu` | The same, with the neighbour search on the device. `TSNEGpu(approx="fft_3k_gpu")` runs the optimiser there too, `PHATEGpu` the spectral landmark selection. |
 
 ## AnnData
 
@@ -122,10 +122,11 @@ operation the old ones went through.
 
 ## Precision
 
-float32 in, float32 throughout; float64 in, float64 throughout. Anything else is
-promoted to float64 rather than narrowed, so precision is never lost by
-accident. The GPU estimators are the exception and cast to float32, because WGSL
-has no float64 and the alternative is a failure inside a kernel.
+float32 in, float32 out; float64 in, float64 out. Anything else is promoted to
+float64 rather than narrowed. The neighbour search runs in float32 on every backend
+bar `"exhaustive"`, while PCA initialisation and the randomised SVDs always run in
+float64. The GPU estimators cast to float32 at any size, and the `"fft_3k_mlx"`
+t-SNE optimiser runs in float32 on the device.
 
 ## What is not in the wheel
 

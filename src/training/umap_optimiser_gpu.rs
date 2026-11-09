@@ -32,6 +32,8 @@ pub enum UmapOptimiserGpu {
     Adam,
     /// Stochastic gradient descent
     Sgd,
+    /// Lock-free parallel stochastic gradient descent (hogwild)
+    SgdParallel,
     /// Adam on MLX (Apple Silicon); the kNN graph stays on wgpu
     #[cfg(mlx_available)]
     AdamMlx,
@@ -41,11 +43,11 @@ pub enum UmapOptimiserGpu {
 ///
 /// ### Params
 ///
-/// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`
-///   `"sgd"` or `"adam_gpu"` (default), plus `"adam_mlx"` when the MLX
-///   backend is compiled in.
+/// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`,
+///   `"sgd"`, `"sgd_parallel"` or `"adam_gpu"` (default), plus `"adam_mlx"`
+///   when the MLX backend is compiled in.
 ///
-/// ### Return
+/// ### Returns
 ///
 /// Option of Optimiser
 pub fn parse_umap_optimiser_gpu(s: &str) -> Option<UmapOptimiserGpu> {
@@ -53,6 +55,7 @@ pub fn parse_umap_optimiser_gpu(s: &str) -> Option<UmapOptimiserGpu> {
         "adam_gpu" => Some(UmapOptimiserGpu::AdamGpu),
         "adam" => Some(UmapOptimiserGpu::Adam),
         "sgd" => Some(UmapOptimiserGpu::Sgd),
+        "sgd_parallel" => Some(UmapOptimiserGpu::SgdParallel),
         "adam_parallel" => Some(UmapOptimiserGpu::AdamParallel),
         #[cfg(mlx_available)]
         "adam_mlx" => Some(UmapOptimiserGpu::AdamMlx),
@@ -72,8 +75,8 @@ pub fn parse_umap_optimiser_gpu(s: &str) -> Option<UmapOptimiserGpu> {
 /// gather latency. It uses no shared memory, so a wider cube costs nothing in
 /// occupancy. The value is a trade-off against the tail waste of a partially
 /// filled cube, and worth retuning per backend.
-// Picked from local benchmarking only: 256 beat both the 32 `ann-search-rs`
-// exports and the wider 512/1024. Treat as indicative, not measured broadly.
+// Differs from the 32 `ann-search-rs` exports on purpose, see above. Not tuned
+// across backends.
 const UMAP_WORKGROUP_SIZE: u32 = 256;
 
 /////////////////////
@@ -727,7 +730,7 @@ pub fn umap_grad_accum<F: Float + CubeElement + LaunchArg>(
 /// Adam moment update and embedding step. One thread per `(node, dim)` pair.
 ///
 /// Skips nodes with `has_update == 0` (no active edge this epoch),
-/// preserving their `m`, `v` and embedding state — matching the CPU
+/// preserving their `m`, `v` and embedding state, matching the CPU
 /// `optimise_embedding_adam_parallel`.
 ///
 /// ### Params
@@ -1171,13 +1174,6 @@ where
     // seed fits in u32; upper bits of a u64 seed are unused.
     let seed_u32 = seed as u32;
 
-    if verbosity.normal_verbosity() {
-        println!(
-            "Running {} epochs with GPU-accelerated Adam optimisation.",
-            params.n_epochs
-        );
-    }
-
     for epoch in 0..params.n_epochs {
         // densMAP: refresh the radii and weights before the gradient pass, so
         // both read the same embedding
@@ -1192,15 +1188,13 @@ where
         launch_adam_update(&client, &state, params, epoch);
         launch_edge_schedule_update(&client, &state, epoch);
 
-        if verbosity.normal_verbosity() && ((epoch + 1) % 100 == 0 || epoch + 1 == params.n_epochs)
-        {
-            let gn = launch_grad_norm(&client, &state)?;
-            println!(
-                " Epoch {} / {}: grad norm {:.2?}",
-                epoch + 1,
-                params.n_epochs,
-                gn
-            );
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
+            print!("  Epoch {}/{}", epoch + 1, params.n_epochs);
+            // the norm needs a readback, so it stays out of the normal path
+            if verbosity.detailed_verbosity() {
+                print!(" | grad norm = {:.2?}", launch_grad_norm(&client, &state)?);
+            }
+            println!();
         }
     }
 

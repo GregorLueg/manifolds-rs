@@ -13,6 +13,7 @@ use crate::utils::density::*;
 use crate::utils::dreams::*;
 #[cfg(any(feature = "fft_tsne", feature = "gpu", mlx_available))]
 use crate::utils::math::choose_grid_size;
+use crate::utils::prefetch::prefetch_read;
 
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::*;
@@ -53,10 +54,15 @@ const TSNE_LR_DIVISOR: f64 = 12.0;
 /// Floor for the default learning rate heuristic.
 const TSNE_LR_FLOOR: f64 = 200.0;
 
+/// How many neighbours ahead the den-SNE attraction sweep prefetches.
+///
+/// Neighbour positions are scattered gathers that miss once the embedding
+/// outgrows the caches. Only the radii sweep uses it: the plain attractive
+/// sweeps were not faster with it.
+const ATTR_PREFETCH_DIST: usize = 8;
+
 /// Default tree depth cap for the quick-and-dirty Barnes-Hut optimiser.
-/// qdtsne recommends 7 to 10. At n = 20k (five clusters, f32) depth 7 halved
-/// the full pipeline time against plain Barnes-Hut (4.0 s vs 8.0 s) with
-/// kNN15 preservation 0.223 vs 0.231.
+/// qdtsne recommends 7 to 10. A shallower tree is faster and coarser.
 pub(crate) const TSNE_QD_MAX_DEPTH: usize = 7;
 
 /// Cap on `n_boxes` per dimension in the FFT grid. FFT cost per epoch is
@@ -83,7 +89,7 @@ pub(crate) const TSNE_FFT_GRID_MARGIN: f64 = 0.3;
 // Structures //
 ////////////////
 
-/// t-SNE specific optimization parameters
+/// t-SNE specific optimisation parameters
 #[derive(Clone, Debug)]
 pub struct TsneOptimParams<T> {
     /// Number of epochs
@@ -523,7 +529,10 @@ fn accumulate_attractive_and_radii<T>(
             let mut sum_phi = T::zero();
 
             let (nbrs, p_vals) = csr.row(i);
-            for (&j, &p_val) in nbrs.iter().zip(p_vals) {
+            for (t, (&j, &p_val)) in nbrs.iter().zip(p_vals).enumerate() {
+                if let Some(&ja) = nbrs.get(t + ATTR_PREFETCH_DIST) {
+                    prefetch_read(&pos[2 * ja as usize]);
+                }
                 let j = j as usize;
                 let dx = px - pos[2 * j];
                 let dy = py - pos[2 * j + 1];
@@ -872,10 +881,10 @@ fn optimise_bh_tsne_impl<T>(
 
         recentre_embedding(embd);
 
-        if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(
-                " Epoch {}/{} | Z = {}",
-                epoch,
+                "  Epoch {}/{} | Z = {}",
+                epoch + 1,
                 params.n_epochs,
                 (z_total.round() as i64).separate_with_underscores()
             );
@@ -1405,10 +1414,10 @@ where
 
         recentre_embedding(embd);
 
-        if verbosity.normal_verbosity() && (epoch % 50 == 0 || epoch == params.n_epochs - 1) {
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!(
-                " Epoch {}/{} | Z = {} | n_boxes = {}",
-                epoch,
+                "  Epoch {}/{} | Z = {} | n_boxes = {}",
+                epoch + 1,
                 params.n_epochs,
                 (sum_q.round() as i64).separate_with_underscores(),
                 n_boxes,

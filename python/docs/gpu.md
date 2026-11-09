@@ -1,7 +1,7 @@
 # GPU
 
-Four estimators run part of the work on the device: `UMAPGpu`, `DensMAPGpu`,
-`TSNEGpu` and `DREAMSGpu`. The backend is wgpu, so there is no CUDA runtime to install and the
+Five estimators run part of the work on the device: `UMAPGpu`, `DensMAPGpu`,
+`TSNEGpu`, `DREAMSGpu` and `PHATEGpu`. The backend is wgpu, so there is no CUDA runtime to install and the
 same wheel works on Metal, Vulkan and DX12.
 
 ```python
@@ -29,18 +29,32 @@ mf.TSNEGpu(approx="fft_3k_gpu").fit_transform(X)
 device between epochs. `"fft"` and `"fft_3k"` run the same FFT schemes on the
 CPU after a GPU neighbour search.
 
+`PHATEGpu` runs the neighbour search and, with spectral landmarks, the randomised
+SVD and the k-means of the landmark selection on the device. The diffusion time,
+the powering, the MDS and the interpolation stay on the CPU.
+
+```python
+mf.PHATEGpu(k=5, n_landmarks=4096).fit_transform(X)
+```
+
+The diffusion time PHATE picks is sensitive to the neighbour graph and to the seed
+on any backend, so a different backend can pick a different `t`. Pin `t` if you
+compare runs.
+
 Otherwise the win depends on whether the neighbour search was your bottleneck.
 On a few thousand points it will not be, and the transfers will make the GPU
 path slower than the CPU one. Past a few hundred thousand it usually is. Measure
 on your own data and hardware before switching; on Apple Silicon in particular
 the GPU rarely blows the CPU out of the water for these workloads.
 
-## float32 only
+## Precision
 
-WGSL has no float64. `fit` casts a float64 array down rather than letting it
-fail somewhere inside a kernel, and that is the only silent narrowing this
-package performs anywhere. If that matters for your data, stay on the CPU
-estimators, which run in whatever precision you hand them.
+WGSL has no float64, so the GPU estimators run in float32 at any size. `fit` casts
+your input down, float64 included, and the embedding comes back as float32. That is
+the only silent narrowing of your input in the package. If it matters for your
+data, stay on the CPU estimators, which keep your dtype.
+
+PCA initialisation still runs in float64 on the CPU and casts the result back.
 
 ## Reproducibility
 
@@ -57,8 +71,9 @@ precomputed graph makes a GPU run reproducible too.
 
 The device backends are not the CPU ones with a suffix. `"nndescent_gpu"` builds
 the kNN graph with NN-Descent on the device and is the default for `UMAPGpu`
-and `DensMAPGpu`. `TSNEGpu` and `DREAMSGpu` ask for `3 * perplexity`
-neighbours and default to `"ivf_gpu"`, which holds up better at that `k`.
+and `DensMAPGpu` and `PHATEGpu`. `TSNEGpu` and `DREAMSGpu` ask for
+`3 * perplexity` neighbours and default to `"ivf_gpu"`, which holds up better at
+that `k`.
 `"exhaustive_gpu"` is the third. Passing a CPU-only name like `"hnsw"` is an
 error rather than a silent fallback.
 
@@ -117,12 +132,16 @@ mf.UMAP(ann="nndescent_mlx", optimiser="adam_mlx").fit_transform(X)
 mf.DensMAP(optimiser="adam_mlx").fit_transform(X)
 mf.TSNE(ann="nndescent_mlx", approx="fft_3k_mlx").fit_transform(X)
 mf.DREAMS(approx="fft_3k_mlx").fit_transform(X)
+mf.PHATE(ann="nndescent_mlx", landmark_method="spectral_mlx").fit_transform(X)
 mf.knn_graph(X, k=15, ann="ivf_mlx")
 ```
 
 The neighbour backends are `"exhaustive_mlx"`, `"ivf_mlx"` and
 `"nndescent_mlx"`. `TSNEGpu` and `DREAMSGpu` take `approx="fft_3k_mlx"` as well,
-with the search on wgpu and the optimiser on MLX. den-SNE has no MLX path.
+with the search on wgpu and the optimiser on MLX. `PHATEGpu` takes
+`landmark_method="spectral_mlx"` the same way, with the search on wgpu and the
+landmark selection on MLX. den-SNE has no MLX path, and `DiffusionMaps` keeps its
+landmark selection on the CPU.
 Everything MLX runs in float32, whatever you hand it. In a build without MLX
 these names are refused with a pointer to the build flag.
 

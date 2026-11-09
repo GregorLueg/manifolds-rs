@@ -316,7 +316,7 @@ fn umap_integration_04_initialisation() {
 
     // Test each initialisation method including PCA
     for init_name in &["spectral", "random", "pca"] {
-        let init_type = parse_initilisation(init_name, false, None).unwrap();
+        let init_type = parse_initialisation(init_name, false, None).unwrap();
 
         println!("What is this: {:?}", init_type);
 
@@ -422,12 +422,15 @@ fn umap_integration_05_optimisation_quality() {
         ("spectral", "adam"),
         ("spectral", "sgd"),
         ("spectral", "adam_parallel"),
+        ("spectral", "sgd_parallel"),
         ("pca", "adam"),
         ("pca", "sgd"),
         ("pca", "adam_parallel"),
+        ("pca", "sgd_parallel"),
         ("random", "adam"),
         ("random", "sgd"),
         ("random", "adam_parallel"),
+        ("random", "sgd_parallel"),
     ];
 
     for (init, opt) in configs {
@@ -727,4 +730,38 @@ fn umap_integration_07_precomputed_knn() {
     );
 
     println!("✓ Precomputed kNN produces identical and valid embeddings");
+}
+
+/// A graph wider than `k` is cut to `k`, so `k` still means what it says
+#[test]
+fn umap_integration_precomputed_graph_truncated_to_k() {
+    let (data, _) = create_diagnostic_data(50, 10, 42);
+    let nn_params = NearestNeighbourParams::default();
+    let (ind, dist) = run_ann_search(
+        data.as_ref(),
+        40,
+        "exhaustive".to_string(),
+        &nn_params,
+        42,
+        0,
+    )
+    .unwrap();
+
+    let mut params = UmapParams::<f64>::default();
+    params.optim_params.n_epochs = 20;
+
+    let run = |k: usize, width: usize| {
+        let knn = (
+            ind.iter().map(|r| r[..width].to_vec()).collect::<Vec<_>>(),
+            dist.iter().map(|r| r[..width].to_vec()).collect::<Vec<_>>(),
+        );
+        let params = UmapParams {
+            k,
+            ..params.clone()
+        };
+        umap(data.as_ref(), Some(knn), &params, 42, 0).unwrap()
+    };
+
+    assert_eq!(run(15, 40), run(15, 15));
+    assert_ne!(run(15, 40), run(30, 40));
 }

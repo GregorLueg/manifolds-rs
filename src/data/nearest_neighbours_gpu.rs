@@ -61,7 +61,7 @@ pub struct NearestNeighbourParamsGpu<T> {
     /// NNDescent-GPU: Number of trees for the initialisation of the kNN graph
     /// prior to NNDescent.
     pub n_tree: Option<usize>,
-    /// NNDescent-GPU: Termination criterium for the NNDescent iterations
+    /// NNDescent-GPU: Termination criterion for the NNDescent iterations
     pub delta: T,
     /// NNDescent-GPU: Sampling rate for the NNDescent iterations.
     pub rho: Option<T>,
@@ -233,7 +233,7 @@ where
     let verbosity = parse_verbosity_level(verbose);
 
     let ann_search = parse_ann_search_gpu(&ann_type).unwrap_or_else(|| {
-        println!("Unrecognised GPU-accelerated approximate nearest neighbour method provided: {:?}. Default to GPU NNDescent.", ann_type);
+        eprintln!("Warning: unrecognised GPU-accelerated approximate nearest neighbour method provided: {:?}. Default to GPU NNDescent.", ann_type);
         AnnSearchGpu::default()
     });
 

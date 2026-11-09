@@ -134,6 +134,14 @@ def test_integer_input_is_promoted_not_narrowed(X: np.ndarray) -> None:
     assert mf.UMAP(n_epochs=20).fit_transform(counts).dtype == np.float64
 
 
+@pytest.mark.parametrize("cls", [mf.UMAP, mf.DensMAP])
+def test_sgd_parallel_runs(cls: type[BaseEmbedding], X: np.ndarray) -> None:
+    """Hogwild SGD is not reproducible, so only shape and finiteness."""
+    embedding = fast(cls, optimiser="sgd_parallel").fit_transform(X)
+    assert embedding.shape == (X.shape[0], 2)
+    assert np.isfinite(embedding).all()
+
+
 @pytest.mark.parametrize("cls", [mf.TSNE, mf.DensNE, mf.DREAMS])
 @pytest.mark.parametrize("approx", ["fft", "fft_3k"])
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])

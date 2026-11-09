@@ -23,7 +23,7 @@ from beartype import beartype
 
 from . import _manifolds as _core
 from ._params import ANN_CPU, METRICS, NeighbourParams, merge
-from ._validate import check_choice, check_matrix
+from ._validate import check_choice, check_matrix, check_verbose
 
 
 @beartype
@@ -41,25 +41,29 @@ def knn_graph(
 
     Args:
         X: Array-like of shape ``(n_samples, n_features)``. float32 and float64
-            are used as-is; anything else is promoted to float64.
+            are accepted; anything else is promoted to float64. Every backend
+            bar ``"exhaustive"`` searches in float32 regardless.
         k: Neighbours per point, excluding self.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
         ann: ``"exhaustive"``, ``"kmknn"``, ``"balltree"``, ``"annoy"``,
             ``"hnsw"``, ``"ivf"`` or ``"nndescent"``. ``"kmknn"`` is exact and
             holds up well into the hundreds of thousands; past that
-            ``"nndescent"`` or ``"hnsw"``.
+            ``"nndescent"`` or ``"hnsw"``. An mlx build adds
+            ``"exhaustive_mlx"``, ``"ivf_mlx"`` and ``"nndescent_mlx"``.
         nn_params: Backend-specific knobs. See `NeighbourParams`.
         seed: Fixes anything randomised in the build.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
 
     Returns:
         ``(indices, distances)``, both ``(n_samples, k)``. Indices are int64,
-        distances match the dtype of `X`. Indices first, unlike scikit-learn:
-        it is the order the estimators take them in.
+        distances come back in the dtype of `X`. Indices first, unlike scikit-learn:
+        it is the order the estimators take them in. A row an approximate
+        backend could not fill is padded with ``-1`` and ``+inf``.
 
     Raises:
-        ValueError: If `ann` or `metric` is not recognised, or `X` is empty or
-            not finite.
+        TypeError: If `X` does not hold numbers.
+        ValueError: If `ann` or `metric` is not recognised, `X` is empty or not
+            finite, or `verbose` is not 0, 1 or 2.
     """
     arr = check_matrix(X)
     group = merge(nn_params, dist_metric=check_choice(metric, METRICS, name="metric"))
@@ -69,5 +73,5 @@ def knn_graph(
         ann=check_choice(ann, ANN_CPU, name="ann"),
         nn_params=group,
         seed=seed,
-        verbose=verbose,
+        verbose=check_verbose(verbose),
     )

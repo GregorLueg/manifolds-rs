@@ -8,8 +8,7 @@
 //! Two rules hold throughout:
 //!
 //! - **A missing key means the crate's own default.** The Rust `Default` impl
-//!   stays the single source of truth for every value the Python layer does not
-//!   deliberately override, so no default is written down twice.
+//!   stays the source of truth for every value the Python layer leaves out.
 //! - **An unknown key is an error, naming the key.** A dictionary is
 //!   stringly-typed, and a silently ignored `min_dst` typo would otherwise cost
 //!   somebody an afternoon.
@@ -150,10 +149,10 @@ impl<'a, 'py> Reader<'a, 'py> {
     /// Whether a key is present at all, an explicit `None` included.
     ///
     /// Almost every field treats an absent key and an explicit `None` alike,
-    /// because `None` means "use the crate default". Two do not: PHATE's
-    /// `decay` and PaCMAP's `range` have non-`None` defaults and a `None` that
-    /// means something (a binary connectivity kernel, and no initialisation
-    /// range). Those two ask this first.
+    /// because `None` means "use the crate default". Three do not: PHATE's `decay`
+    /// and `n_landmarks` and PaCMAP's `range` have non-`None` defaults and a `None`
+    /// that means something (a binary connectivity kernel, the full operator, and
+    /// the initialisation's own default range). Those ask this first.
     ///
     /// ### Params
     ///
@@ -459,7 +458,12 @@ where
     set(&mut p.bandwidth_scale, r.float::<T>("bandwidth_scale")?);
     set(&mut p.thresh, r.float::<T>("thresh")?);
     set(&mut p.graph_symmetry, r.get::<String>("graph_symmetry")?);
-    p.n_landmarks = r.get::<usize>("n_landmarks")?.or(p.n_landmarks);
+    // As for `decay`: an explicit `None` selects the full operator.
+    let landmarks_given = r.present("n_landmarks");
+    let n_landmarks = r.get::<usize>("n_landmarks")?;
+    if landmarks_given {
+        p.n_landmarks = n_landmarks;
+    }
     set(&mut p.landmark_method, r.get::<String>("landmark_method")?);
     p.n_svd = r.get::<usize>("n_svd")?.or(p.n_svd);
     set(&mut p.gamma, r.float::<T>("gamma")?);
@@ -546,12 +550,7 @@ where
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
     nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
-    nested(
-        &mut r,
-        "umap_graph_params",
-        &mut p.umap_graph_params,
-        fill_umap_graph,
-    )?;
+    nested(&mut r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(&mut r, "optim_params", &mut p.optim_params, fill_umap_optim)?;
     r.finish()?;
     Ok(p)
@@ -663,21 +662,64 @@ where
 {
     let mut p = PhateParams::<T>::default();
     let mut r = Reader::new(d, "PhateParams");
+    phate_into(&mut r, &mut p)?;
+    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    r.finish()?;
+    Ok(p)
+}
+
+/// Read the PHATE fields shared by `phate` and `phate_gpu`.
+///
+/// ### Params
+///
+/// * `r` - Reader for the enclosing dictionary.
+/// * `p` - Parameter struct to fill.
+///
+/// ### Returns
+///
+/// `Ok(())`, or the first bad key.
+fn phate_into<T>(r: &mut Reader<'_, '_>, p: &mut PhateParams<T>) -> PyResult<()>
+where
+    T: ManifoldsFloat,
+{
     set(&mut p.n_dim, r.get::<usize>("n_dim")?);
     set(&mut p.k, r.get::<usize>("k")?);
     set(&mut p.ann_type, r.get::<String>("ann_type")?);
     set(&mut p.mds_method, r.get::<String>("mds_method")?);
     p.mds_iter = r.get::<usize>("mds_iter")?.or(p.mds_iter);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
-    nested(&mut r, "nn_params", &mut p.ann_params, fill_nn)?;
     nested(
-        &mut r,
+        r,
         "diffusion_params",
         &mut p.diffusion_params,
         fill_phate_diffusion,
-    )?;
+    )
+}
+
+/// Build the parameters of `phate_gpu` from a dictionary.
+///
+/// ### Params
+///
+/// * `d` - The full parameter dictionary sent by the Python layer.
+///
+/// ### Returns
+///
+/// The PHATE parameters and the GPU neighbour parameters, or the first bad or
+/// unknown key.
+#[cfg(feature = "gpu")]
+pub(crate) fn phate_gpu<T>(
+    d: &Bound<'_, PyDict>,
+) -> PyResult<(PhateParams<T>, NearestNeighbourParamsGpu<T>)>
+where
+    T: ManifoldsFloat,
+{
+    let mut p = PhateParams::<T>::default();
+    let mut nn = NearestNeighbourParamsGpu::<T>::default();
+    let mut r = Reader::new(d, "PhateParamsGpu");
+    phate_into(&mut r, &mut p)?;
+    nested(&mut r, "nn_params", &mut nn, fill_nn_gpu)?;
     r.finish()?;
-    Ok(p)
+    Ok((p, nn))
 }
 
 /// Build [`PacmapParams`] from a dictionary.
@@ -697,18 +739,14 @@ where
     let mut r = Reader::new(d, "PacmapParams");
     set(&mut p.n_dim, r.get::<usize>("n_dim")?);
     set(&mut p.ann_type, r.get::<String>("ann_type")?);
-    set(&mut p.optimiser_type, r.get::<String>("optimiser_type")?);
+    set(&mut p.optimiser, r.get::<String>("optimiser")?);
     set(&mut p.n_near, r.get::<usize>("n_near")?);
     set(&mut p.n_mid_near, r.get::<usize>("n_mid_near")?);
     set(&mut p.n_further, r.get::<usize>("n_further")?);
-    set(
-        &mut p.mn_candidate_start,
-        r.get::<usize>("mn_candidate_start")?,
-    );
-    set(&mut p.mn_candidate_end, r.get::<usize>("mn_candidate_end")?);
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
-    // As for PHATE's `decay`: an explicit `None` means no initialisation
-    // range, which is not the same as leaving the default of 0.01 in place.
+    // As for PHATE's `decay`: an explicit `None` hands the range to the
+    // initialisation's own default. For PCA that is 0.01 too; for the others it
+    // is not the same as leaving the default of 0.01 in place.
     let range_given = r.present("range");
     let range = r.float::<T>("range")?;
     if range_given {
@@ -751,7 +789,7 @@ where
     set(&mut p.landmark_method, r.get::<String>("landmark_method")?);
     p.n_svd = r.get::<usize>("n_svd")?.or(p.n_svd);
     p.t = read_time(&mut r, &p.t)?;
-    nested(&mut r, "nn_params", &mut p.ann_params, fill_nn)?;
+    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
     r.finish()?;
     Ok(p)
 }
@@ -775,7 +813,7 @@ where
     set(&mut p.ann_type, r.get::<String>("ann_type")?);
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
-    set(&mut p.randomised_init, r.get::<bool>("randomised_init")?);
+    set(&mut p.randomised, r.get::<bool>("randomised")?);
     nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
     nested(&mut r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(&mut r, "optim_params", &mut p.optim_params, fill_fa2_optim)?;
@@ -813,12 +851,7 @@ where
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
     nested(r, "nn_params", &mut p.nn_params, fill_nn)?;
-    nested(
-        r,
-        "umap_graph_params",
-        &mut p.umap_graph_params,
-        fill_umap_graph,
-    )?;
+    nested(r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(r, "optim_params", &mut p.optim_params, fill_umap_optim)?;
     Ok(())
 }
@@ -845,7 +878,7 @@ where
     set(&mut p.ann_type, r.get::<String>("ann_type")?);
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
-    set(&mut p.randomised_init, r.get::<bool>("randomised_init")?);
+    set(&mut p.randomised, r.get::<bool>("randomised")?);
     nested(r, "nn_params", &mut p.nn_params, fill_nn)?;
     nested(r, "optim_params", &mut p.optim_params, fill_tsne_optim)?;
     Ok(())
@@ -971,11 +1004,9 @@ where
     T: ManifoldsFloat,
 {
     let mut r = Reader::new(d, "DreamsParamsGpu");
-    let mut p = DreamsParamsGpu {
-        tsne_params: TsneParamsGpu::new_default_2d(r.float::<T>("perplexity")?),
-        ..Default::default()
-    };
-    set(&mut p.lambda, r.float::<T>("lambda")?);
+    let perplexity = r.float::<T>("perplexity")?;
+    let lambda = r.float::<T>("lambda")?;
+    let mut p = DreamsParamsGpu::new_default_2d(perplexity, lambda);
     tsne_gpu_into(&mut r, &mut p.tsne_params)?;
     r.finish()?;
     Ok(p)
@@ -1000,7 +1031,7 @@ where
     set(&mut p.ann_type, r.get::<String>("ann_type")?);
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
-    set(&mut p.randomised_init, r.get::<bool>("randomised_init")?);
+    set(&mut p.randomised, r.get::<bool>("randomised")?);
     nested(r, "nn_params", &mut p.nn_params, fill_nn_gpu)?;
     nested(r, "optim_params", &mut p.optim_params, fill_tsne_optim)?;
     Ok(())
@@ -1029,12 +1060,7 @@ where
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
     nested(r, "nn_params", &mut p.nn_params, fill_nn_gpu)?;
-    nested(
-        r,
-        "umap_graph_params",
-        &mut p.umap_graph_params,
-        fill_umap_graph,
-    )?;
+    nested(r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(r, "optim_params", &mut p.optim_params, fill_umap_optim)?;
     Ok(())
 }

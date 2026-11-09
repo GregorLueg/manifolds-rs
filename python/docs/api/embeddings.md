@@ -8,6 +8,8 @@
 
 ::: manifolds_rs.DensNE
 
+::: manifolds_rs.DREAMS
+
 ::: manifolds_rs.PHATE
 
 ::: manifolds_rs.PaCMAP

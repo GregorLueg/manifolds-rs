@@ -25,6 +25,7 @@ CASES = [
     ("DensMAP", mf.DensMAP, core.densmap),
     ("TSNE", mf.TSNE, core.tsne),
     ("DensNE", mf.DensNE, core.densne),
+    ("DREAMS", mf.DREAMS, core.dreams),
     ("PHATE", mf.PHATE, core.phate),
     ("PaCMAP", mf.PaCMAP, core.pacmap),
     ("DiffusionMaps", mf.DiffusionMaps, core.diffusion_maps),
@@ -43,6 +44,15 @@ def test_defaults_match_the_core(
     )
 
 
+def test_phate_defaults_to_landmarks_above_their_count() -> None:
+    """The landmark default only bites above 2048 points, so the fixture misses it."""
+    big, _ = mf.datasets.clustered(2200, dim=20, n_clusters=5)
+
+    landmark = mf.PHATE().fit_transform(big)
+    assert np.array_equal(landmark, core.phate(big, {}, seed=42, verbose=0))
+    assert not np.array_equal(landmark, mf.PHATE(n_landmarks=None).fit_transform(big))
+
+
 @pytest.mark.skipif(not mf.gpu_available(), reason="no GPU adapter on this machine")
 @pytest.mark.parametrize(
     ("name", "cls", "fn"),
@@ -54,6 +64,7 @@ def test_defaults_match_the_core(
             getattr(core, "densmap_gpu", None),
         ),
         ("TSNEGpu", getattr(mf, "TSNEGpu", None), getattr(core, "tsne_gpu", None)),
+        ("PHATEGpu", getattr(mf, "PHATEGpu", None), getattr(core, "phate_gpu", None)),
     ],
 )
 def test_gpu_defaults_match_the_core(
@@ -71,8 +82,7 @@ def test_gpu_defaults_match_the_core(
     part, and that half is deterministic.
 
     The cost is that this variant no longer covers the `NeighbourParamsGpu`
-    defaults, only the ones the optimiser reads. The CPU test above still
-    covers the neighbour defaults in full.
+    defaults or the GPU `ann` strings, only the ones the optimiser reads.
     """
     ind = np.ascontiguousarray(knn[0])
     dist = np.ascontiguousarray(knn[1], dtype=np.float32)

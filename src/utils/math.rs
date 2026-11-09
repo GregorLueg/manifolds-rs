@@ -1,10 +1,10 @@
 //! Math helper functions
 
 use ann_search_rs::prelude::SimdDistance;
-use faer::{Mat, MatMut, MatRef};
+use faer::{Mat, MatMut, MatRef, Side};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use rand_distr::{Distribution, Normal, StandardNormal};
+use rand_distr::{Distribution, Normal};
 use rayon::prelude::*;
 
 use crate::assert_same_len;
@@ -48,11 +48,14 @@ pub struct RandomSvdResults<T> {
     pub u: faer::Mat<T>,
     /// Matrix v of the SVD decomposition
     pub v: faer::Mat<T>,
-    /// Eigen vectors of the SVD decomposition
+    /// Singular values of the SVD decomposition
     pub s: Vec<T>,
 }
 
 /// Randomised SVD
+///
+/// Takes and returns `f64`: the `f32` factorisations in faer return garbage at
+/// large sample counts.
 ///
 /// ### Params
 ///
@@ -61,7 +64,7 @@ pub struct RandomSvdResults<T> {
 ///   vectors to compute).
 /// * `seed` - Random seed for reproducible results.
 /// * `oversampling` - Additional samples beyond the target rank to improve
-///   accuracy. Defaults to 10 if not specified.
+///   accuracy. Defaults to `rank` below a rank of 10, to 10 otherwise.
 /// * `n_power_iter` - Number of power iterations to perform for better
 ///   approximation quality. More iterations generally improve accuracy but
 ///   increase computation time. Defaults to 2 if not specified.
@@ -74,22 +77,18 @@ pub struct RandomSvdResults<T> {
 ///
 /// 1. Generate a random Gaussian matrix Ω of size n × (rank + oversampling)
 /// 2. Compute `Y = X * Ω` to capture the range of X
-/// 3. Orthogonalize Y using QR decomposition to get Q
+/// 3. Orthogonalise Y using QR decomposition to get Q
 /// 4. Apply power iterations: for each iteration, compute `Z = X^T * Q`, then
 ///    `Q = QR(X * Z)`
 /// 5. Form B = Q^T * X and compute its SVD
 /// 6. Reconstruct the final `SVD: U = Q * U_B, V = V_B, S = S_B`
-pub fn randomised_svd<T>(
-    x: MatRef<T>,
+pub fn randomised_svd(
+    x: MatRef<f64>,
     rank: usize,
     seed: usize,
     oversampling: Option<usize>,
     n_power_iter: Option<usize>,
-) -> Result<RandomSvdResults<T>, ManifoldsError>
-where
-    T: ManifoldsFloat,
-    StandardNormal: Distribution<T>,
-{
+) -> Result<RandomSvdResults<f64>, ManifoldsError> {
     let ncol = x.ncols();
     let nrow = x.nrows();
 
@@ -106,7 +105,7 @@ where
 
     // Create a random matrix
     let mut rng = StdRng::seed_from_u64(seed as u64);
-    let normal = Normal::new(T::from(0.0).unwrap(), T::from(1.0).unwrap()).unwrap();
+    let normal = Normal::new(0.0, 1.0).unwrap();
     let omega = Mat::from_fn(ncol, sample_size, |_, _| normal.sample(&mut rng));
 
     // Multiply random matrix with original and use QR composition to get
@@ -134,9 +133,37 @@ where
 // Sparse randomised SVD //
 ///////////////////////////
 
+/// Orthonormal basis of a tall matrix via Cholesky QR.
+///
+/// Forms the small Gram matrix `Y^T Y`, so most of the work is GEMM. Loses
+/// orthogonality as `cond(Y)^2 * eps`, which is fine for an intermediate basis.
+/// Falls back to Householder QR when `Y` is too close to rank deficient for the
+/// Cholesky factorisation.
+///
+/// ### Params
+///
+/// * `y` - Tall matrix, `n x k`
+///
+/// ### Returns
+///
+/// The `n x k` basis.
+fn cholesky_qr(y: &Mat<f64>) -> Mat<f64> {
+    let gram = y.transpose() * y;
+    match gram.llt(Side::Lower) {
+        Ok(llt) => {
+            let mut l_inv = Mat::<f64>::identity(y.ncols(), y.ncols());
+            llt.L().solve_lower_triangular_in_place(l_inv.as_mut());
+            y * l_inv.transpose()
+        }
+        Err(_) => y.qr().compute_thin_Q(),
+    }
+}
+
 /// Sparse randomised SVD
 ///
-/// Calculates the sparse randomised SVD.
+/// Calculates the sparse randomised SVD. Runs in and returns `f64` whatever `T`
+/// is: the `f32` factorisations in faer return garbage at large sample counts,
+/// which leaves a rank-one result.
 ///
 /// ### Params
 ///
@@ -148,16 +175,16 @@ where
 ///
 /// ### Returns
 ///
-/// The RandomSvdResults
+/// The RandomSvdResults, in `f64`
 pub fn sparse_randomised_svd<T>(
     matrix: &CompressedSparseData<T>,
     rank: usize,
     seed: u64,
     oversampling: Option<usize>,
     n_power_iter: Option<usize>,
-) -> Result<RandomSvdResults<T>, ManifoldsError>
+) -> Result<RandomSvdResults<f64>, ManifoldsError>
 where
-    T: Into<T> + ManifoldsFloat,
+    T: ManifoldsFloat,
 {
     let (n, m) = matrix.shape;
     let os = oversampling.unwrap_or(10);
@@ -187,31 +214,32 @@ where
     let data_csr = csr.data.as_slice();
     let data_csc = csc.data.as_slice();
 
-    let spmm = |sparse: &CompressedSparseData<T>, data: &[T], x_flat: &[T], y_flat: &mut [T]| {
-        let n_outer = sparse.indptr.len() - 1;
+    let spmm =
+        |sparse: &CompressedSparseData<T>, data: &[T], x_flat: &[f64], y_flat: &mut [f64]| {
+            let n_outer = sparse.indptr.len() - 1;
 
-        y_flat
-            .par_chunks_exact_mut(ncols)
-            .take(n_outer)
-            .enumerate()
-            .for_each(|(i, y_row)| {
-                y_row.fill(T::zero());
+            y_flat
+                .par_chunks_exact_mut(ncols)
+                .take(n_outer)
+                .enumerate()
+                .for_each(|(i, y_row)| {
+                    y_row.fill(0.0);
 
-                for idx in sparse.indptr[i]..sparse.indptr[i + 1] {
-                    let j = sparse.indices[idx];
-                    let a_val = data[idx];
-                    let x_row = &x_flat[j * ncols..(j + 1) * ncols];
+                    for idx in sparse.indptr[i]..sparse.indptr[i + 1] {
+                        let j = sparse.indices[idx];
+                        let a_val = data[idx].to_f64().unwrap();
+                        let x_row = &x_flat[j * ncols..(j + 1) * ncols];
 
-                    for col in 0..ncols {
-                        y_row[col] += a_val * x_row[col];
+                        for col in 0..ncols {
+                            y_row[col] += a_val * x_row[col];
+                        }
                     }
-                }
-            });
-    };
+                });
+        };
 
-    let to_row_major = |mat: MatRef<T>| -> Vec<T> {
+    let to_row_major = |mat: MatRef<f64>| -> Vec<f64> {
         let rows = mat.nrows();
-        let mut flat = vec![T::zero(); rows * ncols];
+        let mut flat = vec![0.0; rows * ncols];
         flat.par_chunks_exact_mut(ncols)
             .enumerate()
             .for_each(|(i, row_slice)| {
@@ -222,7 +250,7 @@ where
         flat
     };
 
-    let from_row_major = |flat: &[T], mut mat: MatMut<T>| {
+    let from_row_major = |flat: &[f64], mut mat: MatMut<f64>| {
         let rows = mat.nrows();
         for i in 0..rows {
             let row_slice = &flat[i * ncols..(i + 1) * ncols];
@@ -234,23 +262,26 @@ where
 
     let mut rng = StdRng::seed_from_u64(seed);
     let normal = Normal::new(0.0, 1.0).unwrap();
-    let omega = Mat::from_fn(m, sample_size, |_, _| {
-        T::from_f64(normal.sample(&mut rng)).unwrap()
-    });
+    let omega = Mat::from_fn(m, sample_size, |_, _| normal.sample(&mut rng));
 
     let mut x_flat = to_row_major(omega.as_ref());
-    let mut y_flat = vec![T::zero(); n * ncols];
-    let mut z_flat = vec![T::zero(); m * ncols];
+    let mut y_flat = vec![0.0; n * ncols];
+    let mut z_flat = vec![0.0; m * ncols];
 
     // Y = A * Omega
     spmm(csr, data_csr, &x_flat, &mut y_flat);
 
-    let mut y = Mat::<T>::zeros(n, sample_size);
+    let mut y = Mat::<f64>::zeros(n, sample_size);
     from_row_major(&y_flat, y.as_mut());
-    let mut q = y.qr().compute_thin_Q();
+    let mut q = if n_iter == 0 {
+        y.qr().compute_thin_Q()
+    } else {
+        cholesky_qr(&y)
+    };
 
-    // Power Iterations
-    for _ in 0..n_iter {
+    // Power Iterations. The intermediate bases only have to stop the columns
+    // collapsing onto the top vector, so only the last one gets a Householder QR.
+    for iter in 0..n_iter {
         // Z = A^T * Q  --> Notice we use `csc` here!
         x_flat = to_row_major(q.as_ref());
         spmm(csc, data_csc, &x_flat, &mut z_flat);
@@ -259,15 +290,19 @@ where
         spmm(csr, data_csr, &z_flat, &mut y_flat);
 
         from_row_major(&y_flat, y.as_mut());
-        q = y.qr().compute_thin_Q();
+        q = if iter + 1 == n_iter {
+            y.qr().compute_thin_Q()
+        } else {
+            cholesky_qr(&y)
+        };
     }
 
     // B_t = A^T * Q
     x_flat = to_row_major(q.as_ref());
-    let mut b_t_flat = vec![T::zero(); m * ncols];
+    let mut b_t_flat = vec![0.0; m * ncols];
     spmm(csc, data_csc, &x_flat, &mut b_t_flat);
 
-    let mut b_t = Mat::<T>::zeros(m, sample_size);
+    let mut b_t = Mat::<f64>::zeros(m, sample_size);
     from_row_major(&b_t_flat, b_t.as_mut());
 
     let b = b_t.transpose().to_owned();
@@ -275,10 +310,93 @@ where
     // Final SVD on the small B matrix
     let svd = b.thin_svd().map_err(|_| ManifoldsError::FaerSvdError)?;
     let u = (&q * svd.U()).get(.., ..rank).to_owned();
-    let s: Vec<T> = svd.S().column_vector().iter().copied().take(rank).collect();
+    let s: Vec<f64> = svd.S().column_vector().iter().copied().take(rank).collect();
     let v = svd.V().get(.., ..rank).to_owned();
 
     Ok(RandomSvdResults { u, s, v })
+}
+
+/// The sketch of [`sparse_randomised_svd`] for `n` rows, as row-major `f32`.
+///
+/// Drawn in the same order from the same generator, so a device path and the
+/// CPU path start from the same subspace for a given seed.
+///
+/// ### Params
+///
+/// * `n` - Rows of the sketch
+/// * `s` - Columns of the sketch
+/// * `seed` - Seed
+///
+/// ### Returns
+///
+/// The sketch, row-major, length `n * s`
+#[cfg(any(feature = "gpu", mlx_available))]
+pub(crate) fn sketch_row_major_f32(n: usize, s: usize, seed: u64) -> Vec<f32> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let normal = Normal::<f64>::new(0.0, 1.0).unwrap();
+    let col_major: Vec<f32> = (0..n * s).map(|_| normal.sample(&mut rng) as f32).collect();
+
+    let mut out = vec![0.0f32; n * s];
+    out.par_chunks_exact_mut(s)
+        .enumerate()
+        .for_each(|(i, row)| {
+            for (j, v) in row.iter_mut().enumerate() {
+                *v = col_major[j * n + i];
+            }
+        });
+    out
+}
+
+/// `R^-1` for `R^T R = G`, factorised on the host in `f64`.
+///
+/// ### Params
+///
+/// * `g` - Row-major Gram matrix, length `s * s`
+/// * `s` - Side length of `G`
+///
+/// ### Returns
+///
+/// Row-major upper-triangular `R^-1`, or `CholeskyQrFailed` if `G` is not
+/// positive definite
+#[cfg(any(feature = "gpu", mlx_available))]
+pub(crate) fn r_inverse_row_major(g: &[f32], s: usize) -> Result<Vec<f32>, ManifoldsError> {
+    let g = Mat::<f64>::from_fn(s, s, |i, j| g[i * s + j] as f64);
+    let llt = g
+        .llt(Side::Lower)
+        .map_err(|_| ManifoldsError::CholeskyQrFailed)?;
+    let mut l_inv = Mat::<f64>::identity(s, s);
+    llt.L().solve_lower_triangular_in_place(l_inv.as_mut());
+    // R = L^T, so R^-1 is the transpose of L^-1
+    Ok((0..s * s).map(|k| l_inv[(k % s, k / s)] as f32).collect())
+}
+
+/// Leading left singular vectors of the `Z = A Q` a device path reads back.
+///
+/// For a symmetric `A`, these are the right singular vectors of the `B = Q^T A`
+/// that [`sparse_randomised_svd`] factorises. Runs in `f64`: the `f32`
+/// factorisations in faer break at large row counts.
+///
+/// ### Params
+///
+/// * `z` - Row-major `Z`, length `n * s`
+/// * `n` - Rows of `Z`
+/// * `s` - Columns of `Z`
+/// * `rank` - Vectors to keep
+///
+/// ### Returns
+///
+/// The vectors, `n x rank`
+#[cfg(any(feature = "gpu", mlx_available))]
+pub(crate) fn right_vectors_from_sketch(
+    z: &[f32],
+    n: usize,
+    s: usize,
+    rank: usize,
+) -> Result<Mat<f64>, ManifoldsError> {
+    let svd = Mat::<f64>::from_fn(n, s, |i, j| z[i * s + j] as f64)
+        .thin_svd()
+        .map_err(|_| ManifoldsError::FaerSvdError)?;
+    Ok(svd.U().get(.., ..rank).to_owned())
 }
 
 /////////////////////////////////////
@@ -835,11 +953,11 @@ where
 ///
 /// `(eigenvalues, eigenvectors)` where `eigenvectors[i][j]` is element `i` of
 /// eigenvector `j`.
-fn ritz_to_rows(ritz: &RitzPairs, n: usize, sign: f64) -> (Vec<f32>, Vec<Vec<f32>>) {
+fn ritz_to_rows(ritz: &RitzPairs, n: usize, sign: f64) -> (Vec<f64>, Vec<Vec<f64>>) {
     let n_out = ritz.values.len();
-    let evals = ritz.values.iter().map(|&v| (sign * v) as f32).collect();
+    let evals = ritz.values.iter().map(|&v| sign * v).collect();
     let evecs = (0..n)
-        .map(|i| (0..n_out).map(|c| ritz.vectors[c * n + i] as f32).collect())
+        .map(|i| (0..n_out).map(|c| ritz.vectors[c * n + i]).collect())
         .collect();
     (evals, evecs)
 }
@@ -868,7 +986,7 @@ pub fn compute_smallest_eigenpairs_lanczos<T>(
     matrix: &CompressedSparseData<T>,
     n_components: usize,
     seed: u64,
-) -> Result<(Vec<f32>, Vec<Vec<f32>>), ManifoldsError>
+) -> Result<(Vec<f64>, Vec<Vec<f64>>), ManifoldsError>
 where
     T: ManifoldsFloat,
 {
@@ -900,7 +1018,7 @@ pub fn compute_largest_eigenpairs_lanczos<T>(
     matrix: &CompressedSparseData<T>,
     n_components: usize,
     seed: u64,
-) -> Result<(Vec<f32>, Vec<Vec<f32>>), ManifoldsError>
+) -> Result<(Vec<f64>, Vec<Vec<f64>>), ManifoldsError>
 where
     T: ManifoldsFloat,
 {
@@ -916,8 +1034,8 @@ where
 ///
 /// ### Params
 ///
-/// * `mat`: The matrix for which to calculate the von Neumann entropy.
-/// * `t_max`: The maximum number of powers to consider.
+/// * `operator` - The matrix for which to calculate the von Neumann entropy.
+/// * `t_max` - The maximum number of powers to consider.
 ///
 /// ### Returns
 ///
@@ -929,31 +1047,60 @@ pub fn landmark_von_neumann_entropy<T>(
 where
     T: ManifoldsFloat,
 {
+    Ok(von_neumann_entropy_f64(operator, t_max)?
+        .into_iter()
+        .map(|h| T::from_f64(h).unwrap())
+        .collect())
+}
+
+/// Von Neumann entropy of a matrix at each power, accumulated in `f64`.
+///
+/// The curve only moves by small amounts past the knee, and powers of the
+/// singular values underflow quickly, so `f32` would shift the knee.
+///
+/// ### Params
+///
+/// * `operator`: The matrix for which to calculate the von Neumann entropy.
+/// * `t_max`: The maximum number of powers to consider.
+///
+/// ### Returns
+///
+/// A vector of von Neumann entropies for each power.
+pub fn von_neumann_entropy_f64<T>(
+    operator: &CompressedSparseData<T>,
+    t_max: usize,
+) -> Result<Vec<f64>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
     let (n, _) = operator.shape;
 
-    let eigenvalues: Vec<T> = if n < VNE_DENSE_THRESHOLD {
-        let dense = operator.to_dense();
-        let svd = dense.thin_svd().map_err(|_| ManifoldsError::FaerSvdError)?;
-        svd.S().column_vector().iter().copied().collect()
+    let eigenvalues: Vec<f64> = if n < VNE_DENSE_THRESHOLD {
+        operator
+            .to_dense()
+            .singular_values()
+            .map_err(|_| ManifoldsError::FaerSvdError)?
+            .into_iter()
+            .map(|s| s.to_f64().unwrap())
+            .collect()
     } else {
         let rank = VNE_SPARSE_RANK.min(n.saturating_sub(1));
-        let svd = sparse_randomised_svd(operator, rank, 42, None, None)?;
-        svd.s
+        sparse_randomised_svd(operator, rank, 42, None, None)?.s
     };
 
     let mut eigenvalues_t = eigenvalues.clone();
     let mut entropy = Vec::with_capacity(t_max);
 
     for _ in 0..t_max {
-        let sum: T = eigenvalues_t.iter().copied().sum();
+        let sum: f64 = eigenvalues_t.iter().sum();
 
-        if sum <= T::zero() {
-            entropy.push(T::zero());
+        if sum <= 0.0 {
+            entropy.push(0.0);
         } else {
-            let h: T = eigenvalues_t
+            let h: f64 = eigenvalues_t
                 .iter()
                 .map(|&v| {
-                    let prob = v / sum + T::epsilon();
+                    let prob = v / sum + f64::EPSILON;
                     -prob * prob.ln()
                 })
                 .sum();
@@ -1019,6 +1166,38 @@ pub fn choose_grid_size(
 mod test_utils_math {
     use super::*;
     use approx::assert_relative_eq;
+
+    /// Largest absolute entry of `Q^T Q - I`.
+    fn orthonormality_error(q: &Mat<f64>) -> f64 {
+        let gram = q.transpose() * q;
+        let mut worst = 0.0_f64;
+        for i in 0..gram.nrows() {
+            for j in 0..gram.ncols() {
+                let target = if i == j { 1.0 } else { 0.0 };
+                worst = worst.max((gram[(i, j)] - target).abs());
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn test_cholesky_qr_gives_orthonormal_basis() {
+        let y = Mat::<f64>::from_fn(50, 4, |i, j| {
+            ((i * (j + 2) + j) as f64).sin() + (i == j) as u8 as f64
+        });
+        let q = cholesky_qr(&y);
+        assert_eq!((q.nrows(), q.ncols()), (50, 4));
+        assert!(orthonormality_error(&q) < 1e-8);
+    }
+
+    #[test]
+    fn test_cholesky_qr_falls_back_on_rank_deficient_input() {
+        // two identical columns: the Gram matrix has no Cholesky factor
+        let y = Mat::<f64>::from_fn(20, 2, |i, _| (i as f64 + 1.0).sin());
+        let q = cholesky_qr(&y);
+        assert!(q.col(0).iter().all(|v| v.is_finite()));
+        assert!(q.col(1).iter().all(|v| v.is_finite()));
+    }
 
     #[test]
     fn test_dot_product() {
@@ -1239,7 +1418,7 @@ mod test_utils_math {
         assert_eq!(evals.len(), 3);
 
         for (k, &lambda) in evals.iter().enumerate() {
-            let v: Vec<f64> = (0..n).map(|i| evecs[i][k] as f64).collect();
+            let v: Vec<f64> = (0..n).map(|i| evecs[i][k]).collect();
             let norm_v = v.iter().map(|x| x * x).sum::<f64>().sqrt();
             assert!(
                 norm_v > 0.5,
@@ -1252,7 +1431,7 @@ mod test_utils_math {
                 for idx in indptr[i]..indptr[i + 1] {
                     mv += data[idx] * v[indices[idx]];
                 }
-                let r = mv - lambda as f64 * v[i];
+                let r = mv - lambda * v[i];
                 resid_sq += r * r;
             }
             let rel = resid_sq.sqrt() / norm_v;
@@ -1303,7 +1482,7 @@ mod test_utils_math {
         let mut sorted = evals.clone();
         sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
 
-        assert_relative_eq!(sorted[0], 2.0 + 2.0_f32.sqrt(), epsilon = 0.05);
+        assert_relative_eq!(sorted[0], 2.0 + 2.0_f64.sqrt(), epsilon = 0.05);
         assert_relative_eq!(sorted[1], 2.0, epsilon = 0.05);
     }
 

@@ -4,9 +4,8 @@
 //!
 //! One epoch is three kernels, as on the cubecl path: gradient per node, Adam
 //! step per coordinate, schedule advance per edge. MLX kernels write fresh
-//! output buffers, so fusing all three into one per-node kernel is race-free,
-//! but it measured about 20% slower than the split at 100k and 1M nodes and
-//! was dropped.
+//! output buffers, so fusing all three into one per-node kernel would be race-free,
+//! but it runs slower than the split.
 //!
 //! The host stays at most one epoch ahead of the device: it submits epoch
 //! `t` asynchronously, then waits on epoch `t - 1`. Unbounded, it would queue
@@ -31,7 +30,7 @@ const UMAP_MLX_THREADGROUP: i32 = 256;
 const N_EPOCH_PARAMS: usize = 13;
 
 /// Epochs between progress lines at normal verbosity.
-const LOG_EVERY: usize = 100;
+const LOG_EVERY: usize = 50;
 
 ////////////////////
 // Kernel sources //
@@ -727,13 +726,6 @@ where
     fp[10] = 1.0 - params.beta1;
     fp[11] = 1.0 - params.beta2;
 
-    if verbosity.normal_verbosity() {
-        println!(
-            "Running {} epochs with MLX-accelerated Adam optimisation.",
-            params.n_epochs
-        );
-    }
-
     for epoch in 0..params.n_epochs {
         // radii and weights before the gradient, so both see the same embedding
         let (dens_arrays, dens_coeff) = match dens.as_ref() {
@@ -775,7 +767,7 @@ where
         if verbosity.normal_verbosity()
             && ((epoch + 1) % LOG_EVERY == 0 || epoch + 1 == params.n_epochs)
         {
-            println!(" Epoch {} / {}", epoch + 1, params.n_epochs);
+            println!("  Epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
 

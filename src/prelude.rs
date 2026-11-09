@@ -5,7 +5,7 @@
 //! ```
 
 pub use crate::data::graph::UmapGraphParams;
-pub use crate::data::init::{initialise_embedding, parse_initilisation};
+pub use crate::data::init::{initialise_embedding, parse_initialisation};
 pub use crate::data::nearest_neighbours::{
     metric_returns_squared, parse_ann_search, run_ann_search, NearestNeighbourParams,
 };
@@ -25,7 +25,7 @@ pub use crate::utils::dreams::DreamsState;
 pub use crate::utils::input::{ManifoldsMatrix, MatInput};
 pub use crate::utils::math::landmark_von_neumann_entropy;
 pub use crate::utils::potentials::calculate_potential;
-pub use crate::utils::traits::ManifoldsFloat;
+pub use crate::utils::traits::{AtomicFloat, ManifoldsFloat};
 
 #[cfg(feature = "gpu")]
 pub use crate::data::nearest_neighbours_gpu::*;
@@ -73,4 +73,24 @@ pub use ann_search_rs::prelude::Verbosity;
 /// The matching [Verbosity].
 pub fn parse_verbosity_level(level: usize) -> Verbosity {
     ann_search_rs::prelude::parse_annsearch_verbosity(level)
+}
+
+/// Numeric level to hand a kNN build that runs inside an embedding.
+///
+/// The embedding prints one timed stage for the search at normal verbosity, so
+/// the build only speaks when detailed output was asked for.
+///
+/// ### Params
+///
+/// * `verbosity` - The embedding's verbosity
+///
+/// ### Returns
+///
+/// `2` when detailed, otherwise `0`.
+pub(crate) fn ann_verbose(verbosity: Verbosity) -> usize {
+    if verbosity.detailed_verbosity() {
+        2
+    } else {
+        0
+    }
 }

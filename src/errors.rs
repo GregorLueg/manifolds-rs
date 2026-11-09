@@ -6,7 +6,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum ManifoldsError {
     // -- tSNE --
-    /// Error when perplexity is set to high
+    /// Error when perplexity is set too high
     #[error("perplexity ({perplexity}) must be strictly less than the kNN size ({k})")]
     PerplexityTooLarge {
         /// Set perplexity parameter
@@ -24,7 +24,6 @@ pub enum ManifoldsError {
     /// Error if the sparse matrix is not of CSR
     #[error("The matrix is not of CSR type. Please double check the inputs")]
     SparseMatrixIsNotCsr,
-    // -- sparse errors --
     /// Error for sparse multiplication dimension mismatches
     #[error("The dimensions of the matrix do not support sparse multiplication (matrix a n_col: {n_col_a}; matrix b n_row: {n_row_b})")]
     SparseMatrixMultiplication {
@@ -35,7 +34,7 @@ pub enum ManifoldsError {
     },
     /// The matrix is not square, but should be.
     #[error("The sparse matrix must be square")]
-    SpareMatrixMustBeSquare,
+    SparseMatrixMustBeSquare,
     /// Power value is not positive
     #[error("The chosen power must be positive, but is {power}.")]
     PowerMustBePositive {
@@ -67,6 +66,10 @@ pub enum ManifoldsError {
     /// Error for SVDs from faer
     #[error("The faer SVD failed - please verify the data")]
     FaerSvdError,
+    /// A CholeskyQR pass of a GPU randomised SVD hit a Gram matrix that is not
+    /// positive definite, i.e. the sketch is numerically rank deficient
+    #[error("CholeskyQR failed: the Gram matrix of the sketch is not positive definite")]
+    CholeskyQrFailed,
     /// Error for Eigen decomposition from faer
     #[error("The faer Eigen decomposition failed - please verify the data")]
     FaerEigenError,
@@ -79,10 +82,37 @@ pub enum ManifoldsError {
         /// Number of eigenpairs requested
         requested: usize,
     },
+    /// Error when the diffusion maps kernel leaves points without any edge
+    #[error("{n_isolated} of {n_total} points have no edges left in the diffusion kernel, so their coordinates are undefined; raise k, use graph_symmetry = \"add\" or lower thresh")]
+    IsolatedPoints {
+        /// Number of points with zero degree
+        n_isolated: usize,
+        /// Number of points in the kernel
+        n_total: usize,
+    },
+
+    /// Error when the VNE knee search has too few diffusion times to work with
+    #[error("t_max = {t_max} is too small for the VNE knee search, it needs at least {min}")]
+    TMaxTooSmall {
+        /// Length of the entropy curve, i.e. the provided `t_max`
+        t_max: usize,
+        /// Smallest supported `t_max`
+        min: usize,
+    },
+
     // -- input errors --
     /// Error if a square matrix is not square
     #[error("The matrix needs to be square")]
     NotSquareMatrix,
+
+    /// Error when a method cannot run with the chosen distance metric
+    #[error("{method} does not support the '{metric}' distance metric")]
+    MetricNotSupported {
+        /// Name of the method
+        method: &'static str,
+        /// The metric asked for
+        metric: String,
+    },
 
     /// Error if the data is empty
     #[error("Empty data was parsed through - upstream error?")]
@@ -102,7 +132,7 @@ pub enum ManifoldsError {
         n_edges: usize,
     },
 
-    /// Error if the data is empty
+    /// Error if the graph to optimise has no edges
     #[error("UMAP: no edges to optimise - upstream error?")]
     NoGraphEdges,
 
@@ -143,8 +173,8 @@ pub enum ManifoldsError {
     NotEnoughNeighbours {
         /// Provided number of neighbours
         n_provided: usize,
-        /// The end for the mid_near neighbours
-        mid_near_candidate_end: usize,
+        /// Near pairs per point, which the graph must cover
+        n_near: usize,
     },
 
     // -- density preservation --
@@ -176,7 +206,7 @@ pub enum ManifoldsError {
     #[error("DREAMS: the reference embedding has no spread after centring")]
     DreamsDegenerateReference,
 
-    // -- GPU t-SNE --
+    // -- t-SNE optimisers --
     /// Error when the chosen t-SNE optimiser has no density (den-SNE) term
     #[cfg(mlx_available)]
     #[error("tSNE optimiser '{name}' does not support the den-SNE density term")]
@@ -188,6 +218,15 @@ pub enum ManifoldsError {
     /// point
     #[error("tSNE optimiser '{name}' runs only through tsne_gpu()")]
     TsneOptimiserNeedsGpu {
+        /// Name of the requested optimiser
+        name: String,
+    },
+    /// Error when an FFT t-SNE optimiser is requested from a build without the
+    /// `fft_tsne` feature
+    #[error(
+        "tSNE optimiser '{name}' needs the fft_tsne feature; recompile with it or use 'barnes_hut'"
+    )]
+    TsneOptimiserNeedsFft {
         /// Name of the requested optimiser
         name: String,
     },

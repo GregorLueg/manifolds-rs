@@ -1,7 +1,7 @@
 # Choosing an algorithm
 
-Eight of them, and the honest summary is that three cover most work. Here is how
-to pick without running all eight.
+Nine of them, and the honest summary is that three cover most work. Here is how
+to pick without running all nine.
 
 ## Start here
 
@@ -12,6 +12,7 @@ to pick without running all eight.
 | You care about the arrangement of clusters, not just the clusters | `PaCMAP` |
 | You want the tightest possible local structure and nothing else | `TSNE` |
 | Relative density in the plot should mean something | `DensMAP` |
+| t-SNE clusters, but in a sensible arrangement | `DREAMS` |
 | You want the spectral embedding itself, not a layout of it | `DiffusionMaps` |
 | You want a force-directed graph layout, scanpy `draw_graph` style | `ForceAtlas2` |
 
@@ -36,8 +37,13 @@ learning rate here defaults to `max(N / 12, 200)` rather than a fixed 200, so it
 does not need retuning as the dataset grows. Two-dimensional only.
 
 **den-SNE** is the same density correction applied to t-SNE. The default weight
-is much smaller than densMAP's because the gradients are on a different scale,
-not because the effect is meant to be weaker.
+is much smaller than densMAP's because its gradient has neither a log epsilon nor
+gradient clipping to absorb a collapsed radius, not because the effect is meant to
+be weaker.
+
+**DREAMS** is t-SNE with a pull towards a global reference embedding, PCA unless
+you hand one in. You keep the clusters and get a sensible arrangement of them.
+`lambda_` slides from plain t-SNE at `0` to the reference at `1`.
 
 **PHATE** powers a diffusion operator to time `t`, takes the potential distance
 between the resulting distributions, and lays those out with MDS. That is a
@@ -46,8 +52,8 @@ and branch points survive PHATE that t-SNE tears into blobs. If your biology is
 continuous, this is the one.
 
 **PaCMAP** uses three kinds of pair: near pairs pull, further pairs push, and
-mid-near pairs hold the global arrangement together while their weight decays
-over the first two phases. That decay is what lets it keep global structure
+mid-near pairs hold the global arrangement together. Their weight starts high
+and decays across the first phase, which is what lets it keep global structure
 without leaning on a spectral initialisation. PCA init is close to required;
 random init throws away most of the advantage.
 
@@ -76,12 +82,17 @@ Rough ordering on the same data, dominated by different things:
   an interpolation grid, linear in the number of points.
 - `UMAP`, `DensMAP` and `PaCMAP` pay for the neighbour search and then a cheap
   per-edge update. The parallel Adam optimiser is the default.
-- `PHATE` and `DiffusionMaps` pay for an eigendecomposition. Set `n_landmarks`
-  above roughly 50k points or you will wait.
+  `optimiser="sgd_parallel"` runs the reference SGD lock-free over all
+  threads, at the price of a different embedding on every run.
+- `PHATE` pays for the powering, the potential distances and the MDS, which is
+  why it runs on 2048 landmarks by default. `n_landmarks=None` runs the full
+  operator, whose dense distance matrix grows with the square of the sample count.
+- `DiffusionMaps` pays for an eigendecomposition of the sparse operator, and runs
+  on the full operator unless you set `n_landmarks`.
 
 For all of them, past a few hundred thousand points the neighbour search
-dominates. The defaults (`"nndescent"`, `"ivf"` for the t-SNE family) are
-built for that; `"hnsw"` is the alternative. Or build the graph once
+dominates. The defaults (`"nndescent"`, `"ivf"` for the t-SNE family and PaCMAP)
+are built for that; `"hnsw"` is the alternative. Or build the graph once
 with [`knn_graph`](api/neighbours.md) and hand it to each estimator.
 
 ## What none of them do

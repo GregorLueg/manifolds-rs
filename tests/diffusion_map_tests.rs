@@ -625,3 +625,131 @@ fn dm_integration_19_landmark_coverage() {
     println!("\n=== DM DIAGNOSTIC 19: Landmark Coverage ===");
     println!("{} landmarks selected", landmarks.get_n_landmarks());
 }
+
+/// Clustered data plus one far outlier, whose neighbours never point back at it
+/// and all sit at about the same distance.
+fn data_with_outlier() -> faer::Mat<f64> {
+    let (data, _) = create_diagnostic_data(20, 10, 42);
+    let n = data.nrows();
+    faer::Mat::from_fn(
+        n + 1,
+        data.ncols(),
+        |i, j| {
+            if i == n {
+                1e3
+            } else {
+                data[(i, j)]
+            }
+        },
+    )
+}
+
+/// Parameters for the zero-degree tests.
+fn outlier_params(symmetry: &str, thresh: f64) -> DiffusionMapsParams<f64> {
+    DiffusionMapsParams {
+        k: 5,
+        ann_type: "exhaustive".to_string(),
+        graph_symmetry: symmetry.to_string(),
+        thresh,
+        ..DiffusionMapsParams::default()
+    }
+}
+
+/// Test 20: mutual-edge symmetrisation isolates the outlier and is refused
+#[test]
+fn dm_integration_20_mutual_symmetry_isolated_point_errors() {
+    let data = data_with_outlier();
+    for symmetry in ["mnn", "multiply"] {
+        let res = diffusion_maps(data.as_ref(), None, outlier_params(symmetry, 1e-4), 42, 0);
+        assert!(
+            matches!(
+                res,
+                Err(ManifoldsError::IsolatedPoints {
+                    n_isolated: 1..,
+                    n_total: 101
+                })
+            ),
+            "{symmetry}: {res:?}"
+        );
+    }
+}
+
+/// Test 21: additive symmetry keeps the outlier connected, so the run stays
+/// valid and finite
+#[test]
+fn dm_integration_21_additive_symmetry_keeps_outlier() {
+    let data = data_with_outlier();
+    let embd = diffusion_maps(data.as_ref(), None, outlier_params("add", 1e-4), 42, 0).unwrap();
+    assert!(embd.iter().flatten().all(|v| v.is_finite()));
+}
+
+/// Test 22: a threshold above the affinity of the outlier's neighbours isolates
+/// it under additive symmetry too
+#[test]
+fn dm_integration_22_high_thresh_isolated_point_errors() {
+    let data = data_with_outlier();
+    let res = diffusion_maps(data.as_ref(), None, outlier_params("add", 0.6), 42, 0);
+    assert!(
+        matches!(res, Err(ManifoldsError::IsolatedPoints { .. })),
+        "{res:?}"
+    );
+}
+
+/// Test 23: the landmark operator refuses an isolated landmark as well. All
+/// points are landmarks bar one, and the seed keeps the outlier among them.
+#[test]
+fn dm_integration_23_landmark_isolated_point_errors() {
+    let data = data_with_outlier();
+    let params = DiffusionMapsParams {
+        n_landmarks: Some(data.nrows() - 1),
+        landmark_method: "random".to_string(),
+        ..outlier_params("mnn", 1e-4)
+    };
+    let res = diffusion_maps(data.as_ref(), None, params, 42, 0);
+    assert!(
+        matches!(res, Err(ManifoldsError::IsolatedPoints { .. })),
+        "{res:?}"
+    );
+}
+
+/// Test 24: `t_max` below the knee search minimum errors on both operators,
+/// the minimum itself runs
+#[test]
+fn dm_integration_24_small_t_max() {
+    let (data, _) = create_diagnostic_data(20, 10, 42);
+    for n_landmarks in [None, Some(30)] {
+        let params = |t_max| DiffusionMapsParams {
+            k: 10,
+            t: PhateTime::Auto { t_max },
+            n_landmarks,
+            landmark_method: "random".to_string(),
+            ..DiffusionMapsParams::default()
+        };
+        for t_max in 0..3 {
+            let res = diffusion_maps::<f64>(data.as_ref(), None, params(t_max), 42, 0);
+            assert!(
+                matches!(res, Err(ManifoldsError::TMaxTooSmall { t_max: t, min: 3 }) if t == t_max),
+                "t_max = {t_max}, n_landmarks = {n_landmarks:?}: {res:?}"
+            );
+        }
+        diffusion_maps::<f64>(data.as_ref(), None, params(3), 42, 0).unwrap();
+    }
+}
+
+/// Test 25: PHATE shares the knee search and returns the same error
+#[test]
+fn dm_integration_25_phate_small_t_max() {
+    let (data, _) = create_diagnostic_data(20, 10, 42);
+    let params = PhateParams::<f64> {
+        diffusion_params: PhateDiffusionParams {
+            t: PhateTime::Auto { t_max: 2 },
+            ..PhateDiffusionParams::default()
+        },
+        ..PhateParams::default()
+    };
+    let res = phate(data.as_ref(), None, params, 42, 0);
+    assert!(
+        matches!(res, Err(ManifoldsError::TMaxTooSmall { t_max: 2, min: 3 })),
+        "{res:?}"
+    );
+}

@@ -234,11 +234,7 @@ where
 ///
 /// `(indptr, entries)` of the transpose, rows sorted ascending by index. Row `i`
 /// holds the incoming edges of vertex `i` as `(source, weight)` pairs.
-fn transpose_csr<T>(
-    indptr: &[usize],
-    entries: &[(u32, T)],
-    n: usize,
-) -> (Vec<usize>, Vec<(u32, T)>)
+fn transpose_csr<T>(indptr: &[usize], entries: &[(u32, T)], n: usize) -> (Vec<usize>, Vec<(u32, T)>)
 where
     T: ManifoldsFloat,
 {
@@ -696,8 +692,8 @@ where
 /// ### Params
 ///
 /// * `graph` - Input directed graph in COO format
-/// * `mix_weight` - Balance between fuzzy union (0.5) and directed graph (1.0).
-///   Controls how much to weight the union operation.
+/// * `mix_weight` - Weight on the fuzzy union, in `[0, 1]`. The remainder goes to
+///   the directed graph.
 ///
 /// ### Returns
 ///
@@ -706,7 +702,7 @@ where
 /// ### Notes
 ///
 /// * `mix_weight = 1.0`: Full fuzzy union (standard UMAP, symmetric)
-/// * `mix_weight = 0.5`: Weighted average of union and directed)
+/// * `mix_weight = 0.5`: Weighted average of union and directed
 /// * `mix_weight = 0.0`: Use only outgoing edges (directed)
 pub fn symmetrise_graph<T>(mut graph: CoordinateList<T>, mix_weight: T) -> CoordinateList<T>
 where
@@ -784,16 +780,16 @@ where
     adj
 }
 
-/// Filter out edges that are too weak to be sampled during optimization
+/// Filter out edges that are too weak to be sampled during optimisation
 ///
 /// Removes edges where weight < max_weight / n_epochs, matching uwot's
 /// preprocessing step. These weak edges would never be sampled during
-/// optimization and can cause fragmentation.
+/// optimisation and can cause fragmentation.
 ///
 /// ### Params
 ///
 /// * `graph` - Input graph in COO format
-/// * `n_epochs` - Optimization parameters (uses n_epochs for threshold)
+/// * `n_epochs` - Number of optimiser epochs, which sets the threshold
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
 ///
@@ -866,7 +862,7 @@ where
 
     if verbosity.detailed_verbosity() {
         println!(
-            " Filtered out {} weak edges.",
+            " Filtered out {} weak edges",
             (original_edge_no - filtered_edge_no).separate_with_underscores(),
         );
     }
@@ -1229,6 +1225,7 @@ where
 /// ### Params
 ///
 /// * `graph` - Reference to the graph to symmetrise
+/// * `theta` - Weight on `min(K, K^T)`, in `[0, 1]`
 fn symmetrise_mnn<T>(graph: &mut CoordinateList<T>, theta: T)
 where
     T: ManifoldsFloat,
@@ -1246,8 +1243,8 @@ where
 ///
 /// ### Params
 ///
-/// * `knn_indices`: The indices of the k-nearest neighbors for each vertex.
-/// * `knn`: The number of nearest neighbors to consider.
+/// * `knn_indices`: The indices of the k-nearest neighbours for each vertex.
+/// * `knn`: The number of nearest neighbours to consider.
 /// * `symmetrise`: The symmetrisation method to use.
 ///
 /// ### Returns
@@ -1306,8 +1303,8 @@ where
 ///
 /// ### Params
 ///
-/// * `knn_indices` - kNN indices (including self)
-/// * `knn_dists` - kNN distances (including self)
+/// * `knn_indices` - kNN indices (excluding self)
+/// * `knn_dists` - kNN distances (excluding self)
 /// * `knn` - Which neighbour to use for bandwidth (e.g., 5 means use 5th
 ///   nearest neighbour distance)
 /// * `decay` - Decay exponent alpha (typical: 40). If None, returns binary
@@ -1316,11 +1313,12 @@ where
 /// * `thresh` - Threshold below which affinities are set to 0 (default: 1e-4,
 ///   for sparsity)
 /// * `symmetrise` - symmetrisation method: "add" for (K+K^T)/2, "multiply" for
-///   K*K^T, "none" for asymmetric.
+///   the element-wise product of K and K^T, "mnn" for the mutual nearest neighbour
+///   form, "none" for asymmetric.
 ///
 /// ### Returns
 ///
-/// A `CoordinateList` containing the (optionally symmetrized) affinities
+/// A `CoordinateList` containing the (optionally symmetrised) affinities
 #[allow(clippy::too_many_arguments)]
 pub fn phate_alpha_decay_affinities<T>(
     knn_indices: &[Vec<usize>],
@@ -1352,9 +1350,9 @@ where
         .zip(knn_dists.par_iter())
         .enumerate()
         .map(|(i, (indices, dists))| {
-            // bandwidth: dist to kth nearest neighbour
-            // note: indices[0] is self, so indices[knn-1] is the kth neighbour
-            // (excluding self)
+            // bandwidth: distance to the kth neighbour. The lists exclude self, and
+            // may run past knn, in which case the extra points join the kernel
+            // while their affinity clears the threshold
             let bandwidth_dist = if knn > 0 && knn <= dists.len() {
                 dists[knn - 1]
             } else {

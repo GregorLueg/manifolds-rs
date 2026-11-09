@@ -166,7 +166,7 @@ fn densmap_integration_01_original_radii_are_informative() {
         Some((knn_indices.clone(), knn_dist.clone())),
         params.k,
         "kmknn".to_string(),
-        &params.umap_graph_params,
+        &params.graph_params,
         &nn_params,
         params.optim_params.n_epochs,
         42,
@@ -360,7 +360,7 @@ fn densmap_integration_06_output_is_finite() {
 
     println!("\n=== densMAP DIAGNOSTIC 6: Numerical Health ===");
 
-    for optimiser in ["adam_parallel", "adam", "sgd"] {
+    for optimiser in ["adam_parallel", "adam", "sgd", "sgd_parallel"] {
         let umap_params = UmapParams {
             optimiser: optimiser.to_string(),
             ..UmapParams::default()
@@ -431,7 +431,7 @@ fn densmap_integration_07_precomputed_knn() {
 /// `0.9993` on Windows, and nothing beats `0.9993`.
 const SATURATED_CORRELATION: f64 = 0.99;
 
-/// Test 8: All three optimisers improve the density correlation
+/// Test 8: All four CPU optimisers improve the density correlation
 #[test]
 fn densmap_integration_08_all_optimisers_preserve_density() {
     let (data, labels) = variable_density_clusters(60, 10, &[0.2, 1.0, 4.0], 42);
@@ -441,7 +441,7 @@ fn densmap_integration_08_all_optimisers_preserve_density() {
     let orig = original_cluster_radii(&data, &labels, 3);
     let log = |v: &[f64]| -> Vec<f64> { v.iter().map(|x| x.ln()).collect() };
 
-    for optimiser in ["adam_parallel", "adam", "sgd"] {
+    for optimiser in ["adam_parallel", "adam", "sgd", "sgd_parallel"] {
         let umap_params = UmapParams {
             optimiser: optimiser.to_string(),
             ..UmapParams::default()

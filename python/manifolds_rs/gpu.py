@@ -5,18 +5,18 @@ machine has an adapter, which is the part that varies. The ordinary wheel has
 GPU support compiled in, so importing this module only fails on a build made
 with ``--no-default-features``.
 
-Three things differ from the CPU estimators, all of them consequences of the
+Four things differ from the CPU estimators, all of them consequences of the
 backend rather than choices:
 
-- **float32 only.** WGSL has no float64, so `fit` casts rather than letting a
-  float64 array fail somewhere inside a kernel. That is a narrowing conversion,
-  and the only one this package performs silently.
+- **float32 at any size.** `fit` casts down to it, the only narrowing this
+  package performs silently.
 - **Different neighbour backends.** ``"nndescent_gpu"``, ``"ivf_gpu"`` and
   ``"exhaustive_gpu"``, with their own knobs. See `NeighbourParamsGpu`.
 - **Only the search and the optimiser run on the device.** The UMAP Adam update,
-  and the t-SNE optimiser with ``approx="fft_3k_gpu"``. Graph construction and
-  the initialisation stay on the CPU, so a small dataset can easily come out
-  slower than the CPU path once the transfers are paid for. Measure.
+  the t-SNE optimiser with ``approx="fft_3k_gpu"``, and the SVD and k-means of
+  PHATE's spectral landmark selection. Graph construction and the initialisation
+  stay on the CPU, so a small dataset can easily come out slower than the CPU
+  path once the transfers are paid for. Measure.
 - **Reproducible in structure, not in coordinates.** The device searches are not
   always bit-stable at scale, and the optimiser amplifies a small difference in
   the graph into visibly different positions. Cluster structure is preserved
@@ -36,15 +36,21 @@ from ._base import BaseEmbedding, ReferenceEmbedding
 from ._params import (
     ANN_GPU,
     INITS,
+    MDS_METHODS,
     METRICS,
+    PHATE_LANDMARK_METHODS,
+    PHATE_METRICS,
+    SYMMETRIES,
     TSNE_APPROX_GPU,
     UMAP_OPTIMISERS_GPU,
     DensParams,
     NeighbourParamsGpu,
+    PhateDiffusion,
     TsneOptim,
     UmapGraph,
     UmapOptim,
     merge,
+    umap_epochs,
 )
 from ._validate import check_choice
 
@@ -59,7 +65,7 @@ if not hasattr(_core, "umap_gpu"):  # pragma: no cover - build-dependent
 # Globals #
 ###########
 
-#: The only element type the GPU backend can carry.
+#: The element type the device kernels run in.
 _GPU_DTYPE: np.dtype = np.dtype(np.float32)
 
 
@@ -78,7 +84,8 @@ class UMAPGpu(BaseEmbedding):
         min_dist: How tightly points may pack. Fits the repulsion curve with
             `spread`.
         spread: Scale of the embedding relative to `min_dist`.
-        n_epochs: Optimisation epochs.
+        n_epochs: Optimisation epochs. ``None`` means 500, or 200 for the SGD
+            optimisers above 10,000 samples, as umap-learn does.
         learning_rate: Initial learning rate.
         init: ``"spectral"``, ``"pca"`` or ``"random"``. Computed on the CPU
             either way.
@@ -89,14 +96,14 @@ class UMAPGpu(BaseEmbedding):
         randomised: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation and the negative sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParamsGpu`.
         graph_params: See `UmapGraph`.
         optim_params: See `UmapOptim`.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.umap_gpu
-    _FORCE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
+    _BASE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
 
     @beartype
     def __init__(
@@ -106,7 +113,7 @@ class UMAPGpu(BaseEmbedding):
         metric: str = "euclidean",
         min_dist: float = 0.5,
         spread: float = 1.0,
-        n_epochs: int = 500,
+        n_epochs: int | None = None,
         learning_rate: float = 1.0,
         init: str = "spectral",
         ann: str = "nndescent_gpu",
@@ -137,7 +144,7 @@ class UMAPGpu(BaseEmbedding):
         self.graph_params = graph_params
         self.optim_params = optim_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         return {
             "n_dim": self.n_components,
             "k": self.n_neighbors,
@@ -154,9 +161,11 @@ class UMAPGpu(BaseEmbedding):
                 self.nn_params,
                 dist_metric=check_choice(self.metric, METRICS, name="metric"),
             ),
-            "umap_graph_params": merge(self.graph_params),
+            "graph_params": merge(self.graph_params),
             "optim_params": merge(
-                self.optim_params, n_epochs=self.n_epochs, lr=self.learning_rate
+                self.optim_params,
+                n_epochs=umap_epochs(self.n_epochs, self.optimiser, n_samples),
+                lr=self.learning_rate,
             ),
         }
 
@@ -185,7 +194,7 @@ class DensMAPGpu(UMAPGpu):
         min_dist: float = 0.5,
         spread: float = 1.0,
         lambda_: float = 2.0,
-        n_epochs: int = 500,
+        n_epochs: int | None = None,
         learning_rate: float = 1.0,
         init: str = "spectral",
         ann: str = "nndescent_gpu",
@@ -221,9 +230,9 @@ class DensMAPGpu(UMAPGpu):
         self.lambda_ = lambda_
         self.dens_params = dens_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         return {
-            **super()._params(),
+            **super()._params(n_samples),
             "lambda": self.lambda_,
             "dens_params": merge(self.dens_params),
         }
@@ -250,16 +259,16 @@ class TSNEGpu(BaseEmbedding):
         ann: ``"nndescent_gpu"``, ``"ivf_gpu"`` or ``"exhaustive_gpu"``.
         approx: ``"barnes_hut"``, ``"qd"``, ``"fft"`` or ``"fft_3k"`` (CPU
             optimisers, see `TSNE`), or ``"fft_3k_gpu"`` (GPU optimiser).
-        randomised_init: Use randomised SVD for the PCA initialisation.
+        randomised: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParamsGpu`.
         optim_params: See `TsneOptim`.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.tsne_gpu
-    _FORCE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
+    _BASE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
     _EXTRA: ClassVar[tuple[str, ...]] = ("approx",)
 
     @beartype
@@ -273,7 +282,7 @@ class TSNEGpu(BaseEmbedding):
         init: str = "pca",
         ann: str = "ivf_gpu",
         approx: str = "barnes_hut",
-        randomised_init: bool = True,
+        randomised: bool = True,
         init_range: float | None = None,
         seed: int = 42,
         verbose: int = 0,
@@ -288,21 +297,21 @@ class TSNEGpu(BaseEmbedding):
         self.init = init
         self.ann = ann
         self.approx = approx
-        self.randomised_init = randomised_init
+        self.randomised = randomised
         self.init_range = init_range
         self.seed = seed
         self.verbose = verbose
         self.nn_params = nn_params
         self.optim_params = optim_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         check_choice(self.approx, TSNE_APPROX_GPU, name="approx")
         return {
             "n_dim": self.n_components,
             "perplexity": self.perplexity,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
-            "randomised_init": self.randomised_init,
+            "randomised": self.randomised,
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,
@@ -326,11 +335,11 @@ class DREAMSGpu(ReferenceEmbedding):
         init: Ignored; accepted so the signature matches `TSNEGpu`.
 
     Everything else is as `TSNEGpu`. The reference is passed to `fit`, see
-    `ReferenceEmbedding.fit`.
+    `fit`.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.dreams_gpu
-    _FORCE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
+    _BASE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
     _EXTRA: ClassVar[tuple[str, ...]] = ("approx",)
 
     @beartype
@@ -345,7 +354,7 @@ class DREAMSGpu(ReferenceEmbedding):
         init: str = "pca",
         ann: str = "ivf_gpu",
         approx: str = "barnes_hut",
-        randomised_init: bool = True,
+        randomised: bool = True,
         init_range: float | None = None,
         seed: int = 42,
         verbose: int = 0,
@@ -361,14 +370,14 @@ class DREAMSGpu(ReferenceEmbedding):
         self.init = init
         self.ann = ann
         self.approx = approx
-        self.randomised_init = randomised_init
+        self.randomised = randomised
         self.init_range = init_range
         self.seed = seed
         self.verbose = verbose
         self.nn_params = nn_params
         self.optim_params = optim_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         check_choice(self.approx, TSNE_APPROX_GPU, name="approx")
         return {
             "n_dim": self.n_components,
@@ -376,7 +385,7 @@ class DREAMSGpu(ReferenceEmbedding):
             "lambda": self.lambda_,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
-            "randomised_init": self.randomised_init,
+            "randomised": self.randomised,
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,
@@ -385,4 +394,107 @@ class DREAMSGpu(ReferenceEmbedding):
             "optim_params": merge(
                 self.optim_params, n_epochs=self.n_epochs, lr=self.learning_rate
             ),
+        }
+
+
+class PHATEGpu(BaseEmbedding):
+    """PHATE with the neighbour search and landmark selection on the GPU.
+
+    Same embedding as `PHATE`. The kNN search and, for spectral landmarks, the
+    randomised SVD and the k-means run on the device. The diffusion time, the
+    powering, the MDS and the interpolation stay on the CPU.
+
+    Args:
+        n_components: Output dimensionality.
+        k: Neighbours that set the kernel bandwidth. The search runs ``6k + 5``
+            wide, so give a precomputed graph that width as well.
+        metric: ``"euclidean"``/``"l2"`` or ``"cosine"``.
+        decay: Alpha-decay exponent of the kernel. ``None`` gives a binary
+            connectivity kernel instead.
+        t: Diffusion time. ``None`` picks the VNE knee.
+        gamma: Informational distance constant, in ``[-1, 1]``.
+        n_landmarks: Landmarks to diffuse on. ``None``, or a value at least
+            `n_samples`, runs the full operator, whose dense potential distances
+            grow with the square of `n_samples`.
+        landmark_method: ``"spectral"``, ``"random"`` or ``"density"``. An mlx
+            build adds ``"spectral_mlx"``, which keeps the search on wgpu
+            and runs the landmark selection on MLX.
+        mds: ``"sgd_dense"`` (also ``"dense"``) or ``"classic"``.
+        mds_iter: MDS iterations. ``None`` uses the backend default.
+        ann: ``"nndescent_gpu"``, ``"ivf_gpu"`` or ``"exhaustive_gpu"``.
+        randomised: Use randomised SVD for the initialisation.
+        seed: Fixes the sketch, the k-means initialisation and the MDS.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
+        nn_params: See `NeighbourParamsGpu`.
+        diffusion_params: Remaining operator knobs. See `PhateDiffusion`.
+    """
+
+    _FN: ClassVar[Callable[..., Any]] = _core.phate_gpu
+    _BASE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
+
+    @beartype
+    def __init__(
+        self,
+        n_components: int = 2,
+        k: int = 5,
+        metric: str = "euclidean",
+        decay: float | None = 40.0,
+        t: int | None = None,
+        gamma: float = 1.0,
+        n_landmarks: int | None = 2048,
+        landmark_method: str = "spectral",
+        mds: str = "sgd_dense",
+        mds_iter: int | None = None,
+        ann: str = "nndescent_gpu",
+        randomised: bool = True,
+        seed: int = 42,
+        verbose: int = 0,
+        nn_params: NeighbourParamsGpu | None = None,
+        diffusion_params: PhateDiffusion | None = None,
+    ) -> None:
+        self.n_components = n_components
+        self.k = k
+        self.metric = metric
+        self.decay = decay
+        self.t = t
+        self.gamma = gamma
+        self.n_landmarks = n_landmarks
+        self.landmark_method = landmark_method
+        self.mds = mds
+        self.mds_iter = mds_iter
+        self.ann = ann
+        self.randomised = randomised
+        self.seed = seed
+        self.verbose = verbose
+        self.nn_params = nn_params
+        self.diffusion_params = diffusion_params
+
+    def _params(self, n_samples: int) -> dict[str, Any]:
+        diffusion = merge(self.diffusion_params, gamma=self.gamma) or {}
+        # `decay` and `n_landmarks` are set rather than merged: `None` selects the
+        # binary kernel and the full operator, and `merge` drops nulls as "leave
+        # the default".
+        diffusion["decay"] = self.decay
+        diffusion["n_landmarks"] = self.n_landmarks
+        if self.t is not None:
+            diffusion["t"] = self.t
+        if "graph_symmetry" in diffusion:
+            diffusion["graph_symmetry"] = check_choice(
+                diffusion["graph_symmetry"], SYMMETRIES, name="graph_symmetry"
+            )
+        diffusion["landmark_method"] = check_choice(
+            self.landmark_method, PHATE_LANDMARK_METHODS, name="landmark_method"
+        )
+        return {
+            "n_dim": self.n_components,
+            "k": self.k,
+            "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
+            "mds_method": check_choice(self.mds, MDS_METHODS, name="mds"),
+            "mds_iter": self.mds_iter,
+            "randomised": self.randomised,
+            "nn_params": merge(
+                self.nn_params,
+                dist_metric=check_choice(self.metric, PHATE_METRICS, name="metric"),
+            ),
+            "diffusion_params": diffusion,
         }

@@ -2,8 +2,9 @@
 
 One worked example per method. The parameter structs live at the crate root,
 the shared helpers (synthetic data, `run_ann_search`, `ManifoldsError`) in the
-prelude, so both glob imports are worth having. Every entry point returns
-`Result<Vec<Vec<T>>, ManifoldsError>`; the examples `.unwrap()` for brevity.
+prelude, so both glob imports are worth having. Entry points return
+`Result<Vec<Vec<T>>, ManifoldsError>`, bar `train_parametric_umap_model`, which
+returns the model as well; the examples `.unwrap()` for brevity.
 
 ## UMAP
 
@@ -116,8 +117,8 @@ small loss in local structure.
 ## den-SNE
 
 Same idea as densMAP, applied to t-SNE. The default `lambda` here is `0.1`,
-twenty times smaller than densMAP's, because the Student-t gradients are much
-larger.
+twenty times smaller than densMAP's, because den-SNE's gradient has neither a log
+epsilon nor gradient clipping to absorb a collapsed radius.
 
 ```rust
 use manifolds_rs::prelude::*;
@@ -184,8 +185,9 @@ let embedding = dreams(
 
 ## Precomputed kNN
 
-Every entry point takes a precomputed k-nearest neighbour graph, which pays off
-when you run several embeddings over the same data:
+Every entry point bar `forceatlas2_from_graph` and `train_parametric_umap_model`
+takes a precomputed k-nearest neighbour graph, which pays off when you run several
+embeddings over the same data:
 
 ```rust
 use manifolds_rs::prelude::*;
@@ -218,9 +220,11 @@ let embedding = umap(
 ```
 
 The indices and distances must exclude the point itself, which is what
-`run_ann_search` gives you. The graph is taken as-is, no `k` check, so make it
-match the `k` in the parameter struct. PaCMAP is the exception: it needs
-`k >= mn_candidate_end` for mid-near pair sampling.
+`run_ann_search` gives you, sorted by distance. UMAP, densMAP and ForceAtlas2 cut
+a wider graph to the `k` in the parameter struct and warn on stderr. PHATE wants
+`6k + 5` neighbours
+(`utils::diffusions::phate_search_width`) and PaCMAP `n_near + 50`, and PaCMAP checks
+for at least `n_near`.
 
 ## GPU (`gpu` feature)
 
@@ -326,7 +330,7 @@ correlation sensitivities. The radii are read back in between so the
 correlation statistics can be accumulated in `f64` on the host, since summing
 `n` log-radii in `f32` loses its significant digits. That readback is a sync
 point, but it only happens over the final 30% of the epochs. Pick any of the
-other optimisers (`"sgd"`, `"adam"`, `"adam_parallel"`) and the density path
+other optimisers (`"sgd"`, `"sgd_parallel"`, `"adam"`, `"adam_parallel"`) and the density path
 falls back to CPU, with only the kNN search on the GPU.
 
 The GPU entry points take a `cubecl::Device`, which picks the runtime at run
@@ -367,7 +371,7 @@ let params = ParametricUmapParams::new(
     "hnsw".into(),                       // ann_type
     vec![128, 64],                       // hidden_layers (encoder architecture)
     NearestNeighbourParams::default(),   // nn_params
-    UmapGraphParams::default(),          // umap_graph_params
+    UmapGraphParams::default(),          // graph_params
     fit_params,                          // training parameters
 );
 
@@ -409,30 +413,8 @@ let (data, branch_assignments) = generate_trajectory(
     42,          // seed
 );
 
-// Configure PHATE parameters
-let diffusion_params = PhateDiffusionParams::new(
-    Some(40.0),              // decay
-    1.0,                     // bandwidth_scale
-    1e-4,                    // thresh
-    "average".to_string(),   // graph_symmetry
-    None,                    // n_landmarks (None = full operator)
-    "spectral".to_string(),  // landmark_method
-    None,                    // n_svd
-    None,                    // t_max (None = default cap)
-    None,                    // t_custom (None = auto-select via VNE knee)
-    1.0,                     // gamma
-);
-
-let params = PhateParams::new(
-    2,                                   // n_dim (output dimensions)
-    5,                                   // k (number of neighbours)
-    "kmknn".to_string(),                 // ann_type
-    NearestNeighbourParams::default(),   // ann_params
-    diffusion_params,
-    "sgd_dense".to_string(),             // mds_method
-    None,                                // mds_iter
-    true,                                // randomised
-);
+// Default: k = 5, 2048 spectral landmarks, diffusion time from the VNE knee
+let params = PhateParams::new_default_2d(Some(5));
 
 // Run PHATE
 let embedding = phate(
@@ -445,8 +427,22 @@ let embedding = phate(
 .unwrap();
 ```
 
-`PhateParams::new_default_2d(Some(k))` gives the same thing with sensible
-defaults if you only want to tune the neighbour count.
+The operator knobs live in `params.diffusion_params` (`PhateDiffusionParams`). For
+example, the full operator instead of landmarks, whose dense distance matrix grows
+with the square of the sample count:
+
+```rust
+use manifolds_rs::prelude::*;
+use manifolds_rs::*;
+
+let params = PhateParams::<f64> {
+    diffusion_params: PhateDiffusionParams {
+        n_landmarks: None,
+        ..PhateDiffusionParams::default()
+    },
+    ..PhateParams::default()
+};
+```
 
 ## PaCMAP
 
@@ -556,21 +552,9 @@ use manifolds_rs::*;
 // Generate synthetic clustered data
 let (data, _) = generate_clustered_data(1000, 50, 5, 42);
 
-// Configure diffusion maps parameters
-let params = DiffusionMapsParams::new(
-    2,                                   // n_dim (output dimensions)
-    5,                                   // k (number of neighbours)
-    "kmknn".to_string(),                 // ann_type
-    NearestNeighbourParams::default(),   // ann_params
-    1.0,                                 // bandwidth_scale
-    1e-4,                                // thresh
-    "add".to_string(),                   // graph_symmetry
-    1.0,                                 // alpha_norm (Laplace-Beltrami)
-    PhateTime::Auto { t_max: 100 },      // t (Auto = VNE knee up to t_max)
-    None,                                // n_landmarks (None = full operator)
-    "spectral".to_string(),              // landmark_method
-    None,                                // n_svd
-);
+// Default: k = 5, the Laplace-Beltrami operator, the full operator rather than
+// landmarks (set n_landmarks to change that)
+let params = DiffusionMapsParams::new_default_2d(Some(5));
 
 // Run diffusion maps
 let embedding = diffusion_maps(

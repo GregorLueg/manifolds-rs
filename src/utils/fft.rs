@@ -13,6 +13,14 @@ use std::fmt::Debug;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 pub use crate::utils::math::choose_grid_size;
+use crate::utils::prefetch::prefetch_read;
+
+/// How many points ahead the charge-spreading loop prefetches.
+///
+/// Points within a box row are scattered across the per-point buffers, so
+/// their loads miss once `n` outgrows the caches. Far enough ahead to cover a
+/// memory round trip, near enough that the lines are still resident when used.
+const SPREAD_PREFETCH_DIST: usize = 8;
 
 ////////////
 // Traits //
@@ -813,7 +821,14 @@ pub fn n_body_fft_2d<T: FftFloat>(
             .for_each(|(by, slab)| {
                 slab.fill(T::zero());
                 let (lo, hi) = (row_starts[by] as usize, row_starts[by + 1] as usize);
-                for &pi in &order[lo..hi] {
+                for (t, &pi) in order[lo..hi].iter().enumerate() {
+                    if let Some(&pa) = order[lo..hi].get(t + SPREAD_PREFETCH_DIST) {
+                        let a = pa as usize;
+                        prefetch_read(&box_data[a]);
+                        prefetch_read(&x_weights[a * n_interp]);
+                        prefetch_read(&y_weights[a * n_interp]);
+                        prefetch_read(&charges[a * n_terms]);
+                    }
                     let i = pi as usize;
                     let ((_, box_x), _, _) = box_data[i];
                     let w_start_idx = i * n_interp;
@@ -1204,7 +1219,13 @@ pub fn n_body_fft_2d_3k<T: FftFloat>(
             .for_each(|(by, slab)| {
                 slab.fill(T::zero());
                 let (lo, hi) = (row_starts[by] as usize, row_starts[by + 1] as usize);
-                for &pi in &order[lo..hi] {
+                for (t, &pi) in order[lo..hi].iter().enumerate() {
+                    if let Some(&pa) = order[lo..hi].get(t + SPREAD_PREFETCH_DIST) {
+                        let a = pa as usize;
+                        prefetch_read(&box_data[a]);
+                        prefetch_read(&x_weights[a * n_interp]);
+                        prefetch_read(&y_weights[a * n_interp]);
+                    }
                     let i = pi as usize;
                     let ((_, box_x), _, _) = box_data[i];
                     let wi = i * n_interp;

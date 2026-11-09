@@ -13,6 +13,8 @@ use crate::data::structures::*;
 use crate::parametric::batch::*;
 use crate::parametric::dataset::*;
 use crate::parametric::model::*;
+use crate::prelude::Verbosity;
+use crate::training::umap_optimisers::{DEFAULT_MIN_DIST, DEFAULT_SPREAD};
 
 ////////////
 // Params //
@@ -21,9 +23,9 @@ use crate::parametric::model::*;
 /// Parameters for parametric UMAP training
 #[derive(Clone, Debug)]
 pub struct TrainParametricParams<T> {
-    /// Curve parameter for attractive force (typically ~1.5 for 2D)
+    /// Curve parameter for attractive force. Fitted from `min_dist` and `spread`.
     pub a: T,
-    /// Curve parameter for repulsive force (typically ~0.9 for 2D)
+    /// Curve parameter for repulsive force. Fitted from `min_dist` and `spread`.
     pub b: T,
     /// Learning rate for the optimiser
     pub lr: T,
@@ -45,19 +47,21 @@ where
 {
     /// Default parameters for 2D embedding
     ///
+    /// The curve is fitted to the same `min_dist` and `spread` as standard UMAP.
+    ///
     /// ### Returns
     ///
     /// Sensible default parameters for 2D embeddings
     pub fn default_2d() -> Self {
-        Self {
-            a: T::from_f64(1.5).unwrap(),
-            b: T::from_f64(0.9).unwrap(),
-            lr: T::from_f64(0.001).unwrap(),
-            n_epochs: 500,
-            batch_size: 256,
-            neg_sample_rate: 5,
-            corr_weight: T::from_f64(0.0).unwrap(),
-        }
+        Self::from_min_dist_spread(
+            T::from_f64(DEFAULT_MIN_DIST).unwrap(),
+            T::from_f64(DEFAULT_SPREAD).unwrap(),
+            T::zero(),
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
     /// Parameters from specified minimum distance, spread and correlation loss
@@ -98,15 +102,14 @@ where
 
     /// Fit curve parameters from min_dist and spread
     ///
-    /// Fits the UMAP curve: `f(x) = 1 / (1 + a + x^(2b))` such that
-    /// `f(min_dist) ca. 1.0` and `f(spread) ca. 0.0`.
+    /// Fits the UMAP curve `f(x) = 1 / (1 + a * x^(2b))` to `1` below `min_dist`
+    /// and `exp(-(x - min_dist) / spread)` above it.
     ///
     /// ### Params
     ///
     /// * `min_dist` - Minimum distance parameter
     /// * `spread` - Effective scale of embedded points
-    /// * `lr` - Learning rate for gradient descent (default: 0.1)
-    /// * `n_iter` - Number of optimisation iterations (default: 100)
+    /// * `n_iter` - Number of optimisation iterations (default: 300)
     ///
     /// ### Returns
     ///
@@ -241,7 +244,7 @@ pub fn graph_to_trainings_data<T>(graph_data: &CoordinateList<T>) -> UmapEdgeDat
 // Training //
 //////////////
 
-/// Trainings loop for parametric UMAP
+/// Training loop for parametric UMAP
 ///
 /// ### Params
 ///
@@ -251,7 +254,7 @@ pub fn graph_to_trainings_data<T>(graph_data: &CoordinateList<T>) -> UmapEdgeDat
 /// * `train_params` - The training parameters for the parametric UMAP
 /// * `device` - The device on which to train the model on
 /// * `seed` - Seed for reproducibility.
-/// * `verbose` - Controls verbosity of the function.
+/// * `verbosity` - Epoch lines print at normal verbosity and above.
 ///
 /// ### Returns
 ///
@@ -263,7 +266,7 @@ pub fn train_parametric_umap<T>(
     train_params: &TrainParametricParams<T>,
     device: &Device,
     seed: usize,
-    verbose: bool,
+    verbosity: Verbosity,
 ) -> (Vec<Vec<T>>, TrainedUmapModel<T>)
 where
     T: Element + Float + FromPrimitive + ToPrimitive,
@@ -275,11 +278,8 @@ where
     let tensor_data: Tensor<2> = data_to_tensor(data, device);
     let edge_dataset = graph_to_trainings_data(&graph_data);
 
-    if verbose {
-        println!(
-            "Training parametric UMAP on {} positive edges...",
-            edge_dataset.len()
-        );
+    if verbosity.normal_verbosity() {
+        println!(" Training on {} positive edges ...", edge_dataset.len());
     }
 
     let batcher = UmapBatcher::new(train_params.neg_sample_rate, n_samples, seed as u64);
@@ -296,8 +296,8 @@ where
     let use_correlation = train_params.corr_weight > T::zero();
 
     for epoch in 0..train_params.n_epochs {
-        let should_log =
-            verbose && (epoch == 0 || (epoch + 1) % 25 == 0 || epoch + 1 == train_params.n_epochs);
+        let should_log = verbosity.normal_verbosity()
+            && ((epoch + 1) % 50 == 0 || epoch + 1 == train_params.n_epochs);
 
         let mut total_loss = 0.0;
         let mut n_batches = 0;
@@ -344,7 +344,7 @@ where
 
         if should_log {
             println!(
-                "Epoch {}/{}: Loss = {:.6}",
+                "  Epoch {}/{} | loss = {:.6}",
                 epoch + 1,
                 train_params.n_epochs,
                 total_loss / n_batches as f64

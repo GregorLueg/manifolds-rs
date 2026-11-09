@@ -111,7 +111,11 @@ where
     /// * `data` - The underlying data
     /// * `indices` - The index positions (in this case row indices)
     /// * `indptr` - The index pointer (in this case the column index pointers)
-    /// * `data2` - An optional second layer
+    /// * `shape` - Shape of the matrix as `(nrows, ncols)`
+    ///
+    /// ### Returns
+    ///
+    /// The CSC matrix, owning copies of the slices.
     #[allow(dead_code)]
     pub fn new_csc(data: &[T], indices: &[usize], indptr: &[usize], shape: (usize, usize)) -> Self {
         Self {
@@ -123,19 +127,23 @@ where
         }
     }
 
-    /// Generate a nes CSR version of the matrix
+    /// Generate a new CSR version of the matrix
     ///
     /// ### Params
     ///
     /// * `data` - The underlying data
-    /// * `indices` - The index positions (in this case row indices)
-    /// * `indptr` - The index pointer (in this case the column index pointers)
-    /// * `data2` - An optional second layer
+    /// * `indices` - The index positions (in this case column indices)
+    /// * `indptr` - The index pointer (in this case the row index pointers)
+    /// * `shape` - Shape of the matrix as `(nrows, ncols)`
+    ///
+    /// ### Returns
+    ///
+    /// The CSR matrix, owning copies of the slices.
     pub fn new_csr(data: &[T], indices: &[usize], indptr: &[usize], shape: (usize, usize)) -> Self {
         Self {
             data: data.to_vec(),
             indices: indices.to_vec(),
-            indptr: indptr.to_vec(), // Fixed: was using indices instead of indptr
+            indptr: indptr.to_vec(),
             cs_type: CompressedSparseFormat::Csr,
             shape,
         }
@@ -384,7 +392,15 @@ where
     }
 }
 
-/// Helper to
+/// Turn a sparse matrix into a dense one.
+///
+/// ### Params
+///
+/// * `sparse` - The sparse matrix, CSR or CSC
+///
+/// ### Returns
+///
+/// The dense matrix.
 pub fn to_dense<T>(sparse: &CompressedSparseData<T>) -> Mat<T>
 where
     T: Clone + Float + Zero + ComplexField,
@@ -439,7 +455,7 @@ pub struct SparseRow<T> {
 /// Convert COO CoordinateList to CSR CompressedSparseData
 ///
 /// Converts coordinate format to Compressed Sparse Row format. This is required
-/// for efficient row-based operations like normalization and matrix multiplication.
+/// for efficient row-based operations like normalisation and matrix multiplication.
 ///
 /// An input already in `(row, column)` order is copied straight through; anything
 /// else is sorted in parallel first. The graph symmetrisations in

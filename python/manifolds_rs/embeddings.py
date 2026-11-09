@@ -4,9 +4,9 @@ Each class stores its constructor arguments verbatim, names the core function it
 drives, and assembles the parameter payload in ``_params``. Everything else
 comes from `BaseEmbedding`.
 
-Defaults are the crate's own, and there is a test asserting exactly that: an
-estimator left alone must produce the same embedding as calling the core with an
-empty payload. A default that drifts here fails it.
+Defaults are written out as literals so a signature tells the reader something,
+and they have to match the crate's: a test asserts that an estimator left alone
+produces the same embedding as calling the core with an empty payload.
 """
 
 from __future__ import annotations
@@ -26,6 +26,8 @@ from ._params import (
     MDS_METHODS,
     METRICS,
     PACMAP_OPTIMISERS,
+    PHATE_LANDMARK_METHODS,
+    PHATE_METRICS,
     SYMMETRIES,
     TSNE_APPROX,
     UMAP_OPTIMISERS,
@@ -38,6 +40,7 @@ from ._params import (
     UmapGraph,
     UmapOptim,
     merge,
+    umap_epochs,
 )
 from ._validate import check_choice
 
@@ -46,32 +49,39 @@ class UMAP(BaseEmbedding):
     """Uniform manifold approximation and projection.
 
     The default optimiser is the multi-threaded Adam one, which is where most of
-    the speed comes from; `"sgd"` reproduces the original reference behaviour
-    more closely and is slower. Spectral initialisation is the default and is
+    the speed comes from; `"sgd"` follows umap-learn's edge sampling schedule
+    and is slower. `"sgd_parallel"` is the same SGD run lock-free
+    (hogwild) over all threads, so a fixed seed no longer gives the same
+    embedding twice. Spectral initialisation is the default and is
     worth keeping: PCA is the fallback when the Laplacian will not converge, and
     random init throws away the global structure spectral gives you for free.
 
     Args:
         n_components: Output dimensionality.
         n_neighbors: Neighbours per point. The locality knob: small values chase
-            fine structure, large ones preserve more of the global picture.
+            fine structure, large ones preserve more of the global picture. A wider
+            precomputed graph is cut to this, with a warning on stderr.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
+            The last needs ``ann`` to be ``"nndescent"``, ``"hnsw"`` or
+            ``"exhaustive"``.
         min_dist: How tightly points may pack in the embedding. Together with
             `spread` it fits the repulsion curve; neither is used for anything
             else.
         spread: Scale of the embedding relative to `min_dist`.
-        n_epochs: Optimisation epochs.
+        n_epochs: Optimisation epochs. ``None`` means 500, or 200 for the SGD
+            optimisers above 10,000 samples, as umap-learn does.
         learning_rate: Initial learning rate.
         init: ``"spectral"``, ``"pca"`` or ``"random"``.
         ann: Neighbour backend. ``"nndescent"`` suits the small `k` here;
             ``"kmknn"`` is exact and fast up to a few hundred thousand points.
-        optimiser: ``"adam_parallel"``, ``"adam"`` or ``"sgd"``.
+        optimiser: ``"adam_parallel"``, ``"adam"``, ``"sgd"`` or
+            ``"sgd_parallel"``. The last is not reproducible run to run.
         randomised: Use randomised SVD for the PCA initialisation. No effect
             under spectral or random init.
         init_range: Scale of the initial coordinates. ``None`` lets the core
             pick per initialisation.
         seed: Fixes the initialisation and the negative sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed. Progress goes to
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed. Progress goes to
             the process stdout, not ``sys.stdout``. In Jupyter that lands in the
             terminal running the kernel.
         nn_params: Backend-specific neighbour knobs. See `NeighbourParams`.
@@ -89,7 +99,7 @@ class UMAP(BaseEmbedding):
         metric: str = "euclidean",
         min_dist: float = 0.5,
         spread: float = 1.0,
-        n_epochs: int = 500,
+        n_epochs: int | None = None,
         learning_rate: float = 1.0,
         init: str = "spectral",
         ann: str = "nndescent",
@@ -120,7 +130,7 @@ class UMAP(BaseEmbedding):
         self.graph_params = graph_params
         self.optim_params = optim_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         return {
             "n_dim": self.n_components,
             "k": self.n_neighbors,
@@ -137,9 +147,11 @@ class UMAP(BaseEmbedding):
                 self.nn_params,
                 dist_metric=check_choice(self.metric, METRICS, name="metric"),
             ),
-            "umap_graph_params": merge(self.graph_params),
+            "graph_params": merge(self.graph_params),
             "optim_params": merge(
-                self.optim_params, n_epochs=self.n_epochs, lr=self.learning_rate
+                self.optim_params,
+                n_epochs=umap_epochs(self.n_epochs, self.optimiser, n_samples),
+                lr=self.learning_rate,
             ),
         }
 
@@ -171,7 +183,7 @@ class DensMAP(UMAP):
         min_dist: float = 0.5,
         spread: float = 1.0,
         lambda_: float = 2.0,
-        n_epochs: int = 500,
+        n_epochs: int | None = None,
         learning_rate: float = 1.0,
         init: str = "spectral",
         ann: str = "nndescent",
@@ -207,9 +219,9 @@ class DensMAP(UMAP):
         self.lambda_ = lambda_
         self.dens_params = dens_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         return {
-            **super()._params(),
+            **super()._params(n_samples),
             "lambda": self.lambda_,
             "dens_params": merge(self.dens_params),
         }
@@ -241,10 +253,10 @@ class TSNE(BaseEmbedding):
             FFT-interpolated repulsion with four terms or three kernels. The
             FFT variants scale best to large N. See `TSNEGpu` for
             ``"fft_3k_gpu"``.
-        randomised_init: Use randomised SVD for the PCA initialisation.
+        randomised: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
         optim_params: See `TsneOptim`.
     """
@@ -263,7 +275,7 @@ class TSNE(BaseEmbedding):
         init: str = "pca",
         ann: str = "ivf",
         approx: str = "barnes_hut",
-        randomised_init: bool = True,
+        randomised: bool = True,
         init_range: float | None = None,
         seed: int = 42,
         verbose: int = 0,
@@ -278,21 +290,21 @@ class TSNE(BaseEmbedding):
         self.init = init
         self.ann = ann
         self.approx = approx
-        self.randomised_init = randomised_init
+        self.randomised = randomised
         self.init_range = init_range
         self.seed = seed
         self.verbose = verbose
         self.nn_params = nn_params
         self.optim_params = optim_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         check_choice(self.approx, TSNE_APPROX, name="approx")
         return {
             "n_dim": self.n_components,
             "perplexity": self.perplexity,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
-            "randomised_init": self.randomised_init,
+            "randomised": self.randomised,
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,
@@ -332,7 +344,7 @@ class DensNE(TSNE):
         init: str = "pca",
         ann: str = "ivf",
         approx: str = "barnes_hut",
-        randomised_init: bool = True,
+        randomised: bool = True,
         init_range: float | None = None,
         seed: int = 42,
         verbose: int = 0,
@@ -349,7 +361,7 @@ class DensNE(TSNE):
             init=init,
             ann=ann,
             approx=approx,
-            randomised_init=randomised_init,
+            randomised=randomised,
             init_range=init_range,
             seed=seed,
             verbose=verbose,
@@ -359,9 +371,9 @@ class DensNE(TSNE):
         self.lambda_ = lambda_
         self.dens_params = dens_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         return {
-            **super()._params(),
+            **super()._params(n_samples),
             "lambda": self.lambda_,
             "dens_params": merge(self.dens_params),
         }
@@ -381,7 +393,7 @@ class DREAMS(ReferenceEmbedding):
         init: Ignored; accepted so the signature matches `TSNE`.
 
     Everything else is as `TSNE`. The reference is passed to `fit`, see
-    `ReferenceEmbedding.fit`.
+    `fit`.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.dreams
@@ -399,7 +411,7 @@ class DREAMS(ReferenceEmbedding):
         init: str = "pca",
         ann: str = "ivf",
         approx: str = "barnes_hut",
-        randomised_init: bool = True,
+        randomised: bool = True,
         init_range: float | None = None,
         seed: int = 42,
         verbose: int = 0,
@@ -415,14 +427,14 @@ class DREAMS(ReferenceEmbedding):
         self.init = init
         self.ann = ann
         self.approx = approx
-        self.randomised_init = randomised_init
+        self.randomised = randomised
         self.init_range = init_range
         self.seed = seed
         self.verbose = verbose
         self.nn_params = nn_params
         self.optim_params = optim_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         check_choice(self.approx, TSNE_APPROX, name="approx")
         return {
             "n_dim": self.n_components,
@@ -430,7 +442,7 @@ class DREAMS(ReferenceEmbedding):
             "lambda": self.lambda_,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
-            "randomised_init": self.randomised_init,
+            "randomised": self.randomised,
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,
@@ -455,23 +467,29 @@ class PHATE(BaseEmbedding):
 
     Args:
         n_components: Output dimensionality.
-        k: Neighbours used to build the affinity graph. Smaller than UMAP's
-            because the diffusion does the smoothing.
-        metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
+        k: Neighbours that set the kernel bandwidth. Smaller than UMAP's because
+            the diffusion does the smoothing. The search runs ``6k + 5`` wide,
+            since the kernel keeps anything just past the ``k``-th neighbour, so
+            give a precomputed graph that width as well.
+        metric: ``"euclidean"``/``"l2"`` or ``"cosine"``.
         decay: Alpha-decay exponent of the kernel. ``None`` gives a binary
             connectivity kernel instead.
         t: Diffusion time. ``None`` picks the VNE knee.
         gamma: Informational distance constant, in ``[-1, 1]``. ``1`` is the log
             potential, ``0`` the square-root potential.
+        n_landmarks: Landmarks to diffuse on. ``None``, or a value at least
+            `n_samples`, runs the full operator, whose dense potential distances
+            grow with the square of `n_samples`.
+        landmark_method: ``"spectral"``, ``"random"`` or ``"density"``. An mlx
+            build adds ``"spectral_mlx"``.
         mds: ``"sgd_dense"`` (also ``"dense"``) or ``"classic"``.
         mds_iter: MDS iterations. ``None`` uses the backend default.
         ann: Neighbour backend.
         randomised: Use randomised SVD for the initialisation.
         seed: Fixes the initialisation and the landmark sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
-        diffusion_params: Remaining operator knobs, landmarks included. See
-            `PhateDiffusion`.
+        diffusion_params: Remaining operator knobs. See `PhateDiffusion`.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.phate
@@ -485,9 +503,11 @@ class PHATE(BaseEmbedding):
         decay: float | None = 40.0,
         t: int | None = None,
         gamma: float = 1.0,
+        n_landmarks: int | None = 2048,
+        landmark_method: str = "spectral",
         mds: str = "sgd_dense",
         mds_iter: int | None = None,
-        ann: str = "nndescent",
+        ann: str = "ivf",
         randomised: bool = True,
         seed: int = 42,
         verbose: int = 0,
@@ -500,6 +520,8 @@ class PHATE(BaseEmbedding):
         self.decay = decay
         self.t = t
         self.gamma = gamma
+        self.n_landmarks = n_landmarks
+        self.landmark_method = landmark_method
         self.mds = mds
         self.mds_iter = mds_iter
         self.ann = ann
@@ -509,21 +531,22 @@ class PHATE(BaseEmbedding):
         self.nn_params = nn_params
         self.diffusion_params = diffusion_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         diffusion = merge(self.diffusion_params, gamma=self.gamma) or {}
-        # `decay` is set rather than merged: `None` selects the binary
-        # connectivity kernel, and `merge` drops nulls as "leave the default".
+        # `decay` and `n_landmarks` are set rather than merged: `None` selects the
+        # binary kernel and the full operator, and `merge` drops nulls as "leave
+        # the default".
         diffusion["decay"] = self.decay
+        diffusion["n_landmarks"] = self.n_landmarks
         if self.t is not None:
             diffusion["t"] = self.t
         if "graph_symmetry" in diffusion:
             diffusion["graph_symmetry"] = check_choice(
                 diffusion["graph_symmetry"], SYMMETRIES, name="graph_symmetry"
             )
-        if "landmark_method" in diffusion:
-            diffusion["landmark_method"] = check_choice(
-                diffusion["landmark_method"], LANDMARK_METHODS, name="landmark_method"
-            )
+        diffusion["landmark_method"] = check_choice(
+            self.landmark_method, PHATE_LANDMARK_METHODS, name="landmark_method"
+        )
         return {
             "n_dim": self.n_components,
             "k": self.k,
@@ -533,7 +556,7 @@ class PHATE(BaseEmbedding):
             "randomised": self.randomised,
             "nn_params": merge(
                 self.nn_params,
-                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+                dist_metric=check_choice(self.metric, PHATE_METRICS, name="metric"),
             ),
             "diffusion_params": diffusion,
         }
@@ -543,8 +566,8 @@ class PaCMAP(BaseEmbedding):
     """Pairwise-controlled manifold approximation and projection.
 
     Three kinds of pair rather than UMAP's one: near pairs pull, further pairs
-    push, and mid-near pairs hold the global arrangement together while their
-    weight decays over the first two phases. That decay is what lets PaCMAP keep
+    push, and mid-near pairs hold the global arrangement together. Their weight
+    starts high and decays across the first phase, which is what lets PaCMAP keep
     global structure without the spectral initialisation UMAP leans on.
 
     PCA initialisation is the default and close to required: random init costs
@@ -552,21 +575,22 @@ class PaCMAP(BaseEmbedding):
 
     Args:
         n_components: Output dimensionality.
-        n_near: Near (attractive) pairs per point.
+        n_near: Near (attractive) pairs per point. The search runs ``n_near + 50``
+            wide and picks them from those by locally scaled distance. A precomputed
+            graph needs at least `n_near` neighbours and should be that wide.
         n_mid_near: Mid-near pairs per point.
         n_further: Further (repulsive) pairs per point.
-        mn_candidate_start: First kNN slot the mid-near sampler draws from.
-        mn_candidate_end: Last such slot, and therefore the width of the kNN
-            search. A precomputed graph must be at least this wide.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
         n_epochs: Optimisation epochs across all three phases.
         learning_rate: Adam learning rate.
         init: ``"pca"``, ``"spectral"`` or ``"random"``.
         ann: Neighbour backend.
         optimiser: ``"adam_parallel"`` or ``"adam"``.
-        range_: Scale of the initial coordinates.
+        range_: Scale of the initial coordinates. For ``"pca"`` the multiplier on
+            the scores, where ``None`` means ``0.01``. For the other initialisations
+            ``None`` lets the core pick.
         seed: Fixes the initialisation and the pair sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
         optim_params: Phase boundaries and Adam knobs. See `PacmapOptim`.
     """
@@ -580,13 +604,11 @@ class PaCMAP(BaseEmbedding):
         n_near: int = 10,
         n_mid_near: int = 5,
         n_further: int = 20,
-        mn_candidate_start: int = 4,
-        mn_candidate_end: int = 50,
         metric: str = "euclidean",
         n_epochs: int = 450,
-        learning_rate: float = 0.01,
+        learning_rate: float = 1.0,
         init: str = "pca",
-        ann: str = "nndescent",
+        ann: str = "ivf",
         optimiser: str = "adam_parallel",
         range_: float | None = 0.01,
         seed: int = 42,
@@ -598,8 +620,6 @@ class PaCMAP(BaseEmbedding):
         self.n_near = n_near
         self.n_mid_near = n_mid_near
         self.n_further = n_further
-        self.mn_candidate_start = mn_candidate_start
-        self.mn_candidate_end = mn_candidate_end
         self.metric = metric
         self.n_epochs = n_epochs
         self.learning_rate = learning_rate
@@ -612,17 +632,15 @@ class PaCMAP(BaseEmbedding):
         self.nn_params = nn_params
         self.optim_params = optim_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         return {
             "n_dim": self.n_components,
             "n_near": self.n_near,
             "n_mid_near": self.n_mid_near,
             "n_further": self.n_further,
-            "mn_candidate_start": self.mn_candidate_start,
-            "mn_candidate_end": self.mn_candidate_end,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
-            "optimiser_type": check_choice(
+            "optimiser": check_choice(
                 self.optimiser, PACMAP_OPTIMISERS, name="optimiser"
             ),
             "range": self.range_,
@@ -649,18 +667,23 @@ class DiffusionMaps(BaseEmbedding):
         n_components: Output dimensionality, meaning eigenvectors kept.
         k: Neighbours used to build the kernel.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
+            Landmarks take the first two only.
         alpha: Anisotropic density-correction exponent in ``[0, 1]``.
         t: Diffusion time. ``None`` picks the VNE knee.
         bandwidth_scale: Multiplier on the adaptive kernel bandwidth.
         thresh: Kernel entries below this are zeroed.
         graph_symmetry: ``"add"``, ``"multiply"``, ``"mnn"`` or ``"none"``.
         n_landmarks: Landmarks to diffuse on instead of the full graph. ``None``
-            or a value at least `n_samples` runs the full operator.
+            or a value at least `n_samples` runs the full operator. Keep `k` a
+            small fraction of it: when `k` covers a large share of the
+            landmarks the landmark kernel turns broad and the later
+            coordinates shrink towards a line. On small data, prefer the full
+            operator.
         landmark_method: ``"spectral"``, ``"random"`` or ``"density"``.
         n_svd: Components for spectral landmark selection.
         ann: Neighbour backend.
         seed: Fixes the landmark sampling.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
     """
 
@@ -701,7 +724,7 @@ class DiffusionMaps(BaseEmbedding):
         self.verbose = verbose
         self.nn_params = nn_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         return {
             "n_dim": self.n_components,
             "k": self.k,
@@ -737,7 +760,8 @@ class ForceAtlas2(BaseEmbedding):
     Two-dimensional only, which is the core's restriction.
 
     Args:
-        n_neighbors: Neighbours per point used to build the graph.
+        n_neighbors: Neighbours per point used to build the graph. A wider
+            precomputed graph is cut to this, with a warning on stderr.
         metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
         n_epochs: Optimisation epochs.
         scaling_ratio: Repulsion strength. Larger values spread the layout.
@@ -747,11 +771,11 @@ class ForceAtlas2(BaseEmbedding):
         init: ``"spectral"``, ``"pca"`` or ``"random"``.
         ann: Neighbour backend.
         approx: Repulsion approximation. ``"barnes_hut"`` is the only one.
-        randomised_init: Use randomised SVD for the PCA initialisation.
+        randomised: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates. ``None`` lets the core
             pick per initialisation.
         seed: Fixes the initialisation.
-        verbose: ``0`` silent, ``1`` normal, ``2`` detailed.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
         nn_params: See `NeighbourParams`.
         graph_params: Fuzzy simplicial set knobs. See `UmapGraph`.
             ``mix_weight`` must stay at ``1``: anything lower leaves the graph
@@ -774,7 +798,7 @@ class ForceAtlas2(BaseEmbedding):
         init: str = "spectral",
         ann: str = "nndescent",
         approx: str = "barnes_hut",
-        randomised_init: bool = False,
+        randomised: bool = False,
         init_range: float | None = None,
         seed: int = 42,
         verbose: int = 0,
@@ -791,7 +815,7 @@ class ForceAtlas2(BaseEmbedding):
         self.init = init
         self.ann = ann
         self.approx = approx
-        self.randomised_init = randomised_init
+        self.randomised = randomised
         self.init_range = init_range
         self.seed = seed
         self.verbose = verbose
@@ -799,13 +823,13 @@ class ForceAtlas2(BaseEmbedding):
         self.graph_params = graph_params
         self.optim_params = optim_params
 
-    def _params(self) -> dict[str, Any]:
+    def _params(self, n_samples: int) -> dict[str, Any]:
         check_choice(self.approx, FA2_APPROX, name="approx")
         return {
             "k": self.n_neighbors,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
-            "randomised_init": self.randomised_init,
+            "randomised": self.randomised,
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,

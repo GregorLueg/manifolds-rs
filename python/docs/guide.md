@@ -4,15 +4,28 @@ The details that will otherwise bite you.
 
 ## Precision
 
-float32 in, float32 throughout. float64 in, float64 throughout. Anything else,
-integers included, is promoted to float64 rather than narrowed, so precision is
-never lost by accident.
+float32 in, float32 out. float64 in, float64 out. Anything else, integers
+included, is promoted to float64 rather than narrowed.
 
-The design matrix picks the precision for the whole pipeline, including the
-neighbour search and the optimiser. There is no separate knob for it.
+The design matrix picks the precision for the pipeline at any size, including
+the optimiser. There is no separate knob for it.
 
-The GPU estimators are the exception: they cast to float32 because WGSL has no
-float64. That is the only silent narrowing anywhere in the package.
+Worth knowing on large data: float32 kept up. On real single cell PCA at 1M cells,
+UMAP, t-SNE, PaCMAP and ForceAtlas2 scored the same in both precisions, while
+float64 took up to 51% longer and 46% more memory. That is one dataset, and nothing
+above 1M was tested.
+
+Four exceptions:
+
+- The neighbour search runs in float32 on every backend bar `"exhaustive"`, and
+  the distances are cast back up. So `knn_graph` on float64 input returns float64
+  with float32 precision in the values. Want float64 ground truth? Use
+  `"exhaustive"`.
+- PCA initialisation and the randomised SVDs always run in float64, then cast the
+  result back. The float32 factorisations break down at about 520k samples.
+- The GPU estimators cast to float32 at any size. That is the only silent
+  narrowing of your input in the package.
+- `approx="fft_3k_mlx"` optimises in float32 on the device, whatever you pass.
 
 ## Distances
 
@@ -24,6 +37,8 @@ distances reach you.
 So a graph you build yourself and hand to `fit` should hold true distances too.
 
 Metrics available: `"euclidean"`/`"l2"`, `"cosine"` and `"manhattan"`/`"l1"`.
+Manhattan needs `"nndescent"`, `"hnsw"` or `"exhaustive"` as the backend. `PHATE`,
+`PHATEGpu` and `DiffusionMaps` with landmarks raise `ValueError` on it.
 
 ## Reusing the neighbour graph
 
@@ -31,15 +46,21 @@ Past a few hundred thousand points the neighbour search is most of the runtime.
 Build it once:
 
 ```python
-ind, dist = mf.knn_graph(X, k=50, ann="hnsw")
+ind, dist = mf.knn_graph(X, k=60, ann="hnsw")
 
 umap = mf.UMAP(n_neighbors=15).fit_transform(X, knn_indices=ind, knn_distances=dist)
 pacmap = mf.PaCMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
 ```
 
-Two things to get right. Give the shared graph the widest `k` any consumer
-needs: PaCMAP indexes into the list up to `mn_candidate_end`, 50 by default,
-which is usually the binding constraint. And the graph must be complete: a row
+Three things to get right. Build the graph as wide as the widest consumer needs:
+`3 * perplexity` for the t-SNE family, `n_near + 50` for `PaCMAP` and `6k + 5` for
+`PHATE`, since its kernel keeps anything just past the `k`-th neighbour.
+
+`UMAP`, `DensMAP` and `ForceAtlas2` cut a wider graph to `n_neighbors`, keeping the
+nearest, and print a warning to stderr saying so. A graph you build yourself has to
+be sorted by distance for that to mean anything.
+
+And the graph must be complete: a row
 an approximate backend could not fill is padded with `-1`, and that is refused
 rather than quietly dropped, because a hole in the graph is not something these
 algorithms can embed.
@@ -50,9 +71,9 @@ bit-identical embedding. It is a shortcut, not a different algorithm.
 ## Choosing a neighbour backend
 
 The default follows `k`. Estimators that ask for a small neighbourhood (UMAP,
-densMAP, PHATE, PaCMAP, diffusion maps, ForceAtlas2) default to `"nndescent"`.
-t-SNE, den-SNE and DREAMS ask for `3 * perplexity` neighbours and default to
-`"ivf"`, which holds up better at that size.
+densMAP, PHATE, diffusion maps, ForceAtlas2) default to `"nndescent"`. t-SNE,
+den-SNE and DREAMS ask for `3 * perplexity` neighbours and PaCMAP for `n_near + 50`,
+and those default to `"ivf"`, which holds up better at that size.
 
 `"kmknn"` is exact and holds up well into the hundreds of thousands, which
 surprises people who assume exact means slow. `"exhaustive"` is for ground
@@ -80,15 +101,21 @@ applies. A misspelled field is a `TypeError` naming the field.
 
 ## Nulls that mean something
 
-Two parameters take `None` as a real value rather than "use the default":
+Three parameters take `None` as a real value rather than "use the default":
 
 - `PHATE(decay=None)` selects a binary connectivity kernel instead of the
   alpha-decay one.
-- `PaCMAP(range_=None)` means no initialisation range.
+- `PHATE(n_landmarks=None)` runs the full operator instead of landmarks.
+- `PaCMAP(range_=None)` hands the range to the initialisation's own default.
 
 Everywhere else `None` means "let the crate decide".
 
 ## Verbosity
+
+`verbose=0` is quiet. `verbose=1` prints each stage with its timing, plus the
+optimiser's epochs every 50. `verbose=2` adds the parameters, the neighbour index
+internals and the landmark selection. Anything else raises `ValueError`.
+Warnings print at every level, to stderr.
 
 `verbose=1` or `2` writes progress to the *process* stdout, not `sys.stdout`. In
 Jupyter that lands in the terminal running the kernel, not in the notebook. This
@@ -146,15 +173,18 @@ runs of the same configuration will differ, as they should.
 
 Across releases it does not hold either: 0.5.0 changed the eigensolver behind
 the spectral initialisation, PHATE and diffusion maps, so coordinates differ
-from 0.4.x at the same seed.
+from 0.4.x at the same seed. 0.6.0 moved PCA initialisation and the randomised
+SVDs to float64, so float32 runs differ from 0.5.0. It also moved the neighbour
+search to float32, so float64 runs differ too.
 
 ## Errors
 
-- `ValueError` for anything you can fix by changing an argument, including
+- `ValueError` for most things you can fix by changing an argument, including
   everything the neighbour search rejects.
 - `ConvergenceError` when a spectral decomposition ran but did not get there,
   which usually means degenerate data: duplicate points, or a disconnected
-  landmark set. Both subclass `ManifoldsRsError`.
+  landmark set. It subclasses `ManifoldsRsError`, which is also what the rest of
+  the core's errors come as, for example `DensNE(approx="fft_3k_mlx")`.
 - `TypeError` for a bad parameter name or type.
 - `NotFittedError` for reading `embedding_` before `fit`. It subclasses both
   `ValueError` and `AttributeError`, matching scikit-learn's.

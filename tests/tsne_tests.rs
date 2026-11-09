@@ -428,7 +428,7 @@ fn tsne_integration_05_initialisation() {
 
     for init_name in &["pca", "random", "spectral"] {
         let range = Some(1e-4); // t-SNE standard
-        let init_type = parse_initilisation(init_name, false, range).unwrap();
+        let init_type = parse_initialisation(init_name, false, range).unwrap();
         let embd = initialise_embedding(&init_type, 2, 42, &graph, data.as_ref()).unwrap();
 
         println!("\n{} initialisation:", init_name);
@@ -1255,4 +1255,20 @@ fn tsne_integration_20_bh_vs_qd_comparison() {
         "Both optimisers should produce similar quality, got ratio {:.2}",
         ratio
     );
+}
+
+/// The CPU FFT optimisers are an error, not a panic, without their feature
+#[cfg(not(feature = "fft_tsne"))]
+#[test]
+fn tsne_integration_fft_without_feature_is_an_error() {
+    let (data, _) = create_diagnostic_data(30, 10, 42);
+    let params = TsneParams::<f64>::new_default_2d(Some(10.0));
+
+    for approx in ["fft", "fft_3k"] {
+        let res = tsne(data.as_ref(), None, &params, approx, 42, 0);
+        assert!(matches!(
+            res,
+            Err(ManifoldsError::TsneOptimiserNeedsFft { .. })
+        ));
+    }
 }

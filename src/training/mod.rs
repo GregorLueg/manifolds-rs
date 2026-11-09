@@ -1,5 +1,5 @@
-//! Contains all of the different optimiser to fit PHATE, tSNE, UMAP, PaCMAP and
-//! ForceAtlas2.
+//! The optimisers behind PHATE (MDS), t-SNE, UMAP, PaCMAP and ForceAtlas2, with the
+//! GPU variants of the UMAP and t-SNE ones.
 
 pub mod fa2_optimiser;
 pub mod mds_optimiser;

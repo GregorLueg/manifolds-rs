@@ -1,6 +1,8 @@
 //! Various sparse operations on the internal `CompressedSparseData` structure.
 //! These are designed to be highly efficient and use unsafe under the hood.
 
+use faer::linalg::matmul::matmul;
+use faer::{Accum, Mat, Par};
 use rayon::prelude::*;
 use rustc_hash::{FxBuildHasher, FxHashMap};
 
@@ -333,7 +335,7 @@ where
     }
 
     if matrix.shape.0 != matrix.shape.1 {
-        return Err(ManifoldsError::SpareMatrixMustBeSquare);
+        return Err(ManifoldsError::SparseMatrixMustBeSquare);
     }
 
     let mut result = matrix.clone();
@@ -350,7 +352,7 @@ where
 ///
 /// Examples:
 /// - P^8 = ((P^2)^2)^2 (3 multiplications vs 7)
-/// - P^15 = P × ((P^2)^2)^2 × P (5 multiplications vs 14)
+/// - P^15 = P × P^2 × (P^2)^2 × ((P^2)^2)^2 (6 multiplications vs 14)
 ///
 /// ### Params
 ///
@@ -379,7 +381,7 @@ where
     }
 
     if matrix.shape.0 != matrix.shape.1 {
-        return Err(ManifoldsError::SpareMatrixMustBeSquare);
+        return Err(ManifoldsError::SparseMatrixMustBeSquare);
     }
 
     // binary exponentiation
@@ -405,6 +407,75 @@ where
     Ok(result.unwrap())
 }
 
+/// Raise a CSR matrix to an integer power, as a dense matrix.
+///
+/// For small matrices that fill in within a few squarings, such as the PHATE
+/// landmark operator, where a sparse accumulator only adds overhead. Binary
+/// exponentiation over a parallel GEMM, reusing one scratch matrix.
+///
+/// ### Params
+///
+/// * `matrix` - CSR matrix to power
+/// * `t` - Exponent (must be > 0)
+///
+/// ### Returns
+///
+/// P^t as a dense matrix
+pub fn dense_matrix_power<T>(
+    matrix: &CompressedSparseData<T>,
+    t: usize,
+) -> Result<Mat<T>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    if !matrix.cs_type.is_csr() {
+        return Err(ManifoldsError::SparseMatrixIsNotCsr);
+    }
+    if t == 0 {
+        return Err(ManifoldsError::PowerMustBePositive { power: t });
+    }
+    if matrix.shape.0 != matrix.shape.1 {
+        return Err(ManifoldsError::SparseMatrixMustBeSquare);
+    }
+
+    let n = matrix.shape.0;
+    let mut base = matrix.to_dense();
+    let mut scratch = Mat::<T>::zeros(n, n);
+    let mut result: Option<Mat<T>> = None;
+    let mut exp = t;
+
+    let multiply = |out: &mut Mat<T>, a: &Mat<T>, b: &Mat<T>| {
+        matmul(
+            out.as_mut(),
+            Accum::Replace,
+            a.as_ref(),
+            b.as_ref(),
+            T::one(),
+            Par::rayon(0),
+        );
+    };
+
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result = Some(match result {
+                None => base.clone(),
+                Some(mut r) => {
+                    multiply(&mut scratch, &r, &base);
+                    std::mem::swap(&mut r, &mut scratch);
+                    r
+                }
+            });
+        }
+        exp >>= 1;
+        if exp > 0 {
+            multiply(&mut scratch, &base, &base);
+            std::mem::swap(&mut base, &mut scratch);
+        }
+    }
+
+    Ok(result.expect("t > 0 sets a bit, so the loop stores a result"))
+}
+
 ///////////
 // Tests //
 ///////////
@@ -413,6 +484,26 @@ where
 mod test_matrix_power {
     use super::*;
     use approx::assert_relative_eq;
+
+    #[test]
+    fn test_dense_power_matches_sparse_power() {
+        let mat = create_simple_stochastic_matrix();
+        for t in [1, 2, 3, 7, 8, 13] {
+            let sparse = matrix_power(&mat, t).unwrap().to_dense();
+            let dense = dense_matrix_power(&mat, t).unwrap();
+            for i in 0..3 {
+                for j in 0..3 {
+                    assert_relative_eq!(dense[(i, j)], sparse[(i, j)], epsilon = 1e-12);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_dense_power_rejects_zero() {
+        let mat = create_simple_stochastic_matrix();
+        assert!(dense_matrix_power(&mat, 0).is_err());
+    }
 
     fn create_simple_stochastic_matrix() -> CompressedSparseData<f64> {
         // Simple 3x3 row-stochastic matrix
@@ -570,7 +661,7 @@ mod test_matrix_power {
 
         assert!(matches!(
             matrix_power(&mat, 2),
-            Err(ManifoldsError::SpareMatrixMustBeSquare)
+            Err(ManifoldsError::SparseMatrixMustBeSquare)
         ));
     }
 }
