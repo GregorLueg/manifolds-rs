@@ -8,8 +8,9 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 **Breaking changes**
 
 Different coordinates than 0.8.0 at the same seed: PaCMAP, PHATE, parametric
-UMAP, diffusion maps with spectral landmarks, `f32` classic MDS, `f32` PCA
-initialisation and every `f64` run on an approximate kNN backend.
+UMAP, UMAP and densMAP with `"sgd"`, diffusion maps with spectral landmarks,
+`f32` classic MDS, `f32` PCA initialisation and every `f64` run on an
+approximate kNN backend.
 
 - Linear algebra runs in `f64`. `compute_largest_eigenpairs_lanczos`,
   `compute_smallest_eigenpairs_lanczos`, `eigendecompose`, `randomised_svd` and
@@ -63,6 +64,12 @@ initialisation and every `f64` run on an approximate kNN backend.
   parameters, landmark selection, kNN internals and the GPU UMAP gradient norm.
   Unknown-parameter warnings go to stderr. `train_parametric_umap` takes
   `Verbosity`, not `bool`.
+- The `"sgd"` UMAP optimiser evaluates an edge's negative samples against the
+  same source position and applies them as one step, instead of moving the
+  source after each, and takes `x^b` from a lookup table instead of `powf`.
+- `ManifoldsFloat` gains the supertrait `AtomicFloat` (relaxed atomic
+  load and store of `f32`/`f64`). Only matters if you implement
+  `ManifoldsFloat` yourself.
 
 **Features**
 
@@ -73,12 +80,18 @@ initialisation and every `f64` run on an approximate kNN backend.
   singular vectors match the CPU up to `f32` rounding.
 - `PhateLandmarks::build_with_backend` and `SpectralBackend`. `build` stays on
   the CPU.
+- `"sgd_parallel"` UMAP optimiser (`optimise_embedding_sgd_parallel`): the
+  `"sgd"` update run lock-free (hogwild) over all threads. With one thread it
+  matches `"sgd"` exactly; with more, a fixed seed no longer gives the same
+  embedding twice. Works with densMAP and as a CPU fallback in `umap_gpu`.
 
 **Performance**
 
 - PHATE powers the landmark operator as a dense matrix (`dense_matrix_power`,
   `PhateLandmarks::power_dense`). The sparse randomised SVD uses Cholesky QR for
   all but the last power iteration.
+- `"sgd"` is about 2.4x faster, from the batched negative samples, the `x^b`
+  lookup table and, on aarch64, prefetching the negative samples.
 
 **Bug fixes**
 

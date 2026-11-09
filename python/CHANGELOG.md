@@ -10,8 +10,9 @@ Requires `manifolds-rs` 0.9.0.
 **Breaking changes**
 
 Different coordinates than 0.5.0 at the same seed: `PaCMAP`, `PHATE`,
-`DiffusionMaps` with spectral landmarks, `float32` PCA initialisation and every
-`float64` run on an approximate neighbour search.
+`UMAP` and `DensMAP` with `optimiser="sgd"`, `DiffusionMaps` with spectral
+landmarks, `float32` PCA initialisation and every `float64` run on an
+approximate neighbour search.
 
 - The neighbour search runs in `float32` on every backend bar `"exhaustive"`,
   which keeps your dtype. Same recall, faster. `knn_graph` values have `float32`
@@ -45,6 +46,8 @@ Different coordinates than 0.5.0 at the same seed: `PaCMAP`, `PHATE`,
 - `verbose` takes 0 (quiet), 1 (timed stages, epochs every 50) or 2 (also
   parameters, landmark selection, index internals). Anything else raises
   `ValueError`.
+- `optimiser="sgd"` applies an edge's negative samples as one step and uses a
+  lookup table for the power in the gradient, so its layouts differ from 0.5.0.
 
 **Features**
 
@@ -52,6 +55,12 @@ Different coordinates than 0.5.0 at the same seed: `PaCMAP`, `PHATE`,
   randomised SVD and k-means on the device, in `float32`.
 - `PHATE(landmark_method="spectral_mlx")` in an `mlx` build: the landmark SVD
   and k-means on MLX, in `float32`. Works with `PHATEGpu` too.
+- `optimiser="sgd_parallel"` for `UMAP`, `DensMAP` and the GPU variants: the
+  SGD update run lock-free over all threads. Not reproducible run to run.
+
+**Performance**
+
+- `optimiser="sgd"` is about 2.4x faster.
 
 **Bug fixes**
 
