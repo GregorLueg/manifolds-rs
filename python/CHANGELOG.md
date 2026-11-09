@@ -30,6 +30,8 @@ approximate neighbour search.
   - 2048 landmarks by default (was none). `n_landmarks` and `landmark_method`
     moved from `PhateDiffusion` to the `PHATE` and `PHATEGpu` constructors, and
     `n_landmarks=None` selects the full operator.
+  - `ann` defaults to `"ivf"` (was `"nndescent"`). `PHATEGpu` keeps
+    `"nndescent_gpu"`.
   - The search is `6k + 5` wide, thresholded by `thresh`. A precomputed graph
     should be that wide.
   - The kernel has a unit diagonal, the landmark operator is built from it, and

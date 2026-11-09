@@ -34,6 +34,7 @@ approximate kNN backend.
     `NotEnoughNeighbours` carries `n_near`.
 - PHATE follows the reference.
   - `n_landmarks` defaults to `PHATE_DEFAULT_LANDMARKS` (2048), was `None`.
+  - `ann_type` defaults to `"ivf"` (was `"nndescent"`).
   - The kNN search is `6k + 5` wide (`phate_search_width`), and neighbours past
     `k` join the kernel while their affinity clears `thresh`. Build a
     precomputed graph that wide.
@@ -87,7 +88,7 @@ approximate kNN backend.
   `PhateLandmarks::power_dense`). The sparse randomised SVD uses Cholesky QR for
   all but the last power iteration.
 - `"sgd"` is about 2.4x faster.
-- Software prefetch on aarch64 for scattered reads: SGD and parallel Adam
+- Software prefetch on aarch64 and x86_64 for scattered reads: SGD and parallel Adam
   negative samples, FFT t-SNE charge spreading, den-SNE attraction.
 
 **Bug fixes**
