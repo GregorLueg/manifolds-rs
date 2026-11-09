@@ -507,7 +507,7 @@ class PHATE(BaseEmbedding):
         landmark_method: str = "spectral",
         mds: str = "sgd_dense",
         mds_iter: int | None = None,
-        ann: str = "nndescent",
+        ann: str = "ivf",
         randomised: bool = True,
         seed: int = 42,
         verbose: int = 0,
