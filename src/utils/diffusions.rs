@@ -71,6 +71,10 @@ const SPECTRAL_LANDMARK_OVERSAMPLING: usize = 10;
 /// diffusion time the landmark operator picks.
 const SPECTRAL_LANDMARK_KMEANS_ITERS: usize = 30;
 
+/// Shortest curve the knee search accepts. It fits a line either side of an
+/// interior breakpoint, and a curve needs three values to have one.
+const MIN_KNEE_CURVE_LEN: usize = 3;
+
 ///////////
 // PHATE //
 ///////////
@@ -888,15 +892,19 @@ fn compact_assignments(assignments: &mut [usize], n_landmarks: usize) -> usize {
 ///
 /// ### Returns
 ///
-/// Index of the knee point
-pub fn find_knee_point<T>(y: &[T]) -> usize
+/// Index of the knee point, or [`ManifoldsError::TMaxTooSmall`] if the curve
+/// has fewer than [`MIN_KNEE_CURVE_LEN`] values.
+pub fn find_knee_point<T>(y: &[T]) -> Result<usize, ManifoldsError>
 where
     T: Float,
 {
     let n = y.len();
 
-    if n < 3 {
-        panic!("Cannot find knee point on vector of length < 3");
+    if n < MIN_KNEE_CURVE_LEN {
+        return Err(ManifoldsError::TMaxTooSmall {
+            t_max: n,
+            min: MIN_KNEE_CURVE_LEN,
+        });
     }
 
     // use indices as x values
@@ -1023,7 +1031,7 @@ where
         }
     }
 
-    min_idx
+    Ok(min_idx)
 }
 
 ////////////////////
@@ -1423,10 +1431,11 @@ where
     ///
     /// ### Returns
     ///
-    /// Optimal t value (knee point of entropy curve)
+    /// Optimal t value (knee point of entropy curve), or
+    /// [`ManifoldsError::TMaxTooSmall`] if `t_max` is too small for the search.
     pub fn find_optimal_t(&self, t_max: usize) -> Result<usize, ManifoldsError> {
         let entropy = von_neumann_entropy_f64(&self.landmark_op, t_max)?;
-        Ok(find_knee_point(&entropy))
+        find_knee_point(&entropy)
     }
 
     /// Interpolate embedding from landmark embedding
@@ -1548,7 +1557,8 @@ where
 ///
 /// P_sym shares eigenvalues with the row-stochastic operator `P = D^{-1} K`;
 /// right eigenvectors of P are recovered via `phi[i] = u[i] / sqrt(d_i)`,
-/// where u are the symmetric eigenvectors.
+/// where u are the symmetric eigenvectors. That division has no answer for a
+/// zero-degree point, so such a kernel is refused here.
 ///
 /// ### Params
 ///
@@ -1556,7 +1566,8 @@ where
 ///
 /// ### Returns
 ///
-/// `(P_sym, sqrt(degrees))`
+/// `(P_sym, sqrt(degrees))`, or [`ManifoldsError::IsolatedPoints`] if any point
+/// has zero degree.
 pub fn build_symmetric_diffusion_operator<T>(
     kernel: &CompressedSparseData<T>,
 ) -> Result<(CompressedSparseData<T>, Vec<T>), ManifoldsError>
@@ -1577,6 +1588,14 @@ where
             kernel.data[start..end].iter().copied().sum()
         })
         .collect();
+
+    let n_isolated = degrees.iter().filter(|&&d| d <= T::zero()).count();
+    if n_isolated > 0 {
+        return Err(ManifoldsError::IsolatedPoints {
+            n_isolated,
+            n_total: nrows,
+        });
+    }
 
     let sqrt_d: Vec<T> = degrees.par_iter().map(|&d| d.sqrt()).collect();
 
@@ -1802,8 +1821,8 @@ where
     ///   bandwidth
     /// * `thresh` - Minimum affinity; entries below this are dropped for
     ///   sparsity
-    /// * `graph_symmetry` - Symmetrisation method: `"add"`, `"multiply"`, or
-    ///   `"none"`
+    /// * `graph_symmetry` - Symmetrisation method: `"add"`, `"multiply"`,
+    ///   `"mnn"` or `"none"`
     /// * `seed` - RNG seed
     /// * `n_svd` - Number of SVD components for spectral landmark selection
     /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for
@@ -2072,10 +2091,11 @@ where
     ///
     /// ### Returns
     ///
-    /// Optimal `t` (knee point of the entropy curve)
+    /// Optimal `t` (knee point of the entropy curve), or
+    /// [`ManifoldsError::TMaxTooSmall`] if `t_max` is too small for the search.
     pub fn find_optimal_t(&self, t_max: usize) -> Result<usize, ManifoldsError> {
         let entropy = landmark_von_neumann_entropy(&self.p_sym_ll, t_max)?;
-        Ok(find_knee_point(&entropy))
+        find_knee_point(&entropy)
     }
 
     /// Compute diffusion coordinates on the landmarks: y_k(l) = λ_k^t · φ_k(l).
@@ -2365,5 +2385,33 @@ mod test_data_diffusion {
         let (evals, _) = compute_largest_eigenpairs_lanczos(&p_sym, 1, 42).unwrap();
         use approx::assert_relative_eq;
         assert_relative_eq!(evals[0], 1.0, epsilon = 1e-4);
+    }
+
+    #[test]
+    fn test_symmetric_operator_refuses_isolated_point() {
+        // the last row is empty, so point 2 has zero degree
+        let data = vec![1.0, 0.5, 0.5, 1.0];
+        let indices = vec![0, 1, 0, 1];
+        let indptr = vec![0, 2, 4, 4];
+        let kernel = CompressedSparseData::new_csr(&data, &indices, &indptr, (3, 3));
+
+        assert!(matches!(
+            build_symmetric_diffusion_operator(&kernel),
+            Err(ManifoldsError::IsolatedPoints {
+                n_isolated: 1,
+                n_total: 3
+            })
+        ));
+    }
+
+    #[test]
+    fn test_find_knee_point_curve_length() {
+        for n in 0..MIN_KNEE_CURVE_LEN {
+            assert!(matches!(
+                find_knee_point(&vec![1.0_f64; n]),
+                Err(ManifoldsError::TMaxTooSmall { t_max, min: 3 }) if t_max == n
+            ));
+        }
+        assert_eq!(find_knee_point(&[3.0_f64, 2.0, 1.0]).unwrap(), 1);
     }
 }

@@ -3166,7 +3166,7 @@ where
                 PhateDiffusion::Landmark { landmarks } => landmarks.find_optimal_t(t_max),
                 PhateDiffusion::Full { operator } => {
                     let entropy = von_neumann_entropy_f64(operator, t_max)?;
-                    Ok(find_knee_point(&entropy))
+                    find_knee_point(&entropy)
                 }
             }
         }
@@ -4075,13 +4075,22 @@ where
 /// [`ManifoldsError::InsufficientEigenpairs`] rather than a truncated
 /// embedding.
 ///
+/// The kernel has no diagonal, so a point can lose every edge: `"multiply"` and
+/// `"mnn"` drop one-sided edges, and a high `thresh` drops weak ones under any
+/// symmetry. Such a point has no diffusion coordinate, which surfaces as
+/// [`ManifoldsError::IsolatedPoints`]. An auto `t` with `t_max` below 3 returns
+/// [`ManifoldsError::TMaxTooSmall`].
+///
 /// ### Params
 ///
 /// * `data` - Input data as samples x features. Accepts a faer matrix, an
 ///   ndarray 2-D array (with the `ndarray` feature) or a row-major
 ///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
 /// * `precomputed_knn` - Optional precomputed kNN; skips search if provided.
-///   Must have been computed with k >= `dm_params.k`.
+///   The `dm_params.k`-th neighbour sets the bandwidth and every neighbour given
+///   joins the kernel while its affinity clears `thresh`. Unlike UMAP, densMAP
+///   and ForceAtlas2, a wider graph is not cut to `k`. A list shorter than `k`
+///   takes the bandwidth from its last neighbour.
 /// * `dm_params` - Diffusion maps parameters
 /// * `seed` - RNG seed
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -4143,7 +4152,7 @@ where
                         println!(" Finding optimal t (t_max = {}) ...", t_max);
                     }
                     let entropy = landmark_von_neumann_entropy(&p_sym, t_max)?;
-                    find_knee_point(&entropy)
+                    find_knee_point(&entropy)?
                 }
                 PhateTime::Fixed(t) => t,
             };

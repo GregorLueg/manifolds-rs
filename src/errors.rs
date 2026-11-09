@@ -82,6 +82,24 @@ pub enum ManifoldsError {
         /// Number of eigenpairs requested
         requested: usize,
     },
+    /// Error when the diffusion maps kernel leaves points without any edge
+    #[error("{n_isolated} of {n_total} points have no edges left in the diffusion kernel, so their coordinates are undefined; raise k, use graph_symmetry = \"add\" or lower thresh")]
+    IsolatedPoints {
+        /// Number of points with zero degree
+        n_isolated: usize,
+        /// Number of points in the kernel
+        n_total: usize,
+    },
+
+    /// Error when the VNE knee search has too few diffusion times to work with
+    #[error("t_max = {t_max} is too small for the VNE knee search, it needs at least {min}")]
+    TMaxTooSmall {
+        /// Length of the entropy curve, i.e. the provided `t_max`
+        t_max: usize,
+        /// Smallest supported `t_max`
+        min: usize,
+    },
+
     // -- input errors --
     /// Error if a square matrix is not square
     #[error("The matrix needs to be square")]
