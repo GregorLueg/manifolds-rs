@@ -1555,7 +1555,8 @@ where
             .zip(node_has_update.par_iter_mut())
             .zip(node_rngs.par_iter_mut())
             .enumerate()
-            .for_each(|(node_i, ((node_grad, has_update), rng))| {
+            .for_each_init(Vec::new, |negs, (node_i, per_node)| {
+                let ((node_grad, has_update), rng) = per_node;
                 // Clear old gradients
                 for g in node_grad.iter_mut() {
                     *g = T::zero();
@@ -1632,8 +1633,16 @@ where
                             .to_usize()
                             .unwrap_or(0);
 
+                        // draw and prefetch every sample before evaluating any,
+                        // in the original draw order
+                        negs.clear();
                         for _ in 0..n_neg_samples {
                             let k = rng.random_range(0..n);
+                            prefetch_read(&embd_flat[k * n_dim]);
+                            negs.push(k);
+                        }
+
+                        for &k in negs.iter() {
                             if k == node_i {
                                 continue;
                             }
