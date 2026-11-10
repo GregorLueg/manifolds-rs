@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
     
     
       
@@ -1015,31 +1015,50 @@
 <h1 id="guide">Guide<a class="headerlink" href="#guide" title="Permanent link">&para;</a></h1>
 <p>The details that will otherwise bite you.</p>
 <h2 id="precision">Precision<a class="headerlink" href="#precision" title="Permanent link">&para;</a></h2>
-<p>float32 in, float32 throughout. float64 in, float64 throughout. Anything else,
-integers included, is promoted to float64 rather than narrowed, so precision is
-never lost by accident.</p>
-<p>The design matrix picks the precision for the whole pipeline, including the
-neighbour search and the optimiser. There is no separate knob for it.</p>
-<p>The GPU estimators are the exception: they cast to float32 because WGSL has no
-float64. That is the only silent narrowing anywhere in the package.</p>
+<p>float32 in, float32 out. float64 in, float64 out. Anything else, integers
+included, is promoted to float64 rather than narrowed.</p>
+<p>The design matrix picks the precision for the pipeline at any size, including
+the optimiser. There is no separate knob for it.</p>
+<p>Worth knowing on large data: float32 kept up. On real single cell PCA at 1M cells,
+UMAP, t-SNE, PaCMAP and ForceAtlas2 scored the same in both precisions, while
+float64 took up to 51% longer and 46% more memory. That is one dataset, and nothing
+above 1M was tested.</p>
+<p>Four exceptions:</p>
+<ul>
+<li>The neighbour search runs in float32 on every backend bar <code>"exhaustive"</code>, and
+  the distances are cast back up. So <code>knn_graph</code> on float64 input returns float64
+  with float32 precision in the values. Want float64 ground truth? Use
+  <code>"exhaustive"</code>.</li>
+<li>PCA initialisation and the randomised SVDs always run in float64, then cast the
+  result back. The float32 factorisations break down at about 520k samples.</li>
+<li>The GPU estimators cast to float32 at any size. That is the only silent
+  narrowing of your input in the package.</li>
+<li><code>approx="fft_3k_mlx"</code> optimises in float32 on the device, whatever you pass.</li>
+</ul>
 <h2 id="distances">Distances<a class="headerlink" href="#distances" title="Permanent link">&para;</a></h2>
 <p><code>knn_graph</code> returns true distances in whatever metric you asked for. The
 Euclidean backends compute squared distances internally, because that does not
 change the ordering they sort on, and the square root is taken before the
 distances reach you.</p>
 <p>So a graph you build yourself and hand to <code>fit</code> should hold true distances too.</p>
-<p>Metrics available: <code>"euclidean"</code>/<code>"l2"</code>, <code>"cosine"</code> and <code>"manhattan"</code>/<code>"l1"</code>.</p>
+<p>Metrics available: <code>"euclidean"</code>/<code>"l2"</code>, <code>"cosine"</code> and <code>"manhattan"</code>/<code>"l1"</code>.
+Manhattan needs <code>"nndescent"</code>, <code>"hnsw"</code> or <code>"exhaustive"</code> as the backend. <code>PHATE</code>,
+<code>PHATEGpu</code> and <code>DiffusionMaps</code> with landmarks raise <code>ValueError</code> on it.</p>
 <h2 id="reusing-the-neighbour-graph">Reusing the neighbour graph<a class="headerlink" href="#reusing-the-neighbour-graph" title="Permanent link">&para;</a></h2>
 <p>Past a few hundred thousand points the neighbour search is most of the runtime.
 Build it once:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">ind</span><span class="p">,</span> <span class="n">dist</span> <span class="o">=</span> <span class="n">mf</span><span class="o">.</span><span class="n">knn_graph</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">50</span><span class="p">,</span> <span class="n">ann</span><span class="o">=</span><span class="s2">"hnsw"</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">ind</span><span class="p">,</span> <span class="n">dist</span> <span class="o">=</span> <span class="n">mf</span><span class="o">.</span><span class="n">knn_graph</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">ann</span><span class="o">=</span><span class="s2">"hnsw"</span><span class="p">)</span>
 <a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
 <a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">umap</span> <span class="o">=</span> <span class="n">mf</span><span class="o">.</span><span class="n">UMAP</span><span class="p">(</span><span class="n">n_neighbors</span><span class="o">=</span><span class="mi">15</span><span class="p">)</span><span class="o">.</span><span class="n">fit_transform</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">knn_indices</span><span class="o">=</span><span class="n">ind</span><span class="p">,</span> <span class="n">knn_distances</span><span class="o">=</span><span class="n">dist</span><span class="p">)</span>
 <a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">pacmap</span> <span class="o">=</span> <span class="n">mf</span><span class="o">.</span><span class="n">PaCMAP</span><span class="p">()</span><span class="o">.</span><span class="n">fit_transform</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">knn_indices</span><span class="o">=</span><span class="n">ind</span><span class="p">,</span> <span class="n">knn_distances</span><span class="o">=</span><span class="n">dist</span><span class="p">)</span>
 </code></pre></div>
-<p>Two things to get right. Give the shared graph the widest <code>k</code> any consumer
-needs: PaCMAP indexes into the list up to <code>mn_candidate_end</code>, 50 by default,
-which is usually the binding constraint. And the graph must be complete: a row
+<p>Three things to get right. Build the graph as wide as the widest consumer needs:
+<code>3 * perplexity</code> for the t-SNE family, <code>n_near + 50</code> for <code>PaCMAP</code> and <code>6k + 5</code> for
+<code>PHATE</code>, since its kernel keeps anything just past the <code>k</code>-th neighbour.</p>
+<p><code>UMAP</code>, <code>DensMAP</code> and <code>ForceAtlas2</code> cut a wider graph to <code>n_neighbors</code>, keeping the
+nearest, and print a warning to stderr saying so. A graph you build yourself has to
+be sorted by distance for that to mean anything.</p>
+<p>And the graph must be complete: a row
 an approximate backend could not fill is padded with <code>-1</code>, and that is refused
 rather than quietly dropped, because a hole in the graph is not something these
 algorithms can embed.</p>
@@ -1047,9 +1066,9 @@ algorithms can embed.</p>
 bit-identical embedding. It is a shortcut, not a different algorithm.</p>
 <h2 id="choosing-a-neighbour-backend">Choosing a neighbour backend<a class="headerlink" href="#choosing-a-neighbour-backend" title="Permanent link">&para;</a></h2>
 <p>The default follows <code>k</code>. Estimators that ask for a small neighbourhood (UMAP,
-densMAP, PHATE, PaCMAP, diffusion maps, ForceAtlas2) default to <code>"nndescent"</code>.
-t-SNE, den-SNE and DREAMS ask for <code>3 * perplexity</code> neighbours and default to
-<code>"ivf"</code>, which holds up better at that size.</p>
+densMAP, PHATE, diffusion maps, ForceAtlas2) default to <code>"nndescent"</code>. t-SNE,
+den-SNE and DREAMS ask for <code>3 * perplexity</code> neighbours and PaCMAP for <code>n_near + 50</code>,
+and those default to <code>"ivf"</code>, which holds up better at that size.</p>
 <p><code>"kmknn"</code> is exact and holds up well into the hundreds of thousands, which
 surprises people who assume exact means slow. <code>"exhaustive"</code> is for ground
 truth. <code>"hnsw"</code>, <code>"annoy"</code> and <code>"balltree"</code> are there for the cases where they
@@ -1071,14 +1090,19 @@ estimator it is not in the group, and vice versa. So:</p>
 <p>A field left at <code>None</code> in a group is not sent at all and the crate's default
 applies. A misspelled field is a <code>TypeError</code> naming the field.</p>
 <h2 id="nulls-that-mean-something">Nulls that mean something<a class="headerlink" href="#nulls-that-mean-something" title="Permanent link">&para;</a></h2>
-<p>Two parameters take <code>None</code> as a real value rather than "use the default":</p>
+<p>Three parameters take <code>None</code> as a real value rather than "use the default":</p>
 <ul>
 <li><code>PHATE(decay=None)</code> selects a binary connectivity kernel instead of the
   alpha-decay one.</li>
-<li><code>PaCMAP(range_=None)</code> means no initialisation range.</li>
+<li><code>PHATE(n_landmarks=None)</code> runs the full operator instead of landmarks.</li>
+<li><code>PaCMAP(range_=None)</code> hands the range to the initialisation's own default.</li>
 </ul>
 <p>Everywhere else <code>None</code> means "let the crate decide".</p>
 <h2 id="verbosity">Verbosity<a class="headerlink" href="#verbosity" title="Permanent link">&para;</a></h2>
+<p><code>verbose=0</code> is quiet. <code>verbose=1</code> prints each stage with its timing, plus the
+optimiser's epochs every 50. <code>verbose=2</code> adds the parameters, the neighbour index
+internals and the landmark selection. Anything else raises <code>ValueError</code>.
+Warnings print at every level, to stderr.</p>
 <p><code>verbose=1</code> or <code>2</code> writes progress to the <em>process</em> stdout, not <code>sys.stdout</code>. In
 Jupyter that lands in the terminal running the kernel, not in the notebook. This
 is the core printing directly and there is nothing this layer can do about it
@@ -1122,14 +1146,17 @@ clusters, the branches and the separations being there.</p>
 runs of the same configuration will differ, as they should.</p>
 <p>Across releases it does not hold either: 0.5.0 changed the eigensolver behind
 the spectral initialisation, PHATE and diffusion maps, so coordinates differ
-from 0.4.x at the same seed.</p>
+from 0.4.x at the same seed. 0.6.0 moved PCA initialisation and the randomised
+SVDs to float64, so float32 runs differ from 0.5.0. It also moved the neighbour
+search to float32, so float64 runs differ too.</p>
 <h2 id="errors">Errors<a class="headerlink" href="#errors" title="Permanent link">&para;</a></h2>
 <ul>
-<li><code>ValueError</code> for anything you can fix by changing an argument, including
+<li><code>ValueError</code> for most things you can fix by changing an argument, including
   everything the neighbour search rejects.</li>
 <li><code>ConvergenceError</code> when a spectral decomposition ran but did not get there,
   which usually means degenerate data: duplicate points, or a disconnected
-  landmark set. Both subclass <code>ManifoldsRsError</code>.</li>
+  landmark set. It subclasses <code>ManifoldsRsError</code>, which is also what the rest of
+  the core's errors come as, for example <code>DensNE(approx="fft_3k_mlx")</code>.</li>
 <li><code>TypeError</code> for a bad parameter name or type.</li>
 <li><code>NotFittedError</code> for reading <code>embedding_</code> before <code>fit</code>. It subclasses both
   <code>ValueError</code> and <code>AttributeError</code>, matching scikit-learn's.</li>
@@ -1200,7 +1227,7 @@ build on Apple Silicon; see <a href="../gpu/#mlx-on-apple-silicon">GPU</a>.</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
       
     
   </body>

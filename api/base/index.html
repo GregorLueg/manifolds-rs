@@ -21,7 +21,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
     
     
       
@@ -1188,6 +1188,37 @@ whole.</p>
         <p>Set constructor parameters, discarding any fitted embedding.</p>
 
 
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>**params</code>
+            </td>
+            <td>
+                  <code><span title="typing.Any">Any</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Constructor arguments to replace, by name.</p>
+              </div>
+            </td>
+            <td>
+                  <code>{}</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
     <p><span class="doc-section-title">Returns:</span></p>
     <table>
       <thead>
@@ -1282,8 +1313,9 @@ whole.</p>
               <div class="doc-md-description">
                 <p>Array-like of shape <code>(n_samples, n_features)</code>. float32 and
 float64 are used as-is; other numeric types are promoted to
-float64. The element type picks the precision the whole
-pipeline runs in.</p>
+float64. The element type picks the precision the pipeline runs
+in, apart from the neighbour search, which is float32 on every
+backend bar <code>"exhaustive"</code>.</p>
               </div>
             </td>
             <td>
@@ -1380,11 +1412,23 @@ in the same metric. <code>knn_graph</code> returns exactly that.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>X</code> or the kNN arrays do not hold numbers.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                   <code><span title="ValueError">ValueError</span></code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If only one of the two kNN arrays was given.</p>
+                <p>If <code>X</code> or the kNN arrays have the wrong shape or hold
+non-finite values, if only one of the two kNN arrays was given,
+or if <code>verbose</code> is not 0, 1 or 2.</p>
               </div>
             </td>
           </tr>
@@ -1512,7 +1556,7 @@ in the same metric. <code>knn_graph</code> returns exactly that.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The embedding, <code>(n_samples, n_components)</code>, in the same float type</p>
+                <p>The embedding, <code>(n_samples, n_components)</code>, in the float type the</p>
               </div>
             </td>
           </tr>
@@ -1522,7 +1566,7 @@ in the same metric. <code>knn_graph</code> returns exactly that.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>as the input.</p>
+                <p>pipeline ran in. See <code>fit</code>.</p>
               </div>
             </td>
           </tr>
@@ -1738,7 +1782,7 @@ the whole set, which changes the existing coordinates too.</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.c21346df.min.js"></script>
+      <script src="../../assets/javascripts/bundle.a5f9d56c.min.js"></script>
       
     
   </body>

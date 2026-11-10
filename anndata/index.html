@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
     
     
       
@@ -942,8 +942,8 @@ narrow for t-SNE at the usual perplexity. There is no automatic PCA: without
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">mf</span><span class="o">.</span><span class="n">umap</span><span class="p">(</span><span class="n">adata</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">"gpu"</span><span class="p">)</span>
 <a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">mf</span><span class="o">.</span><span class="n">tsne</span><span class="p">(</span><span class="n">adata</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="s2">"gpu"</span><span class="p">,</span> <span class="n">approx</span><span class="o">=</span><span class="s2">"fft_3k_gpu"</span><span class="p">)</span>
 </code></pre></div>
-<p><code>device="gpu"</code> swaps in <code>UMAPGpu</code> / <code>TSNEGpu</code>, float32 throughout. See
-<a href="../gpu/">GPU</a> for what runs on the device.</p>
+<p><code>device="gpu"</code> swaps in <code>UMAPGpu</code> / <code>TSNEGpu</code>. See <a href="../gpu/">GPU</a> for what runs on
+the device and in which precision.</p>
 <h2 id="what-gets-written">What gets written<a class="headerlink" href="#what-gets-written" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -977,11 +977,14 @@ the result survives <code>write_h5ad</code>. UMAP's <code>a</code> and <code>b</
 fits them from <code>min_dist</code> and <code>spread</code> and does not hand them back.</p>
 <p><code>copy=True</code> returns a modified copy and leaves <code>adata</code> alone.</p>
 <h2 id="everything-else">Everything else<a class="headerlink" href="#everything-else" title="Permanent link">&para;</a></h2>
-<p>Any other constructor argument of the estimator goes through as a keyword:</p>
+<p>Other constructor arguments of the estimator go through as keywords:</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">mf</span><span class="o">.</span><span class="n">umap</span><span class="p">(</span><span class="n">adata</span><span class="p">,</span> <span class="n">n_epochs</span><span class="o">=</span><span class="mi">200</span><span class="p">,</span> <span class="n">init</span><span class="o">=</span><span class="s2">"pca"</span><span class="p">,</span> <span class="n">optim_params</span><span class="o">=</span><span class="n">mf</span><span class="o">.</span><span class="n">UmapOptim</span><span class="p">(</span><span class="n">gamma</span><span class="o">=</span><span class="mf">1.5</span><span class="p">))</span>
-<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">mf</span><span class="o">.</span><span class="n">tsne</span><span class="p">(</span><span class="n">adata</span><span class="p">,</span> <span class="n">learning_rate</span><span class="o">=</span><span class="mf">500.0</span><span class="p">,</span> <span class="n">ann</span><span class="o">=</span><span class="s2">"hnsw"</span><span class="p">,</span> <span class="n">metric</span><span class="o">=</span><span class="s2">"cosine"</span><span class="p">)</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">mf</span><span class="o">.</span><span class="n">tsne</span><span class="p">(</span><span class="n">adata</span><span class="p">,</span> <span class="n">learning_rate</span><span class="o">=</span><span class="mf">500.0</span><span class="p">)</span>
 </code></pre></div>
-<p>Unknown names raise, same as the estimator constructors.</p>
+<p>Unknown names raise, same as the estimator constructors. The neighbour graph
+comes from <code>adata</code>, which sets two limits: <code>n_neighbors</code> is taken from the graph
+and raises <code>TypeError</code> if you pass it, and <code>ann</code> and <code>metric</code> are accepted but do
+nothing, since the search never runs.</p>
 <h2 id="benchmark">Benchmark<a class="headerlink" href="#benchmark" title="Permanent link">&para;</a></h2>
 <p>25,000 cells from <code>mf.datasets.clustered(25_000, dim=50, n_clusters=8)</code>,
 <code>sc.pp.pca(n_comps=30)</code> and <code>sc.pp.neighbors(n_neighbors=15)</code> beforehand, not
@@ -1037,7 +1040,8 @@ means the clusters sit further apart than they are wide.</p>
 </table>
 <p>Mean ± sd over the three repeats. Run on an Apple M1 Max (10 cores), scanpy
 1.11.5. Defaults on both sides, with two things worth knowing: scanpy runs UMAP
-for 200 epochs above 10,000 cells where <code>mf.umap</code> runs 500, and <code>sc.tl.tsne</code>
+for 200 epochs above 10,000 cells where <code>mf.umap</code> runs 500 with its default Adam
+optimiser (the SGD optimisers drop to 200 there too), and <code>sc.tl.tsne</code>
 was given <code>n_jobs=10</code> since its default is single-threaded. One synthetic
 dataset on one machine; measure on your own data before relying on it.</p>
 
@@ -1102,7 +1106,7 @@ dataset on one machine; measure on your own data before relying on it.</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
       
     
   </body>

@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
     
     
       
@@ -1000,7 +1000,7 @@ data, and be suspicious of any benchmark that reports one number.</p>
 <h2 id="comparing-algorithms-on-the-same-graph">Comparing algorithms on the same graph<a class="headerlink" href="#comparing-algorithms-on-the-same-graph" title="Permanent link">&para;</a></h2>
 <p>The neighbour search is most of the runtime on anything large, and every
 estimator accepts a precomputed graph. Build it once:</p>
-<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">ind</span><span class="p">,</span> <span class="n">dist</span> <span class="o">=</span> <span class="n">mf</span><span class="o">.</span><span class="n">knn_graph</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">50</span><span class="p">,</span> <span class="n">ann</span><span class="o">=</span><span class="s2">"hnsw"</span><span class="p">)</span>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">ind</span><span class="p">,</span> <span class="n">dist</span> <span class="o">=</span> <span class="n">mf</span><span class="o">.</span><span class="n">knn_graph</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">90</span><span class="p">,</span> <span class="n">ann</span><span class="o">=</span><span class="s2">"hnsw"</span><span class="p">)</span>
 <a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
 <a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">results</span> <span class="o">=</span> <span class="p">{}</span>
 <a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">estimator</span> <span class="ow">in</span> <span class="p">[</span>
@@ -1010,9 +1010,9 @@ estimator accepts a precomputed graph. Build it once:</p>
 <a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="p">]:</span>
 <a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="n">results</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">estimator</span><span class="o">.</span><span class="n">fit_transform</span><span class="p">(</span><span class="n">X</span><span class="p">,</span> <span class="n">knn_indices</span><span class="o">=</span><span class="n">ind</span><span class="p">,</span> <span class="n">knn_distances</span><span class="o">=</span><span class="n">dist</span><span class="p">)</span>
 </code></pre></div>
-<p><code>k=50</code> because PaCMAP indexes into the kNN list up to <code>mn_candidate_end</code>, which
-defaults to 50. Give the shared graph the widest <code>k</code> any of your estimators
-needs.</p>
+<p>Build the graph as wide as the widest estimator needs. <code>UMAP</code> cuts it to
+<code>n_neighbors</code> and warns that it did. See the
+<a href="../guide/#reusing-the-neighbour-graph">guide</a>.</p>
 <h2 id="trajectories">Trajectories<a class="headerlink" href="#trajectories" title="Permanent link">&para;</a></h2>
 <p>This is where the choice of algorithm stops being cosmetic.</p>
 <div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">X</span><span class="p">,</span> <span class="n">branch</span> <span class="o">=</span> <span class="n">mf</span><span class="o">.</span><span class="n">datasets</span><span class="o">.</span><span class="n">trajectory</span><span class="p">(</span><span class="mi">10_000</span><span class="p">,</span> <span class="n">topology</span><span class="o">=</span><span class="s2">"bifurcation"</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">50</span><span class="p">)</span>
@@ -1111,7 +1111,7 @@ not pass at all is the same as passing an empty one. A misspelled field is a
       <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
       
     
   </body>

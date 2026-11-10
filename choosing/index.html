@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.1">
     
     
       
@@ -859,8 +859,8 @@
 
 
 <h1 id="choosing-an-algorithm">Choosing an algorithm<a class="headerlink" href="#choosing-an-algorithm" title="Permanent link">&para;</a></h1>
-<p>Eight of them, and the honest summary is that three cover most work. Here is how
-to pick without running all eight.</p>
+<p>Nine of them, and the honest summary is that three cover most work. Here is how
+to pick without running all nine.</p>
 <h2 id="start-here">Start here<a class="headerlink" href="#start-here" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -891,6 +891,10 @@ to pick without running all eight.</p>
 <td><code>DensMAP</code></td>
 </tr>
 <tr>
+<td>t-SNE clusters, but in a sensible arrangement</td>
+<td><code>DREAMS</code></td>
+</tr>
+<tr>
 <td>You want the spectral embedding itself, not a layout of it</td>
 <td><code>DiffusionMaps</code></td>
 </tr>
@@ -917,16 +921,20 @@ t-SNE clusters carry very little information, and cluster sizes carry none. The
 learning rate here defaults to <code>max(N / 12, 200)</code> rather than a fixed 200, so it
 does not need retuning as the dataset grows. Two-dimensional only.</p>
 <p><strong>den-SNE</strong> is the same density correction applied to t-SNE. The default weight
-is much smaller than densMAP's because the gradients are on a different scale,
-not because the effect is meant to be weaker.</p>
+is much smaller than densMAP's because its gradient has neither a log epsilon nor
+gradient clipping to absorb a collapsed radius, not because the effect is meant to
+be weaker.</p>
+<p><strong>DREAMS</strong> is t-SNE with a pull towards a global reference embedding, PCA unless
+you hand one in. You keep the clusters and get a sensible arrangement of them.
+<code>lambda_</code> slides from plain t-SNE at <code>0</code> to the reference at <code>1</code>.</p>
 <p><strong>PHATE</strong> powers a diffusion operator to time <code>t</code>, takes the potential distance
 between the resulting distributions, and lays those out with MDS. That is a
 completely different object from a kNN graph layout, and it is why trajectories
 and branch points survive PHATE that t-SNE tears into blobs. If your biology is
 continuous, this is the one.</p>
 <p><strong>PaCMAP</strong> uses three kinds of pair: near pairs pull, further pairs push, and
-mid-near pairs hold the global arrangement together while their weight decays
-over the first two phases. That decay is what lets it keep global structure
+mid-near pairs hold the global arrangement together. Their weight starts high
+and decays across the first phase, which is what lets it keep global structure
 without leaning on a spectral initialisation. PCA init is close to required;
 random init throws away most of the advantage.</p>
 <p><strong>Diffusion maps</strong> is the spectral embedding PHATE builds on. Reach for it when
@@ -950,13 +958,18 @@ needs a symmetric graph. Two-dimensional only.</p>
   optimiser time. <code>approx="fft"</code> and <code>"fft_3k"</code> swap the tree for an FFT on
   an interpolation grid, linear in the number of points.</li>
 <li><code>UMAP</code>, <code>DensMAP</code> and <code>PaCMAP</code> pay for the neighbour search and then a cheap
-  per-edge update. The parallel Adam optimiser is the default.</li>
-<li><code>PHATE</code> and <code>DiffusionMaps</code> pay for an eigendecomposition. Set <code>n_landmarks</code>
-  above roughly 50k points or you will wait.</li>
+  per-edge update. The parallel Adam optimiser is the default.
+  <code>optimiser="sgd_parallel"</code> runs the reference SGD lock-free over all
+  threads, at the price of a different embedding on every run.</li>
+<li><code>PHATE</code> pays for the powering, the potential distances and the MDS, which is
+  why it runs on 2048 landmarks by default. <code>n_landmarks=None</code> runs the full
+  operator, whose dense distance matrix grows with the square of the sample count.</li>
+<li><code>DiffusionMaps</code> pays for an eigendecomposition of the sparse operator, and runs
+  on the full operator unless you set <code>n_landmarks</code>.</li>
 </ul>
 <p>For all of them, past a few hundred thousand points the neighbour search
-dominates. The defaults (<code>"nndescent"</code>, <code>"ivf"</code> for the t-SNE family) are
-built for that; <code>"hnsw"</code> is the alternative. Or build the graph once
+dominates. The defaults (<code>"nndescent"</code>, <code>"ivf"</code> for the t-SNE family and PaCMAP)
+are built for that; <code>"hnsw"</code> is the alternative. Or build the graph once
 with <a href="../api/neighbours/"><code>knn_graph</code></a> and hand it to each estimator.</p>
 <h2 id="what-none-of-them-do">What none of them do<a class="headerlink" href="#what-none-of-them-do" title="Permanent link">&para;</a></h2>
 <p>Project new points. There is no <code>transform</code>. Embedding new data means refitting
@@ -1025,7 +1038,7 @@ operation the old ones went through.</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "navigation.tracking", "content.code.copy", "content.action.edit", "toc.follow"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
       
     
   </body>
