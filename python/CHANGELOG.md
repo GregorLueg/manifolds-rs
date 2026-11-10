@@ -3,6 +3,16 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.6.1
+
+Requires `manifolds-rs` 0.9.1.
+
+- Fix: the automatic `t` of `PHATE` and `DiffusionMaps` from 5000 points up
+  was far too large. Coordinates differ from 0.6.0 at the same seed unless `t`
+  is pinned, as do `float32` runs below 5000 points.
+- Faster `t` selection below 5000 points and faster spectral landmark selection
+  in `DiffusionMaps`.
+
 ## 0.6.0
 
 Requires `manifolds-rs` 0.9.0.

@@ -3,6 +3,16 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.9.1
+
+- Fix: the automatic `t` of PHATE and diffusion maps from 5000 points up used
+  only the top 100 singular values and picked far too large a `t`. It now uses
+  stochastic Lanczos quadrature over the whole spectrum. Coordinates differ from
+  0.9.0 at the same seed unless `t` is pinned, as do `f32` runs below 5000
+  points.
+- Faster `t` selection below 5000 points and faster spectral landmark selection
+  for diffusion maps.
+
 ## 0.9.0
 
 **Breaking changes**
