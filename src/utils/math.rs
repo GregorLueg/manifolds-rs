@@ -15,11 +15,18 @@ use crate::prelude::*;
 // Consts //
 ////////////
 
-/// Threshold when to go through the sparse path in VNE
+/// Operator size from which VNE switches from the exact dense spectrum to
+/// stochastic Lanczos quadrature
 const VNE_DENSE_THRESHOLD: usize = 5000;
 
-/// Number of PCs to return on the sparse path
-const VNE_SPARSE_RANK: usize = 100;
+/// Rademacher probes for the SLQ entropy estimate
+const VNE_SLQ_PROBES: usize = 30;
+
+/// Lanczos steps per SLQ probe
+const VNE_SLQ_STEPS: usize = 50;
+
+/// Seed for the SLQ probes
+const VNE_SLQ_SEED: u64 = 42;
 
 /// Rows handled per parallel chunk in the Lanczos sparse matrix-vector product.
 ///
@@ -1053,7 +1060,144 @@ where
         .collect())
 }
 
+/// Von Neumann entropy of a square matrix at each power, from stochastic
+/// Lanczos quadrature on `A^T A`.
+///
+/// The entropy at power `t` only needs two spectral sums over the singular
+/// values: `H_t = ln S_t - Q_t / S_t` with `S_t = sum s^t` and
+/// `Q_t = sum s^t ln s^t`. Each probe runs `steps` Lanczos iterations (no
+/// reorthogonalisation) from a Rademacher vector; the tridiagonal's
+/// eigenvalues and squared first eigenvector components are the Gauss nodes
+/// and weights, and every `t` reuses them. Unlike a truncated SVD this keeps
+/// the tail of the spectrum, which dominates the sums at small `t`.
+///
+/// Probes run in parallel but are summed in probe order, so a seed gives the
+/// same curve on any thread count.
+///
+/// ### Params
+///
+/// * `operator` - Square sparse matrix.
+/// * `t_max` - The maximum number of powers to consider.
+/// * `n_probe` - Number of Rademacher probes.
+/// * `steps` - Lanczos steps per probe.
+/// * `seed` - Seed for the probes.
+///
+/// ### Returns
+///
+/// A vector of von Neumann entropies for each power.
+///
+/// ### References
+///
+/// Ubaru, Chen & Saad, SIAM J. Matrix Anal. Appl., 2017
+fn slq_von_neumann_entropy<T>(
+    operator: &CompressedSparseData<T>,
+    t_max: usize,
+    n_probe: usize,
+    steps: usize,
+    seed: u64,
+) -> Result<Vec<f64>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let n = operator.shape.0;
+    let flipped = operator.transform();
+    let (a, at) = match operator.cs_type {
+        CompressedSparseFormat::Csr => (operator, &flipped),
+        CompressedSparseFormat::Csc => (&flipped, operator),
+    };
+    // CSC arrays of A read as CSR are A^T
+    let spmv = |m: &CompressedSparseData<T>, x: &[f64], y: &mut [f64]| {
+        for (i, y_i) in y.iter_mut().enumerate() {
+            let mut acc = 0.0;
+            for idx in m.indptr[i]..m.indptr[i + 1] {
+                acc += m.data[idx].to_f64().unwrap() * x[m.indices[idx]];
+            }
+            *y_i = acc;
+        }
+    };
+
+    let quadratures: Vec<(Vec<f64>, Vec<f64>)> = (0..n_probe)
+        .into_par_iter()
+        .map(|probe| {
+            let mut rng = StdRng::seed_from_u64(seed.wrapping_add(probe as u64));
+            let scale = 1.0 / (n as f64).sqrt();
+            let mut v: Vec<f64> = (0..n)
+                .map(|_| if rng.random::<bool>() { scale } else { -scale })
+                .collect();
+            let mut v_prev = vec![0.0f64; n];
+            let mut av = vec![0.0f64; n];
+            let mut w = vec![0.0f64; n];
+            let mut alpha: Vec<f64> = Vec::with_capacity(steps);
+            let mut beta: Vec<f64> = Vec::with_capacity(steps);
+
+            for j in 0..steps {
+                spmv(a, &v, &mut av);
+                spmv(at, &av, &mut w);
+                let a_j: f64 = w.iter().zip(&v).map(|(x, y)| x * y).sum();
+                let b_prev = if j > 0 { beta[j - 1] } else { 0.0 };
+                for i in 0..n {
+                    w[i] -= a_j * v[i] + b_prev * v_prev[i];
+                }
+                alpha.push(a_j);
+                let b_j = norm(&w);
+                // invariant subspace: the quadrature is exact from here
+                if j + 1 == steps || b_j <= LANCZOS_BREAKDOWN_RATIO * a_j.abs().max(b_prev) {
+                    break;
+                }
+                beta.push(b_j);
+                std::mem::swap(&mut v_prev, &mut v);
+                for (v_i, &w_i) in v.iter_mut().zip(&w) {
+                    *v_i = w_i / b_j;
+                }
+            }
+
+            let k = alpha.len();
+            let tri = Mat::<f64>::from_fn(k, k, |i, j| match i.abs_diff(j) {
+                0 => alpha[i],
+                1 => beta[i.min(j)],
+                _ => 0.0,
+            });
+            let eig = tri
+                .self_adjoint_eigen(Side::Lower)
+                .map_err(|_| ManifoldsError::FaerEigenError)?;
+            let nodes = (0..k).map(|i| eig.S()[i].max(0.0).sqrt()).collect();
+            let weights = (0..k).map(|i| eig.U()[(0, i)].powi(2)).collect();
+            Ok((nodes, weights))
+        })
+        .collect::<Result<_, ManifoldsError>>()?;
+
+    // tr f(A^T A) ~ n / n_probe * sum of the per-probe quadratures
+    let scale = n as f64 / n_probe as f64;
+    let entropy = (1..=t_max)
+        .map(|t| {
+            let (mut s, mut q) = (0.0f64, 0.0f64);
+            for (nodes, weights) in &quadratures {
+                for (&sv, &tau) in nodes.iter().zip(weights) {
+                    let g = sv.powi(t as i32);
+                    if g > 0.0 {
+                        s += tau * g;
+                        q += tau * g * g.ln();
+                    }
+                }
+            }
+            if s <= 0.0 {
+                0.0
+            } else {
+                (scale * s).ln() - q / s
+            }
+        })
+        .collect();
+
+    Ok(entropy)
+}
+
 /// Von Neumann entropy of a matrix at each power, accumulated in `f64`.
+///
+/// Below [`VNE_DENSE_THRESHOLD`] the full singular spectrum is computed
+/// densely; above it the entropy comes from stochastic Lanczos quadrature,
+/// see [`slq_von_neumann_entropy`]. A truncated SVD is not an option: the
+/// dropped tail carries most of the spectral mass at small powers and moves
+/// the knee.
 ///
 /// The curve only moves by small amounts past the knee, and powers of the
 /// singular values underflow quickly, so `f32` would shift the knee.
@@ -1075,22 +1219,28 @@ where
 {
     let (n, _) = operator.shape;
 
-    let eigenvalues: Vec<f64> = if n < VNE_DENSE_THRESHOLD {
-        // singular values as sqrt(eig(A^T A)): about half the cost of a full
-        // SVD. Squaring loses singular values below ~1e-8 of the largest,
-        // which carry no weight in the entropy.
-        let a = operator.to_dense();
-        let a = Mat::<f64>::from_fn(n, operator.shape.1, |i, j| a[(i, j)].to_f64().unwrap());
-        let gram = a.transpose() * &a;
-        gram.self_adjoint_eigenvalues(faer::Side::Lower)
-            .map_err(|_| ManifoldsError::FaerEigenError)?
-            .into_iter()
-            .map(|s| s.max(0.0).sqrt())
-            .collect()
-    } else {
-        let rank = VNE_SPARSE_RANK.min(n.saturating_sub(1));
-        sparse_randomised_svd(operator, rank, 42, None, None)?.s
-    };
+    if n >= VNE_DENSE_THRESHOLD {
+        return slq_von_neumann_entropy(
+            operator,
+            t_max,
+            VNE_SLQ_PROBES,
+            VNE_SLQ_STEPS,
+            VNE_SLQ_SEED,
+        );
+    }
+
+    // singular values as sqrt(eig(A^T A)): about half the cost of a full SVD.
+    // Squaring loses singular values below ~1e-8 of the largest, which carry
+    // no weight in the entropy.
+    let a = operator.to_dense();
+    let a = Mat::<f64>::from_fn(n, operator.shape.1, |i, j| a[(i, j)].to_f64().unwrap());
+    let gram = a.transpose() * &a;
+    let eigenvalues: Vec<f64> = gram
+        .self_adjoint_eigenvalues(Side::Lower)
+        .map_err(|_| ManifoldsError::FaerEigenError)?
+        .into_iter()
+        .map(|s| s.max(0.0).sqrt())
+        .collect();
 
     let mut eigenvalues_t = eigenvalues.clone();
     let mut entropy = Vec::with_capacity(t_max);
