@@ -175,7 +175,9 @@ Across releases it does not hold either: 0.5.0 changed the eigensolver behind
 the spectral initialisation, PHATE and diffusion maps, so coordinates differ
 from 0.4.x at the same seed. 0.6.0 moved PCA initialisation and the randomised
 SVDs to float64, so float32 runs differ from 0.5.0. It also moved the neighbour
-search to float32, so float64 runs differ too.
+search to float32, so float64 runs differ too. 0.6.1 fixed the automatic `t` of
+`PHATE` and `DiffusionMaps` from 5000 points up, and moved it to float64, so
+those runs differ from 0.6.0 unless `t` is pinned.
 
 ## Errors
 
