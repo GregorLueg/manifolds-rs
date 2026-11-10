@@ -1948,34 +1948,28 @@ where
                     &Dist::SquaredEuclidean,
                 );
 
-                // for each cluster, pick the point closest to its centroid
-                let mut indices: Vec<usize> = Vec::with_capacity(n_landmarks);
-                for cluster_idx in 0..n_landmarks {
-                    let centroid = &centroids[cluster_idx * k_proj..(cluster_idx + 1) * k_proj];
-                    let mut best: Option<(usize, T)> = None;
-                    for (point_idx, &c) in assignments.iter().enumerate() {
-                        if c as usize == cluster_idx {
-                            let point =
-                                &embedding_flat[point_idx * k_proj..(point_idx + 1) * k_proj];
-                            let d = T::euclidean_simd(centroid, point);
-                            if best.is_none_or(|(_, bd)| d < bd) {
-                                best = Some((point_idx, d));
-                            }
-                        }
-                    }
-                    if let Some((idx, _)) = best {
-                        if !indices.contains(&idx) {
-                            indices.push(idx);
-                        }
+                // for each cluster, pick the point closest to its centroid;
+                // a point has one assignment, so picks never collide
+                let mut best: Vec<Option<(usize, T)>> = vec![None; n_landmarks];
+                for (point_idx, &c) in assignments.iter().enumerate() {
+                    let c = c as usize;
+                    let centroid = &centroids[c * k_proj..(c + 1) * k_proj];
+                    let point = &embedding_flat[point_idx * k_proj..(point_idx + 1) * k_proj];
+                    let d = T::euclidean_simd(centroid, point);
+                    if best[c].is_none_or(|(_, bd)| d < bd) {
+                        best[c] = Some((point_idx, d));
                     }
                 }
+                let mut indices: Vec<usize> = best.into_iter().flatten().map(|(i, _)| i).collect();
 
-                // fill remainder (empty clusters or duplicate picks) with
-                // random
+                // fill remainder (empty clusters) with random
                 if indices.len() < n_landmarks {
+                    let mut taken = vec![false; n];
+                    for &i in &indices {
+                        taken[i] = true;
+                    }
                     let mut rng = StdRng::seed_from_u64(seed as u64 + 1);
-                    let mut remaining: Vec<usize> =
-                        (0..n).filter(|i| !indices.contains(i)).collect();
+                    let mut remaining: Vec<usize> = (0..n).filter(|&i| !taken[i]).collect();
                     remaining.shuffle(&mut rng);
                     while indices.len() < n_landmarks {
                         if let Some(pick) = remaining.pop() {
