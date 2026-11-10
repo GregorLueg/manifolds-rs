@@ -1076,12 +1076,16 @@ where
     let (n, _) = operator.shape;
 
     let eigenvalues: Vec<f64> = if n < VNE_DENSE_THRESHOLD {
-        operator
-            .to_dense()
-            .singular_values()
-            .map_err(|_| ManifoldsError::FaerSvdError)?
+        // singular values as sqrt(eig(A^T A)): about half the cost of a full
+        // SVD. Squaring loses singular values below ~1e-8 of the largest,
+        // which carry no weight in the entropy.
+        let a = operator.to_dense();
+        let a = Mat::<f64>::from_fn(n, operator.shape.1, |i, j| a[(i, j)].to_f64().unwrap());
+        let gram = a.transpose() * &a;
+        gram.self_adjoint_eigenvalues(faer::Side::Lower)
+            .map_err(|_| ManifoldsError::FaerEigenError)?
             .into_iter()
-            .map(|s| s.to_f64().unwrap())
+            .map(|s| s.max(0.0).sqrt())
             .collect()
     } else {
         let rank = VNE_SPARSE_RANK.min(n.saturating_sub(1));
