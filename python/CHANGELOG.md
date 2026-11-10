@@ -7,20 +7,11 @@ Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 
 Requires `manifolds-rs` 0.9.1.
 
-**Fixes**
-
-Different coordinates than 0.6.0 at the same seed with an automatic `t`:
-`PHATE` and `DiffusionMaps` on 5000 or more points (full operator or
-landmarks), and `float32` runs of either below that.
-
-- The automatic `t` from 5000 points up used only the top 100 singular values,
-  which put the knee far too late: `DiffusionMaps` on 10k cells of a real single
-  cell PCA picked `t = 44` where the full spectrum gives 12. It now estimates
-  the entropy over the whole spectrum at about the same cost.
-- Choosing `t` below 5000 points, including on the default 2048 `PHATE`
-  landmarks, takes about half the time. Same `t`.
-- Spectral landmark selection in `DiffusionMaps` no longer scales with points
-  times landmarks. Same landmarks.
+- Fix: the automatic `t` of `PHATE` and `DiffusionMaps` from 5000 points up
+  was far too large. Coordinates differ from 0.6.0 at the same seed unless `t`
+  is pinned, as do `float32` runs below 5000 points.
+- Faster `t` selection below 5000 points and faster spectral landmark selection
+  in `DiffusionMaps`.
 
 ## 0.6.0
 

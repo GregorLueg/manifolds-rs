@@ -5,25 +5,13 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
 ## 0.9.1
 
-**Fixes**
-
-Different coordinates than 0.9.0 at the same seed with an automatic `t`: PHATE
-and diffusion maps on 5000 or more points (full operator or landmarks), and
-`f32` runs of either below that.
-
-- The von Neumann entropy behind the automatic `t` kept only the top 100
-  singular values from 5000 points up. The dropped tail carries most of the
-  spectral mass at small `t`, so the knee landed far too late: on a real single
-  cell PCA, diffusion maps on 10k cells picked `t = 44` where the full spectrum
-  gives 12. It now runs stochastic Lanczos quadrature over the whole spectrum,
-  which lands within one step of the exact `t` at about the cost of the old path
-  (1.4 s on 100k cells).
-- Below 5000 points the singular values come from the eigenvalues of `AᵀA`
-  rather than a full SVD, in `f64` for every `T`. Same `t`, about half the time,
-  which is most of the cost of choosing `t` on 2048 landmarks.
-- Spectral landmark selection for diffusion maps picks the point nearest each
-  centroid in one pass over the points instead of one pass per landmark. Same
-  landmarks.
+- Fix: the automatic `t` of PHATE and diffusion maps from 5000 points up used
+  only the top 100 singular values and picked far too large a `t`. It now uses
+  stochastic Lanczos quadrature over the whole spectrum. Coordinates differ from
+  0.9.0 at the same seed unless `t` is pinned, as do `f32` runs below 5000
+  points.
+- Faster `t` selection below 5000 points and faster spectral landmark selection
+  for diffusion maps.
 
 ## 0.9.0
 
