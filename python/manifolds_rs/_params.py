@@ -67,9 +67,9 @@ INITS: frozenset[str] = frozenset({"spectral", "pca", "random"})
 #: label propagation initialisation and needs the UMAP graph.
 UMAP_INITS: frozenset[str] = INITS | {"recursive"}
 
-#: GPU UMAP optimisers, from `parse_umap_optimiser_gpu`. `"adam_gpu"` keeps the
-#: update on the device; the CPU names still work and pull the embedding back each
-#: epoch.
+#: GPU UMAP optimisers, from `parse_umap_optimiser_gpu`. `"adam_gpu"` and
+#: `"adam_v06_gpu"` keep the update on the device; the CPU names still work and
+#: pull the embedding back each epoch.
 UMAP_OPTIMISERS_GPU: frozenset[str] = frozenset(
     {
         "adam",
@@ -86,6 +86,9 @@ UMAP_OPTIMISERS_GPU: frozenset[str] = frozenset(
 UMAP_OPTIMISERS: frozenset[str] = frozenset(
     {"adam", "sgd", "sgd_parallel", "adam_parallel", "adam_v06"}
 ) | (frozenset({"adam_mlx"}) if _MLX else frozenset())
+
+#: The umap-learn 0.6 Adam optimisers. densMAP rejects them in the core.
+V06_OPTIMISERS: frozenset[str] = frozenset({"adam_v06", "adam_v06_gpu"})
 
 #: The SGD optimisers, which drop to `SGD_EPOCHS_LARGE` epochs on large data.
 SGD_OPTIMISERS: frozenset[str] = frozenset({"sgd", "sgd_parallel"})
@@ -238,9 +241,10 @@ class UmapOptim:
         gamma: Weight on the repulsive term.
         neg_sample_rate: Negative samples drawn per positive edge.
         beta1: Adam first-moment decay. The crate uses 0.5 for UMAP rather than
-            the usual 0.9.
-        beta2: Adam second-moment decay.
-        eps: Adam denominator epsilon.
+            the usual 0.9. Ignored by ``"adam_v06"`` / ``"adam_v06_gpu"``, which
+            keep umap-learn's constants.
+        beta2: Adam second-moment decay. Ignored by the 0.6 Adam, as `beta1`.
+        eps: Adam denominator epsilon. Ignored by the 0.6 Adam, as `beta1`.
     """
 
     a: float | None = None
@@ -281,7 +285,7 @@ class TsneOptim:
 
 @dataclass(frozen=True)
 class PacmapOptim:
-    """PaCMAP optimiser knobs beyond the epochs and learning rate.
+    """PaCMAP and LocalMAP optimiser knobs beyond the epochs and learning rate.
 
     The three phases are what PaCMAP does instead of early exaggeration: the
     mid-near weight starts high, decays across phase 1, holds low through phase 2,

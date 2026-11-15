@@ -32,6 +32,7 @@ from ._params import (
     TSNE_APPROX,
     UMAP_INITS,
     UMAP_OPTIMISERS,
+    V06_OPTIMISERS,
     DensParams,
     Fa2Optim,
     NeighbourParams,
@@ -77,8 +78,10 @@ class UMAP(BaseEmbedding):
         ann: Neighbour backend. ``"nndescent"`` suits the small `k` here;
             ``"kmknn"`` is exact and fast up to a few hundred thousand points.
         optimiser: ``"adam_parallel"``, ``"adam"``, ``"adam_v06"`` (the
-            umap-learn 0.6 Adam, not with `DensMAP`), ``"sgd"`` or
-            ``"sgd_parallel"``. The last is not reproducible run to run.
+            umap-learn 0.6 Adam, not with `DensMAP`; with ``init="recursive"``
+            it takes the short warm-up umap-learn uses for a good start),
+            ``"sgd"`` or ``"sgd_parallel"``. The last is not reproducible run
+            to run.
         randomised: Use randomised SVD for the PCA initialisation. No effect
             under spectral or random init.
         init_range: Scale of the initial coordinates. ``None`` lets the core
@@ -93,6 +96,7 @@ class UMAP(BaseEmbedding):
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.umap
+    _OPTIMISERS: ClassVar[frozenset[str]] = UMAP_OPTIMISERS
 
     @beartype
     def __init__(
@@ -142,7 +146,7 @@ class UMAP(BaseEmbedding):
             "initialisation": check_choice(self.init, UMAP_INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
             "optimiser": check_choice(
-                self.optimiser, UMAP_OPTIMISERS, name="optimiser"
+                self.optimiser, self._OPTIMISERS, name="optimiser"
             ),
             "randomised": self.randomised,
             "init_range": self.init_range,
@@ -172,10 +176,12 @@ class DensMAP(UMAP):
         lambda_: Weight on the density term. ``0`` recovers plain UMAP.
         dens_params: Remaining density knobs. See `DensParams`.
 
-    Everything else is as `UMAP`.
+    Everything else is as `UMAP`, bar ``optimiser="adam_v06"``: the umap-learn
+    0.6 Adam has no density term.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.densmap
+    _OPTIMISERS: ClassVar[frozenset[str]] = UMAP_OPTIMISERS - V06_OPTIMISERS
 
     @beartype
     def __init__(

@@ -44,6 +44,7 @@ from ._params import (
     TSNE_APPROX_GPU,
     UMAP_INITS,
     UMAP_OPTIMISERS_GPU,
+    V06_OPTIMISERS,
     DensParams,
     NeighbourParamsGpu,
     PhateDiffusion,
@@ -91,9 +92,11 @@ class UMAPGpu(BaseEmbedding):
         init: ``"spectral"``, ``"pca"``, ``"random"`` or ``"recursive"`` (the
             umap-learn 0.6 initialisation). Computed on the CPU either way.
         ann: ``"nndescent_gpu"``, ``"ivf_gpu"`` or ``"exhaustive_gpu"``.
-        optimiser: ``"adam_gpu"`` keeps the update on the device. The CPU names
-            still work and pull the embedding back each epoch, which is only
-            worth it for debugging.
+        optimiser: ``"adam_gpu"`` keeps the update on the device, as does
+            ``"adam_v06_gpu"`` (the umap-learn 0.6 Adam). The CPU names
+            (``"adam_parallel"``, ``"adam"``, ``"adam_v06"``, ``"sgd"``,
+            ``"sgd_parallel"``) still work and run the optimisation on the CPU
+            after the GPU neighbour search.
         randomised: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation and the negative sampling.
@@ -104,6 +107,7 @@ class UMAPGpu(BaseEmbedding):
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.umap_gpu
+    _OPTIMISERS: ClassVar[frozenset[str]] = UMAP_OPTIMISERS_GPU
     _BASE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
 
     @beartype
@@ -154,7 +158,7 @@ class UMAPGpu(BaseEmbedding):
             "initialisation": check_choice(self.init, UMAP_INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
             "optimiser": check_choice(
-                self.optimiser, UMAP_OPTIMISERS_GPU, name="optimiser"
+                self.optimiser, self._OPTIMISERS, name="optimiser"
             ),
             "randomised": self.randomised,
             "init_range": self.init_range,
@@ -181,10 +185,12 @@ class DensMAPGpu(UMAPGpu):
         lambda_: Weight on the density term. ``0`` recovers plain UMAP.
         dens_params: Remaining density knobs. See `DensParams`.
 
-    Everything else is as `UMAPGpu`.
+    Everything else is as `UMAPGpu`, bar ``"adam_v06"`` and ``"adam_v06_gpu"``:
+    the umap-learn 0.6 Adam has no density term.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.densmap_gpu
+    _OPTIMISERS: ClassVar[frozenset[str]] = UMAP_OPTIMISERS_GPU - V06_OPTIMISERS
 
     @beartype
     def __init__(
