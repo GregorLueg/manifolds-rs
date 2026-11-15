@@ -194,6 +194,6 @@ those runs differ from 0.6.0 unless `t` is pinned.
 ## What is not in the wheel
 
 The MLX backends. They link mlx-c dynamically, so they only come with a source
-build on Apple Silicon; see [GPU](gpu.md#mlx-on-apple-silicon).
+build on Apple Silicon; see [GPU acceleration](vignettes/gpu.ipynb).
 
 Parametric UMAP exists in the crate but is not yet bound.

@@ -56,8 +56,12 @@ in the group, so there is never a question of which wins.
   want. Ten is a lot of choice and most of them are wrong for your problem.
 - [Quickstart](quickstart.md) for worked examples over the synthetic generators,
   including how to score an embedding rather than squint at it.
-- [GPU](gpu.md) for the five device-accelerated estimators and what they
-  actually buy you.
+- The vignettes, worked through on the synthetic generators and timed against
+  the reference packages: [nearest neighbour searches](vignettes/knn_searches.ipynb),
+  [t-SNE, den-SNE and DREAMS](vignettes/tsne.ipynb),
+  [UMAP, densMAP, PaCMAP, LocalMAP and ForceAtlas2](vignettes/umap_pacmap.ipynb),
+  [PHATE and diffusion maps](vignettes/phate_diffusion.ipynb) and
+  [GPU acceleration](vignettes/gpu.ipynb).
 - [Guide](guide.md) for metrics, precision, threads, reusing the neighbour graph
   and the sharp edges.
 - [API reference](api/embeddings.md) for every parameter of every estimator,
