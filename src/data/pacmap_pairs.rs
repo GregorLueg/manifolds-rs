@@ -51,6 +51,111 @@ pub struct PacmapPairs {
     pub further: Vec<(usize, usize)>,
 }
 
+/// Pairs of one type laid out per node, as CSR with `u32` indices.
+///
+/// Each pair `(i, j)` appears twice: as `j` in row `i` and as `i` in row `j`,
+/// so a node gathers its whole gradient from its own row without any writes
+/// to other nodes. Rows keep the order of a pass over the pair list, which
+/// fixes the summation order and with it the result at a given seed.
+pub struct PairCsr {
+    /// Row offsets, length `n + 1`.
+    pub indptr: Vec<u32>,
+    /// Partner of each entry, length `2 * n_pairs`.
+    pub indices: Vec<u32>,
+}
+
+impl PairCsr {
+    /// Build the per-node layout from a pair list.
+    ///
+    /// ### Params
+    ///
+    /// * `pairs` - Pairs `(i, j)` with both indices below `n`.
+    /// * `n` - Number of nodes.
+    ///
+    /// ### Returns
+    ///
+    /// The CSR, or `TooManyVertices` / `TooManyEdges` if it does not fit `u32`.
+    pub fn from_pairs(pairs: &[(usize, usize)], n: usize) -> Result<Self, ManifoldsError> {
+        Self::build(|| pairs.iter().copied(), pairs.len(), n)
+    }
+
+    /// Build the per-node layout from each node's own partners, without
+    /// materialising the pair list. Same result as [`PairCsr::from_pairs`] on
+    /// the pairs grouped by first index.
+    ///
+    /// ### Params
+    ///
+    /// * `rows` - Partners of each node; `rows.len()` is the number of nodes.
+    ///
+    /// ### Returns
+    ///
+    /// The CSR, or a size error as for [`PairCsr::from_pairs`].
+    pub fn from_rows(rows: &[Vec<usize>]) -> Result<Self, ManifoldsError> {
+        let n_pairs = rows.iter().map(Vec::len).sum();
+        let pairs = || {
+            rows.iter()
+                .enumerate()
+                .flat_map(|(i, r)| r.iter().map(move |&j| (i, j)))
+        };
+        Self::build(pairs, n_pairs, rows.len())
+    }
+
+    /// Counting-sort the pairs into rows, in two passes over them.
+    ///
+    /// ### Params
+    ///
+    /// * `pairs` - Yields the pairs afresh on each call.
+    /// * `n_pairs` - Number of pairs it yields.
+    /// * `n` - Number of nodes.
+    ///
+    /// ### Returns
+    ///
+    /// The CSR, or a size error.
+    fn build<F, I>(pairs: F, n_pairs: usize, n: usize) -> Result<Self, ManifoldsError>
+    where
+        F: Fn() -> I,
+        I: Iterator<Item = (usize, usize)>,
+    {
+        if n > u32::MAX as usize {
+            return Err(ManifoldsError::TooManyVertices { n });
+        }
+        if 2 * n_pairs > u32::MAX as usize {
+            return Err(ManifoldsError::TooManyEdges { n_edges: n_pairs });
+        }
+        let mut indptr = vec![0u32; n + 1];
+        for (i, j) in pairs() {
+            indptr[i + 1] += 1;
+            indptr[j + 1] += 1;
+        }
+        for i in 0..n {
+            indptr[i + 1] += indptr[i];
+        }
+        let mut cursor: Vec<u32> = indptr[..n].to_vec();
+        let mut indices = vec![0u32; 2 * n_pairs];
+        for (i, j) in pairs() {
+            indices[cursor[i] as usize] = j as u32;
+            cursor[i] += 1;
+            indices[cursor[j] as usize] = i as u32;
+            cursor[j] += 1;
+        }
+        Ok(Self { indptr, indices })
+    }
+
+    /// Partners of node `i`.
+    ///
+    /// ### Params
+    ///
+    /// * `i` - Node index.
+    ///
+    /// ### Returns
+    ///
+    /// The slice of partner indices.
+    #[inline(always)]
+    pub fn row(&self, i: usize) -> &[u32] {
+        &self.indices[self.indptr[i] as usize..self.indptr[i + 1] as usize]
+    }
+}
+
 /// Distance between two rows, used to rank mid-near candidates.
 ///
 /// ### Params
@@ -575,5 +680,15 @@ mod test_pacmap_pairs {
         let knn: Vec<Vec<usize>> = vec![vec![]; 5];
         let pairs = pairs_for(&knn, 10, 5, 20, 42);
         assert!(pairs.near.is_empty());
+    }
+
+    #[test]
+    fn test_pair_csr_lists_both_endpoints_in_pair_order() {
+        let csr = PairCsr::from_pairs(&[(0, 2), (1, 2), (0, 1)], 4).unwrap();
+        assert_eq!(csr.indptr, vec![0, 2, 4, 6, 6]);
+        assert_eq!(csr.row(0), &[2, 1]);
+        assert_eq!(csr.row(1), &[2, 0]);
+        assert_eq!(csr.row(2), &[0, 1]);
+        assert!(csr.row(3).is_empty());
     }
 }

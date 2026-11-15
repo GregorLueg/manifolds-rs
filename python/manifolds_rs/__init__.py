@@ -1,6 +1,6 @@
 """Dimensionality reduction for single-cell and computational biology, in Rust.
 
-UMAP, densMAP, t-SNE, den-SNE, DREAMS, PHATE, PaCMAP, diffusion maps and
+UMAP, densMAP, t-SNE, den-SNE, DREAMS, PHATE, PaCMAP, LocalMAP, diffusion maps and
 ForceAtlas2 behind one estimator surface. UMAP, densMAP, t-SNE, DREAMS and PHATE have
 GPU variants, where the neighbour search and parts of the optimiser move to the
 device.
@@ -72,6 +72,7 @@ from .embeddings import (
     DensNE,
     DiffusionMaps,
     ForceAtlas2,
+    LocalMAP,
     PaCMAP,
 )
 from .neighbours import knn_graph
@@ -89,6 +90,7 @@ __all__ = [
     "DiffusionMaps",
     "Fa2Optim",
     "ForceAtlas2",
+    "LocalMAP",
     "ManifoldsRsError",
     "NeighbourParams",
     "NeighbourParamsGpu",

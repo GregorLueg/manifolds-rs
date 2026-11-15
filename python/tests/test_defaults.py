@@ -28,6 +28,7 @@ CASES = [
     ("DREAMS", mf.DREAMS, core.dreams),
     ("PHATE", mf.PHATE, core.phate),
     ("PaCMAP", mf.PaCMAP, core.pacmap),
+    ("LocalMAP", mf.LocalMAP, core.localmap),
     ("DiffusionMaps", mf.DiffusionMaps, core.diffusion_maps),
     ("ForceAtlas2", mf.ForceAtlas2, core.forceatlas2),
 ]

@@ -1,11 +1,13 @@
 //! Optimiser for PaCMAP fitting.
 
 use num_traits::{Float, FromPrimitive};
+use rand::{rngs::SmallRng, Rng, SeedableRng};
 use rayon::prelude::*;
-use std::ops::{AddAssign, SubAssign};
 
+use crate::data::pacmap_pairs::PairCsr;
 use crate::prelude::*;
 use crate::training::*;
+use crate::utils::prefetch::prefetch_read;
 
 /////////////
 // Globals //
@@ -29,6 +31,10 @@ const W_NB_PHASE3: f64 = 1.0;
 const W_MN_PHASE1: f64 = 1000.0;
 /// Weight for the far-away points (kept constant during training)
 const W_FP: f64 = 1.0;
+/// Loss constant `c` of the near pairs
+const C_NEAR: f64 = 10.0;
+/// Loss constant `c` of the mid-near pairs
+const C_MID_NEAR: f64 = 10_000.0;
 
 /// Type of PaCMAP optimiser to use
 #[derive(Default)]
@@ -240,23 +246,416 @@ where
     two / (denom * denom)
 }
 
+//////////////
+// LocalMAP //
+//////////////
+
+/// Further pairs are redrawn every this many epochs in LocalMAP's phase 3.
+/// Set by the LocalMAP reference implementation.
+const LOCALMAP_RESAMPLE_EVERY: usize = 10;
+
+/// Draws per further-pair slot before the resampler keeps the old pair. brisc
+/// counts every kind of rejection towards this, the original only some.
+const LOCALMAP_RESAMPLE_TRIALS: usize = 100;
+
+/// Default embedding distance beyond which LocalMAP's phase 3 rejects a
+/// further pair. Set by the LocalMAP reference implementation.
+pub const LOCALMAP_MAX_DISTANCE: f64 = 10.0;
+
+/// Software prefetch distance in the pair gathers, in entries.
+const PREFETCH_AHEAD: usize = 8;
+
+/// LocalMAP's phase 3 settings.
+#[derive(Clone, Copy, Debug)]
+struct LocalMapPhase3<T> {
+    /// Half of `max_distance`; scales the near-pair force by
+    /// `half_max_distance / sqrt(1 + d)`.
+    half_max_distance: T,
+    /// Squared `max_distance`; resampled further pairs must lie within it.
+    max_distance_sq: T,
+    /// Seed of the further-pair resampler.
+    seed: u64,
+}
+
+/// Build LocalMAP's phase-3 settings.
+///
+/// ### Params
+///
+/// * `max_distance` - Embedding distance cut-off for further pairs.
+/// * `seed` - Seed of the further-pair resampler.
+///
+/// ### Returns
+///
+/// The settings.
+fn localmap_phase3<T: ManifoldsFloat>(max_distance: T, seed: u64) -> LocalMapPhase3<T> {
+    LocalMapPhase3 {
+        half_max_distance: T::from_f64(0.5).unwrap() * max_distance,
+        max_distance_sq: max_distance * max_distance,
+        seed,
+    }
+}
+
+/// Owned partners per node, as the resampler needs them.
+///
+/// ### Params
+///
+/// * `pairs` - Pair list grouped by first index, as `construct_pacmap_pairs`
+///   returns it.
+/// * `n` - Number of nodes.
+///
+/// ### Returns
+///
+/// The partners of each node, in pair-list order.
+fn own_rows(pairs: &[(usize, usize)], n: usize) -> Vec<Vec<usize>> {
+    let mut rows = vec![Vec::new(); n];
+    for &(i, j) in pairs {
+        rows[i].push(j);
+    }
+    rows
+}
+
+/// Flatten per-node rows back to a pair list grouped by first index.
+///
+/// ### Params
+///
+/// * `rows` - Partners of each node.
+///
+/// ### Returns
+///
+/// The pairs `(i, j)`.
+fn rows_to_pairs(rows: &[Vec<usize>]) -> Vec<(usize, usize)> {
+    rows.iter()
+        .enumerate()
+        .flat_map(|(i, r)| r.iter().map(move |&j| (i, j)))
+        .collect()
+}
+
+/// Seed of the resampling round after `epoch`. Counts down from `seed` as brisc
+/// does, which keeps it clear of the pair construction seeds above it.
+///
+/// ### Params
+///
+/// * `seed` - Base seed.
+/// * `epoch` - Current epoch.
+/// * `n` - Number of nodes.
+///
+/// ### Returns
+///
+/// The round's seed; node `i` adds `i`.
+fn resample_seed(seed: u64, epoch: usize, n: usize) -> u64 {
+    seed.wrapping_sub(((epoch as u64) + 1).wrapping_mul(n as u64))
+}
+
+/// Redraw each node's further pairs near it in the embedding.
+///
+/// Each slot draws up to [`LOCALMAP_RESAMPLE_TRIALS`] candidates and takes
+/// the first that is not the node, lies within `max_distance`, is not one of
+/// the node's own near pairs and is not in an earlier slot. If none qualifies
+/// the old pair stays. One RNG per node, so the result does not depend on the
+/// thread count.
+///
+/// ### Params
+///
+/// * `embd` - Row-major embedding, `n * n_dim` long.
+/// * `n_dim` - Embedding dimensions.
+/// * `near_own` - Each node's own near pairs.
+/// * `further_own` - Each node's further pairs, redrawn in place.
+/// * `max_distance_sq` - Squared distance cut-off.
+/// * `seed` - Seed for this round.
+///
+/// ### References
+///
+/// Wang et al., arXiv:2412.15426, 2024 (LocalMAP); brisc `embed.pyx`
+/// (`sample_further_pairs_nearby`).
+fn resample_further_nearby<T>(
+    embd: &[T],
+    n_dim: usize,
+    near_own: &[Vec<usize>],
+    further_own: &mut [Vec<usize>],
+    max_distance_sq: T,
+    seed: u64,
+) where
+    T: ManifoldsFloat,
+{
+    let n = further_own.len();
+    further_own
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, slots)| {
+            let mut rng = SmallRng::seed_from_u64(seed.wrapping_add(i as u64));
+            let yi = &embd[i * n_dim..(i + 1) * n_dim];
+            for s in 0..slots.len() {
+                for _ in 0..LOCALMAP_RESAMPLE_TRIALS {
+                    let c = rng.random_range(0..n);
+                    if c == i {
+                        continue;
+                    }
+                    let yc = &embd[c * n_dim..(c + 1) * n_dim];
+                    let d2 = yi
+                        .iter()
+                        .zip(yc)
+                        .fold(T::zero(), |acc, (&a, &b)| acc + (a - b) * (a - b));
+                    if d2 > max_distance_sq || near_own[i].contains(&c) || slots[..s].contains(&c) {
+                        continue;
+                    }
+                    slots[s] = c;
+                    break;
+                }
+            }
+        });
+}
+
+////////////
+// Kernel //
+////////////
+
+/// Adam constants for one epoch.
+#[derive(Clone, Copy)]
+struct AdamStep<T> {
+    /// Learning rate times the bias correction.
+    ad_scale: T,
+    /// `1 - beta1`.
+    one_minus_b1: T,
+    /// `1 - beta2`.
+    one_minus_b2: T,
+    /// Adam epsilon.
+    eps: T,
+}
+
+impl<T: ManifoldsFloat> AdamStep<T> {
+    /// Constants for the epoch with bias-correction powers `beta1t`, `beta2t`.
+    ///
+    /// ### Params
+    ///
+    /// * `params` - Optimisation parameters.
+    /// * `beta1t` - `beta1^(epoch + 1)`.
+    /// * `beta2t` - `beta2^(epoch + 1)`.
+    ///
+    /// ### Returns
+    ///
+    /// The epoch's constants.
+    fn new(params: &PacmapOptimParams<T>, beta1t: T, beta2t: T) -> Self {
+        Self {
+            ad_scale: params.lr * (T::one() - beta2t).sqrt() / (T::one() - beta1t),
+            one_minus_b1: T::one() - params.beta1,
+            one_minus_b2: T::one() - params.beta2,
+            eps: params.eps,
+        }
+    }
+
+    /// Apply Adam to one coordinate.
+    ///
+    /// ### Params
+    ///
+    /// * `x` - Current coordinate.
+    /// * `g` - Gradient, signed as a step direction.
+    /// * `m` - First moment, updated.
+    /// * `v` - Second moment, updated.
+    ///
+    /// ### Returns
+    ///
+    /// The new coordinate.
+    #[inline(always)]
+    fn apply(&self, x: T, g: T, m: &mut T, v: &mut T) -> T {
+        *m = *m + self.one_minus_b1 * (g - *m);
+        *v = *v + self.one_minus_b2 * (g * g - *v);
+        x + self.ad_scale * *m / (v.sqrt() + self.eps)
+    }
+}
+
+/// Signed near-pair coefficient: PaCMAP's weighted attraction, or LocalMAP's
+/// phase-3 attraction scaled by `half_max_distance / sqrt(1 + d)`.
+///
+/// ### Params
+///
+/// * `dist_sq` - Squared embedding distance.
+/// * `w_nb` - Near-pair weight, ignored in LocalMAP's phase 3.
+/// * `half_max_distance` - LocalMAP's phase-3 scaling, `None` otherwise.
+///
+/// ### Returns
+///
+/// The coefficient on `y_i - y_j`.
+#[inline(always)]
+fn near_coeff<T: ManifoldsFloat>(dist_sq: T, w_nb: T, half_max_distance: Option<T>) -> T {
+    let c = T::from_f64(C_NEAR).unwrap();
+    match half_max_distance {
+        None => -(w_nb * attract_grad_coeff(dist_sq, c)),
+        Some(h) => -(attract_grad_coeff(dist_sq, c) * h / (T::one() + dist_sq).sqrt()),
+    }
+}
+
+/// Add one pair type's force on a node.
+///
+/// ### Params
+///
+/// * `embd` - Row-major embedding.
+/// * `yi` - The node's coordinates.
+/// * `n_dim` - Embedding dimensions.
+/// * `partners` - All entries of the pair CSR; the node's row is
+///   `partners[start..end]`. Passed whole so the prefetch runs into the next
+///   row.
+/// * `start` - First entry of the row.
+/// * `end` - One past the last entry.
+/// * `coeff` - Signed force coefficient from the squared distance; the step is
+///   `coeff * (y_i - y_j)`.
+/// * `grad` - Accumulated step of the node.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn gather<T, F>(
+    embd: &[T],
+    yi: &[T],
+    n_dim: usize,
+    partners: &[u32],
+    start: usize,
+    end: usize,
+    coeff: F,
+    grad: &mut [T],
+) where
+    T: ManifoldsFloat,
+    F: Fn(T) -> T,
+{
+    for k in start..end {
+        if let Some(&ahead) = partners.get(k + PREFETCH_AHEAD) {
+            prefetch_read(&embd[ahead as usize * n_dim]);
+        }
+        let j = partners[k] as usize * n_dim;
+        let yj = &embd[j..j + n_dim];
+        let mut dist_sq = T::zero();
+        for d in 0..n_dim {
+            let diff = yi[d] - yj[d];
+            dist_sq += diff * diff;
+        }
+        let c = coeff(dist_sq);
+        for d in 0..n_dim {
+            grad[d] += c * (yi[d] - yj[d]);
+        }
+    }
+}
+
+/// One fused epoch: each node gathers its gradient from `old` and applies Adam
+/// straight away, writing to `new`, since other nodes still need its old
+/// position.
+///
+/// ### Params
+///
+/// * `old` - Embedding at the start of the epoch.
+/// * `new` - Embedding after the epoch, fully overwritten.
+/// * `m` - Adam first moments.
+/// * `v` - Adam second moments.
+/// * `n_dim` - Embedding dimensions.
+/// * `near` - Near pairs.
+/// * `mid_near` - Mid-near pairs with their weight; `None` skips them.
+/// * `further` - Further pairs.
+/// * `w_nb` - Near-pair weight.
+/// * `half_max_distance` - LocalMAP's phase-3 near scaling, `None` otherwise.
+/// * `adam` - Adam constants for this epoch.
+#[allow(clippy::too_many_arguments)]
+fn fused_epoch<T>(
+    old: &[T],
+    new: &mut [T],
+    m: &mut [T],
+    v: &mut [T],
+    n_dim: usize,
+    near: &PairCsr,
+    mid_near: Option<(&PairCsr, T)>,
+    further: &PairCsr,
+    w_nb: T,
+    half_max_distance: Option<T>,
+    adam: AdamStep<T>,
+) where
+    T: ManifoldsFloat,
+{
+    let c_mn = T::from_f64(C_MID_NEAR).unwrap();
+    let w_fp = T::from_f64(W_FP).unwrap();
+
+    new.par_chunks_exact_mut(n_dim)
+        .zip(m.par_chunks_exact_mut(n_dim))
+        .zip(v.par_chunks_exact_mut(n_dim))
+        .enumerate()
+        .for_each(|(i, ((grad, m_i), v_i))| {
+            let yi = &old[i * n_dim..(i + 1) * n_dim];
+            let row = |csr: &PairCsr| (csr.indptr[i] as usize, csr.indptr[i + 1] as usize);
+            grad.fill(T::zero());
+
+            let (s, e) = row(near);
+            let near_c = |d2| near_coeff(d2, w_nb, half_max_distance);
+            gather(old, yi, n_dim, &near.indices, s, e, near_c, grad);
+
+            if let Some((mn, w_mn)) = mid_near {
+                let (s, e) = row(mn);
+                let mn_c = |d2| -(w_mn * attract_grad_coeff(d2, c_mn));
+                gather(old, yi, n_dim, &mn.indices, s, e, mn_c, grad);
+            }
+
+            let (s, e) = row(further);
+            let fp_c = |d2| w_fp * repel_grad_coeff(d2);
+            gather(old, yi, n_dim, &further.indices, s, e, fp_c, grad);
+
+            for d in 0..n_dim {
+                grad[d] = adam.apply(yi[d], grad[d], &mut m_i[d], &mut v_i[d]);
+            }
+        });
+}
+
+/// Scatter one pair type's force onto both endpoints of each pair.
+///
+/// ### Params
+///
+/// * `embd` - Row-major embedding.
+/// * `n_dim` - Embedding dimensions.
+/// * `pairs` - Pair list.
+/// * `coeff` - Signed force coefficient from the squared distance.
+/// * `grads` - Accumulated steps of all nodes.
+#[inline(always)]
+fn scatter<T, F>(embd: &[T], n_dim: usize, pairs: &[(usize, usize)], coeff: F, grads: &mut [T])
+where
+    T: ManifoldsFloat,
+    F: Fn(T) -> T,
+{
+    for (k, &(i, j)) in pairs.iter().enumerate() {
+        if let Some(&(_, ahead)) = pairs.get(k + PREFETCH_AHEAD) {
+            prefetch_read(&embd[ahead * n_dim]);
+        }
+        let (bi, bj) = (i * n_dim, j * n_dim);
+        let mut dist_sq = T::zero();
+        for d in 0..n_dim {
+            let diff = embd[bi + d] - embd[bj + d];
+            dist_sq += diff * diff;
+        }
+        let c = coeff(dist_sq);
+        for d in 0..n_dim {
+            let delta = embd[bi + d] - embd[bj + d];
+            grads[bi + d] += c * delta;
+            grads[bj + d] -= c * delta;
+        }
+    }
+}
+
 //////////
 // Main //
 //////////
 
-/// Optimise a PaCMAP embedding using Adam.
+/// Shared body of the sequential PaCMAP and LocalMAP optimisers.
+///
+/// Scatters each pair's force onto both endpoints, then applies Adam to the
+/// whole embedding.
 ///
 /// ### Params
 ///
 /// * `embd` - Embedding, shape `[n_samples][n_dim]`. Modified in place.
 /// * `pairs` - The three pair sets from `construct_pacmap_pairs`.
 /// * `params` - Optimisation parameters.
-/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
-///   verbosity.
-pub fn optimise_pacmap<T>(
+/// * `localmap` - LocalMAP's phase-3 settings, `None` for PaCMAP.
+/// * `verbose` - Verbosity level.
+///
+/// ### Returns
+///
+/// `Ok(())` or `NoData` on an empty embedding.
+fn sequential_impl<T>(
     embd: &mut [Vec<T>],
     pairs: &PacmapPairs,
     params: &PacmapOptimParams<T>,
+    localmap: Option<LocalMapPhase3<T>>,
     verbose: usize,
 ) -> Result<(), ManifoldsError>
 where
@@ -267,127 +666,176 @@ where
         return Err(ManifoldsError::NoData);
     }
     let verbosity = parse_verbosity_level(verbose);
-
     let n_dim = embd[0].len();
 
-    // Flatten embedding for cache locality
     let mut embd_flat: Vec<T> = embd.iter().flatten().copied().collect();
-
-    // Adam moments
     let mut m = vec![T::zero(); n * n_dim];
     let mut v = vec![T::zero(); n * n_dim];
+    let mut grads = vec![T::zero(); n * n_dim];
+    let c_mn = T::from_f64(C_MID_NEAR).unwrap();
+    let w_fp = T::from_f64(W_FP).unwrap();
 
-    let one_minus_b1 = T::one() - params.beta1;
-    let one_minus_b2 = T::one() - params.beta2;
+    let near_own = localmap.map(|_| own_rows(&pairs.near, n));
+    let mut further_own = localmap.map(|_| own_rows(&pairs.further, n));
+    let mut further = pairs.further.clone();
 
     let mut beta1t = params.beta1;
     let mut beta2t = params.beta2;
 
-    // Near pair c constant
-    let c_near = T::from_f64(10.0).unwrap();
-    // Mid-near pair c constant
-    let c_mn = T::from_f64(10_000.0).unwrap();
-
     for epoch in 0..params.n_epochs {
-        let (w_nb, w_mn, w_fp) = phase_weights::<T>(epoch, params.phase1_end, params.phase2_end);
+        let (w_nb, w_mn, _) = phase_weights::<T>(epoch, params.phase1_end, params.phase2_end);
+        let phase3 = epoch >= params.phase2_end;
+        let half_max = localmap.filter(|_| phase3).map(|l| l.half_max_distance);
+        let adam = AdamStep::new(params, beta1t, beta2t);
 
-        // Bias-corrected Adam scale
-        let ad_scale = params.lr * (T::one() - beta2t).sqrt() / (T::one() - beta1t);
-
-        // Accumulate per-node gradients
-        let mut grads = vec![T::zero(); n * n_dim];
-
-        // Near pairs: attractive
-        for &(i, j) in &pairs.near {
-            let base_i = i * n_dim;
-            let base_j = j * n_dim;
-
-            let mut dist_sq = T::zero();
-            for d in 0..n_dim {
-                let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
-                dist_sq += diff * diff;
-            }
-
-            let coeff = w_nb * attract_grad_coeff(dist_sq, c_near);
-
-            for d in 0..n_dim {
-                let delta = embd_flat[base_i + d] - embd_flat[base_j + d];
-                grads[base_i + d] -= coeff * delta;
-                grads[base_j + d] += coeff * delta;
-            }
-        }
-
-        // Mid-near pairs: attractive (skipped in phase 3 when w_mn == 0)
+        grads.fill(T::zero());
+        let near_c = |d2| near_coeff(d2, w_nb, half_max);
+        scatter(&embd_flat, n_dim, &pairs.near, near_c, &mut grads);
         if w_mn > T::zero() {
-            for &(i, j) in &pairs.mid_near {
-                let base_i = i * n_dim;
-                let base_j = j * n_dim;
-
-                let mut dist_sq = T::zero();
-                for d in 0..n_dim {
-                    let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
-                    dist_sq += diff * diff;
-                }
-
-                let coeff = w_mn * attract_grad_coeff(dist_sq, c_mn);
-
-                for d in 0..n_dim {
-                    let delta = embd_flat[base_i + d] - embd_flat[base_j + d];
-                    grads[base_i + d] -= coeff * delta;
-                    grads[base_j + d] += coeff * delta;
-                }
-            }
+            let mn_c = |d2| -(w_mn * attract_grad_coeff(d2, c_mn));
+            scatter(&embd_flat, n_dim, &pairs.mid_near, mn_c, &mut grads);
         }
+        let fp_c = |d2| w_fp * repel_grad_coeff(d2);
+        scatter(&embd_flat, n_dim, &further, fp_c, &mut grads);
 
-        // Further pairs: repulsive
-        for &(i, j) in &pairs.further {
-            let base_i = i * n_dim;
-            let base_j = j * n_dim;
-
-            let mut dist_sq = T::zero();
-            for d in 0..n_dim {
-                let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
-                dist_sq += diff * diff;
-            }
-
-            let coeff = w_fp * repel_grad_coeff(dist_sq);
-
-            for d in 0..n_dim {
-                let delta = embd_flat[base_i + d] - embd_flat[base_j + d];
-                // repulsive: push i away from j
-                grads[base_i + d] += coeff * delta;
-                grads[base_j + d] -= coeff * delta;
-            }
-        }
-
-        // Adam update
-        for idx in 0..(n * n_dim) {
-            let g = grads[idx];
-            let m_old = m[idx];
-            let v_old = v[idx];
-            m[idx] = m_old + one_minus_b1 * (g - m_old);
-            v[idx] = v_old + one_minus_b2 * (g * g - v_old);
-            embd_flat[idx] += ad_scale * m[idx] / (v[idx].sqrt() + params.eps);
+        for ((x, &g), (m_i, v_i)) in embd_flat
+            .iter_mut()
+            .zip(&grads)
+            .zip(m.iter_mut().zip(v.iter_mut()))
+        {
+            *x = adam.apply(*x, g, m_i, v_i);
         }
 
         beta1t *= params.beta1;
         beta2t *= params.beta2;
+
+        if let (Some(l), Some(near_own), Some(further_own)) =
+            (localmap, near_own.as_ref(), further_own.as_mut())
+        {
+            if phase3 && epoch % LOCALMAP_RESAMPLE_EVERY == 0 {
+                resample_further_nearby(
+                    &embd_flat,
+                    n_dim,
+                    near_own,
+                    further_own,
+                    l.max_distance_sq,
+                    resample_seed(l.seed, epoch, n),
+                );
+                further = rows_to_pairs(further_own);
+            }
+        }
 
         if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
             println!("  Epoch {}/{}", epoch + 1, params.n_epochs);
         }
     }
 
-    // write back
-    for (i, point) in embd.iter_mut().enumerate() {
-        let base = i * n_dim;
-        point.copy_from_slice(&embd_flat[base..base + n_dim]);
+    for (point, row) in embd.iter_mut().zip(embd_flat.chunks_exact(n_dim)) {
+        point.copy_from_slice(row);
     }
-
     Ok(())
 }
 
-/// Optimise a PaCMAP embedding using Adam (parallel).
+/// Shared body of the parallel PaCMAP and LocalMAP optimisers.
+///
+/// Lays the pairs out per node as CSR, then runs [`fused_epoch`] between two
+/// embedding buffers that swap every epoch.
+///
+/// ### Params
+///
+/// * `embd` - Embedding, shape `[n_samples][n_dim]`. Modified in place.
+/// * `pairs` - The three pair sets from `construct_pacmap_pairs`.
+/// * `params` - Optimisation parameters.
+/// * `localmap` - LocalMAP's phase-3 settings, `None` for PaCMAP.
+/// * `verbose` - Verbosity level.
+///
+/// ### Returns
+///
+/// `Ok(())`, `NoData` on an empty embedding, or a CSR size error.
+fn parallel_impl<T>(
+    embd: &mut [Vec<T>],
+    pairs: &PacmapPairs,
+    params: &PacmapOptimParams<T>,
+    localmap: Option<LocalMapPhase3<T>>,
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let n = embd.len();
+    if n == 0 {
+        return Err(ManifoldsError::NoData);
+    }
+    let verbosity = parse_verbosity_level(verbose);
+    let n_dim = embd[0].len();
+
+    let mut old: Vec<T> = embd.iter().flatten().copied().collect();
+    let mut new = vec![T::zero(); n * n_dim];
+    let mut m = vec![T::zero(); n * n_dim];
+    let mut v = vec![T::zero(); n * n_dim];
+
+    let near = PairCsr::from_pairs(&pairs.near, n)?;
+    let mid_near = PairCsr::from_pairs(&pairs.mid_near, n)?;
+    let mut further = PairCsr::from_pairs(&pairs.further, n)?;
+
+    let near_own = localmap.map(|_| own_rows(&pairs.near, n));
+    let mut further_own = localmap.map(|_| own_rows(&pairs.further, n));
+
+    let mut beta1t = params.beta1;
+    let mut beta2t = params.beta2;
+
+    for epoch in 0..params.n_epochs {
+        let (w_nb, w_mn, _) = phase_weights::<T>(epoch, params.phase1_end, params.phase2_end);
+        let phase3 = epoch >= params.phase2_end;
+        let half_max = localmap.filter(|_| phase3).map(|l| l.half_max_distance);
+        let adam = AdamStep::new(params, beta1t, beta2t);
+
+        fused_epoch(
+            &old,
+            &mut new,
+            &mut m,
+            &mut v,
+            n_dim,
+            &near,
+            (w_mn > T::zero()).then_some((&mid_near, w_mn)),
+            &further,
+            w_nb,
+            half_max,
+            adam,
+        );
+        std::mem::swap(&mut old, &mut new);
+
+        beta1t *= params.beta1;
+        beta2t *= params.beta2;
+
+        if let (Some(l), Some(near_own), Some(further_own)) =
+            (localmap, near_own.as_ref(), further_own.as_mut())
+        {
+            if phase3 && epoch % LOCALMAP_RESAMPLE_EVERY == 0 {
+                resample_further_nearby(
+                    &old,
+                    n_dim,
+                    near_own,
+                    further_own,
+                    l.max_distance_sq,
+                    resample_seed(l.seed, epoch, n),
+                );
+                further = PairCsr::from_rows(further_own)?;
+            }
+        }
+
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
+            println!("  Epoch {}/{}", epoch + 1, params.n_epochs);
+        }
+    }
+
+    for (point, row) in embd.iter_mut().zip(old.chunks_exact(n_dim)) {
+        point.copy_from_slice(row);
+    }
+    Ok(())
+}
+
+/// Optimise a PaCMAP embedding using Adam.
 ///
 /// ### Params
 ///
@@ -396,6 +844,38 @@ where
 /// * `params` - Optimisation parameters.
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
+///
+/// ### Returns
+///
+/// `Ok(())` or `NoData` on an empty embedding.
+pub fn optimise_pacmap<T>(
+    embd: &mut [Vec<T>],
+    pairs: &PacmapPairs,
+    params: &PacmapOptimParams<T>,
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    sequential_impl(embd, pairs, params, None, verbose)
+}
+
+/// Optimise a PaCMAP embedding using Adam (parallel).
+///
+/// Each node gathers its gradient over its own pairs and applies Adam in the
+/// same pass, writing to a second embedding buffer.
+///
+/// ### Params
+///
+/// * `embd` - Embedding, shape `[n_samples][n_dim]`. Modified in place.
+/// * `pairs` - The three pair sets from `construct_pacmap_pairs`.
+/// * `params` - Optimisation parameters.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// `Ok(())`, `NoData` on an empty embedding, or a CSR size error.
 pub fn optimise_pacmap_parallel<T>(
     embd: &mut [Vec<T>],
     pairs: &PacmapPairs,
@@ -403,135 +883,85 @@ pub fn optimise_pacmap_parallel<T>(
     verbose: usize,
 ) -> Result<(), ManifoldsError>
 where
-    T: Float + FromPrimitive + AddAssign + Send + Sync + SubAssign,
+    T: ManifoldsFloat,
 {
-    let n = embd.len();
-    if n == 0 {
-        return Err(ManifoldsError::NoData);
-    }
-    let verbosity = parse_verbosity_level(verbose);
+    parallel_impl(embd, pairs, params, None, verbose)
+}
 
-    let n_dim = embd[0].len();
+/// Optimise a LocalMAP embedding using Adam.
+///
+/// Phases 1 and 2 are PaCMAP's. In phase 3 the mid-near pairs drop out, the
+/// near force is scaled by `0.5 * max_distance / sqrt(1 + d)`, and every
+/// 10 epochs the further pairs are redrawn among the
+/// points within `max_distance` in the embedding.
+///
+/// ### Params
+///
+/// * `embd` - Embedding, shape `[n_samples][n_dim]`. Modified in place.
+/// * `pairs` - The three pair sets from `construct_pacmap_pairs`.
+/// * `params` - Optimisation parameters.
+/// * `max_distance` - Embedding distance cut-off for further pairs.
+/// * `seed` - Seed of the further-pair resampler.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// `Ok(())` or `NoData` on an empty embedding.
+///
+/// ### References
+///
+/// Wang et al., arXiv:2412.15426, 2024
+pub fn optimise_localmap<T>(
+    embd: &mut [Vec<T>],
+    pairs: &PacmapPairs,
+    params: &PacmapOptimParams<T>,
+    max_distance: T,
+    seed: u64,
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let l = localmap_phase3(max_distance, seed);
+    sequential_impl(embd, pairs, params, Some(l), verbose)
+}
 
-    // flatten embedding for cache locality
-    let mut embd_flat: Vec<T> = embd.iter().flatten().copied().collect();
-
-    // Adam moments
-    let mut m = vec![T::zero(); n * n_dim];
-    let mut v = vec![T::zero(); n * n_dim];
-
-    let one_minus_b1 = T::one() - params.beta1;
-    let one_minus_b2 = T::one() - params.beta2;
-
-    let mut beta1t = params.beta1;
-    let mut beta2t = params.beta2;
-
-    // near pair c constant
-    let c_near = T::from_f64(10.0).unwrap();
-    // mid-near pair c constant
-    let c_mn = T::from_f64(10_000.0).unwrap();
-
-    // collect everything into nodes to be able to accumulate gradients
-    // in parallel
-    let mut node_near: Vec<Vec<usize>> = vec![vec![]; n];
-    let mut node_mn: Vec<Vec<usize>> = vec![vec![]; n];
-    let mut node_fp: Vec<Vec<usize>> = vec![vec![]; n];
-
-    for &(i, j) in &pairs.near {
-        node_near[i].push(j);
-        node_near[j].push(i);
-    }
-    for &(i, j) in &pairs.mid_near {
-        node_mn[i].push(j);
-        node_mn[j].push(i);
-    }
-    for &(i, j) in &pairs.further {
-        node_fp[i].push(j);
-        node_fp[j].push(i);
-    }
-
-    for epoch in 0..params.n_epochs {
-        let (w_nb, w_mn, w_fp) = phase_weights::<T>(epoch, params.phase1_end, params.phase2_end);
-
-        // bias-corrected Adam scale
-        let ad_scale = params.lr * (T::one() - beta2t).sqrt() / (T::one() - beta1t);
-
-        let grads: Vec<T> = (0..n)
-            .into_par_iter()
-            .flat_map(|i| {
-                let base_i = i * n_dim;
-                let mut node_grad = vec![T::zero(); n_dim];
-
-                for &j in &node_near[i] {
-                    let base_j = j * n_dim;
-                    let mut dist_sq = T::zero();
-                    for d in 0..n_dim {
-                        let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
-                        dist_sq += diff * diff;
-                    }
-                    let coeff = w_nb * attract_grad_coeff(dist_sq, c_near);
-                    for d in 0..n_dim {
-                        node_grad[d] -= coeff * (embd_flat[base_i + d] - embd_flat[base_j + d]);
-                    }
-                }
-
-                if w_mn > T::zero() {
-                    for &j in &node_mn[i] {
-                        let base_j = j * n_dim;
-                        let mut dist_sq = T::zero();
-                        for d in 0..n_dim {
-                            let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
-                            dist_sq += diff * diff;
-                        }
-                        let coeff = w_mn * attract_grad_coeff(dist_sq, c_mn);
-                        for d in 0..n_dim {
-                            node_grad[d] -= coeff * (embd_flat[base_i + d] - embd_flat[base_j + d]);
-                        }
-                    }
-                }
-
-                for &j in &node_fp[i] {
-                    let base_j = j * n_dim;
-                    let mut dist_sq = T::zero();
-                    for d in 0..n_dim {
-                        let diff = embd_flat[base_i + d] - embd_flat[base_j + d];
-                        dist_sq += diff * diff;
-                    }
-                    let coeff = w_fp * repel_grad_coeff(dist_sq);
-                    for d in 0..n_dim {
-                        node_grad[d] += coeff * (embd_flat[base_i + d] - embd_flat[base_j + d]);
-                    }
-                }
-
-                node_grad
-            })
-            .collect();
-
-        // adam update
-        for idx in 0..(n * n_dim) {
-            let g = grads[idx];
-            let m_old = m[idx];
-            let v_old = v[idx];
-            m[idx] = m_old + one_minus_b1 * (g - m_old);
-            v[idx] = v_old + one_minus_b2 * (g * g - v_old);
-            embd_flat[idx] += ad_scale * m[idx] / (v[idx].sqrt() + params.eps);
-        }
-
-        beta1t = beta1t * params.beta1;
-        beta2t = beta2t * params.beta2;
-
-        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
-            println!("  Epoch {}/{}", epoch + 1, params.n_epochs);
-        }
-    }
-
-    // write back
-    for (i, point) in embd.iter_mut().enumerate() {
-        let base = i * n_dim;
-        point.copy_from_slice(&embd_flat[base..base + n_dim]);
-    }
-
-    Ok(())
+/// Optimise a LocalMAP embedding using Adam (parallel).
+///
+/// As [`optimise_localmap`], with the fused per-node kernel of
+/// [`optimise_pacmap_parallel`].
+///
+/// ### Params
+///
+/// * `embd` - Embedding, shape `[n_samples][n_dim]`. Modified in place.
+/// * `pairs` - The three pair sets from `construct_pacmap_pairs`.
+/// * `params` - Optimisation parameters.
+/// * `max_distance` - Embedding distance cut-off for further pairs.
+/// * `seed` - Seed of the further-pair resampler.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// `Ok(())`, `NoData` on an empty embedding, or a CSR size error.
+///
+/// ### References
+///
+/// Wang et al., arXiv:2412.15426, 2024
+pub fn optimise_localmap_parallel<T>(
+    embd: &mut [Vec<T>],
+    pairs: &PacmapPairs,
+    params: &PacmapOptimParams<T>,
+    max_distance: T,
+    seed: u64,
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    let l = localmap_phase3(max_distance, seed);
+    parallel_impl(embd, pairs, params, Some(l), verbose)
 }
 
 ///////////
@@ -701,5 +1131,46 @@ mod test_pacmap_optimiser {
             diff,
             scale
         );
+    }
+
+    #[test]
+    fn test_resample_respects_distance_near_and_duplicates() {
+        // 1-D line, spacing 1: within distance 3 of node 10 lie 7..=13
+        let n = 30;
+        let embd: Vec<f64> = (0..n).map(|i| i as f64).collect();
+        let mut near_own = vec![Vec::new(); n];
+        near_own[10] = vec![9, 11];
+        let mut further_own = vec![vec![0, 1, 2]; n];
+        resample_further_nearby(&embd, 1, &near_own, &mut further_own, 9.0, 42);
+
+        let row = &further_own[10];
+        for (s, &j) in row.iter().enumerate() {
+            assert!(j != 10 && j != 9 && j != 11, "self or near pair kept: {j}");
+            assert!((7..=13).contains(&j), "pair {j} beyond max_distance");
+            assert!(!row[..s].contains(&j), "duplicate pair {j}");
+        }
+    }
+
+    #[test]
+    fn test_resample_keeps_old_pair_when_nothing_qualifies() {
+        // everyone else is far away, so every draw is rejected
+        let n = 20;
+        let embd: Vec<f64> = (0..n).map(|i| 100.0 * i as f64).collect();
+        let near_own = vec![Vec::new(); n];
+        let mut further_own = vec![vec![5, 6]; n];
+        resample_further_nearby(&embd, 1, &near_own, &mut further_own, 1.0, 42);
+        assert!(further_own.iter().all(|r| r == &vec![5, 6]));
+    }
+
+    #[test]
+    fn test_localmap_reproducible_and_finite() {
+        let pairs = simple_pairs(20);
+        let params = PacmapOptimParams::new(Some(260), None, None, None, None, None, None);
+        let mut a = simple_embd(20);
+        let mut b = simple_embd(20);
+        optimise_localmap_parallel(&mut a, &pairs, &params, 10.0, 7, 0).unwrap();
+        optimise_localmap_parallel(&mut b, &pairs, &params, 10.0, 7, 0).unwrap();
+        assert_eq!(a, b);
+        assert!(a.iter().flatten().all(|x| x.is_finite()));
     }
 }

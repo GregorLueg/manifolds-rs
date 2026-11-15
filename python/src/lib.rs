@@ -93,6 +93,7 @@ fn _manifolds(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(embed::dreams, m)?)?;
     m.add_function(wrap_pyfunction!(embed::phate, m)?)?;
     m.add_function(wrap_pyfunction!(embed::pacmap, m)?)?;
+    m.add_function(wrap_pyfunction!(embed::localmap, m)?)?;
     m.add_function(wrap_pyfunction!(embed::diffusion_maps, m)?)?;
     m.add_function(wrap_pyfunction!(embed::forceatlas2, m)?)?;
 

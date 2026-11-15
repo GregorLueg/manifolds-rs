@@ -1517,8 +1517,9 @@ where
     let one_minus_beta1 = T::one() - params.beta1;
     let one_minus_beta2 = T::one() - params.beta2;
 
-    let mut node_gradients_all: Vec<T> = vec![T::zero(); n * n_dim];
-    let mut node_has_update: Vec<bool> = vec![false; n];
+    // each node writes its new position here, as the other nodes still read
+    // its old one; the buffers swap every epoch
+    let mut embd_next: Vec<T> = vec![T::zero(); n * n_dim];
 
     // stateful RNG instantiated once per thread/node - should be faster ... ?
     let mut node_rngs: Vec<SmallRng> = (0..n)
@@ -1529,9 +1530,6 @@ where
         let lr = lr_schedule[epoch];
         let epoch_t = T::from(epoch).unwrap();
         let (ad_scale, epsc) = bias_corrections[epoch];
-
-        // reset state
-        node_has_update.fill(false);
 
         // pass 0: embedding local radii over every edge, then the correlation
         // statistics. Reads the same frozen embd_flat as the gradient pass, so
@@ -1552,18 +1550,16 @@ where
             _ => None,
         };
 
-        // safely partition gradients per node
-        node_gradients_all
+        // gradient and Adam step fused per node
+        embd_next
             .par_chunks_exact_mut(n_dim)
-            .zip(node_has_update.par_iter_mut())
+            .zip(m.par_chunks_exact_mut(n_dim))
+            .zip(v.par_chunks_exact_mut(n_dim))
             .zip(node_rngs.par_iter_mut())
             .enumerate()
             .for_each_init(Vec::new, |negs, (node_i, per_node)| {
-                let ((node_grad, has_update), rng) = per_node;
-                // Clear old gradients
-                for g in node_grad.iter_mut() {
-                    *g = T::zero();
-                }
+                let (((node_grad, m_node), v_node), rng) = per_node;
+                node_grad.fill(T::zero());
 
                 let mut local_has_updates = false;
                 let base_i = node_i * n_dim;
@@ -1678,35 +1674,20 @@ where
                     }
                 }
 
-                if local_has_updates {
-                    *has_update = true;
-                }
-            });
-
-        // parallelise Adam moments and embedding updates
-        node_gradients_all
-            .par_chunks_exact_mut(n_dim)
-            .zip(m.par_chunks_exact_mut(n_dim))
-            .zip(v.par_chunks_exact_mut(n_dim))
-            .zip(embd_flat.par_chunks_exact_mut(n_dim))
-            .zip(node_has_update.par_iter())
-            .for_each(|((((grad, m_node), v_node), embd_node), &has_update)| {
-                if !has_update {
+                let embd_node = &embd_flat[base_i..base_i + n_dim];
+                if !local_has_updates {
+                    node_grad.copy_from_slice(embd_node);
                     return;
                 }
-
                 for d in 0..n_dim {
-                    let g = grad[d];
-
-                    let m_old = m_node[d];
-                    m_node[d] += one_minus_beta1 * (g - m_old);
-
-                    let v_old = v_node[d];
-                    v_node[d] += one_minus_beta2 * (g * g - v_old);
-
-                    embd_node[d] += lr * ad_scale * m_node[d] / (v_node[d].sqrt() + epsc);
+                    let g = node_grad[d];
+                    m_node[d] += one_minus_beta1 * (g - m_node[d]);
+                    v_node[d] += one_minus_beta2 * (g * g - v_node[d]);
+                    node_grad[d] =
+                        embd_node[d] + lr * ad_scale * m_node[d] / (v_node[d].sqrt() + epsc);
                 }
             });
+        std::mem::swap(&mut embd_flat, &mut embd_next);
 
         // parallelise edge schedules
         epoch_of_next_sample

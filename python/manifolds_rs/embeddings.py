@@ -657,6 +657,67 @@ class PaCMAP(BaseEmbedding):
         }
 
 
+class LocalMAP(PaCMAP):
+    """LocalMAP: PaCMAP with local repulsion in its last phase.
+
+    Phases 1 and 2 are PaCMAP's. In phase 3 the mid-near pairs drop out, the
+    near-pair pull is scaled by ``0.5 * max_distance / sqrt(1 + d)``, and every
+    10 epochs each point's further pairs are redrawn among the points within
+    `max_distance` of it in the embedding. Repulsion from close non-neighbours
+    is what pulls apart clusters that PaCMAP leaves touching.
+
+    Takes every PaCMAP argument, plus:
+
+    Args:
+        max_distance: Embedding distance beyond which phase 3 rejects a further
+            pair. Also sets the near-pair scaling.
+    """
+
+    _FN: ClassVar[Callable[..., Any]] = _core.localmap
+
+    @beartype
+    def __init__(
+        self,
+        n_components: int = 2,
+        n_near: int = 10,
+        n_mid_near: int = 5,
+        n_further: int = 20,
+        metric: str = "euclidean",
+        n_epochs: int = 450,
+        learning_rate: float = 1.0,
+        init: str = "pca",
+        ann: str = "ivf",
+        optimiser: str = "adam_parallel",
+        range_: float | None = 0.01,
+        max_distance: float = 10.0,
+        seed: int = 42,
+        verbose: int = 0,
+        nn_params: NeighbourParams | None = None,
+        optim_params: PacmapOptim | None = None,
+    ) -> None:
+        super().__init__(
+            n_components=n_components,
+            n_near=n_near,
+            n_mid_near=n_mid_near,
+            n_further=n_further,
+            metric=metric,
+            n_epochs=n_epochs,
+            learning_rate=learning_rate,
+            init=init,
+            ann=ann,
+            optimiser=optimiser,
+            range_=range_,
+            seed=seed,
+            verbose=verbose,
+            nn_params=nn_params,
+            optim_params=optim_params,
+        )
+        self.max_distance = max_distance
+
+    def _params(self, n_samples: int) -> dict[str, Any]:
+        return {**super()._params(n_samples), "max_distance": self.max_distance}
+
+
 class DiffusionMaps(BaseEmbedding):
     """Diffusion maps.
 

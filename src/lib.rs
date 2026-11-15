@@ -49,7 +49,8 @@ use crate::prelude::*;
 use crate::training::fa2_optimiser::*;
 use crate::training::mds_optimiser::*;
 use crate::training::pacmap_optimiser::{
-    optimise_pacmap, optimise_pacmap_parallel, PacMapOptimiser,
+    optimise_localmap, optimise_localmap_parallel, optimise_pacmap, optimise_pacmap_parallel,
+    PacMapOptimiser, LOCALMAP_MAX_DISTANCE,
 };
 use crate::training::tsne_optimiser::*;
 use crate::training::umap_optimiser_v06::optimise_embedding_adam_v06;
@@ -3615,12 +3616,47 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    pacmap_family(data, precomputed_knn, params_pacmap, None, seed, verbose)
+}
+
+/// Shared body of PaCMAP and LocalMAP, which differ only in the optimiser.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features.
+/// * `precomputed_knn` - Optional precomputed kNN, with k >= `params.n_near`.
+/// * `params_pacmap` - PaCMAP parameters.
+/// * `max_distance` - LocalMAP's further-pair cut-off, `None` for PaCMAP.
+/// * `seed` - Seed for reproducibility.
+/// * `verbose` - Verbosity level.
+///
+/// ### Returns
+///
+/// Embedding with shape `[n_dim][n_samples]`.
+fn pacmap_family<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params_pacmap: &PacmapParams<T>,
+    max_distance: Option<T>,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
     let n_samples = data.nrows();
 
     let verbosity = parse_verbosity_level(verbose);
-    let name = "PaCMAP";
+    let name = if max_distance.is_some() {
+        "LocalMAP"
+    } else {
+        "PaCMAP"
+    };
     let start_run = Instant::now();
     if verbosity.normal_verbosity() {
         println!(
@@ -3672,7 +3708,7 @@ where
     };
 
     if verbosity.normal_verbosity() {
-        println!(" Building PaCMAP pairs ...");
+        println!(" Building {} pairs ...", name);
     }
 
     let start_pairs = Instant::now();
@@ -3757,12 +3793,17 @@ where
 
     let start_optim = Instant::now();
 
-    match optimiser {
-        PacMapOptimiser::AdamParallel => {
-            optimise_pacmap_parallel(&mut embd, &pairs, &params_pacmap.optim_params, verbose)?;
+    let optim = &params_pacmap.optim_params;
+    match (optimiser, max_distance) {
+        (PacMapOptimiser::AdamParallel, None) => {
+            optimise_pacmap_parallel(&mut embd, &pairs, optim, verbose)?
         }
-        PacMapOptimiser::Adam => {
-            optimise_pacmap(&mut embd, &pairs, &params_pacmap.optim_params, verbose)?;
+        (PacMapOptimiser::Adam, None) => optimise_pacmap(&mut embd, &pairs, optim, verbose)?,
+        (PacMapOptimiser::AdamParallel, Some(d)) => {
+            optimise_localmap_parallel(&mut embd, &pairs, optim, d, seed as u64, verbose)?
+        }
+        (PacMapOptimiser::Adam, Some(d)) => {
+            optimise_localmap(&mut embd, &pairs, optim, d, seed as u64, verbose)?
         }
     }
 
@@ -3782,6 +3823,225 @@ where
     }
 
     Ok(transposed)
+}
+
+//////////////
+// LocalMAP //
+//////////////
+
+/// Parameters for LocalMAP dimensionality reduction.
+///
+/// PaCMAP's parameters plus `max_distance`, which only acts in phase 3.
+#[derive(Debug, Clone)]
+pub struct LocalMapParams<T> {
+    /// Output dimensionality. Defaults to `2`.
+    pub n_dim: usize,
+    /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
+    /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
+    /// Defaults to `"ivf"`.
+    pub ann_type: String,
+    /// Which optimiser to use. Options are `"adam"` and `"adam_parallel"`.
+    pub optimiser: String,
+    /// Near pairs per point (attractive). The kNN search runs 50 wider, and the
+    /// pairs are the best of those by locally scaled distance. Default 10.
+    pub n_near: usize,
+    /// Mid-near pairs per point (attractive, phases 1 and 2 only). Default 5.
+    pub n_mid_near: usize,
+    /// Further pairs per point (repulsive). Default 20.
+    pub n_further: usize,
+    /// Embedding initialisation. Defaults to `"pca"`.
+    pub initialisation: String,
+    /// Scale of the initial embedding. For PCA, the multiplier on the scores.
+    pub range: Option<T>,
+    /// Embedding distance beyond which phase 3 rejects a further pair. Also
+    /// sets the near-pair force scaling, `0.5 * max_distance / sqrt(1 + d)`.
+    /// Default 10.
+    pub max_distance: T,
+    /// Nearest neighbour search parameters.
+    pub nn_params: NearestNeighbourParams<T>,
+    /// Optimiser parameters, shared with PaCMAP.
+    pub optim_params: PacmapOptimParams<T>,
+}
+
+impl<T> Default for LocalMapParams<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        let p = PacmapParams::<T>::default();
+        Self {
+            n_dim: p.n_dim,
+            ann_type: p.ann_type,
+            optimiser: p.optimiser,
+            n_near: p.n_near,
+            n_mid_near: p.n_mid_near,
+            n_further: p.n_further,
+            initialisation: p.initialisation,
+            range: p.range,
+            max_distance: T::from_f64(LOCALMAP_MAX_DISTANCE).unwrap(),
+            nn_params: p.nn_params,
+            optim_params: p.optim_params,
+        }
+    }
+}
+
+impl<T> LocalMapParams<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Generate a new instance of the LocalMAP parameters with full control
+    /// over every field.
+    ///
+    /// For sensible defaults, use [`LocalMapParams::default`] or
+    /// [`LocalMapParams::new_default_2d`] instead.
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - Number of dimensions for the embedding.
+    /// * `ann_type` - (Approximate) nearest neighbour method. See
+    ///   [`PacmapParams::new`].
+    /// * `optimiser` - `"adam"` or `"adam_parallel"`.
+    /// * `n_near` - Near pairs per point.
+    /// * `n_mid_near` - Mid-near pairs per point.
+    /// * `n_further` - Further pairs per point.
+    /// * `initialisation` - Embedding initialisation.
+    /// * `range` - Scale of the initial embedding.
+    /// * `max_distance` - Phase-3 further-pair cut-off in the embedding.
+    /// * `nn_params` - Nearest neighbour search parameters.
+    /// * `optim_params` - Optimiser parameters.
+    ///
+    /// ### Returns
+    ///
+    /// A fully specified set of LocalMAP parameters.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        n_dim: usize,
+        ann_type: String,
+        optimiser: String,
+        n_near: usize,
+        n_mid_near: usize,
+        n_further: usize,
+        initialisation: String,
+        range: Option<T>,
+        max_distance: T,
+        nn_params: NearestNeighbourParams<T>,
+        optim_params: PacmapOptimParams<T>,
+    ) -> Self {
+        Self {
+            n_dim,
+            ann_type,
+            optimiser,
+            n_near,
+            n_mid_near,
+            n_further,
+            initialisation,
+            range,
+            max_distance,
+            nn_params,
+            optim_params,
+        }
+    }
+
+    /// Default parameters for standard 2D visualisation.
+    ///
+    /// ### Params
+    ///
+    /// * `n_near` - Number of near pairs. Defaults to `10`.
+    /// * `max_distance` - Phase-3 further-pair cut-off. Defaults to `10`.
+    ///
+    /// ### Returns
+    ///
+    /// Hopefully sensible standard parameters for 2D visualisation.
+    pub fn new_default_2d(n_near: Option<usize>, max_distance: Option<T>) -> Self {
+        let default = Self::default();
+        Self {
+            n_near: n_near.unwrap_or(default.n_near),
+            max_distance: max_distance.unwrap_or(default.max_distance),
+            ..default
+        }
+    }
+}
+
+/// Run LocalMAP dimensionality reduction.
+///
+/// PaCMAP with a different last phase. Phases 1 and 2 are PaCMAP's, pairs,
+/// initialisation and schedule included. In phase 3 the mid-near pairs drop
+/// out, the near-pair force is scaled by `0.5 * max_distance / sqrt(1 + d)`,
+/// and every 10 epochs each point's further pairs are redrawn among the points
+/// within `max_distance` of it in the embedding. Local repulsion is what pulls
+/// apart clusters that PaCMAP leaves touching.
+///
+/// The resampler follows brisc, which counts every rejected draw towards the
+/// 100 trials per pair, where the original counts only some. Same seed, same
+/// result regardless of thread count.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Optional precomputed kNN, with k >= `params.n_near`,
+///   sorted by distance. Make it `params.n_near + 50` wide, as the internal
+///   search is.
+/// * `params` - LocalMAP parameters.
+/// * `seed` - Seed for reproducibility.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+///
+/// ### Errors
+///
+/// [`ManifoldsError::NoData`] on an empty precomputed graph,
+/// [`ManifoldsError::NotEnoughNeighbours`] if it is narrower than `params.n_near`
+/// and [`ManifoldsError::LocalMapInvalidMaxDistance`] unless `max_distance` is
+/// positive and finite.
+///
+/// ### References
+///
+/// Wang et al. (2024): "Dimension Reduction with Locally Adjusted Graphs",
+/// arXiv:2412.15426
+pub fn localmap<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &LocalMapParams<T>,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    if !(params.max_distance > T::zero() && params.max_distance.is_finite()) {
+        return Err(ManifoldsError::LocalMapInvalidMaxDistance {
+            value: params.max_distance.to_f64().unwrap_or(f64::NAN),
+        });
+    }
+    let shared = PacmapParams {
+        n_dim: params.n_dim,
+        ann_type: params.ann_type.clone(),
+        optimiser: params.optimiser.clone(),
+        n_near: params.n_near,
+        n_mid_near: params.n_mid_near,
+        n_further: params.n_further,
+        initialisation: params.initialisation.clone(),
+        range: params.range,
+        nn_params: params.nn_params.clone(),
+        optim_params: params.optim_params.clone(),
+    };
+    pacmap_family(
+        data,
+        precomputed_knn,
+        &shared,
+        Some(params.max_distance),
+        seed,
+        verbose,
+    )
 }
 
 ////////////////////

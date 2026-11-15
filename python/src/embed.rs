@@ -309,6 +309,45 @@ pub fn pacmap<'py>(
     )
 }
 
+/// LocalMAP: PaCMAP with local further pairs in its last phase.
+///
+/// ### Params
+///
+/// * `x` - Samples by features, C-contiguous float32 or float64.
+/// * `params` - Parameters, as built by the Python layer. See
+///   [`crate::params::localmap`].
+/// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices. Must hold
+///   at least `n_near` neighbours and should hold `n_near + 50`, as the internal
+///   search does.
+/// * `knn_distances` - Optional `(n, k)` distances, same dtype as `x`.
+/// * `seed` - Fixes the initialisation, the pair sampling and the resampling.
+/// * `verbose` - `0` silent, `1` normal, `2` detailed.
+///
+/// ### Returns
+///
+/// The embedding as an `(n_samples, n_dim)` array of the input's float type.
+#[pyfunction]
+#[pyo3(signature = (x, params, *, knn_indices = None, knn_distances = None, seed = 42, verbose = 0))]
+pub fn localmap<'py>(
+    py: Python<'py>,
+    x: &Bound<'py, PyAny>,
+    params: &Bound<'py, PyDict>,
+    knn_indices: Option<&Bound<'py, PyAny>>,
+    knn_distances: Option<&Bound<'py, PyAny>>,
+    seed: usize,
+    verbose: usize,
+) -> PyResult<Bound<'py, PyAny>> {
+    embed_dispatch!(
+        py,
+        x,
+        params,
+        knn_indices,
+        knn_distances,
+        localmap,
+        |data, n, dim, p, knn| manifolds_rs::localmap((data, n, dim), knn, p, seed, verbose)
+    )
+}
+
 /// Diffusion maps.
 ///
 /// ### Params

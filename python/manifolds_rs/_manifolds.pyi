@@ -129,6 +129,15 @@ def pacmap(
     seed: int = ...,
     verbose: int = ...,
 ) -> np.ndarray: ...
+def localmap(
+    x: np.ndarray,
+    params: dict[str, Any],
+    *,
+    knn_indices: np.ndarray | None = ...,
+    knn_distances: np.ndarray | None = ...,
+    seed: int = ...,
+    verbose: int = ...,
+) -> np.ndarray: ...
 def diffusion_maps(
     x: np.ndarray,
     params: dict[str, Any],

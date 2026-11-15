@@ -15,8 +15,8 @@
 
 use manifolds_rs::prelude::*;
 use manifolds_rs::{
-    DensmapParams, DensneParams, DiffusionMapsParams, DreamsParams, Fa2Params, PacmapParams,
-    PhateParams, TsneParams, UmapParams,
+    DensmapParams, DensneParams, DiffusionMapsParams, DreamsParams, Fa2Params, LocalMapParams,
+    PacmapParams, PhateParams, TsneParams, UmapParams,
 };
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -752,6 +752,46 @@ where
     if range_given {
         p.range = range;
     }
+    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nested(
+        &mut r,
+        "optim_params",
+        &mut p.optim_params,
+        fill_pacmap_optim,
+    )?;
+    r.finish()?;
+    Ok(p)
+}
+
+/// Build [`LocalMapParams`] from a dictionary.
+///
+/// ### Params
+///
+/// * `d` - The full parameter dictionary sent by the Python layer.
+///
+/// ### Returns
+///
+/// A fully specified parameter struct, or the first bad or unknown key.
+pub(crate) fn localmap<T>(d: &Bound<'_, PyDict>) -> PyResult<LocalMapParams<T>>
+where
+    T: ManifoldsFloat,
+{
+    let mut p = LocalMapParams::<T>::default();
+    let mut r = Reader::new(d, "LocalMapParams");
+    set(&mut p.n_dim, r.get::<usize>("n_dim")?);
+    set(&mut p.ann_type, r.get::<String>("ann_type")?);
+    set(&mut p.optimiser, r.get::<String>("optimiser")?);
+    set(&mut p.n_near, r.get::<usize>("n_near")?);
+    set(&mut p.n_mid_near, r.get::<usize>("n_mid_near")?);
+    set(&mut p.n_further, r.get::<usize>("n_further")?);
+    set(&mut p.initialisation, r.get::<String>("initialisation")?);
+    // an explicit `None` hands the range to the initialisation, as for PaCMAP
+    let range_given = r.present("range");
+    let range = r.float::<T>("range")?;
+    if range_given {
+        p.range = range;
+    }
+    set(&mut p.max_distance, r.float::<T>("max_distance")?);
     nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
     nested(
         &mut r,

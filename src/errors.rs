@@ -166,6 +166,13 @@ pub enum ManifoldsError {
         requirement: &'static str,
     },
 
+    /// Error if LocalMAP's `max_distance` is not a positive finite number
+    #[error("LocalMAP: max_distance = {value} is invalid, it must be positive and finite")]
+    LocalMapInvalidMaxDistance {
+        /// Supplied value
+        value: f64,
+    },
+
     // -- pacmap
     /// If the pre-computed kNN does not have enough neighbours for the
     /// parameter settings

@@ -71,7 +71,15 @@ UMAP_INITS: frozenset[str] = INITS | {"recursive"}
 #: update on the device; the CPU names still work and pull the embedding back each
 #: epoch.
 UMAP_OPTIMISERS_GPU: frozenset[str] = frozenset(
-    {"adam", "sgd", "sgd_parallel", "adam_parallel", "adam_gpu", "adam_v06", "adam_v06_gpu"}
+    {
+        "adam",
+        "sgd",
+        "sgd_parallel",
+        "adam_parallel",
+        "adam_gpu",
+        "adam_v06",
+        "adam_v06_gpu",
+    }
 ) | (frozenset({"adam_mlx"}) if _MLX else frozenset())
 
 #: UMAP optimisers, from `parse_umap_optimiser`.
@@ -89,7 +97,7 @@ SGD_SMALL_N: int = 10_000
 #: Epochs for the SGD optimisers above `SGD_SMALL_N` samples.
 SGD_EPOCHS_LARGE: int = 200
 
-#: PaCMAP optimisers, from `parse_pacmap_optimiser`.
+#: PaCMAP and LocalMAP optimisers, from `parse_pacmap_optimiser`.
 PACMAP_OPTIMISERS: frozenset[str] = frozenset({"adam", "adam_parallel"})
 
 #: MDS backends for PHATE, from `parse_mds_method`.
