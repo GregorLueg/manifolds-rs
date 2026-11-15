@@ -13,6 +13,12 @@ Requires `manifolds-rs` 0.10.0.
   coordinates than 0.6.1 at the same seed: `UMAP`, `DensMAP`, `UMAPGpu`,
   `DensMAPGpu` and `ForceAtlas2`.
 
+**New**
+
+- `optimiser="adam_v06"` for `UMAP`: the umap-learn 0.6 Adam.
+- `init="recursive"` for `UMAP`, `DensMAP`, `UMAPGpu` and `DensMAPGpu`: the
+  umap-learn 0.6 recursive initialisation.
+
 ## 0.6.1
 
 Requires `manifolds-rs` 0.9.1.
