@@ -15,9 +15,15 @@ Requires `manifolds-rs` 0.10.0.
 
 **New**
 
-- `optimiser="adam_v06"` for `UMAP`: the umap-learn 0.6 Adam.
+- `optimiser="adam_v06"` for `UMAP` and `UMAPGpu`, and `"adam_v06_gpu"` for
+  `UMAPGpu`: the umap-learn 0.6 Adam. `DensMAP` and `DensMAPGpu` reject both.
 - `init="recursive"` for `UMAP`, `DensMAP`, `UMAPGpu` and `DensMAPGpu`: the
   umap-learn 0.6 recursive initialisation.
+- `LocalMAP`.
+- The t-SNE estimators take an `int` `perplexity`.
+- Faster `UMAP`, `DensMAP` and `PaCMAP` with the default optimisers. Same
+  coordinates as before at the same seed.
+- Vignettes in the docs.
 
 ## 0.6.1
 

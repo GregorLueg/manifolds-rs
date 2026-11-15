@@ -16,7 +16,13 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 - `optimiser = "adam_v06"`: the umap-learn 0.6 Adam for UMAP (CPU only, not with
   densMAP).
 - `initialisation = "recursive"`: the umap-learn 0.6 recursive label propagation
-  initialisation, UMAP only.
+  initialisation, for UMAP and densMAP.
+- `optimiser = "adam_v06_gpu"` for `umap_gpu`: the umap-learn 0.6 Adam on the
+  device. `umap_gpu` also takes the CPU `"adam_v06"`. `densmap_gpu` rejects
+  both.
+- LocalMAP: `localmap` and `LocalMapParams`.
+- Faster parallel Adam for UMAP and densMAP, and faster PaCMAP. Same
+  coordinates as before at the same seed.
 
 ## 0.9.1
 
