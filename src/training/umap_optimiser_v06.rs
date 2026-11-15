@@ -22,27 +22,27 @@ use crate::training::umap_optimisers::{SplitPowLut, UmapOptimParams};
 ///////////////
 
 /// Adam first-moment decay of the 0.6 optimiser.
-const V06_BETA1: f64 = 0.9;
+pub(crate) const V06_BETA1: f64 = 0.9;
 
 /// Adam second-moment decay of the 0.6 optimiser.
-const V06_BETA2: f64 = 0.99;
+pub(crate) const V06_BETA2: f64 = 0.99;
 
 /// Adam denominator epsilon of the 0.6 optimiser. Large next to textbook
 /// Adam, which damps the steps of nodes whose gradients are tiny and noisy.
-const V06_ADAM_EPS: f64 = 1e-4;
+pub(crate) const V06_ADAM_EPS: f64 = 1e-4;
 
 /// Stretch on the negative-sampling period, so the 0.6 optimiser draws
 /// `1 / 1.5` as many negatives per positive as the nominal rate. Both
 /// endpoints of an edge draw them, so the total is still above the classic
 /// single-endpoint scheme.
-const V06_NEG_PERIOD_SCALE: f64 = 1.5;
+pub(crate) const V06_NEG_PERIOD_SCALE: f64 = 1.5;
 
 /// Additive epsilon on the repulsive squared distance.
-const V06_REP_EPS: f64 = 0.001;
+pub(crate) const V06_REP_EPS: f64 = 0.001;
 
 /// Ceiling on the soft clip of a single repulsive gradient's norm, applied as
 /// `min(gamma, V06_REP_CLIP_MAX) * tanh(|g| / gamma)`.
-const V06_REP_CLIP_MAX: f64 = 16.0;
+pub(crate) const V06_REP_CLIP_MAX: f64 = 16.0;
 
 /// Layouts with at most this many nodes take the small-layout path: halved
 /// attraction and negatives drawn from all nodes. Coarse levels of the
@@ -50,7 +50,7 @@ const V06_REP_CLIP_MAX: f64 = 16.0;
 pub(crate) const V06_SMALL_LAYOUT_MAX: usize = 1024;
 
 /// Attraction multiplier on the small-layout path.
-const V06_SMALL_ATTRACTION_SCALE: f64 = 0.5;
+pub(crate) const V06_SMALL_ATTRACTION_SCALE: f64 = 0.5;
 
 /// Default hard-negative window. Layouts with fewer nodes than this draw
 /// negatives from the whole embedding.
@@ -58,7 +58,7 @@ pub const V06_DEFAULT_NEG_SELECTION_RANGE: usize = 200_000;
 
 /// Floor on the hard-negative window, so a small configured range still
 /// leaves a usable candidate pool.
-const V06_MIN_NEG_SELECTION_RANGE: usize = 200;
+pub(crate) const V06_MIN_NEG_SELECTION_RANGE: usize = 200;
 
 /// Exponent of the initial hard-negative repulsion scale
 /// `(range / n)^V06_NEG_SCALE_EXPONENT`. Local negatives are closer and so
@@ -183,7 +183,7 @@ fn quantile_in_place(values: &mut [f64], q: f64) -> f64 {
 /// ### Returns
 ///
 /// One learning rate per epoch.
-fn alpha_schedule(n_epochs: usize, lr: f64, good_init: bool) -> Vec<f64> {
+pub(crate) fn alpha_schedule(n_epochs: usize, lr: f64, good_init: bool) -> Vec<f64> {
     let n = n_epochs as f64;
     let (n_warm, start) = if good_init {
         (V06_WARMUP_MAX.min(n / 8.0) as usize, 0.5 * lr)
@@ -217,7 +217,11 @@ fn alpha_schedule(n_epochs: usize, lr: f64, good_init: bool) -> Vec<f64> {
 /// ### Returns
 ///
 /// `(order, ranks)`: nodes sorted by projection, and `ranks[order[k]] = k`.
-fn projection_order<T>(embd: &[T], n_dim: usize, rng: &mut SmallRng) -> (Vec<u32>, Vec<u32>)
+pub(crate) fn projection_order<T>(
+    embd: &[T],
+    n_dim: usize,
+    rng: &mut SmallRng,
+) -> (Vec<u32>, Vec<u32>)
 where
     T: ManifoldsFloat,
 {
@@ -333,7 +337,7 @@ where
 /// ### Returns
 ///
 /// The force ratio, `1` if no sample had both resultants non-zero.
-fn negative_force_ratio<T>(
+pub(crate) fn negative_force_ratio<T>(
     embd: &[T],
     n_dim: usize,
     order: &[u32],
@@ -413,6 +417,76 @@ where
         .sum::<f64>()
         / log_ratios.len() as f64;
     mean.exp()
+}
+
+/// Repulsion scale of the hard negatives and its force-ratio adaptation.
+///
+/// Starts at `(range / n)^V06_NEG_SCALE_EXPONENT`. The first adaptation
+/// anchors the uniform-to-local force ratio; later ones nudge the scale in
+/// log space towards keeping that ratio, bounded around the prior.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HardNegScale {
+    /// Current scale on the hard-negative repulsion
+    pub scale: f64,
+    /// Initial scale, the centre of the allowed band
+    prior: f64,
+    /// `scale / ratio` at the first adaptation, negative before it
+    anchor: f64,
+}
+
+impl HardNegScale {
+    /// Initial scale for a window of `range` nodes out of `n`.
+    ///
+    /// ### Params
+    ///
+    /// * `range` - Configured hard-negative window
+    /// * `n` - Number of nodes
+    ///
+    /// ### Returns
+    ///
+    /// The scale state before any adaptation.
+    pub fn new(range: usize, n: usize) -> Self {
+        let scale = (range.min(n) as f64 / n as f64).powf(V06_NEG_SCALE_EXPONENT);
+        Self {
+            scale,
+            prior: scale,
+            anchor: -1.0,
+        }
+    }
+
+    /// Whether the scale is re-estimated at this epoch.
+    ///
+    /// ### Params
+    ///
+    /// * `epoch` - Current epoch
+    /// * `n_epochs` - Total epochs
+    ///
+    /// ### Returns
+    ///
+    /// `true` every `V06_ADAPT_EVERY` epochs during the first half of the run.
+    pub fn due(epoch: usize, n_epochs: usize) -> bool {
+        (V06_ADAPT_EVERY..=n_epochs / 2).contains(&epoch) && epoch.is_multiple_of(V06_ADAPT_EVERY)
+    }
+
+    /// Fold in one force-ratio estimate from [`negative_force_ratio`].
+    ///
+    /// ### Params
+    ///
+    /// * `ratio` - Uniform-to-local resultant repulsion ratio
+    pub fn update(&mut self, ratio: f64) {
+        if self.anchor < 0.0 {
+            self.anchor = self.scale / ratio;
+            return;
+        }
+        let raw = (self.anchor * ratio).clamp(
+            self.prior / V06_ADAPT_PRIOR_BAND,
+            self.prior * V06_ADAPT_PRIOR_BAND,
+        );
+        let log_change = (raw / self.scale)
+            .ln()
+            .clamp(V06_ADAPT_CHANGE.0.ln(), V06_ADAPT_CHANGE.1.ln());
+        self.scale *= (V06_ADAPT_STEP * log_change).exp();
+    }
 }
 
 //////////
@@ -515,10 +589,7 @@ where
     let small = n <= V06_SMALL_LAYOUT_MAX;
     let hard_negatives = cfg.neg_selection_range < n;
     let range = n.min(V06_MIN_NEG_SELECTION_RANGE.max(cfg.neg_selection_range));
-    let mut neg_scale =
-        (cfg.neg_selection_range.min(n) as f64 / n as f64).powf(V06_NEG_SCALE_EXPONENT);
-    let neg_scale_prior = neg_scale;
-    let mut force_anchor = -1.0f64;
+    let mut neg_scale = HardNegScale::new(cfg.neg_selection_range, n);
 
     let lut = SplitPowLut::new(cfg.b);
     let two = T::from_f64(2.0).unwrap();
@@ -575,12 +646,8 @@ where
     let mut v = vec![T::zero(); n * n_dim];
 
     for epoch in 0..cfg.n_epochs {
-        if !small
-            && hard_negatives
-            && (V06_ADAPT_EVERY..=cfg.n_epochs / 2).contains(&epoch)
-            && epoch % V06_ADAPT_EVERY == 0
-        {
-            let ratio = negative_force_ratio(
+        if !small && hard_negatives && HardNegScale::due(epoch, cfg.n_epochs) {
+            neg_scale.update(negative_force_ratio(
                 embd,
                 n_dim,
                 &order,
@@ -588,26 +655,14 @@ where
                 cfg,
                 &lut,
                 &mut adapt_rng,
-            );
-            if force_anchor < 0.0 {
-                force_anchor = neg_scale / ratio;
-            } else {
-                let raw = (force_anchor * ratio).clamp(
-                    neg_scale_prior / V06_ADAPT_PRIOR_BAND,
-                    neg_scale_prior * V06_ADAPT_PRIOR_BAND,
-                );
-                let log_change = (raw / neg_scale)
-                    .ln()
-                    .clamp(V06_ADAPT_CHANGE.0.ln(), V06_ADAPT_CHANGE.1.ln());
-                neg_scale *= (V06_ADAPT_STEP * log_change).exp();
-            }
+            ));
         }
 
         let epoch_t = T::from(epoch).unwrap();
         let neg_scale_t = if small {
             T::one()
         } else {
-            T::from_f64(neg_scale).unwrap()
+            T::from_f64(neg_scale.scale).unwrap()
         };
         let embd_ro: &[T] = embd;
         let order_ro = &order;

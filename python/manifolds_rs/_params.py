@@ -71,7 +71,7 @@ UMAP_INITS: frozenset[str] = INITS | {"recursive"}
 #: update on the device; the CPU names still work and pull the embedding back each
 #: epoch.
 UMAP_OPTIMISERS_GPU: frozenset[str] = frozenset(
-    {"adam", "sgd", "sgd_parallel", "adam_parallel", "adam_gpu"}
+    {"adam", "sgd", "sgd_parallel", "adam_parallel", "adam_gpu", "adam_v06", "adam_v06_gpu"}
 ) | (frozenset({"adam_mlx"}) if _MLX else frozenset())
 
 #: UMAP optimisers, from `parse_umap_optimiser`.

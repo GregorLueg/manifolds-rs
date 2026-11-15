@@ -34,6 +34,10 @@ pub enum UmapOptimiserGpu {
     Sgd,
     /// Lock-free parallel stochastic gradient descent (hogwild)
     SgdParallel,
+    /// umap-learn 0.6 Adam on the CPU
+    AdamV06,
+    /// umap-learn 0.6 Adam on the GPU
+    AdamV06Gpu,
     /// Adam on MLX (Apple Silicon); the kNN graph stays on wgpu
     #[cfg(mlx_available)]
     AdamMlx,
@@ -44,8 +48,9 @@ pub enum UmapOptimiserGpu {
 /// ### Params
 ///
 /// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`,
-///   `"sgd"`, `"sgd_parallel"` or `"adam_gpu"` (default), plus `"adam_mlx"`
-///   when the MLX backend is compiled in.
+///   `"sgd"`, `"sgd_parallel"`, `"adam_v06"` (umap-learn 0.6 Adam, CPU),
+///   `"adam_v06_gpu"` (the same on the GPU) or `"adam_gpu"` (default), plus
+///   `"adam_mlx"` when the MLX backend is compiled in.
 ///
 /// ### Returns
 ///
@@ -57,6 +62,8 @@ pub fn parse_umap_optimiser_gpu(s: &str) -> Option<UmapOptimiserGpu> {
         "sgd" => Some(UmapOptimiserGpu::Sgd),
         "sgd_parallel" => Some(UmapOptimiserGpu::SgdParallel),
         "adam_parallel" => Some(UmapOptimiserGpu::AdamParallel),
+        "adam_v06" => Some(UmapOptimiserGpu::AdamV06),
+        "adam_v06_gpu" => Some(UmapOptimiserGpu::AdamV06Gpu),
         #[cfg(mlx_available)]
         "adam_mlx" => Some(UmapOptimiserGpu::AdamMlx),
         _ => None,

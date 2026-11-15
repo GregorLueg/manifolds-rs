@@ -76,6 +76,8 @@ use crate::parametric::parametric_train::*;
 use crate::training::tsne_optimiser_gpu::*;
 #[cfg(feature = "gpu")]
 use crate::training::umap_optimiser_gpu::*;
+#[cfg(feature = "gpu")]
+use crate::training::umap_optimiser_v06_gpu::optimise_embedding_adam_v06_gpu;
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::FftFloat;
 
@@ -5104,6 +5106,8 @@ where
                 UmapOptimiserGpu::SgdParallel => "SGD (multi-threaded, lock-free)",
                 UmapOptimiserGpu::AdamParallel => "Adam (multi-threaded)",
                 UmapOptimiserGpu::AdamGpu => "Adam (GPU-accelerated)",
+                UmapOptimiserGpu::AdamV06 => "Adam (umap-learn 0.6, multi-threaded)",
+                UmapOptimiserGpu::AdamV06Gpu => "Adam (umap-learn 0.6, GPU-accelerated)",
                 #[cfg(mlx_available)]
                 UmapOptimiserGpu::AdamMlx => "Adam (MLX)",
             },
@@ -5161,6 +5165,51 @@ where
                 seed as u64,
                 verbose,
             )?;
+        }
+        UmapOptimiserGpu::AdamV06 | UmapOptimiserGpu::AdamV06Gpu => {
+            if dens_state.is_some() {
+                return Err(ManifoldsError::UnsupportedCombination {
+                    feature: "densMAP",
+                    context: "the \"adam_v06\" optimisers",
+                });
+            }
+            let good_init = umap_params.initialisation.eq_ignore_ascii_case("recursive");
+            if matches!(optimiser, UmapOptimiserGpu::AdamV06) {
+                optimise_embedding_adam_v06(
+                    &mut embd,
+                    &graph_adj,
+                    &umap_params.optim_params,
+                    good_init,
+                    seed as u64,
+                )?;
+            } else {
+                let mut embd_f32: Vec<Vec<f32>> = embd
+                    .iter()
+                    .map(|p| p.iter().map(|&x| x.to_f32().unwrap()).collect())
+                    .collect();
+                let graph_adj_f32: Vec<Vec<(usize, f32)>> = graph_adj
+                    .iter()
+                    .map(|edges| {
+                        edges
+                            .iter()
+                            .map(|&(j, w)| (j, w.to_f32().unwrap()))
+                            .collect()
+                    })
+                    .collect();
+                optimise_embedding_adam_v06_gpu(
+                    &mut embd_f32,
+                    &graph_adj_f32,
+                    &umap_params.optim_params.cast::<f32>(),
+                    good_init,
+                    device,
+                    seed as u64,
+                )?;
+                for (point, src) in embd.iter_mut().zip(&embd_f32) {
+                    for (coord, &x) in point.iter_mut().zip(src) {
+                        *coord = T::from(x).unwrap();
+                    }
+                }
+            }
         }
         UmapOptimiserGpu::AdamGpu => {
             // downcast to f32 for GPU here...

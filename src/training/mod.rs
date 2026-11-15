@@ -13,6 +13,8 @@ pub mod umap_optimisers;
 
 #[cfg(feature = "gpu")]
 pub mod umap_optimiser_gpu;
+#[cfg(feature = "gpu")]
+pub mod umap_optimiser_v06_gpu;
 
 /////////////
 // Globals //
