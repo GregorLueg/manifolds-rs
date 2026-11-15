@@ -314,3 +314,75 @@ fn umap_gpu_integration_06_precomputed_knn() {
     println!("Max diff precomputed vs internal: {:.10}", max_diff);
     assert!(max_diff < 1e-6);
 }
+
+/// Test 7: the umap-learn 0.6 Adam on the device with the recursive
+/// initialisation: finite, reproducible, and the clusters come apart
+#[test]
+fn umap_gpu_integration_07_adam_v06_gpu() {
+    let (data, labels) = create_diagnostic_data(50, 10, 123);
+    let data = mat_to_f32(data);
+
+    let params = UmapParamsGpu {
+        ann_type: "exhaustive_gpu".to_string(),
+        optimiser: "adam_v06_gpu".to_string(),
+        initialisation: "recursive".to_string(),
+        ..UmapParamsGpu::default()
+    };
+
+    let embd1 = umap_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        WgpuDevice::default().into(),
+        42,
+        0,
+    )
+    .unwrap();
+    let embd2 = umap_gpu::<f32>(
+        data.as_ref(),
+        None,
+        &params,
+        WgpuDevice::default().into(),
+        42,
+        0,
+    )
+    .unwrap();
+
+    assert!(embd1.iter().flatten().all(|x| x.is_finite()));
+    assert_eq!(
+        embd1, embd2,
+        "adam_v06_gpu should be reproducible with one seed"
+    );
+
+    let n_clusters = labels.iter().max().unwrap() + 1;
+    let mut centres = vec![[0.0f32; 3]; n_clusters];
+    for (i, &l) in labels.iter().enumerate() {
+        centres[l][0] += embd1[0][i];
+        centres[l][1] += embd1[1][i];
+        centres[l][2] += 1.0;
+    }
+    for c in centres.iter_mut() {
+        c[0] /= c[2];
+        c[1] /= c[2];
+    }
+    let mut min_inter = f32::INFINITY;
+    for a in 0..n_clusters {
+        for b in (a + 1)..n_clusters {
+            let d = ((centres[a][0] - centres[b][0]).powi(2)
+                + (centres[a][1] - centres[b][1]).powi(2))
+            .sqrt();
+            min_inter = min_inter.min(d);
+        }
+    }
+    let intra = labels
+        .iter()
+        .enumerate()
+        .map(|(i, &l)| {
+            ((embd1[0][i] - centres[l][0]).powi(2) + (embd1[1][i] - centres[l][1]).powi(2)).sqrt()
+        })
+        .sum::<f32>()
+        / labels.len() as f32;
+
+    println!("adam_v06_gpu separation ratio: {:.3}", min_inter / intra);
+    assert!(min_inter / intra > 1.0);
+}

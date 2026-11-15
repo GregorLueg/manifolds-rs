@@ -472,3 +472,19 @@ fn densmap_integration_08_all_optimisers_preserve_density() {
 
     println!("✓ Every CPU optimiser improves the density correlation");
 }
+
+/// Test 9: densMAP refuses the umap-learn 0.6 Adam, which has no density term
+#[test]
+fn densmap_integration_09_rejects_adam_v06() {
+    let (data, _) = create_diagnostic_data(40, 10, 42);
+
+    let mut params = DensmapParams::<f64>::default();
+    params.umap_params.optimiser = "adam_v06".to_string();
+
+    let res = densmap(data.as_ref(), None, &params, 42, 0);
+    assert!(
+        matches!(res, Err(ManifoldsError::UnsupportedCombination { .. })),
+        "expected UnsupportedCombination, got {:?}",
+        res.map(|_| ())
+    );
+}
