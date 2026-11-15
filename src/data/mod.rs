@@ -7,6 +7,7 @@ pub mod graph;
 pub mod init;
 pub mod nearest_neighbours;
 pub mod pacmap_pairs;
+pub mod recursive_init;
 pub mod structures;
 pub mod synthetic;
 

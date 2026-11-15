@@ -87,6 +87,13 @@ pub enum EmbdInit<T> {
         /// Shall randomised SVD be used
         randomised: bool,
     },
+    /// Recursive label-propagation initialisation (umap-learn 0.6). Needs the
+    /// UMAP curve, so only the UMAP entry point runs it, via
+    /// [`crate::data::recursive_init::recursive_layout`].
+    RecursiveInit {
+        /// Optional range parameters that overrides defaults
+        range: Option<T>,
+    },
 }
 
 /// Parse the respective initialisation
@@ -108,6 +115,7 @@ where
         "spectral" => Some(EmbdInit::SpectralInit { range }),
         "pca" => Some(EmbdInit::PcaInit { randomised, range }),
         "random" => Some(EmbdInit::RandomInit { range }),
+        "recursive" => Some(EmbdInit::RecursiveInit { range }),
         _ => None,
     }
 }
@@ -1158,6 +1166,9 @@ where
 ///   deviation of `range`, [`PCA_RANGE`] by default
 /// * **Random**: Uniform random values in [-`range`, `range`], [`RANDOM_RANGE`] by
 ///   default
+/// * **Recursive**: not handled here, returns
+///   [`ManifoldsError::UnsupportedCombination`]; UMAP calls
+///   [`crate::data::recursive_init::recursive_layout`] directly
 pub fn initialise_embedding<T>(
     init_method: &EmbdInit<T>,
     n_comp: usize,
@@ -1180,6 +1191,10 @@ where
         EmbdInit::PcaInit { randomised, range } => {
             Ok(pca_layout(data, n_comp, *randomised, *range, seed)?)
         }
+        EmbdInit::RecursiveInit { .. } => Err(ManifoldsError::UnsupportedCombination {
+            feature: "the \"recursive\" initialisation",
+            context: "this method (UMAP only)",
+        }),
     }
 }
 
@@ -1239,6 +1254,10 @@ mod test_init {
             })
         ));
         // error
+        assert!(matches!(
+            parse_initialisation::<f32>("recursive", false, None),
+            Some(EmbdInit::RecursiveInit { range: None })
+        ));
         assert!(parse_initialisation::<f32>("invalid", false, None).is_none());
     }
 

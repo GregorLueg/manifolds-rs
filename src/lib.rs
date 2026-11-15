@@ -43,6 +43,7 @@ use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
 use crate::data::pacmap_pairs::*;
+use crate::data::recursive_init::recursive_layout;
 use crate::data::structures::*;
 use crate::prelude::*;
 use crate::training::fa2_optimiser::*;
@@ -51,6 +52,7 @@ use crate::training::pacmap_optimiser::{
     optimise_pacmap, optimise_pacmap_parallel, PacMapOptimiser,
 };
 use crate::training::tsne_optimiser::*;
+use crate::training::umap_optimiser_v06::optimise_embedding_adam_v06;
 use crate::training::umap_optimisers::*;
 use crate::utils::density::{DENSMAP_LAMBDA, DENSNE_LAMBDA};
 use crate::utils::diffusions::*;
@@ -129,7 +131,8 @@ pub struct UmapParams<T> {
     /// Number of neighbours
     /// Defaults to `15`.
     pub k: usize,
-    /// Which optimiser to use: `"adam_parallel"` (default), `"adam"`, `"sgd"`,
+    /// Which optimiser to use: `"adam_parallel"` (default), `"adam"`,
+    /// `"adam_v06"` (umap-learn 0.6 Adam, no densMAP), `"sgd"`,
     /// `"sgd_parallel"`, or `"adam_mlx"` with the `mlx` feature.
     /// `"sgd_parallel"` is lock-free (hogwild) and so not reproducible run to
     /// run with more than one thread.
@@ -139,8 +142,8 @@ pub struct UmapParams<T> {
     /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// Defaults to `"nndescent"`.
     pub ann_type: String,
-    /// Which embedding initialisation to use: `"spectral"` (default), `"pca"`
-    /// or `"random"`.
+    /// Which embedding initialisation to use: `"spectral"` (default), `"pca"`,
+    /// `"random"` or `"recursive"` (umap-learn 0.6).
     pub initialisation: String,
     /// Optional initialisation range to use
     pub init_range: Option<T>,
@@ -518,7 +521,18 @@ where
 
     let start_init = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data)?;
+    let mut embd = match init_type {
+        EmbdInit::RecursiveInit { range } => recursive_layout(
+            &graph,
+            data,
+            umap_params.n_dim,
+            umap_params.optim_params.a,
+            umap_params.optim_params.b,
+            range,
+            seed as u64,
+        )?,
+        _ => initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data)?,
+    };
 
     if verbosity.normal_verbosity() {
         println!(" ... initialised in {:.2?}", start_init.elapsed());
@@ -539,6 +553,7 @@ where
                 UmapOptimiser::Sgd => "SGD",
                 UmapOptimiser::SgdParallel => "SGD (multi-threaded, lock-free)",
                 UmapOptimiser::AdamParallel => "Adam (multi-threaded)",
+                UmapOptimiser::AdamV06 => "Adam (umap-learn 0.6, multi-threaded)",
                 #[cfg(mlx_available)]
                 UmapOptimiser::AdamMlx => "Adam (MLX)",
             },
@@ -584,6 +599,22 @@ where
                 dens_state.as_ref(),
                 seed as u64,
                 verbose,
+            )?;
+        }
+        UmapOptimiser::AdamV06 => {
+            if dens_state.is_some() {
+                return Err(ManifoldsError::UnsupportedCombination {
+                    feature: "densMAP",
+                    context: "the \"adam_v06\" optimiser",
+                });
+            }
+            let good_init = umap_params.initialisation.eq_ignore_ascii_case("recursive");
+            optimise_embedding_adam_v06(
+                &mut embd,
+                &graph_adj,
+                &umap_params.optim_params,
+                good_init,
+                seed as u64,
             )?;
         }
         #[cfg(mlx_available)]
@@ -4645,8 +4676,8 @@ pub struct UmapParamsGpu<T> {
     /// Which GPU nearest neighbour search to use. One of `"exhaustive_gpu"`,
     /// `"ivf_gpu"` or `"nndescent_gpu"`. Defaults to `"nndescent_gpu"`.
     pub ann_type: String,
-    /// Which embedding initialisation to use: `"spectral"` (default), `"pca"`
-    /// or `"random"`.
+    /// Which embedding initialisation to use: `"spectral"` (default), `"pca"`,
+    /// `"random"` or `"recursive"` (umap-learn 0.6).
     pub initialisation: String,
     /// Optional initialisation range
     pub init_range: Option<T>,
@@ -5040,7 +5071,18 @@ where
 
     let start_init = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data)?;
+    let mut embd = match init_type {
+        EmbdInit::RecursiveInit { range } => recursive_layout(
+            &graph,
+            data,
+            umap_params.n_dim,
+            umap_params.optim_params.a,
+            umap_params.optim_params.b,
+            range,
+            seed as u64,
+        )?,
+        _ => initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data)?,
+    };
 
     if verbosity.normal_verbosity() {
         println!(" ... initialised in {:.2?}", start_init.elapsed());

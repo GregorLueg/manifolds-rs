@@ -291,6 +291,8 @@ pub enum UmapOptimiser {
     Sgd,
     /// Lock-free parallel stochastic gradient descent (hogwild)
     SgdParallel,
+    /// The umap-learn 0.6 Adam, see [`crate::training::umap_optimiser_v06`]
+    AdamV06,
     /// Adam on the GPU via MLX (Apple Silicon, `mlx` feature)
     #[cfg(mlx_available)]
     AdamMlx,
@@ -301,8 +303,8 @@ pub enum UmapOptimiser {
 /// ### Params
 ///
 /// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`,
-///   `"sgd"` or `"sgd_parallel"`, plus `"adam_mlx"` when the MLX backend is
-///   compiled in.
+///   `"adam_v06"`, `"sgd"` or `"sgd_parallel"`, plus `"adam_mlx"` when the MLX
+///   backend is compiled in.
 ///
 /// ### Return
 ///
@@ -313,6 +315,7 @@ pub fn parse_umap_optimiser(s: &str) -> Option<UmapOptimiser> {
         "sgd" => Some(UmapOptimiser::Sgd),
         "sgd_parallel" => Some(UmapOptimiser::SgdParallel),
         "adam_parallel" => Some(UmapOptimiser::AdamParallel),
+        "adam_v06" => Some(UmapOptimiser::AdamV06),
         #[cfg(mlx_available)]
         "adam_mlx" => Some(UmapOptimiser::AdamMlx),
         _ => None,
@@ -448,7 +451,7 @@ where
 /// second, coarser table covers `[POW_LUT_NEAR_MAX, POW_LUT_FAR_MAX]`; its step
 /// is wide in absolute terms but small relative to `x` there, so the linear
 /// interpolation stays accurate. Beyond that, `powf`.
-struct SplitPowLut<T> {
+pub(crate) struct SplitPowLut<T> {
     /// Table over `[0, POW_LUT_NEAR_MAX]`.
     near: FastPowLut<T>,
     /// Table over `[0, POW_LUT_FAR_MAX]`, only read above `POW_LUT_NEAR_MAX`.
@@ -472,7 +475,7 @@ where
     /// ### Returns
     ///
     /// The two-range table.
-    fn new(b: T) -> Self {
+    pub(crate) fn new(b: T) -> Self {
         Self {
             near: FastPowLut::new(b, POW_LUT_NEAR_MAX, POW_LUT_SIZE),
             far: FastPowLut::new(b, POW_LUT_FAR_MAX, POW_LUT_SIZE),
@@ -491,7 +494,7 @@ where
     ///
     /// `x^b`, interpolated from the matching table.
     #[inline(always)]
-    fn get(&self, x: T) -> T {
+    pub(crate) fn get(&self, x: T) -> T {
         if self.b_is_one {
             x
         } else if x < self.split {

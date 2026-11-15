@@ -185,6 +185,16 @@ pub enum ManifoldsError {
     )]
     DegenerateLocalRadii,
 
+    // -- UMAP --
+    /// Error if two settings that cannot be combined are both requested
+    #[error("{feature} is not supported together with {context}")]
+    UnsupportedCombination {
+        /// The requested feature
+        feature: &'static str,
+        /// The setting it clashes with
+        context: &'static str,
+    },
+
     // -- DREAMS --
     /// Error if the DREAMS regularisation strength is outside `[0, 1]`
     #[error("DREAMS: lambda = {lambda} is invalid, it must lie in [0, 1]")]

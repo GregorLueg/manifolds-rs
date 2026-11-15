@@ -8,6 +8,7 @@ pub mod tsne_optimiser;
 #[cfg(feature = "gpu")]
 pub mod tsne_optimiser_gpu;
 pub mod umap_csr;
+pub mod umap_optimiser_v06;
 pub mod umap_optimisers;
 
 #[cfg(feature = "gpu")]
