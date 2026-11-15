@@ -668,77 +668,144 @@ where
         let order_ro = &order;
         let ranks_ro = &ranks;
 
-        grads
-            .par_chunks_exact_mut(n_dim)
-            .zip(rows.par_iter_mut())
-            .enumerate()
-            .for_each(|(i, (grad, row_clocks))| {
-                grad.iter_mut().for_each(|g| *g = T::zero());
-                let base_i = i * n_dim;
-                let current = &embd_ro[base_i..base_i + n_dim];
-                let row_start = offsets[i] as usize;
-                let win_start = if small {
-                    0
-                } else {
-                    window_start(ranks_ro[i] as usize, range, n)
-                };
-                let modulus = if small { n } else { range };
+        if n_dim == 2 {
+            // as the general pass below, with the node's step in registers
+            let (pts, _) = embd_ro.as_chunks::<2>();
+            let (g2, _) = grads.as_chunks_mut::<2>();
+            g2.par_iter_mut()
+                .zip(rows.par_iter_mut())
+                .enumerate()
+                .for_each(|(i, (grad, row_clocks))| {
+                    let yi = pts[i];
+                    let mut g = [T::zero(); 2];
+                    let row_start = offsets[i] as usize;
+                    let win_start = if small {
+                        0
+                    } else {
+                        window_start(ranks_ro[i] as usize, range, n)
+                    };
+                    let modulus = if small { n } else { range };
 
-                for (local, clock) in row_clocks.iter_mut().enumerate() {
-                    if clock.next_sample > epoch_t {
-                        continue;
-                    }
-                    let p = row_start + local;
-                    let e = csr.csr_edge_idx[p] as usize;
-                    let j = csr.csr_other_node[p] as usize;
-                    let other = &embd_ro[j * n_dim..(j + 1) * n_dim];
-
-                    let dist_sq = current
-                        .iter()
-                        .zip(other)
-                        .fold(T::zero(), |s, (x, y)| s + (*x - *y) * (*x - *y));
-                    if dist_sq > T::zero() {
-                        let dist_sq_b = lut.get(dist_sq);
-                        let coeff = -attr_scale * two_a_b * dist_sq_b
-                            / (dist_sq * (cfg.a * dist_sq_b + T::one()));
-                        for d in 0..n_dim {
-                            grad[d] += coeff * (current[d] - other[d]);
+                    for (local, clock) in row_clocks.iter_mut().enumerate() {
+                        if clock.next_sample > epoch_t {
+                            continue;
                         }
-                    }
-                    clock.next_sample += csr.epochs_per_sample[e];
-
-                    let n_neg = ((epoch_t - clock.next_neg) / epochs_per_neg[e])
-                        .floor()
-                        .to_usize()
-                        .unwrap_or(0);
-                    for q in 0..n_neg {
-                        let hash =
-                            ((p as u64) * (epoch as u64 + q as u64 + 1) % modulus as u64) as usize;
-                        let k = order_ro[(win_start + hash) % n] as usize;
-                        let pk = &embd_ro[k * n_dim..(k + 1) * n_dim];
-                        let dist_sq = current
-                            .iter()
-                            .zip(pk)
-                            .fold(T::zero(), |s, (x, y)| s + (*x - *y) * (*x - *y));
+                        let p = row_start + local;
+                        let e = csr.csr_edge_idx[p] as usize;
+                        let yj = pts[csr.csr_other_node[p] as usize];
+                        let (d0, d1) = (yi[0] - yj[0], yi[1] - yj[1]);
+                        let dist_sq = T::zero() + d0 * d0 + d1 * d1;
                         if dist_sq > T::zero() {
-                            let coeff = neg_scale_t
-                                * repulsion_coeff(
-                                    dist_sq,
-                                    lut.get(dist_sq),
-                                    cfg.a,
-                                    two_gamma_b,
-                                    cfg.gamma,
-                                    rep_clip,
-                                    rep_eps,
-                                );
-                            for d in 0..n_dim {
-                                grad[d] += coeff * (current[d] - pk[d]);
+                            let dist_sq_b = lut.get(dist_sq);
+                            let coeff = -attr_scale * two_a_b * dist_sq_b
+                                / (dist_sq * (cfg.a * dist_sq_b + T::one()));
+                            g[0] += coeff * d0;
+                            g[1] += coeff * d1;
+                        }
+                        clock.next_sample += csr.epochs_per_sample[e];
+
+                        let n_neg = ((epoch_t - clock.next_neg) / epochs_per_neg[e])
+                            .floor()
+                            .to_usize()
+                            .unwrap_or(0);
+                        for q in 0..n_neg {
+                            let hash = ((p as u64) * (epoch as u64 + q as u64 + 1) % modulus as u64)
+                                as usize;
+                            let yk = pts[order_ro[(win_start + hash) % n] as usize];
+                            let (d0, d1) = (yi[0] - yk[0], yi[1] - yk[1]);
+                            let dist_sq = T::zero() + d0 * d0 + d1 * d1;
+                            if dist_sq > T::zero() {
+                                let coeff = neg_scale_t
+                                    * repulsion_coeff(
+                                        dist_sq,
+                                        lut.get(dist_sq),
+                                        cfg.a,
+                                        two_gamma_b,
+                                        cfg.gamma,
+                                        rep_clip,
+                                        rep_eps,
+                                    );
+                                g[0] += coeff * d0;
+                                g[1] += coeff * d1;
                             }
                         }
+                        clock.next_neg += T::from(n_neg).unwrap() * epochs_per_neg[e];
                     }
-                    clock.next_neg += T::from(n_neg).unwrap() * epochs_per_neg[e];
-                }
-            });
+                    *grad = g;
+                });
+        } else {
+            grads
+                .par_chunks_exact_mut(n_dim)
+                .zip(rows.par_iter_mut())
+                .enumerate()
+                .for_each(|(i, (grad, row_clocks))| {
+                    grad.iter_mut().for_each(|g| *g = T::zero());
+                    let base_i = i * n_dim;
+                    let current = &embd_ro[base_i..base_i + n_dim];
+                    let row_start = offsets[i] as usize;
+                    let win_start = if small {
+                        0
+                    } else {
+                        window_start(ranks_ro[i] as usize, range, n)
+                    };
+                    let modulus = if small { n } else { range };
+
+                    for (local, clock) in row_clocks.iter_mut().enumerate() {
+                        if clock.next_sample > epoch_t {
+                            continue;
+                        }
+                        let p = row_start + local;
+                        let e = csr.csr_edge_idx[p] as usize;
+                        let j = csr.csr_other_node[p] as usize;
+                        let other = &embd_ro[j * n_dim..(j + 1) * n_dim];
+
+                        let dist_sq = current
+                            .iter()
+                            .zip(other)
+                            .fold(T::zero(), |s, (x, y)| s + (*x - *y) * (*x - *y));
+                        if dist_sq > T::zero() {
+                            let dist_sq_b = lut.get(dist_sq);
+                            let coeff = -attr_scale * two_a_b * dist_sq_b
+                                / (dist_sq * (cfg.a * dist_sq_b + T::one()));
+                            for d in 0..n_dim {
+                                grad[d] += coeff * (current[d] - other[d]);
+                            }
+                        }
+                        clock.next_sample += csr.epochs_per_sample[e];
+
+                        let n_neg = ((epoch_t - clock.next_neg) / epochs_per_neg[e])
+                            .floor()
+                            .to_usize()
+                            .unwrap_or(0);
+                        for q in 0..n_neg {
+                            let hash = ((p as u64) * (epoch as u64 + q as u64 + 1) % modulus as u64)
+                                as usize;
+                            let k = order_ro[(win_start + hash) % n] as usize;
+                            let pk = &embd_ro[k * n_dim..(k + 1) * n_dim];
+                            let dist_sq = current
+                                .iter()
+                                .zip(pk)
+                                .fold(T::zero(), |s, (x, y)| s + (*x - *y) * (*x - *y));
+                            if dist_sq > T::zero() {
+                                let coeff = neg_scale_t
+                                    * repulsion_coeff(
+                                        dist_sq,
+                                        lut.get(dist_sq),
+                                        cfg.a,
+                                        two_gamma_b,
+                                        cfg.gamma,
+                                        rep_clip,
+                                        rep_eps,
+                                    );
+                                for d in 0..n_dim {
+                                    grad[d] += coeff * (current[d] - pk[d]);
+                                }
+                            }
+                        }
+                        clock.next_neg += T::from(n_neg).unwrap() * epochs_per_neg[e];
+                    }
+                });
+        }
 
         let alpha = T::from_f64(alphas[epoch]).unwrap();
         let t = T::from(epoch + 1).unwrap();

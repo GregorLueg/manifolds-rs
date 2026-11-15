@@ -532,9 +532,45 @@ fn gather<T, F>(
     }
 }
 
+/// [`gather`] for 2D embeddings, with the step held in registers.
+///
+/// ### Params
+///
+/// * `embd` - Embedding as 2D points.
+/// * `yi` - The node's coordinates.
+/// * `partners` - All entries of the pair CSR, as in [`gather`].
+/// * `start` - First entry of the row.
+/// * `end` - One past the last entry.
+/// * `coeff` - Signed force coefficient from the squared distance.
+/// * `grad` - Accumulated step of the node.
+#[inline(always)]
+fn gather_2d<T, F>(
+    embd: &[[T; 2]],
+    yi: [T; 2],
+    partners: &[u32],
+    start: usize,
+    end: usize,
+    coeff: F,
+    grad: &mut [T; 2],
+) where
+    T: ManifoldsFloat,
+    F: Fn(T) -> T,
+{
+    for k in start..end {
+        if let Some(&ahead) = partners.get(k + PREFETCH_AHEAD) {
+            prefetch_read(&embd[ahead as usize]);
+        }
+        let yj = embd[partners[k] as usize];
+        let (d0, d1) = (yi[0] - yj[0], yi[1] - yj[1]);
+        let c = coeff(T::zero() + d0 * d0 + d1 * d1);
+        grad[0] += c * d0;
+        grad[1] += c * d1;
+    }
+}
+
 /// One fused epoch: each node gathers its gradient from `old` and applies Adam
 /// straight away, writing to `new`, since other nodes still need its old
-/// position.
+/// position. 2D embeddings take a copy of the loop built on [`gather_2d`].
 ///
 /// ### Params
 ///
@@ -568,6 +604,41 @@ fn fused_epoch<T>(
     let c_mn = T::from_f64(C_MID_NEAR).unwrap();
     let w_fp = T::from_f64(W_FP).unwrap();
 
+    if n_dim == 2 {
+        let (old2, _) = old.as_chunks::<2>();
+        let (new2, _) = new.as_chunks_mut::<2>();
+        let (m2, _) = m.as_chunks_mut::<2>();
+        let (v2, _) = v.as_chunks_mut::<2>();
+        new2.par_iter_mut()
+            .zip(m2.par_iter_mut())
+            .zip(v2.par_iter_mut())
+            .enumerate()
+            .for_each(|(i, ((out, m_i), v_i))| {
+                let yi = old2[i];
+                let row = |csr: &PairCsr| (csr.indptr[i] as usize, csr.indptr[i + 1] as usize);
+                let mut grad = [T::zero(); 2];
+
+                let (s, e) = row(near);
+                let near_c = |d2| near_coeff(d2, w_nb, half_max_distance);
+                gather_2d(old2, yi, &near.indices, s, e, near_c, &mut grad);
+
+                if let Some((mn, w_mn)) = mid_near {
+                    let (s, e) = row(mn);
+                    let mn_c = |d2| -(w_mn * attract_grad_coeff(d2, c_mn));
+                    gather_2d(old2, yi, &mn.indices, s, e, mn_c, &mut grad);
+                }
+
+                let (s, e) = row(further);
+                let fp_c = |d2| w_fp * repel_grad_coeff(d2);
+                gather_2d(old2, yi, &further.indices, s, e, fp_c, &mut grad);
+
+                for d in 0..2 {
+                    out[d] = adam.apply(yi[d], grad[d], &mut m_i[d], &mut v_i[d]);
+                }
+            });
+        return;
+    }
+
     new.par_chunks_exact_mut(n_dim)
         .zip(m.par_chunks_exact_mut(n_dim))
         .zip(v.par_chunks_exact_mut(n_dim))
@@ -597,7 +668,8 @@ fn fused_epoch<T>(
         });
 }
 
-/// Scatter one pair type's force onto both endpoints of each pair.
+/// Scatter one pair type's force onto both endpoints of each pair, with a
+/// separate loop for 2D embeddings that loads each point as one `[T; 2]`.
 ///
 /// ### Params
 ///
@@ -612,6 +684,23 @@ where
     T: ManifoldsFloat,
     F: Fn(T) -> T,
 {
+    if n_dim == 2 {
+        let (pts, _) = embd.as_chunks::<2>();
+        let (g2, _) = grads.as_chunks_mut::<2>();
+        for (k, &(i, j)) in pairs.iter().enumerate() {
+            if let Some(&(_, ahead)) = pairs.get(k + PREFETCH_AHEAD) {
+                prefetch_read(&pts[ahead]);
+            }
+            let (yi, yj) = (pts[i], pts[j]);
+            let (d0, d1) = (yi[0] - yj[0], yi[1] - yj[1]);
+            let c = coeff(T::zero() + d0 * d0 + d1 * d1);
+            g2[i][0] += c * d0;
+            g2[i][1] += c * d1;
+            g2[j][0] -= c * d0;
+            g2[j][1] -= c * d1;
+        }
+        return;
+    }
     for (k, &(i, j)) in pairs.iter().enumerate() {
         if let Some(&(_, ahead)) = pairs.get(k + PREFETCH_AHEAD) {
             prefetch_read(&embd[ahead * n_dim]);
@@ -1172,5 +1261,41 @@ mod test_pacmap_optimiser {
         optimise_localmap_parallel(&mut b, &pairs, &params, 10.0, 7, 0).unwrap();
         assert_eq!(a, b);
         assert!(a.iter().flatten().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn test_general_path_matches_2d_path() {
+        // a zero third axis gets zero gradient and zero Adam step and adds
+        // exact zeros to every distance, so the general n_dim path must
+        // reproduce the 2D path bit for bit
+        let n = 40;
+        let pairs = PacmapPairs {
+            near: (0..n).map(|i| (i, (i * 7 + 1) % n)).collect(),
+            mid_near: (0..n).map(|i| (i, (i * 11 + 3) % n)).collect(),
+            further: (0..n).map(|i| (i, (i * 13 + 5) % n)).collect(),
+        };
+        let params = PacmapOptimParams::new(Some(260), None, None, None, None, None, None);
+        let embd2: Vec<Vec<f64>> = (0..n)
+            .map(|i| vec![(i as f64 * 0.37).sin(), (i as f64 * 0.91).cos()])
+            .collect();
+        let embd3: Vec<Vec<f64>> = embd2.iter().map(|p| vec![p[0], p[1], 0.0]).collect();
+
+        type Run = fn(&mut [Vec<f64>], &PacmapPairs, &PacmapOptimParams<f64>);
+        let runs: [Run; 4] = [
+            |e, p, o| optimise_pacmap(e, p, o, 0).unwrap(),
+            |e, p, o| optimise_pacmap_parallel(e, p, o, 0).unwrap(),
+            |e, p, o| optimise_localmap(e, p, o, 10.0, 7, 0).unwrap(),
+            |e, p, o| optimise_localmap_parallel(e, p, o, 10.0, 7, 0).unwrap(),
+        ];
+        for run in runs {
+            let mut a = embd2.clone();
+            let mut b = embd3.clone();
+            run(&mut a, &pairs, &params);
+            run(&mut b, &pairs, &params);
+            for (pa, pb) in a.iter().zip(&b) {
+                assert_eq!(pa[..], pb[..2]);
+                assert_eq!(pb[2], 0.0);
+            }
+        }
     }
 }
