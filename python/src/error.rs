@@ -70,6 +70,8 @@ impl From<ManErr> for PyErr {
             | ManifoldsError::DreamsDegenerateReference
             | ManifoldsError::MetricNotSupported { .. }
             | ManifoldsError::TsneOptimiserNeedsFft { .. }
+            | ManifoldsError::LocalMapInvalidMaxDistance { .. }
+            | ManifoldsError::UnsupportedCombination { .. }
             | ManifoldsError::AnnSearchRsError(_) => PyValueError::new_err(msg),
 
             // Numerical routines that ran but did not get there. Usually
