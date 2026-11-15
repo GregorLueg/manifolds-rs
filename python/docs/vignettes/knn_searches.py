@@ -15,8 +15,6 @@ import time
 import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
-from pynndescent import NNDescent
-from sklearn.neighbors import NearestNeighbors
 
 import manifolds_rs as mf
 
@@ -79,15 +77,10 @@ mf.NeighbourParams()
 # %% [markdown]
 # ### Speed
 #
-# Every backend at three sizes, one run each. scikit-learn's exact search and
-# [pynndescent](https://github.com/lmcinnes/pynndescent) (what umap-learn uses)
-# are in there for reference. pynndescent compiles with numba on first use, so
-# it gets one warm-up call before the clock starts.
+# Every backend at three sizes, one run each.
 
 # %%
 BACKENDS = ["exhaustive", "kmknn", "balltree", "annoy", "hnsw", "nndescent", "ivf"]
-
-NNDescent(X, n_neighbors=K + 1, random_state=42).neighbor_graph
 
 
 def timed(fn) -> float:
@@ -98,19 +91,12 @@ def timed(fn) -> float:
 
 
 def time_backends(X: np.ndarray) -> dict[str, float]:
-    """Wall time of every manifolds-rs backend and the two references on `X`."""
+    """Wall time of every backend on `X`."""
     params = mf.NeighbourParams(n_probes=25)
-    res = {
+    return {
         ann: timed(lambda ann=ann: mf.knn_graph(X, k=K, ann=ann, nn_params=params))
         for ann in BACKENDS
     }
-    res["sklearn (exact)"] = timed(
-        lambda: NearestNeighbors(n_neighbors=K).fit(X).kneighbors()
-    )
-    res["pynndescent"] = timed(
-        lambda: NNDescent(X, n_neighbors=K + 1, random_state=42).neighbor_graph
-    )
-    return res
 
 
 speed = {
@@ -131,8 +117,7 @@ pl.DataFrame(
 #
 # Annoy and HNSW are no faster than exhaustive here: a one-off self-query at
 # `k = 10` never pays back their index build. They earn their keep at larger N,
-# or when you query the same index again and again. pynndescent looks faster
-# than our NN-Descent, but hold that thought until the recall below.
+# or when you query the same index again and again.
 
 # %% [markdown]
 # ### Precision
@@ -163,18 +148,7 @@ def precision(ann: str) -> dict[str, float | str]:
     }
 
 
-pynn, _ = NNDescent(X_25k, n_neighbors=K + 1, random_state=42).neighbor_graph
-pynn_dist = np.linalg.norm(X_25k[:, None, :] - X_25k[pynn[:, 1:]], axis=2)
-pynn_row = {
-    "method": "pynndescent",
-    "recall": sum(
-        len(set(a) & set(b)) for a, b in zip(pynn[:, 1:], true_idx, strict=True)
-    )
-    / true_idx.size,
-    "dist_ratio": float(np.mean(pynn_dist / true_dist)),
-}
-
-pl.DataFrame([precision(ann) for ann in BACKENDS[1:]] + [pynn_row]).with_columns(
+pl.DataFrame([precision(ann) for ann in BACKENDS[1:]]).with_columns(
     pl.col("recall", "dist_ratio").round(4)
 )
 
@@ -182,13 +156,7 @@ pl.DataFrame([precision(ann) for ann in BACKENDS[1:]] + [pynn_row]).with_columns
 # Look at the distance ratio before you panic about a recall number. The
 # synthetic clusters are tight, so lots of points sit at nearly identical
 # distances and swapping one for another costs nothing. For manifold learning
-# that is exactly the kind of miss you don't care about.
-#
-# pynndescent's speed comes at a price in recall. Part of it is the seeding
-# forest: by default it plants `2 * log10(n)` trees (at most 12), ours
-# `5 + sqrt(n) / 20` (at most 64), so about twice as many at 100k. Give
-# pynndescent the same number of trees and it is still a bit faster, with
-# clearly lower recall on this data. For a much deeper
+# that is exactly the kind of miss you don't care about. For a much deeper
 # comparison of the methods, see the
 # [ann-search-rs benchmarks](https://github.com/GregorLueg/ann-search-rs).
 
