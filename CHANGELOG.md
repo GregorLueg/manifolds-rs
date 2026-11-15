@@ -3,6 +3,21 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.10.0
+
+**Breaking changes**
+
+- The fuzzy graph's bandwidth search targets `log2(k + 1)` as uwot and
+  umap-learn do, not `ln(k)`. Different coordinates than 0.9.1 at the same seed:
+  UMAP, densMAP, `umap_gpu`, `densmap_gpu`, parametric UMAP and ForceAtlas2.
+
+**New**
+
+- `optimiser = "adam_v06"`: the umap-learn 0.6 Adam for UMAP (CPU only, not with
+  densMAP).
+- `initialisation = "recursive"`: the umap-learn 0.6 recursive label propagation
+  initialisation, UMAP only.
+
 ## 0.9.1
 
 - Fix: the automatic `t` of PHATE and diffusion maps from 5000 points up used

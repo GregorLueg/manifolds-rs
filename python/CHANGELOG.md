@@ -3,6 +3,16 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.7.0
+
+Requires `manifolds-rs` 0.10.0.
+
+**Breaking changes**
+
+- The fuzzy graph's bandwidth search matches uwot and umap-learn. Different
+  coordinates than 0.6.1 at the same seed: `UMAP`, `DensMAP`, `UMAPGpu`,
+  `DensMAPGpu` and `ForceAtlas2`.
+
 ## 0.6.1
 
 Requires `manifolds-rs` 0.9.1.
