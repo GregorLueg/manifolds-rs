@@ -42,6 +42,7 @@ from ._params import (
     PHATE_METRICS,
     SYMMETRIES,
     TSNE_APPROX_GPU,
+    UMAP_INITS,
     UMAP_OPTIMISERS_GPU,
     DensParams,
     NeighbourParamsGpu,
@@ -87,8 +88,8 @@ class UMAPGpu(BaseEmbedding):
         n_epochs: Optimisation epochs. ``None`` means 500, or 200 for the SGD
             optimisers above 10,000 samples, as umap-learn does.
         learning_rate: Initial learning rate.
-        init: ``"spectral"``, ``"pca"`` or ``"random"``. Computed on the CPU
-            either way.
+        init: ``"spectral"``, ``"pca"``, ``"random"`` or ``"recursive"`` (the
+            umap-learn 0.6 initialisation). Computed on the CPU either way.
         ann: ``"nndescent_gpu"``, ``"ivf_gpu"`` or ``"exhaustive_gpu"``.
         optimiser: ``"adam_gpu"`` keeps the update on the device. The CPU names
             still work and pull the embedding back each epoch, which is only
@@ -150,7 +151,7 @@ class UMAPGpu(BaseEmbedding):
             "k": self.n_neighbors,
             "min_dist": self.min_dist,
             "spread": self.spread,
-            "initialisation": check_choice(self.init, INITS, name="init"),
+            "initialisation": check_choice(self.init, UMAP_INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
             "optimiser": check_choice(
                 self.optimiser, UMAP_OPTIMISERS_GPU, name="optimiser"

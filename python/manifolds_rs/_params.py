@@ -63,6 +63,10 @@ PHATE_METRICS: frozenset[str] = METRICS - {"manhattan", "l1"}
 #: Embedding initialisations, from `parse_initialisation`.
 INITS: frozenset[str] = frozenset({"spectral", "pca", "random"})
 
+#: As `INITS`, for UMAP and densMAP: ``"recursive"`` is the umap-learn 0.6
+#: label propagation initialisation and needs the UMAP graph.
+UMAP_INITS: frozenset[str] = INITS | {"recursive"}
+
 #: GPU UMAP optimisers, from `parse_umap_optimiser_gpu`. `"adam_gpu"` keeps the
 #: update on the device; the CPU names still work and pull the embedding back each
 #: epoch.
@@ -72,7 +76,7 @@ UMAP_OPTIMISERS_GPU: frozenset[str] = frozenset(
 
 #: UMAP optimisers, from `parse_umap_optimiser`.
 UMAP_OPTIMISERS: frozenset[str] = frozenset(
-    {"adam", "sgd", "sgd_parallel", "adam_parallel"}
+    {"adam", "sgd", "sgd_parallel", "adam_parallel", "adam_v06"}
 ) | (frozenset({"adam_mlx"}) if _MLX else frozenset())
 
 #: The SGD optimisers, which drop to `SGD_EPOCHS_LARGE` epochs on large data.

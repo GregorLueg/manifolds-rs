@@ -30,6 +30,7 @@ from ._params import (
     PHATE_METRICS,
     SYMMETRIES,
     TSNE_APPROX,
+    UMAP_INITS,
     UMAP_OPTIMISERS,
     DensParams,
     Fa2Optim,
@@ -71,10 +72,12 @@ class UMAP(BaseEmbedding):
         n_epochs: Optimisation epochs. ``None`` means 500, or 200 for the SGD
             optimisers above 10,000 samples, as umap-learn does.
         learning_rate: Initial learning rate.
-        init: ``"spectral"``, ``"pca"`` or ``"random"``.
+        init: ``"spectral"``, ``"pca"``, ``"random"`` or ``"recursive"`` (the
+            umap-learn 0.6 initialisation).
         ann: Neighbour backend. ``"nndescent"`` suits the small `k` here;
             ``"kmknn"`` is exact and fast up to a few hundred thousand points.
-        optimiser: ``"adam_parallel"``, ``"adam"``, ``"sgd"`` or
+        optimiser: ``"adam_parallel"``, ``"adam"``, ``"adam_v06"`` (the
+            umap-learn 0.6 Adam, not with `DensMAP`), ``"sgd"`` or
             ``"sgd_parallel"``. The last is not reproducible run to run.
         randomised: Use randomised SVD for the PCA initialisation. No effect
             under spectral or random init.
@@ -136,7 +139,7 @@ class UMAP(BaseEmbedding):
             "k": self.n_neighbors,
             "min_dist": self.min_dist,
             "spread": self.spread,
-            "initialisation": check_choice(self.init, INITS, name="init"),
+            "initialisation": check_choice(self.init, UMAP_INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
             "optimiser": check_choice(
                 self.optimiser, UMAP_OPTIMISERS, name="optimiser"
