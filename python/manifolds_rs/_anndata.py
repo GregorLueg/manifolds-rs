@@ -235,7 +235,7 @@ def tsne(
     n_pcs: int | None = None,
     *,
     use_rep: str | None = None,
-    perplexity: float = 30.0,
+    perplexity: int | float = 30.0,
     approx: str = "barnes_hut",
     key_added: str | None = None,
     device: str = "cpu",

@@ -282,7 +282,7 @@ class TSNEGpu(BaseEmbedding):
     def __init__(
         self,
         n_components: int = 2,
-        perplexity: float = 30.0,
+        perplexity: int | float = 30.0,
         metric: str = "euclidean",
         n_epochs: int = 1000,
         learning_rate: float | None = None,
@@ -315,7 +315,7 @@ class TSNEGpu(BaseEmbedding):
         check_choice(self.approx, TSNE_APPROX_GPU, name="approx")
         return {
             "n_dim": self.n_components,
-            "perplexity": self.perplexity,
+            "perplexity": float(self.perplexity),
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
             "randomised": self.randomised,
@@ -353,7 +353,7 @@ class DREAMSGpu(ReferenceEmbedding):
     def __init__(
         self,
         n_components: int = 2,
-        perplexity: float = 30.0,
+        perplexity: int | float = 30.0,
         metric: str = "euclidean",
         lambda_: float = 0.15,
         n_epochs: int = 1000,
@@ -388,7 +388,7 @@ class DREAMSGpu(ReferenceEmbedding):
         check_choice(self.approx, TSNE_APPROX_GPU, name="approx")
         return {
             "n_dim": self.n_components,
-            "perplexity": self.perplexity,
+            "perplexity": float(self.perplexity),
             "lambda": self.lambda_,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
