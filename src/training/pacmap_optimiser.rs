@@ -1,4 +1,8 @@
-//! Optimiser for PaCMAP fitting.
+//! Optimisers for PaCMAP and LocalMAP fitting.
+//!
+//! The sequential variants scatter pair forces onto both endpoints. The parallel
+//! variants run a fused per-node gradient-plus-Adam step over per-node CSR
+//! pairs, with a dedicated 2D kernel.
 
 use num_traits::{Float, FromPrimitive};
 use rand::{rngs::SmallRng, Rng, SeedableRng};

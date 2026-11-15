@@ -4,6 +4,8 @@
 //! - Near pairs: k nearest neighbours
 //! - Mid-near pairs: second closest of six random points
 //! - Further pairs: random distant points
+//!
+//! [`PairCsr`] lays a pair set out per node for the fused Adam kernels.
 
 use ann_search_rs::utils::dist::Dist;
 use rand::{rngs::SmallRng, Rng, SeedableRng};

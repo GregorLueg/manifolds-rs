@@ -1,5 +1,6 @@
-//! The optimisers behind PHATE (MDS), t-SNE, UMAP, PaCMAP and ForceAtlas2, with the
-//! GPU variants of the UMAP and t-SNE ones.
+//! The optimisers behind PHATE (MDS), t-SNE, UMAP (including the umap-learn 0.6
+//! Adam), PaCMAP, LocalMAP and ForceAtlas2, with the GPU variants of the UMAP
+//! (uwot-style and 0.6 Adam) and t-SNE ones.
 
 pub mod fa2_optimiser;
 pub mod mds_optimiser;

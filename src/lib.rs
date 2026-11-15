@@ -1,5 +1,5 @@
 //! Dimensionality reduction algorithms: UMAP, densMAP, t-SNE, den-SNE, DREAMS,
-//! PHATE, diffusion maps, PaCMAP and ForceAtlas2, plus parametric UMAP via a
+//! PHATE, diffusion maps, PaCMAP, LocalMAP and ForceAtlas2, plus parametric UMAP via a
 //! neural network encoder with the `parametric` feature.
 //!
 //! The `gpu` feature adds `*_gpu` entry points: kNN search on the device for all
@@ -365,7 +365,8 @@ where
 /// 1. Find k-nearest neighbours using approximate nearest neighbour search
 /// 2. Construct fuzzy simplicial set via smooth kNN distances
 /// 3. Symmetrise the graph using fuzzy set union
-/// 4. Initialise embedding via spectral decomposition
+/// 4. Initialise the embedding, spectral by default (or PCA, random or
+///    recursive)
 /// 5. Optimise embedding with the chosen optimiser, parallel Adam by default
 ///
 /// ### Params
@@ -1665,7 +1666,8 @@ where
 ///
 /// The density term touches only the attractive part of the gradient; negative
 /// sampling is untouched. Works with all four CPU optimisers (`"sgd"`,
-/// `"sgd_parallel"`, `"adam"`, `"adam_parallel"`).
+/// `"sgd_parallel"`, `"adam"`, `"adam_parallel"`). The umap-learn 0.6 Adam
+/// (`"adam_v06"`) returns [`ManifoldsError::UnsupportedCombination`].
 ///
 /// ### Params
 ///
@@ -4932,8 +4934,9 @@ pub struct UmapParamsGpu<T> {
     /// Defaults to `15`.
     pub k: usize,
     /// Which optimiser to use: `"adam_gpu"` (default), `"adam"`, `"sgd"`,
-    /// `"sgd_parallel"`, `"adam_parallel"`, or `"adam_mlx"` with the `mlx`
-    /// feature.
+    /// `"sgd_parallel"`, `"adam_parallel"`, `"adam_v06"` (umap-learn 0.6 Adam,
+    /// CPU), `"adam_v06_gpu"` (the same on the device), or `"adam_mlx"` with
+    /// the `mlx` feature. Both 0.6 optimisers are rejected for densMAP.
     pub optimiser: String,
     /// Which GPU nearest neighbour search to use. One of `"exhaustive_gpu"`,
     /// `"ivf_gpu"` or `"nndescent_gpu"`. Defaults to `"nndescent_gpu"`.
@@ -4990,7 +4993,7 @@ where
     ///
     /// * `n_dim` - How many dimensions to return.
     /// * `k` - How many neighbours to consider.
-    /// * `optimiser` - Which optimiser to use, e.g. `"adam_parallel"`.
+    /// * `optimiser` - Which optimiser to use, e.g. `"adam_gpu"`.
     /// * `ann_type` - Which GPU ANN search to use. One of `"exhaustive_gpu"`,
     ///   `"ivf_gpu"` or `"nndescent_gpu"`.
     /// * `initialisation` - Which embedding initialisation to use, e.g.
@@ -5165,8 +5168,9 @@ where
 /// Run UMAP with GPU-accelerated nearest neighbour search
 ///
 /// Identical to `umap` except the kNN graph is constructed on the GPU and, with
-/// the default `"adam_gpu"` optimiser, the Adam update runs there too. Graph
-/// construction and the initialisation stay on the CPU.
+/// the default `"adam_gpu"` optimiser, the Adam update runs there too, as does
+/// the umap-learn 0.6 Adam with `"adam_v06_gpu"`. Graph construction and the
+/// initialisation stay on the CPU.
 ///
 /// ### Params
 ///
@@ -5614,7 +5618,9 @@ where
 ///
 /// The other optimiser choices (`"sgd"`, `"sgd_parallel"`, `"adam"`,
 /// `"adam_parallel"`) run the CPU density path; only the kNN search is
-/// GPU-accelerated for those.
+/// GPU-accelerated for those. The umap-learn 0.6 Adam (`"adam_v06"`,
+/// `"adam_v06_gpu"`) is not supported and returns
+/// [`ManifoldsError::UnsupportedCombination`].
 ///
 /// ### Params
 ///

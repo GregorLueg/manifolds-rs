@@ -29,6 +29,7 @@ estimators and scanpy-style `mf.umap(adata)`. Changes live in the
 | [DREAMS](https://arxiv.org/abs/2508.13747) | `dreams`, `dreams_gpu` | default, `gpu` |
 | [PHATE](https://pmc.ncbi.nlm.nih.gov/articles/PMC7073148/) | `phate`, `phate_gpu` | default, `gpu` |
 | [PaCMAP](https://arxiv.org/abs/2012.04456) | `pacmap` | default |
+| [LocalMAP](https://arxiv.org/abs/2412.15426) | `localmap` | default |
 | [ForceAtlas2](https://doi.org/10.1371/journal.pone.0098679) | `forceatlas2`, `forceatlas2_from_graph` | default |
 | [Diffusion maps](https://www.sciencedirect.com/science/article/pii/S1063520306000546) | `diffusion_maps` | default |
 
@@ -36,7 +37,7 @@ Optimisers and approximations are picked by string:
 
 | What | Options |
 |---|---|
-| UMAP optimiser | `"adam_parallel"` (default), `"adam"`, `"sgd"`, `"sgd_parallel"`, `"adam_gpu"`, `"adam_mlx"` |
+| UMAP optimiser | `"adam_parallel"` (default), `"adam"`, `"adam_v06"`, `"sgd"`, `"sgd_parallel"`, `"adam_gpu"`, `"adam_v06_gpu"`, `"adam_mlx"` |
 | t-SNE repulsion | `"bh"`, `"qd"`, `"fft"`, `"fft_3k"`, `"fft_3k_gpu"`, `"fft_3k_mlx"` |
 | PHATE landmarks | `"spectral"` (default), `"random"`, `"density"`, `"spectral_mlx"` |
 | kNN, CPU | `"nndescent"` (default), `"ivf"` (default for the t-SNE family), `"kmknn"`, `"exhaustive"`, `"hnsw"`, `"annoy"`, `"balltree"` |
@@ -46,7 +47,7 @@ Optimisers and approximations are picked by string:
 Distances: Euclidean and cosine. The `"nndescent"`, `"hnsw"` and `"exhaustive"` CPU
 searches also take Manhattan, which PHATE and landmark diffusion maps do not
 support. Initialisations: spectral (Lanczos), PCA,
-random. Synthetic datasets (swiss roll, clusters, branching trajectories) ship
+random, and for UMAP and densMAP the umap-learn 0.6 recursive one. Synthetic datasets (swiss roll, clusters, branching trajectories) ship
 with the crate for testing.
 
 ## Installation

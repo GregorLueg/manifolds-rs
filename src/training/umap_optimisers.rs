@@ -1,5 +1,6 @@
 //! Optimisers for UMAP fitting. Contains the SGD, a lock-free parallel SGD,
-//! Adam and a parallel Adam variant
+//! Adam and a fused per-node parallel Adam variant. The Adam paths specialise on
+//! 2D embeddings.
 
 use rand::{
     rngs::SmallRng,
@@ -1279,10 +1280,17 @@ where
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
 ///
+/// ### Returns
+///
+/// `Ok(())`, `NoData` on an empty embedding, or a graph size or empty graph
+/// error.
+///
 /// ### Notes
 ///
 /// - Updates are applied immediately (not batched)
 /// - Linear learning rate decay schedule
+/// - 2D embeddings dispatch to a version with the dimension fixed at compile
+///   time
 pub fn optimise_embedding_adam<T>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
@@ -1558,8 +1566,11 @@ where
 /// Implements uwot's `BatchUpdate` with `NodeWorker` behaviour:
 ///
 /// - Parallelises over nodes using Rayon
-/// - Accumulates gradients per node per epoch safely via chunking
-/// - Applies Adam updates and edge schedules in parallel
+/// - Each node gathers its gradient from the frozen embedding of the epoch and
+///   applies Adam in the same pass, writing to a second buffer that swaps in
+///   at the end of the epoch
+/// - Plain 2D embeddings take a dedicated loop on `[T; 2]` points; densMAP
+///   epochs and other dimensions use the generic loop
 /// - Utilises CSR (Compressed Sparse Row) graph structures for cache locality
 /// - Utilises LUTs to avoid expensive float powers
 ///
@@ -1575,6 +1586,10 @@ where
 /// * `seed` - Random seed
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
+///
+/// ### Returns
+///
+/// `Ok(())`, `NoData` on an empty embedding, or a CSR size error.
 ///
 /// ### References
 ///

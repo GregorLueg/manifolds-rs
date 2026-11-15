@@ -1,7 +1,7 @@
 # Choosing an algorithm
 
-Nine of them, and the honest summary is that three cover most work. Here is how
-to pick without running all nine.
+Ten of them, and the honest summary is that three cover most work. Here is how
+to pick without running all ten.
 
 ## Start here
 
@@ -10,6 +10,7 @@ to pick without running all nine.
 | Cell types you expect to separate | `UMAP` |
 | A differentiation trajectory, or anything continuous | `PHATE` |
 | You care about the arrangement of clusters, not just the clusters | `PaCMAP` |
+| As PaCMAP, but neighbouring clusters keep bleeding into each other | `LocalMAP` |
 | You want the tightest possible local structure and nothing else | `TSNE` |
 | Relative density in the plot should mean something | `DensMAP` |
 | t-SNE clusters, but in a sensible arrangement | `DREAMS` |
@@ -57,6 +58,12 @@ and decays across the first phase, which is what lets it keep global structure
 without leaning on a spectral initialisation. PCA init is close to required;
 random init throws away most of the advantage.
 
+**LocalMAP** is PaCMAP with a different last phase. Further pairs that already
+sit more than `max_distance` apart in the embedding get resampled, and the
+near-pair forces are scaled by their embedding distance. The upshot: clusters
+that PaCMAP leaves touching get pulled apart, and the global arrangement from
+the first two phases stays. Same arguments as `PaCMAP` plus `max_distance`.
+
 **Diffusion maps** is the spectral embedding PHATE builds on. Reach for it when
 you want the diffusion coordinates themselves rather than a 2-D picture of
 them. The knob worth understanding is `alpha`: `0` gives the normalised graph
@@ -80,7 +87,7 @@ Rough ordering on the same data, dominated by different things:
   once per leaf instead of once per point; on 20k points that halved the
   optimiser time. `approx="fft"` and `"fft_3k"` swap the tree for an FFT on
   an interpolation grid, linear in the number of points.
-- `UMAP`, `DensMAP` and `PaCMAP` pay for the neighbour search and then a cheap
+- `UMAP`, `DensMAP`, `PaCMAP` and `LocalMAP` pay for the neighbour search and then a cheap
   per-edge update. The parallel Adam optimiser is the default.
   `optimiser="sgd_parallel"` runs the reference SGD lock-free over all
   threads, at the price of a different embedding on every run.
@@ -91,7 +98,7 @@ Rough ordering on the same data, dominated by different things:
   on the full operator unless you set `n_landmarks`.
 
 For all of them, past a few hundred thousand points the neighbour search
-dominates. The defaults (`"nndescent"`, `"ivf"` for the t-SNE family and PaCMAP)
+dominates. The defaults (`"nndescent"`, `"ivf"` for the t-SNE family, PaCMAP and LocalMAP)
 are built for that; `"hnsw"` is the alternative. Or build the graph once
 with [`knn_graph`](api/neighbours.md) and hand it to each estimator.
 
