@@ -1193,9 +1193,9 @@ where
 
 /// Von Neumann entropy of a matrix at each power, accumulated in `f64`.
 ///
-/// Below [`VNE_DENSE_THRESHOLD`] the full singular spectrum is computed
+/// Below `VNE_DENSE_THRESHOLD` the full singular spectrum is computed
 /// densely; above it the entropy comes from stochastic Lanczos quadrature,
-/// see [`slq_von_neumann_entropy`]. A truncated SVD is not an option: the
+/// see `slq_von_neumann_entropy`. A truncated SVD is not an option: the
 /// dropped tail carries most of the spectral mass at small powers and moves
 /// the knee.
 ///

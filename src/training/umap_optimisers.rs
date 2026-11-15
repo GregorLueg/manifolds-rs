@@ -791,7 +791,7 @@ where
 ///   position and applied as one summed step, instead of moving the source
 ///   after each. This breaks the serial dependency between samples, so their
 ///   loads and arithmetic overlap.
-/// - `x^b` comes from a lookup table ([`SplitPowLut`]) rather than `powf`.
+/// - `x^b` comes from a lookup table (`SplitPowLut`) rather than `powf`.
 ///
 /// With one Rayon thread the result is identical to [`optimise_embedding_sgd`].
 /// With more, it is not reproducible run to run for a fixed seed: the RNG
