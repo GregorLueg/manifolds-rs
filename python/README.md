@@ -107,7 +107,7 @@ Running several embeddings over the same data? Build the graph once. On anything
 large the search is most of the runtime.
 
 ```python
-ind, dist = mf.knn_graph(X, k=15, ann="hnsw")
+ind, dist = mf.knn_graph(X, k=60, ann="hnsw")
 
 a = mf.UMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
 b = mf.PaCMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)

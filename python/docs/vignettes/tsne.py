@@ -142,7 +142,8 @@ panels(
 #
 # Sweeping perplexity or epochs? Compute the graph once. t-SNE wants
 # `3 * perplexity` neighbours, so the widest perplexity you plan to try sets
-# `k`. A narrower graph is an error, a wider one is cut down.
+# `k`. A graph no wider than `perplexity` is an error; a wider one is used in
+# full, so slice it (`idx[:, :3 * perplexity]`) to get the default width.
 
 # %%
 idx, dist = mf.knn_graph(X_clust, k=45, ann="ivf")
@@ -178,7 +179,7 @@ panels(
 #   precise, a lot faster. qdtsne recommends depths of 7 to 10.
 # - `"fft"`: FIt-SNE. Charges are spread onto an interpolation grid and the
 #   repulsion comes out of an FFT convolution. `O(N)`, with a constant that
-#   only pays off from roughly 100k points.
+#   pays off from a few tens of thousands of points.
 # - `"fft_3k"`: the three-kernel variant. Put a unit charge on the grid and
 #   convolve it with three kernels (`q`, `q^2 dx` and `q^2 dy`), which hands
 #   you the normalisation and the forces directly. One forward and three

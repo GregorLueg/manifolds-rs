@@ -43,7 +43,7 @@ Optimisers and approximations are picked by string:
 | kNN, CPU | `"nndescent"` (default), `"ivf"` (default for the t-SNE family), `"kmknn"`, `"exhaustive"`, `"hnsw"`, `"annoy"`, `"balltree"` |
 | kNN, wgpu | `"nndescent_gpu"` (default), `"ivf_gpu"` (default for t-SNE), `"exhaustive_gpu"` |
 | kNN, MLX | `"nndescent_mlx"`, `"ivf_mlx"`, `"exhaustive_mlx"` |
-| IVF / KmKNN k-means | `"emeans"` (default), `"lloyd"` |
+| k-means (IVF, KmKNN, spectral landmarks) | `"emeans"` (default), `"lloyd"` |
 
 Distances: Euclidean and cosine. The `"nndescent"`, `"hnsw"` and `"exhaustive"` CPU
 searches also take Manhattan, which PHATE and landmark diffusion maps do not
@@ -55,7 +55,7 @@ with the crate for testing.
 
 ```toml
 [dependencies]
-manifolds-rs = { version = "0.9", features = ["gpu"] }
+manifolds-rs = { version = "0.10", features = ["gpu"] }
 ```
 
 Optional features:
@@ -138,7 +138,7 @@ brew install mlx-c
 ```
 
 ```toml
-manifolds-rs = { version = "0.9", features = ["mlx"] }
+manifolds-rs = { version = "0.10", features = ["mlx"] }
 ```
 
 MLX is not a separate set of entry points. The CPU ones take the MLX names:

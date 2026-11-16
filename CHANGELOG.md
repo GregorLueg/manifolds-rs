@@ -12,12 +12,22 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   UMAP, densMAP, `umap_gpu`, `densmap_gpu`, parametric UMAP and ForceAtlas2.
 - ann-search-rs 0.13.0. IVF and KmKNN (CPU, wgpu, MLX) train their centroids
   with e-means, and the NN-Descent graphs are built differently, so every
-  embedding gets a different kNN graph at the same seed. Recall is unchanged.
+  embedding gets a different kNN graph at the same seed. Recall is the same or
+  better.
+- PHATE and diffusion maps pick their spectral landmarks with e-means instead
+  of Lloyd's. Different coordinates at the same seed.
+- A `k_means` argument on `NearestNeighbourParams::new`,
+  `NearestNeighbourParamsGpu::new` (after `n_probes`), `PhateDiffusionParams::new`,
+  `DiffusionMapsParams::new`, `PhateLandmarks::build`, `build_with_backend` and
+  `DiffusionMapsLandmarks::build`. Struct literals of the four params need the
+  new field or `..Default::default()`.
 
 **New**
 
 - `k_means` on `NearestNeighbourParams` and `NearestNeighbourParamsGpu`:
   `"emeans"` (default) or `"lloyd"` for the IVF and KmKNN centroids.
+- `k_means` on `PhateDiffusionParams` and `DiffusionMapsParams`: the same
+  switch for the spectral landmark selection.
 - `optimiser = "adam_v06"`: the umap-learn 0.6 Adam for UMAP (CPU only, not with
   densMAP).
 - `initialisation = "recursive"`: the umap-learn 0.6 recursive label propagation

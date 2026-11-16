@@ -16,6 +16,12 @@
 import time
 import warnings
 
+# umap-learn's spectral init on the disconnected cluster graph and tqdm in a
+# headless kernel both warn; neither matters here. Set before the imports, which
+# is when tqdm warns.
+warnings.filterwarnings("ignore", message="Graph is not fully connected")
+warnings.filterwarnings("ignore", message="IProgress not found")
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pacmap
@@ -27,10 +33,6 @@ from sklearn.decomposition import PCA
 
 import manifolds_rs as mf
 
-# umap-learn's spectral init on the disconnected cluster graph and tqdm in a
-# headless kernel both warn; neither matters here.
-warnings.filterwarnings("ignore", message="Graph is not fully connected")
-warnings.filterwarnings("ignore", message="IProgress not found")
 pl.Config.set_fmt_str_lengths(60)
 
 

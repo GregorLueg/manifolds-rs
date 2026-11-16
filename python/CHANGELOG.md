@@ -12,14 +12,19 @@ Requires `manifolds-rs` 0.10.0.
 - The fuzzy graph's bandwidth search matches uwot and umap-learn. Different
   coordinates than 0.6.1 at the same seed: `UMAP`, `DensMAP`, `UMAPGpu`,
   `DensMAPGpu` and `ForceAtlas2`.
-- Different kNN graphs at the same seed from `ann="ivf"` and `"nndescent"`, and
-  so from every estimator: ann-search-rs 0.13.0 trains IVF with e-means and
-  builds NN-Descent differently. Recall is unchanged.
+- Different kNN graphs at the same seed from the IVF and NN-Descent backends
+  (`"ivf"`, `"ivf_gpu"`, `"nndescent"`, `"nndescent_gpu"`), and so from every
+  estimator: ann-search-rs 0.13.0 trains IVF with e-means and builds NN-Descent
+  differently. Recall is the same or better.
+- `PHATE`, `PHATEGpu` and `DiffusionMaps` pick their spectral landmarks with
+  e-means instead of Lloyd's. Different coordinates at the same seed.
 
 **New**
 
 - `NeighbourParams(k_means=...)` and `NeighbourParamsGpu(k_means=...)`:
-  `"emeans"` (default) or `"lloyd"` for the IVF centroids.
+  `"emeans"` (default) or `"lloyd"` for the IVF and KmKNN centroids.
+- `PhateDiffusion(k_means=...)` and `DiffusionMaps(landmark_k_means=...)`: the
+  same switch for the spectral landmark selection.
 - `optimiser="adam_v06"` for `UMAP` and `UMAPGpu`, and `"adam_v06_gpu"` for
   `UMAPGpu`: the umap-learn 0.6 Adam. `DensMAP` and `DensMAPGpu` reject both.
 - `init="recursive"` for `UMAP`, `DensMAP`, `UMAPGpu` and `DensMAPGpu`: the

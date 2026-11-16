@@ -14,6 +14,8 @@
 import time
 import warnings
 
+warnings.filterwarnings("ignore", message="IProgress not found")
+
 import matplotlib.pyplot as plt
 import numpy as np
 import phate
@@ -22,7 +24,6 @@ from sklearn.decomposition import PCA
 
 import manifolds_rs as mf
 
-warnings.filterwarnings("ignore", message="IProgress not found")
 pl.Config.set_fmt_str_lengths(60)
 
 

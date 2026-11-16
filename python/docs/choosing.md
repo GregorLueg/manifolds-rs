@@ -98,7 +98,7 @@ Rough ordering on the same data, dominated by different things:
   on the full operator unless you set `n_landmarks`.
 
 For all of them, past a few hundred thousand points the neighbour search
-dominates. The defaults (`"nndescent"`, `"ivf"` for the t-SNE family, PaCMAP and LocalMAP)
+dominates. The defaults (`"nndescent"`, `"ivf"` for the t-SNE family, PaCMAP, LocalMAP and PHATE)
 are built for that; `"hnsw"` is the alternative. Or build the graph once
 with [`knn_graph`](api/neighbours.md) and hand it to each estimator.
 

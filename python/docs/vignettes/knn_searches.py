@@ -63,7 +63,7 @@ np.array_equal(indices, indices_kmknn)
 # | `"balltree"` | Tree | Small data, low dimensionality. |
 # | `"annoy"` | Tree | A single-cell classic. Scales to a few hundred thousand points at low dimensionality. |
 # | `"hnsw"` | Graph | Large data (500k and up), any dimensionality. Slower build, fast queries. The build uses a benign race. |
-# | `"nndescent"` | Graph | The all-rounder from 100k points on. Default for UMAP, densMAP and ForceAtlas2. |
+# | `"nndescent"` | Graph | The all-rounder from 100k points on. Default for UMAP, densMAP, ForceAtlas2 and diffusion maps. |
 # | `"ivf"` | Cluster | The index behind FAISS. Large data, any dimensionality. `n_probes` trades recall for speed. Default for the t-SNE family, PaCMAP, LocalMAP and PHATE. |
 #
 # Every backend bar `"exhaustive"` searches in float32, whatever you hand it,
