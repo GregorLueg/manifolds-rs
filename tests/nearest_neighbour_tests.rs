@@ -210,3 +210,35 @@ fn nndescent_fills_large_k() {
 
     assert!(idx.iter().all(|r| r.len() == k), "rows came back short");
 }
+
+/////////
+// IVF //
+/////////
+
+#[test]
+fn ivf_k_means_lloyd_and_emeans_both_recall() {
+    // Both k-means algorithms must train usable centroids, and an unknown key
+    // falls back to e-means rather than erroring.
+    let (data, _) = commons::create_diagnostic_data(60, 10, 42);
+    let k = 10;
+    let base = NearestNeighbourParams::<f64>::default();
+
+    let truth = run_ann_search(data.as_ref(), k, "exhaustive".to_string(), &base, 42, 0)
+        .unwrap()
+        .0;
+    let search = |k_means: &str| {
+        let params = NearestNeighbourParams {
+            k_means: k_means.to_string(),
+            ..base.clone()
+        };
+        run_ann_search(data.as_ref(), k, "ivf".to_string(), &params, 42, 0)
+            .unwrap()
+            .0
+    };
+
+    for algo in ["emeans", "lloyd"] {
+        let r = recall(&search(algo), &truth, k);
+        assert!(r > 0.9, "{algo}: recall {r} is too low");
+    }
+    assert_eq!(search("not_a_k_means"), search("emeans"));
+}

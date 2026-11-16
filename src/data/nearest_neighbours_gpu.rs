@@ -15,7 +15,7 @@ use cubecl::Device;
 use faer::MatRef;
 use rayon::prelude::*;
 
-use crate::data::nearest_neighbours::{cast_matrix_to_fp32, knn_graph_to_rows};
+use crate::data::nearest_neighbours::{cast_matrix_to_fp32, knn_graph_to_rows, parse_k_means};
 use crate::prelude::*;
 
 /////////////
@@ -55,6 +55,9 @@ pub struct NearestNeighbourParamsGpu<T> {
     /// IVF-GPU: Number of lists to probes. If not provided, will default to
     /// to `sqrt(n_list)` lists.
     pub n_probes: Option<usize>,
+    /// IVF-GPU: k-means algorithm training the centroids, `"emeans"`
+    /// (default) or `"lloyd"`.
+    pub k_means: String,
     /// NNDescent-GPU: Internal working degree of the descent. If `None`, the
     /// ann-search-rs crate defaults to `1.5 * k` of the requested `k`.
     pub k_build: Option<usize>,
@@ -84,6 +87,8 @@ where
     /// * `n_list` - Number of clusters. Defaults to `sqrt(n)`.
     /// * `n_probes` - Number of clusters to probe during querying. Defaults
     ///   to `sqrt(n_list)`.
+    /// * `k_means` - k-means algorithm for the centroids, `"emeans"` or
+    ///   `"lloyd"`.
     ///
     /// **NNDescent-GPU**
     ///
@@ -92,11 +97,13 @@ where
     /// * `n_tree` - Number of trees for kNN graph initialisation.
     /// * `delta` - Convergence threshold for NNDescent iterations.
     /// * `rho` - Sampling rate for NNDescent iterations.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         dist_metric: String,
         // ivf-gpu
         n_list: Option<usize>,
         n_probes: Option<usize>,
+        k_means: String,
         // nndescent-gpu
         k_build: Option<usize>,
         n_tree: Option<usize>,
@@ -107,6 +114,7 @@ where
             dist_metric,
             n_list,
             n_probes,
+            k_means,
             k_build,
             n_tree,
             delta,
@@ -114,8 +122,8 @@ where
         }
     }
 
-    /// Cast parameters to a different float type. `usize` fields and
-    /// `dist_metric` pass through unchanged.
+    /// Cast parameters to a different float type. `usize` fields and the
+    /// strings pass through unchanged.
     ///
     /// ### Returns
     ///
@@ -130,6 +138,7 @@ where
             dist_metric: self.dist_metric.clone(),
             n_list: self.n_list,
             n_probes: self.n_probes,
+            k_means: self.k_means.clone(),
             k_build: self.k_build,
             n_tree: self.n_tree,
             delta: c(self.delta),
@@ -154,6 +163,7 @@ where
             // ivf-gpu
             n_list: None,
             n_probes: None,
+            k_means: "emeans".to_string(),
             // nndescent-gpu
             k_build: None,
             n_tree: None,
@@ -240,6 +250,7 @@ where
     // wgpu does not support f64, hence, the kNN is always run in fp32
     let data_fp32 = cast_matrix_to_fp32(data);
     let params_fp32: NearestNeighbourParamsGpu<f32> = params_nn.cast();
+    let k_means = parse_k_means(&params_nn.k_means);
 
     let (knn_indices_raw, knn_dist) = match ann_search {
         AnnSearchGpu::ExhaustiveGpu => {
@@ -256,7 +267,7 @@ where
             let index = build_ivf_index_gpu::<f32>(
                 data_fp32.as_ref(),
                 params_nn.n_list,
-                None,
+                Some(KMeansGpuParams::default().with_algorithm(k_means)),
                 &params_nn.dist_metric,
                 seed,
                 verbosity,
@@ -301,7 +312,7 @@ where
             let index = build_ivf_index_mlx(
                 data_fp32.as_ref(),
                 params_nn.n_list,
-                None,
+                Some(KMeansTrainingParams::default().with_algorithm(k_means)),
                 &params_nn.dist_metric,
                 seed,
                 verbosity,

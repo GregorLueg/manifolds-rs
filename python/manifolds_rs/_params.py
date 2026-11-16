@@ -24,6 +24,7 @@ from typing import Any
 from beartype import beartype
 
 from . import _manifolds
+from ._validate import check_choice
 
 ###########
 # Globals #
@@ -59,6 +60,9 @@ METRICS: frozenset[str] = frozenset({"euclidean", "l2", "cosine", "manhattan", "
 
 #: As `METRICS`, for PHATE: the potential distances have no Manhattan path.
 PHATE_METRICS: frozenset[str] = METRICS - {"manhattan", "l1"}
+
+#: k-means algorithms for the IVF and KmKNN centroids, from `parse_k_means`.
+K_MEANS: frozenset[str] = frozenset({"emeans", "e-means", "lloyd"})
 
 #: Embedding initialisations, from `parse_initialisation`.
 INITS: frozenset[str] = frozenset({"spectral", "pca", "random"})
@@ -173,6 +177,8 @@ class NeighbourParams:
         bt_budget: Ball tree. Fraction of the dataset to visit per query.
         n_list: IVF. Voronoi cells. ``None`` gives ``sqrt(n)``.
         n_probes: IVF. Cells visited per query. ``None`` gives ``sqrt(n_list)``.
+        k_means: IVF and KmKNN. k-means training the centroids, ``"emeans"``
+            or ``"lloyd"``. ``None`` gives e-means.
     """
 
     n_tree: int | None = None
@@ -184,6 +190,13 @@ class NeighbourParams:
     bt_budget: float | None = None
     n_list: int | None = None
     n_probes: int | None = None
+    k_means: str | None = None
+
+    @beartype
+    def __post_init__(self) -> None:
+        """Reject an unknown `k_means` at construction, see `check_choice`."""
+        if self.k_means is not None:
+            check_choice(self.k_means, K_MEANS, name="k_means")
 
 
 @dataclass(frozen=True)
@@ -196,6 +209,8 @@ class NeighbourParamsGpu:
     Attributes:
         n_list: IVF-GPU. Voronoi cells. ``None`` gives ``sqrt(n)``.
         n_probes: IVF-GPU. Cells visited per query.
+        k_means: IVF-GPU. k-means training the centroids, ``"emeans"`` or
+            ``"lloyd"``. ``None`` gives e-means.
         k_build: NN-Descent-GPU. Working degree of the descent. ``None`` gives
             ``1.5 * k``.
         n_tree: NN-Descent-GPU. Trees used to seed the graph.
@@ -205,10 +220,17 @@ class NeighbourParamsGpu:
 
     n_list: int | None = None
     n_probes: int | None = None
+    k_means: str | None = None
     k_build: int | None = None
     n_tree: int | None = None
     delta: float | None = None
     rho: float | None = None
+
+    @beartype
+    def __post_init__(self) -> None:
+        """Reject an unknown `k_means` at construction, see `check_choice`."""
+        if self.k_means is not None:
+            check_choice(self.k_means, K_MEANS, name="k_means")
 
 
 @dataclass(frozen=True)

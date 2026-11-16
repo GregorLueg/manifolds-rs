@@ -75,6 +75,9 @@ pub struct NearestNeighbourParams<T> {
     /// IVF: Number of lists to probes. If not provided, will default to
     /// to `sqrt(n_list)` lists.
     pub n_probes: Option<usize>,
+    /// IVF / KmKNN: k-means algorithm training the centroids, `"emeans"`
+    /// (default) or `"lloyd"`.
+    pub k_means: String,
 }
 
 impl<T> NearestNeighbourParams<T> {
@@ -112,6 +115,8 @@ impl<T> NearestNeighbourParams<T> {
     ///
     /// * `n_list` - Number of lists to use for IVF
     /// * `n_probes` - Number of lists/clusters to probe during querying
+    /// * `k_means` - k-means algorithm for the centroids, `"emeans"` or
+    ///   `"lloyd"`. Also used by KmKNN.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         dist_metric: String,
@@ -129,6 +134,7 @@ impl<T> NearestNeighbourParams<T> {
         // ivf / kmknn
         n_list: Option<usize>,
         n_probes: Option<usize>,
+        k_means: String,
     ) -> Self {
         Self {
             dist_metric,
@@ -141,6 +147,7 @@ impl<T> NearestNeighbourParams<T> {
             bt_budget,
             n_list,
             n_probes,
+            k_means,
         }
     }
 }
@@ -171,6 +178,7 @@ where
             // ivf
             n_list: None,
             n_probes: None,
+            k_means: "emeans".to_string(),
         }
     }
 }
@@ -308,6 +316,32 @@ pub fn parse_ann_search(s: &str) -> Option<AnnSearch> {
     }
 }
 
+/// Parse the k-means algorithm for the IVF and KmKNN centroids.
+///
+/// Unrecognised keys warn on stderr and fall back to e-means, as unknown
+/// `ann_type` keys do.
+///
+/// ### Params
+///
+/// * `s` - `"emeans"` or `"lloyd"`
+///
+/// ### Returns
+///
+/// The [`KMeansAlgorithm`] at the ann-search-rs defaults.
+pub fn parse_k_means(s: &str) -> KMeansAlgorithm {
+    match s.to_lowercase().as_str() {
+        "emeans" | "e-means" => KMeansAlgorithm::default(),
+        "lloyd" => KMeansAlgorithm::Lloyd,
+        _ => {
+            eprintln!(
+                "Warning: unrecognised k-means algorithm provided: {:?}. Default to e-means.",
+                s
+            );
+            KMeansAlgorithm::default()
+        }
+    }
+}
+
 /// Cut a precomputed kNN graph down to `k` neighbours per point.
 ///
 /// A graph wider than asked for would otherwise count in full, so a shared graph
@@ -395,6 +429,9 @@ where
         AnnSearch::default()
     });
 
+    let k_means_params =
+        KMeansTrainingParams::default().with_algorithm(parse_k_means(&params_nn.k_means));
+
     let (knn_indices, knn_dist) = match ann_search {
         AnnSearch::Annoy => {
             let index = build_annoy_index::<f32>(
@@ -478,7 +515,7 @@ where
             let index = build_ivf_index::<f32>(
                 cast_matrix_to_fp32(data),
                 params_nn.n_list,
-                None,
+                Some(k_means_params),
                 &params_nn.dist_metric,
                 seed,
                 verbosity,
@@ -497,7 +534,7 @@ where
                 cast_matrix_to_fp32(data),
                 &params_nn.dist_metric,
                 params_nn.n_list,
-                None,
+                Some(k_means_params),
                 seed,
                 verbosity,
             )?;
@@ -523,7 +560,7 @@ where
             let index = build_ivf_index_mlx(
                 data_fp32.as_ref(),
                 params_nn.n_list,
-                None,
+                Some(k_means_params),
                 &params_nn.dist_metric,
                 seed,
                 verbosity,

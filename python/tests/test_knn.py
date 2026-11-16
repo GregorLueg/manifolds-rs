@@ -111,6 +111,19 @@ def test_unknown_backend_is_refused(X: np.ndarray) -> None:
         mf.knn_graph(X, k=10, ann="faiss")
 
 
+@pytest.mark.parametrize("k_means", ["emeans", "lloyd"])
+def test_ivf_k_means_reaches_the_search(k_means: str, X: np.ndarray) -> None:
+    ind, _ = mf.knn_graph(
+        X, k=10, ann="ivf", nn_params=mf.NeighbourParams(k_means=k_means), seed=7
+    )
+    assert ind.shape == (X.shape[0], 10)
+
+
+def test_unknown_k_means_is_refused() -> None:
+    with pytest.raises(ValueError, match="k_means"):
+        mf.NeighbourParams(k_means="kmeans++")
+
+
 def test_empty_input_is_refused() -> None:
     with pytest.raises(ValueError, match="non-empty"):
         mf.knn_graph(np.zeros((0, 5)), k=10)

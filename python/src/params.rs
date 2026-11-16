@@ -258,6 +258,7 @@ where
     set(&mut p.bt_budget, r.float::<T>("bt_budget")?);
     p.n_list = r.get::<usize>("n_list")?.or(p.n_list);
     p.n_probes = r.get::<usize>("n_probes")?.or(p.n_probes);
+    set(&mut p.k_means, r.get::<String>("k_means")?);
     r.finish()
 }
 
@@ -953,6 +954,7 @@ where
     set(&mut p.dist_metric, r.get::<String>("dist_metric")?);
     p.n_list = r.get::<usize>("n_list")?.or(p.n_list);
     p.n_probes = r.get::<usize>("n_probes")?.or(p.n_probes);
+    set(&mut p.k_means, r.get::<String>("k_means")?);
     p.k_build = r.get::<usize>("k_build")?.or(p.k_build);
     p.n_tree = r.get::<usize>("n_tree")?.or(p.n_tree);
     set(&mut p.delta, r.float::<T>("delta")?);
