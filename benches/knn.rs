@@ -6,6 +6,10 @@
 //! an exact f64 scan of a fixed row sample, so the ground truth stays cheap at
 //! any `n`. Gated behind `large_scale_diagnostics`.
 //!
+//! `KNN_BENCH_RAW` swaps the synthetic shapes for a real matrix: raw
+//! little-endian `f64`, row-major, `KNN_BENCH_DIM` columns. Each `n` takes the
+//! first `n` rows, so shuffle the rows when writing the file.
+//!
 //! ```sh
 //! KNN_BENCH_N=20000,100000 KNN_BENCH_REPS=3 \
 //!     cargo bench --features large_scale_diagnostics --bench knn
@@ -114,6 +118,32 @@ fn make_data(ds: &Dataset, n: usize) -> (Mat<f64>, Mat<f32>) {
     (data, data_f32)
 }
 
+/// Read the first `n` rows of a raw row-major `f64` matrix.
+///
+/// ### Params
+///
+/// * `path` - File of little-endian `f64`
+/// * `dim` - Columns
+/// * `n` - Rows to keep
+///
+/// ### Returns
+///
+/// `(f64 matrix, f32 matrix)`, samples by features.
+fn read_raw(path: &str, dim: usize, n: usize) -> (Mat<f64>, Mat<f32>) {
+    let bytes = std::fs::read(path).expect("readable KNN_BENCH_RAW file");
+    let vals: Vec<f64> = bytes
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .take(n * dim)
+        .map(|b| f64::from_le_bytes(*b))
+        .collect();
+    assert_eq!(vals.len(), n * dim, "file holds fewer than {n} rows");
+    let data = Mat::from_fn(n, dim, |i, j| vals[i * dim + j]);
+    let data_f32 = Mat::from_fn(n, dim, |i, j| vals[i * dim + j] as f32);
+    (data, data_f32)
+}
+
 /// Exact `k_max` nearest neighbours of a set of rows, self excluded, in `f64`.
 ///
 /// ### Params
@@ -218,11 +248,27 @@ fn main() {
         .unwrap_or(DEFAULT_REPS)
         .max(1);
     let k_max = *K_VALUES.iter().max().unwrap();
+    let raw = std::env::var("KNN_BENCH_RAW").ok();
 
     println!("dataset,n,k,method,nprobe,seconds,recall");
     for &n in &sizes {
-        for ds in &DATASETS {
-            let (data, data_f32) = make_data(ds, n);
+        let inputs: Vec<(&str, Mat<f64>, Mat<f32>)> = match &raw {
+            Some(path) => {
+                let dim = env_list("KNN_BENCH_DIM")
+                    .and_then(|v| v.first().copied())
+                    .expect("KNN_BENCH_DIM with KNN_BENCH_RAW");
+                let (d, f) = read_raw(path, dim, n);
+                vec![("raw", d, f)]
+            }
+            None => DATASETS
+                .iter()
+                .map(|ds| {
+                    let (d, f) = make_data(ds, n);
+                    (ds.name, d, f)
+                })
+                .collect(),
+        };
+        for (name, data, data_f32) in inputs {
             let step = (n / N_RECALL_ROWS).max(1);
             let rows: Vec<usize> = (0..n).step_by(step).take(N_RECALL_ROWS).collect();
             let truth = exact_knn(&data, &rows, k_max);
@@ -234,7 +280,7 @@ fn main() {
             for &k in &K_VALUES {
                 let base = NearestNeighbourParams::<f32>::default();
                 let (s, r) = run(&data_f32, k, "nndescent", &base, reps, &rows, &truth);
-                println!("{},{n},{k},nndescent,-,{s:.3},{r:.4}", ds.name);
+                println!("{name},{n},{k},nndescent,-,{s:.3},{r:.4}");
 
                 for k_means in ["emeans", "lloyd"] {
                     for probes in [nprobe, 2 * nprobe] {
@@ -244,7 +290,7 @@ fn main() {
                             ..base.clone()
                         };
                         let (s, r) = run(&data_f32, k, "ivf", &params, reps, &rows, &truth);
-                        println!("{},{n},{k},ivf_{k_means},{probes},{s:.3},{r:.4}", ds.name);
+                        println!("{name},{n},{k},ivf_{k_means},{probes},{s:.3},{r:.4}");
                     }
                 }
             }
