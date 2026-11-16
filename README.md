@@ -43,6 +43,7 @@ Optimisers and approximations are picked by string:
 | kNN, CPU | `"nndescent"` (default), `"ivf"` (default for the t-SNE family), `"kmknn"`, `"exhaustive"`, `"hnsw"`, `"annoy"`, `"balltree"` |
 | kNN, wgpu | `"nndescent_gpu"` (default), `"ivf_gpu"` (default for t-SNE), `"exhaustive_gpu"` |
 | kNN, MLX | `"nndescent_mlx"`, `"ivf_mlx"`, `"exhaustive_mlx"` |
+| IVF / KmKNN k-means | `"emeans"` (default), `"lloyd"` |
 
 Distances: Euclidean and cosine. The `"nndescent"`, `"hnsw"` and `"exhaustive"` CPU
 searches also take Manhattan, which PHATE and landmark diffusion maps do not

@@ -28,6 +28,7 @@ cargo test --release --features gpu umap_gpu_integration_01_knn_correctness
 # change. Run them only when asked, or when a change targets large-scale behaviour.
 cargo test --release --features large_scale_diagnostics --test tsne_large_scale_diag
 cargo test --release --features large_scale_diagnostics --test spectral_bench -- --nocapture
+cargo bench --features large_scale_diagnostics --bench knn   # NN-Descent vs IVF, KNN_BENCH_* env vars, see the file
 cargo test --release --features gpu,large_scale_diagnostics --test umap_gpu_bench -- --nocapture
 
 # Lint / format
@@ -47,7 +48,7 @@ Linux GPU tests need Vulkan (`libvulkan1 mesa-vulkan-drivers libgl1-mesa-dri`) a
 - `gpu`: GPU kNN + GPU Adam UMAP (`adam_gpu`, and the umap-learn 0.6 `adam_v06_gpu`) + device-resident three-kernel FFT tSNE + PHATE's spectral landmark selection via `cubecl` (wgpu/CUDA) and `ann-search-rs/gpu`. GPU code paths run in `f32` only (WGSL has no `f64`). `GpuTensor`, `GpuLimits`, `grid_2d`, `checked_cube_count`, `resolve_workgroup_size` and `CubeclFloat` come from `cubecl-utils-rs`; allocations and grid sizing are fallible and every limit is queried off the device, never assumed.
 - `mlx`: experimental, Apple Silicon only, `f32` only. kNN, UMAP Adam, three-kernel FFT tSNE and PHATE's spectral landmark selection on MLX via mlx-c. `build.rs` sets `cfg(mlx_available)` only if it finds mlx-c, so MLX code gates on that cfg rather than on the feature, and `MLX_AVAILABLE` reports the result.
 - `ndarray`: accept `ndarray` 2-D arrays wherever a faer matrix is accepted.
-- `large_scale_diagnostics`: dev-only, gates `tests/tsne_large_scale_diag.rs`, all of `tests/umap_gpu_bench.rs` (which also needs `gpu`), the `tests/*_optimiser_compare_bench.rs` files (which also need `gpu` and MLX) and the timing benchmarks in `tests/spectral_bench.rs`. Put heavy tests here so CI never compiles them. Not part of routine test runs.
+- `large_scale_diagnostics`: dev-only, gates `tests/tsne_large_scale_diag.rs`, all of `tests/umap_gpu_bench.rs` (which also needs `gpu`), the `tests/*_optimiser_compare_bench.rs` files (which also need `gpu` and MLX) the timing benchmarks in `tests/spectral_bench.rs` and everything in `benches/`. Put heavy tests here so CI never compiles them. Not part of routine test runs.
 
 Feature-gated code, tests, and prelude re-exports are conditional on these; when adding a new symbol, mirror the `#[cfg(feature = "…")]` gating in `src/prelude.rs`.
 
@@ -56,7 +57,7 @@ Feature-gated code, tests, and prelude re-exports are conditional on these; when
 `src/lib.rs` is the ~6k-line facade. Every user-facing algorithm has three things there: a `<Algo>Params<T>` struct (with `Default` and `new_default_2d`), an optional `construct_<algo>_graph` helper, and the entry-point free function (`umap`, `densmap`, `tsne`, `densne`, `dreams`, `phate`, `pacmap`, `localmap`, `diffusion_maps`, `forceatlas2`, `forceatlas2_from_graph`, `parametric_umap`, `train_parametric_umap_model`, `umap_gpu`, `densmap_gpu`, `tsne_gpu`, `dreams_gpu`, `phate_gpu`). Sub-modules hold the implementation:
 
 - `src/data/`: graph construction and neighbour indices.
-  - `nearest_neighbours.rs` / `nearest_neighbours_gpu.rs`: thin wrapper over `ann-search-rs`. Backends are picked by **string keys**: CPU = `"exhaustive"`, `"kmknn"`, `"balltree"`, `"annoy"`, `"nndescent"`, `"hnsw"`, `"ivf"`; GPU = `"exhaustive_gpu"`, `"ivf_gpu"`, `"nndescent_gpu"`.
+  - `nearest_neighbours.rs` / `nearest_neighbours_gpu.rs`: thin wrapper over `ann-search-rs`. Backends are picked by **string keys**: CPU = `"exhaustive"`, `"kmknn"`, `"balltree"`, `"annoy"`, `"nndescent"`, `"hnsw"`, `"ivf"`; GPU = `"exhaustive_gpu"`, `"ivf_gpu"`, `"nndescent_gpu"`. The IVF and KmKNN centroids train with e-means unless `k_means = "lloyd"` (`parse_k_means`); PHATE's landmark k-means builds Lloyd's explicitly and ignores that key.
   - `graph.rs`: fuzzy simplicial set / UMAP graph construction.
   - `init.rs`: spectral (Lanczos), random, PCA embedding initialisation.
   - `recursive_init.rs`: the umap-learn 0.6 recursive initialisation (`initialisation = "recursive"`, UMAP and densMAP).

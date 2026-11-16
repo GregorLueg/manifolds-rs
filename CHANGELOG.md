@@ -10,9 +10,14 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 - The fuzzy graph's bandwidth search targets `log2(k + 1)` as uwot and
   umap-learn do, not `ln(k)`. Different coordinates than 0.9.1 at the same seed:
   UMAP, densMAP, `umap_gpu`, `densmap_gpu`, parametric UMAP and ForceAtlas2.
+- ann-search-rs 0.13.0. IVF and KmKNN (CPU, wgpu, MLX) train their centroids
+  with e-means, and the NN-Descent graphs are built differently, so every
+  embedding gets a different kNN graph at the same seed. Recall is unchanged.
 
 **New**
 
+- `k_means` on `NearestNeighbourParams` and `NearestNeighbourParamsGpu`:
+  `"emeans"` (default) or `"lloyd"` for the IVF and KmKNN centroids.
 - `optimiser = "adam_v06"`: the umap-learn 0.6 Adam for UMAP (CPU only, not with
   densMAP).
 - `initialisation = "recursive"`: the umap-learn 0.6 recursive label propagation
