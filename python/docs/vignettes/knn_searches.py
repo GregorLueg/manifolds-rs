@@ -111,9 +111,10 @@ pl.DataFrame(
 # %% [markdown]
 # Times in seconds. On 1k points nothing matters: exhaustive is as fast as
 # anything, since every other backend has to build an index first and SIMD does
-# the `O(N^2)` in no time at that size. From 50k on NN-Descent and IVF pull
-# ahead, and the gap grows with N. kMkNN, which is exact, comes in at about half
-# the exhaustive time on this tightly clustered data.
+# the `O(N^2)` in no time at that size. From 50k on NN-Descent and IVF are the
+# fastest, and the gap grows with N. kMkNN, which is exact, is close behind at
+# 50k and takes a quarter to a sixth of the exhaustive time on this tightly
+# clustered data.
 #
 # Annoy and HNSW are no faster than exhaustive here: a one-off self-query at
 # `k = 10` never pays back their index build. They earn their keep at larger N,

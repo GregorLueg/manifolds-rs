@@ -146,7 +146,7 @@ pl.DataFrame(
 # %% [markdown]
 # Both sides get float32 input, so the CPU side is not paying for float64. On
 # the M1 Max these notebooks were executed on, the GPU is about
-# three times faster for UMAP and t-SNE and twice as fast for PHATE, whose
+# three times faster for UMAP and t-SNE and about 1.4 times for PHATE, whose
 # diffusion and MDS stay on the CPU. Measure
 # on your own data and hardware before switching.
 

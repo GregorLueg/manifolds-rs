@@ -189,8 +189,9 @@ panels(
 )
 
 # %% [markdown]
-# Same tree three times, mirrored and rotated. The density landmarks squash the
-# stem a bit more than the other two.
+# Same tree three times, mirrored and rotated. With random landmarks the arms
+# come out straighter, much like `t = 50` above: the entropy knee is picked on
+# the landmark operator, so it moves with the landmarks.
 
 # %% [markdown]
 # ## Diffusion maps
