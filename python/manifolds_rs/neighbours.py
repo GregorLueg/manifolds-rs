@@ -5,7 +5,7 @@ most of the runtime. Build one here, hand it to as many embeddings as you like:
 
     >>> import manifolds_rs as mf
     >>> X, _ = mf.datasets.clustered(20_000, dim=50)
-    >>> ind, dist = mf.knn_graph(X, k=15, ann="hnsw")
+    >>> ind, dist = mf.knn_graph(X, k=60, ann="hnsw")
     >>> a = mf.UMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
     >>> b = mf.PaCMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
 

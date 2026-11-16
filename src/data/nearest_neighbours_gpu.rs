@@ -47,13 +47,13 @@ pub enum AnnSearchGpu {
 /// Parameters for the nearest neighbour search
 #[derive(Debug, Clone)]
 pub struct NearestNeighbourParamsGpu<T> {
-    /// Distance metric, one of `"euclidean"` or `"cosine"`
+    /// Distance metric, one of `"euclidean"` or `"cosine"`. The device builders
+    /// reject Manhattan.
     pub dist_metric: String,
     /// IVF-GPU: Number of lists, clusters to use. If not provided, will default
     /// to `sqrt(n)` lists.
     pub n_list: Option<usize>,
-    /// IVF-GPU: Number of lists to probes. If not provided, will default to
-    /// to `sqrt(n_list)` lists.
+    /// IVF-GPU: Number of lists to probe. Defaults to `sqrt(n_list)`.
     pub n_probes: Option<usize>,
     /// IVF-GPU: k-means algorithm training the centroids, `"emeans"`
     /// (default) or `"lloyd"`.

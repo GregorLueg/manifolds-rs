@@ -72,8 +72,7 @@ pub struct NearestNeighbourParams<T> {
     /// IVF: Number of lists, clusters to use. If not provided, will default
     /// to `sqrt(n)` lists.
     pub n_list: Option<usize>,
-    /// IVF: Number of lists to probes. If not provided, will default to
-    /// to `sqrt(n_list)` lists.
+    /// IVF: Number of lists to probe. Defaults to `sqrt(n_list)`.
     pub n_probes: Option<usize>,
     /// IVF / KmKNN: k-means algorithm training the centroids, `"emeans"`
     /// (default) or `"lloyd"`.

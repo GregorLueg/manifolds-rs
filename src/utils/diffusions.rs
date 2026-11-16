@@ -6,7 +6,7 @@ use ann_search_rs::cpu::nndescent::{NNDescent, NNDescentQuery};
 use ann_search_rs::gpu::k_means_gpu::{k_means_gpu_flat, KMeansGpuParams};
 #[cfg(mlx_available)]
 use ann_search_rs::mlx::k_means_mlx::k_means_clusters_mlx;
-use ann_search_rs::prelude::KMeansTrainingParams;
+use ann_search_rs::prelude::{KMeansAlgorithm, KMeansTrainingParams};
 use ann_search_rs::utils::dist::{parse_ann_dist, Dist};
 use ann_search_rs::utils::k_means_utils::{assign_all_parallel, train_centroids};
 use ann_search_rs::utils::nndescent_utils::ApplySortedUpdates;
@@ -67,8 +67,9 @@ const SPECTRAL_LANDMARK_POWER_ITER: usize = 7;
 /// the default of `sparse_randomised_svd`, not tuned.
 const SPECTRAL_LANDMARK_OVERSAMPLING: usize = 10;
 
-/// k-means iterations for spectral landmark selection. Fewer iterations shift the
-/// diffusion time the landmark operator picks.
+/// Lloyd's iterations for spectral landmark selection. Fewer iterations shift the
+/// diffusion time the landmark operator picks. e-means ignores it and runs its
+/// own epoch budget.
 const SPECTRAL_LANDMARK_KMEANS_ITERS: usize = 30;
 
 /// Shortest curve the knee search accepts. It fits a line either side of an
@@ -106,6 +107,9 @@ pub struct PhateDiffusionParams<T> {
     /// Singular vectors for spectral landmark selection. Defaults to
     /// [`LANDMARK_DEFAULT_N_SVD`].
     pub n_svd: Option<usize>,
+    /// k-means of the spectral landmark selection: `"emeans"` (default) or
+    /// `"lloyd"`.
+    pub k_means: String,
     /// Enum describing how to power the matrix. Auto or user-defined.
     pub t: PhateTime,
     /// Gamma parameter to control the informational distance between data
@@ -128,6 +132,7 @@ where
             n_landmarks: Some(PHATE_DEFAULT_LANDMARKS),
             landmark_method: "spectral".to_string(),
             n_svd: None,
+            k_means: "emeans".to_string(),
             t: PhateTime::default(),
             gamma: T::one(),
         }
@@ -150,6 +155,8 @@ impl<T> PhateDiffusionParams<T> {
     /// * `landmark_method` - Which landmark method to use.
     /// * `n_svd` - Singular vectors for spectral landmark selection. `None` gives
     ///   [`LANDMARK_DEFAULT_N_SVD`].
+    /// * `k_means` - k-means of the spectral landmark selection, `"emeans"` or
+    ///   `"lloyd"`.
     /// * `t_max` - Largest diffusion time the VNE knee search considers. `None`
     ///   gives [`PHATE_MAX_T`].
     /// * `t_custom` - Fixed diffusion time. `None` picks the VNE knee.
@@ -168,6 +175,7 @@ impl<T> PhateDiffusionParams<T> {
         n_landmarks: Option<usize>,
         landmark_method: String,
         n_svd: Option<usize>,
+        k_means: String,
         t_max: Option<usize>,
         t_custom: Option<usize>,
         gamma: T,
@@ -184,6 +192,7 @@ impl<T> PhateDiffusionParams<T> {
             n_landmarks,
             landmark_method,
             n_svd,
+            k_means,
             t,
             gamma,
         }
@@ -545,6 +554,7 @@ where
 /// * `dim` - Embedding dimensionality
 /// * `n` - Number of samples
 /// * `n_landmarks` - Number of clusters
+/// * `k_means` - Lloyd's or e-means
 /// * `seed` - Seed for the initialisation
 /// * `verbosity` - Verbosity of the k-means
 /// * `backend` - Where to run
@@ -552,11 +562,13 @@ where
 /// ### Returns
 ///
 /// Landmark per sample, length `n`
+#[allow(clippy::too_many_arguments)]
 fn spectral_assignments<T>(
     embedding: &[T],
     dim: usize,
     n: usize,
     n_landmarks: usize,
+    k_means: KMeansAlgorithm,
     seed: usize,
     verbosity: Verbosity,
     backend: &SpectralBackend,
@@ -576,11 +588,10 @@ where
                 n,
                 n_landmarks,
                 &Dist::SquaredEuclidean,
-                Some(KMeansTrainingParams::new(
-                    SPECTRAL_LANDMARK_KMEANS_ITERS,
-                    None,
-                    None,
-                )),
+                Some(
+                    KMeansTrainingParams::new(SPECTRAL_LANDMARK_KMEANS_ITERS, None, None)
+                        .with_algorithm(k_means),
+                ),
                 seed,
                 verbosity,
             )?;
@@ -605,12 +616,10 @@ where
                 n,
                 n_landmarks,
                 &Dist::SquaredEuclidean,
-                Some(KMeansGpuParams::new(
-                    SPECTRAL_LANDMARK_KMEANS_ITERS,
-                    None,
-                    true,
-                    false,
-                )),
+                Some(
+                    KMeansGpuParams::new(SPECTRAL_LANDMARK_KMEANS_ITERS, None, true, false)
+                        .with_algorithm(k_means),
+                ),
                 seed,
                 &device.clone().client(),
                 verbosity,
@@ -624,11 +633,10 @@ where
                 (data.as_slice(), n, dim),
                 "euclidean",
                 n_landmarks,
-                Some(KMeansTrainingParams::new(
-                    SPECTRAL_LANDMARK_KMEANS_ITERS,
-                    None,
-                    None,
-                )),
+                Some(
+                    KMeansTrainingParams::new(SPECTRAL_LANDMARK_KMEANS_ITERS, None, None)
+                        .with_algorithm(k_means),
+                ),
                 seed,
                 verbosity,
             )?;
@@ -1072,6 +1080,7 @@ where
     /// * `distance` - Distance metric used
     /// * `seed` - Seed for random number generator
     /// * `n_svd` - Number of SVD components to use
+    /// * `k_means` - k-means of the spectral selection, `"emeans"` or `"lloyd"`
     /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for
     ///   detailed verbosity.
     ///
@@ -1088,6 +1097,7 @@ where
         distance: &str,
         seed: usize,
         n_svd: Option<usize>,
+        k_means: &str,
         verbose: usize,
     ) -> Result<Self, ManifoldsError> {
         Self::build_with_backend(
@@ -1099,6 +1109,7 @@ where
             distance,
             seed,
             n_svd,
+            k_means,
             &SpectralBackend::Cpu,
             verbose,
         )
@@ -1117,6 +1128,7 @@ where
     /// * `distance` - Distance metric used
     /// * `seed` - Seed for random number generator
     /// * `n_svd` - Number of SVD components to use
+    /// * `k_means` - k-means of the spectral selection, `"emeans"` or `"lloyd"`
     /// * `backend` - Where the SVD and k-means of the spectral selection run
     /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for
     ///   detailed verbosity.
@@ -1134,6 +1146,7 @@ where
         distance: &str,
         seed: usize,
         n_svd: Option<usize>,
+        k_means: &str,
         backend: &SpectralBackend,
         verbose: usize,
     ) -> Result<Self, ManifoldsError> {
@@ -1233,6 +1246,7 @@ where
                     k,
                     n,
                     n_landmarks,
+                    parse_k_means(k_means),
                     seed,
                     parse_verbosity_level(ann_verbose(verbosity)),
                     backend,
@@ -1825,6 +1839,7 @@ where
     ///   `"mnn"` or `"none"`
     /// * `seed` - RNG seed
     /// * `n_svd` - Number of SVD components for spectral landmark selection
+    /// * `k_means` - k-means of the spectral selection, `"emeans"` or `"lloyd"`
     /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for
     ///   detailed verbosity.
     ///
@@ -1845,6 +1860,7 @@ where
         graph_symmetry: &str,
         seed: usize,
         n_svd: Option<usize>,
+        k_means: &str,
         verbose: usize,
     ) -> Result<Self, ManifoldsError>
     where
@@ -1923,7 +1939,9 @@ where
                     }
                 }
 
-                let k_means_params = KMeansTrainingParams::new(30, None, None);
+                let k_means_params =
+                    KMeansTrainingParams::new(SPECTRAL_LANDMARK_KMEANS_ITERS, None, None)
+                        .with_algorithm(parse_k_means(k_means));
 
                 let centroids = train_centroids(
                     &embedding_flat,

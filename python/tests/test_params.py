@@ -181,3 +181,10 @@ def test_adam_keeps_the_crate_default_at_any_size() -> None:
 
 def test_explicit_epochs_beat_the_size_rule() -> None:
     assert _umap_epochs(mf.UMAP(optimiser="sgd", n_epochs=500), 1_000_000) == 500
+
+
+def test_unknown_landmark_k_means_is_refused(X: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="k_means"):
+        mf.PhateDiffusion(k_means="kmeans++")
+    with pytest.raises(ValueError, match="landmark_k_means"):
+        mf.DiffusionMaps(n_landmarks=50, landmark_k_means="kmeans++").fit_transform(X)

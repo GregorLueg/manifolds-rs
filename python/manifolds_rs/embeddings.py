@@ -22,6 +22,7 @@ from ._params import (
     ANN_CPU,
     FA2_APPROX,
     INITS,
+    K_MEANS,
     LANDMARK_METHODS,
     MDS_METHODS,
     METRICS,
@@ -751,6 +752,8 @@ class DiffusionMaps(BaseEmbedding):
             operator.
         landmark_method: ``"spectral"``, ``"random"`` or ``"density"``.
         n_svd: Components for spectral landmark selection.
+        landmark_k_means: k-means of the spectral landmark selection,
+            ``"emeans"`` or ``"lloyd"``. ``None`` gives e-means.
         ann: Neighbour backend.
         seed: Fixes the landmark sampling.
         verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
@@ -773,6 +776,7 @@ class DiffusionMaps(BaseEmbedding):
         n_landmarks: int | None = None,
         landmark_method: str = "spectral",
         n_svd: int | None = None,
+        landmark_k_means: str | None = None,
         ann: str = "nndescent",
         seed: int = 42,
         verbose: int = 0,
@@ -789,6 +793,7 @@ class DiffusionMaps(BaseEmbedding):
         self.n_landmarks = n_landmarks
         self.landmark_method = landmark_method
         self.n_svd = n_svd
+        self.landmark_k_means = landmark_k_means
         self.ann = ann
         self.seed = seed
         self.verbose = verbose
@@ -810,6 +815,9 @@ class DiffusionMaps(BaseEmbedding):
                 self.landmark_method, LANDMARK_METHODS, name="landmark_method"
             ),
             "n_svd": self.n_svd,
+            "k_means": None
+            if self.landmark_k_means is None
+            else check_choice(self.landmark_k_means, K_MEANS, name="landmark_k_means"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
             "nn_params": merge(
                 self.nn_params,

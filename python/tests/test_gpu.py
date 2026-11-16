@@ -128,6 +128,13 @@ def test_cpu_backend_names_are_refused(X32: np.ndarray) -> None:
         mf.UMAPGpu(n_epochs=20, ann="hnsw").fit_transform(X32)
 
 
+@pytest.mark.parametrize("name", ["UMAPGpu", "TSNEGpu", "DREAMSGpu"])
+def test_manhattan_is_refused_on_the_gpu(name: str, X32: np.ndarray) -> None:
+    """The device kNN builders reject Manhattan, so refuse it before the call."""
+    with pytest.raises(ValueError, match="metric"):
+        getattr(mf, name)(metric="manhattan").fit_transform(X32)
+
+
 def test_precomputed_knn_is_accepted(X32: np.ndarray) -> None:
     ind, dist = mf.knn_graph(X32, k=15, ann="kmknn", seed=7)
     embedding = mf.UMAPGpu(n_epochs=20).fit_transform(

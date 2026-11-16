@@ -52,7 +52,7 @@ macro_rules! knn_arm {
 /// * `ann` - Backend: `"exhaustive"`, `"kmknn"`, `"balltree"`, `"annoy"`,
 ///   `"hnsw"`, `"ivf"` or `"nndescent"`. Validated by the Python layer, since
 ///   the core falls back to `"kmknn"` on an unrecognised name and only says so
-///   on stdout.
+///   on stderr.
 /// * `nn_params` - Backend-specific knobs, or `None` for the crate defaults.
 /// * `seed` - Fixes anything randomised in the build.
 /// * `verbose` - `0` silent, `1` normal, `2` detailed.

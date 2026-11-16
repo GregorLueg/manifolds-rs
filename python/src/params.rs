@@ -467,6 +467,7 @@ where
     }
     set(&mut p.landmark_method, r.get::<String>("landmark_method")?);
     p.n_svd = r.get::<usize>("n_svd")?.or(p.n_svd);
+    set(&mut p.k_means, r.get::<String>("k_means")?);
     set(&mut p.gamma, r.float::<T>("gamma")?);
     p.t = read_time(&mut r, &p.t)?;
     r.finish()
@@ -829,6 +830,7 @@ where
     p.n_landmarks = r.get::<usize>("n_landmarks")?.or(p.n_landmarks);
     set(&mut p.landmark_method, r.get::<String>("landmark_method")?);
     p.n_svd = r.get::<usize>("n_svd")?.or(p.n_svd);
+    set(&mut p.k_means, r.get::<String>("k_means")?);
     p.t = read_time(&mut r, &p.t)?;
     nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
     r.finish()?;
@@ -931,8 +933,8 @@ where
 
 /// Fill [`NearestNeighbourParamsGpu`] from a dictionary.
 ///
-/// A different struct from the CPU one, not a subset: the GPU backends take
-/// CAGRA build degrees and beam-search budgets that have no CPU counterpart.
+/// A different struct from the CPU one, not a subset: the device NN-Descent has
+/// its own working degree and sampling rate (`k_build`, `rho`).
 ///
 /// ### Params
 ///

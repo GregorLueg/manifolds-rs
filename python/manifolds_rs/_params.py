@@ -61,7 +61,12 @@ METRICS: frozenset[str] = frozenset({"euclidean", "l2", "cosine", "manhattan", "
 #: As `METRICS`, for PHATE: the potential distances have no Manhattan path.
 PHATE_METRICS: frozenset[str] = METRICS - {"manhattan", "l1"}
 
-#: k-means algorithms for the IVF and KmKNN centroids, from `parse_k_means`.
+#: As `METRICS`, for the GPU estimators: the device kNN builders reject
+#: Manhattan.
+GPU_METRICS: frozenset[str] = METRICS - {"manhattan", "l1"}
+
+#: k-means algorithms, from `parse_k_means`: the IVF and KmKNN centroids and the
+#: spectral landmark selection of PHATE and diffusion maps.
 K_MEANS: frozenset[str] = frozenset({"emeans", "e-means", "lloyd"})
 
 #: Embedding initialisations, from `parse_initialisation`.
@@ -379,6 +384,9 @@ class PhateDiffusion:
             operator sparse.
         graph_symmetry: ``"add"``, ``"multiply"``, ``"mnn"`` or ``"none"``.
         n_svd: Singular vectors for spectral landmark selection.
+        k_means: k-means of the spectral landmark selection (not the IVF one in
+            `NeighbourParams`), ``"emeans"`` or ``"lloyd"``. ``None`` gives
+            e-means.
         t_max: Largest diffusion time the VNE knee search will consider. Ignored
             when `t` is pinned.
     """
@@ -387,7 +395,14 @@ class PhateDiffusion:
     thresh: float | None = None
     graph_symmetry: str | None = None
     n_svd: int | None = None
+    k_means: str | None = None
     t_max: int | None = None
+
+    @beartype
+    def __post_init__(self) -> None:
+        """Reject an unknown `k_means` at construction, see `check_choice`."""
+        if self.k_means is not None:
+            check_choice(self.k_means, K_MEANS, name="k_means")
 
 
 #############

@@ -84,6 +84,7 @@ fn device_params() -> PhateParams<f32> {
             Some(100),
             "spectral".to_string(),
             Some(20),
+            "lloyd".to_string(),
             None,
             None,
             1.0,

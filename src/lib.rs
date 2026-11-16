@@ -2980,6 +2980,7 @@ where
                 dist_metric,
                 seed,
                 phate_params.diffusion_params.n_svd,
+                &phate_params.diffusion_params.k_means,
                 &backend,
                 verbose,
             )?;
@@ -4094,6 +4095,9 @@ pub struct DiffusionMapsParams<T> {
     pub landmark_method: String,
     /// Components for spectral landmark selection (ignored otherwise)
     pub n_svd: Option<usize>,
+    /// k-means of the spectral landmark selection: `"emeans"` (default) or
+    /// `"lloyd"`.
+    pub k_means: String,
 }
 
 impl<T> Default for DiffusionMapsParams<T>
@@ -4114,6 +4118,7 @@ where
             n_landmarks: None,
             landmark_method: "spectral".to_string(),
             n_svd: None,
+            k_means: "emeans".to_string(),
         }
     }
 }
@@ -4150,6 +4155,8 @@ where
     /// * `landmark_method` - `"random"`, `"spectral"`, or `"density"`.
     /// * `n_svd` - SVD components for spectral landmark selection. Ignored
     ///   otherwise.
+    /// * `k_means` - k-means of the spectral landmark selection, `"emeans"` or
+    ///   `"lloyd"`.
     ///
     /// ### Returns
     ///
@@ -4168,6 +4175,7 @@ where
         n_landmarks: Option<usize>,
         landmark_method: String,
         n_svd: Option<usize>,
+        k_means: String,
     ) -> Self {
         Self {
             n_dim,
@@ -4182,6 +4190,7 @@ where
             n_landmarks,
             landmark_method,
             n_svd,
+            k_means,
         }
     }
 
@@ -4362,6 +4371,7 @@ where
         &dm_params.graph_symmetry,
         seed,
         dm_params.n_svd,
+        &dm_params.k_means,
         verbose,
     )?;
     if verbosity.normal_verbosity() {

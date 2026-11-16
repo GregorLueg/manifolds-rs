@@ -35,9 +35,9 @@ from . import _manifolds as _core
 from ._base import BaseEmbedding, ReferenceEmbedding
 from ._params import (
     ANN_GPU,
+    GPU_METRICS,
     INITS,
     MDS_METHODS,
-    METRICS,
     PHATE_LANDMARK_METHODS,
     PHATE_METRICS,
     SYMMETRIES,
@@ -164,7 +164,7 @@ class UMAPGpu(BaseEmbedding):
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,
-                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+                dist_metric=check_choice(self.metric, GPU_METRICS, name="metric"),
             ),
             "graph_params": merge(self.graph_params),
             "optim_params": merge(
@@ -322,7 +322,7 @@ class TSNEGpu(BaseEmbedding):
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,
-                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+                dist_metric=check_choice(self.metric, GPU_METRICS, name="metric"),
             ),
             "optim_params": merge(
                 self.optim_params, n_epochs=self.n_epochs, lr=self.learning_rate
@@ -396,7 +396,7 @@ class DREAMSGpu(ReferenceEmbedding):
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,
-                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+                dist_metric=check_choice(self.metric, GPU_METRICS, name="metric"),
             ),
             "optim_params": merge(
                 self.optim_params, n_epochs=self.n_epochs, lr=self.learning_rate
