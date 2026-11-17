@@ -26,3 +26,5 @@ permissions:
 jobs:
   docs:
     uses: GregorLueg/personal-actions/.github/workflows/python-docs.yml@v1
+    with:
+      docs-deps: 'mkdocs mkdocs-jupyter mkdocs-material mkdocstrings[python]'

@@ -37,3 +37,6 @@ jobs:
       # cleanly on a machine without a device, not that the kernels are correct.
       # Kernel correctness needs a runner with a GPU.
       cpu-only-args: '--no-default-features'
+      # macOS runs `cargo test` and a release `maturin develop` back to back
+      # and lands right on the 30 minute default.
+      timeout-minutes: 60
