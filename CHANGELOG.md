@@ -7,6 +7,10 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
 **Breaking changes**
 
+- The `(a, b)` curve fit behind `min_dist` / `spread` runs 1000 steps
+  instead of 300 and now reaches the least-squares optimum. Slightly different
+  `a` and `b`, so different coordinates at the same seed: UMAP, densMAP,
+  `umap_gpu`, `densmap_gpu` and parametric UMAP.
 - The fuzzy graph's bandwidth search targets `log2(k + 1)` as uwot and
   umap-learn do, not `ln(k)`. Different coordinates than 0.9.1 at the same seed:
   UMAP, densMAP, `umap_gpu`, `densmap_gpu`, parametric UMAP and ForceAtlas2.

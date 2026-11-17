@@ -9,6 +9,8 @@ Requires `manifolds-rs` 0.10.0.
 
 **Breaking changes**
 
+- The `min_dist` / `spread` curve fit converges fully. Slightly different
+  coordinates at the same seed: `UMAP`, `DensMAP`, `UMAPGpu` and `DensMAPGpu`.
 - The fuzzy graph's bandwidth search matches uwot and umap-learn. Different
   coordinates than 0.6.1 at the same seed: `UMAP`, `DensMAP`, `UMAPGpu`,
   `DensMAPGpu` and `ForceAtlas2`.

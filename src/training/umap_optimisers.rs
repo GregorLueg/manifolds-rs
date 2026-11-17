@@ -30,6 +30,11 @@ pub const DEFAULT_MIN_DIST: f64 = 0.5;
 /// Spread the default curve is fitted to. See [`DEFAULT_MIN_DIST`].
 pub const DEFAULT_SPREAD: f64 = 1.0;
 
+/// Gradient steps of the `(a, b)` curve fit. Fewer stop short of the
+/// least-squares optimum at small `min_dist`; this many land within 2e-4 of it
+/// across the usual `min_dist` / `spread` range, and the fit costs milliseconds.
+pub(crate) const AB_FIT_ITER: usize = 1000;
+
 /// Upper end of the fine `x^b` table in [`SplitPowLut`]. Squared distances of
 /// connected points sit well inside it.
 const POW_LUT_NEAR_MAX: f64 = 25.0;
@@ -168,13 +173,13 @@ where
     ///
     /// * `min_dist` - Minimum distance parameter
     /// * `spread` - Effective scale of embedded points
-    /// * `n_iter` - Number of optimisation iterations (default: 300)
+    /// * `n_iter` - Number of optimisation iterations (default: [`AB_FIT_ITER`])
     ///
     /// ### Returns
     ///
     /// Tuple of `(a, b)` according to the optimisation problem above.
     pub(crate) fn fit_params(min_dist: T, spread: T, n_iter: Option<usize>) -> (T, T) {
-        let n_iter = n_iter.unwrap_or(300);
+        let n_iter = n_iter.unwrap_or(AB_FIT_ITER);
         let n_points = 300;
 
         // Generate x values from 0 to spread * 3
