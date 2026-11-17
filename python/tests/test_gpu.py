@@ -218,11 +218,9 @@ def test_densmap_gpu_refuses_adam_v06(optimiser: str, X32: np.ndarray) -> None:
         mf.DensMAPGpu(optimiser=optimiser).fit_transform(X32)
 
 
-@pytest.mark.parametrize("cls", [mf.TSNEGpu, mf.DREAMSGpu])
-def test_gpu_tsne_takes_an_int_perplexity(
-    cls: type[BaseEmbedding], X32: np.ndarray
-) -> None:
-    assert build(cls.__name__, perplexity=15).fit_transform(X32).shape == (
+@pytest.mark.parametrize("name", ["TSNEGpu", "DREAMSGpu"])
+def test_gpu_tsne_takes_an_int_perplexity(name: str, X32: np.ndarray) -> None:
+    assert build(name, perplexity=15).fit_transform(X32).shape == (
         X32.shape[0],
         2,
     )
