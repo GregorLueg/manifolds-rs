@@ -1,5 +1,5 @@
 //! Dimensionality reduction algorithms: UMAP, densMAP, t-SNE, den-SNE, DREAMS,
-//! PHATE, diffusion maps, PaCMAP, LocalMAP and ForceAtlas2, plus parametric UMAP via a
+//! PHATE, diffusion maps, PaCMAP, LocalMAP, ForceAtlas2 and NCVis, plus parametric UMAP via a
 //! neural network encoder with the `parametric` feature.
 //!
 //! The `gpu` feature adds `*_gpu` entry points: kNN search on the device for all
@@ -27,6 +27,7 @@ use ann_search_rs::utils::dist::{parse_ann_dist, Dist};
 use ann_search_rs::utils::matrix_to_flat;
 use ann_search_rs::utils::nndescent_utils::ApplySortedUpdates;
 use faer::MatRef;
+use rand::{rngs::SmallRng, SeedableRng};
 use rand_distr::{Distribution, StandardNormal};
 use std::{default::Default, time::Instant};
 use thousands::*;
@@ -48,6 +49,7 @@ use crate::data::structures::*;
 use crate::prelude::*;
 use crate::training::fa2_optimiser::*;
 use crate::training::mds_optimiser::*;
+use crate::training::ncvis_optimiser::{optimise_ncvis, symmetrise_knn};
 use crate::training::pacmap_optimiser::{
     optimise_localmap, optimise_localmap_parallel, optimise_pacmap, optimise_pacmap_parallel,
     PacMapOptimiser, LOCALMAP_MAX_DISTANCE,
@@ -4045,6 +4047,348 @@ where
         seed,
         verbose,
     )
+}
+
+///////////
+// NCVis //
+///////////
+
+/// Minimum number of samples NCVis accepts: each point needs at least one
+/// neighbour and one other point to draw as a negative.
+const NCVIS_MIN_SAMPLES: usize = 3;
+
+/// Default standard deviation of the first axis of the NCVis initial layout.
+/// NCVis+ found smaller scales lose global structure and much larger ones keep
+/// the layout too close to PCA.
+pub const NCVIS_INIT_SCALE: f64 = 10.0;
+
+/// NCVis parameters
+#[derive(Debug, Clone)]
+pub struct NcvisParams<T> {
+    /// Number of embedding dimensions. Defaults to `2`.
+    pub n_dim: usize,
+    /// Number of neighbours. Defaults to `15`.
+    pub k: usize,
+    /// (Approximate) nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
+    /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
+    /// Defaults to `"nndescent"`.
+    pub ann_type: String,
+    /// Initialisation: `"pca"` or `"random"` (standard normal). Defaults to
+    /// `"pca"`.
+    pub initialisation: String,
+    /// Standard deviation of the first axis of the initial layout; the other
+    /// axes are scaled by the same factor. Defaults to [`NCVIS_INIT_SCALE`].
+    pub init_scale: T,
+    /// Use randomised SVD for the PCA initialisation. Defaults to `false`.
+    pub randomised: bool,
+    /// Nearest neighbour parameters
+    pub nn_params: NearestNeighbourParams<T>,
+    /// NCVis optimisation parameters
+    pub optim_params: NcvisOptimParams<T>,
+}
+
+impl<T> Default for NcvisParams<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            n_dim: 2,
+            k: 15,
+            ann_type: "nndescent".to_string(),
+            initialisation: "pca".to_string(),
+            init_scale: T::from_f64(NCVIS_INIT_SCALE).unwrap(),
+            randomised: false,
+            nn_params: NearestNeighbourParams::default(),
+            optim_params: NcvisOptimParams::default(),
+        }
+    }
+}
+
+impl<T> NcvisParams<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Create new NCVis parameters with full control over every field.
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - Number of embedding dimensions.
+    /// * `k` - Number of neighbours.
+    /// * `ann_type` - (Approximate) nearest neighbour method. One of
+    ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
+    ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
+    /// * `initialisation` - `"pca"` or `"random"`.
+    /// * `init_scale` - Standard deviation of the first initial axis.
+    /// * `randomised` - Whether randomised SVD is used for the PCA
+    ///   initialisation.
+    /// * `nn_params` - Nearest neighbour parameters.
+    /// * `optim_params` - NCVis optimisation parameters.
+    ///
+    /// ### Returns
+    ///
+    /// A fully specified set of NCVis parameters.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        n_dim: usize,
+        k: usize,
+        ann_type: String,
+        initialisation: String,
+        init_scale: T,
+        randomised: bool,
+        nn_params: NearestNeighbourParams<T>,
+        optim_params: NcvisOptimParams<T>,
+    ) -> Self {
+        Self {
+            n_dim,
+            k,
+            ann_type,
+            initialisation,
+            init_scale,
+            randomised,
+            nn_params,
+            optim_params,
+        }
+    }
+
+    /// Default parameters for standard 2D visualisation.
+    ///
+    /// ### Params
+    ///
+    /// * `k` - Number of neighbours. Defaults to `15`.
+    /// * `n_negative` - Mean negative samples per edge. Defaults to `10`;
+    ///   `20` buys local quality for about 1.6x the layout time (NCVis+).
+    ///
+    /// ### Returns
+    ///
+    /// Hopefully sensible standard parameters for 2D visualisation.
+    pub fn new_default_2d(k: Option<usize>, n_negative: Option<T>) -> Self {
+        let default = Self::default();
+        let optim_params = NcvisOptimParams {
+            n_negative: n_negative.unwrap_or(default.optim_params.n_negative),
+            ..default.optim_params.clone()
+        };
+        Self {
+            k: k.unwrap_or(default.k),
+            optim_params,
+            ..default
+        }
+    }
+}
+
+/// Centre a layout and scale it uniformly so its first axis has standard
+/// deviation `scale`.
+///
+/// Unlike [`pca_layout`], every axis gets the same factor, so the ratios
+/// between the principal components survive. That is what keeps NCVis's
+/// global structure.
+///
+/// ### Params
+///
+/// * `embd` - Layout `[n_samples][n_dim]`, modified in place
+/// * `scale` - Target standard deviation of axis 0
+fn scale_first_axis<T>(embd: &mut [Vec<T>], scale: T)
+where
+    T: ManifoldsFloat,
+{
+    let n = T::from_usize(embd.len()).unwrap();
+    let n_dim = embd[0].len();
+    let means: Vec<T> = (0..n_dim)
+        .map(|d| embd.iter().map(|p| p[d]).sum::<T>() / n)
+        .collect();
+    let var0 = embd
+        .iter()
+        .map(|p| (p[0] - means[0]) * (p[0] - means[0]))
+        .sum::<T>()
+        / n;
+    let std0 = var0.sqrt();
+    let factor = if std0 > T::zero() {
+        scale / std0
+    } else {
+        scale
+    };
+    for p in embd.iter_mut() {
+        for (v, &m) in p.iter_mut().zip(&means) {
+            *v = (*v - m) * factor;
+        }
+    }
+}
+
+/// Run NCVis
+///
+/// Symmetrises the unweighted kNN graph, starts from a PCA (or Gaussian)
+/// layout scaled to `init_scale` on its first axis, and optimises the NCVis
+/// noise-contrastive objective with Hogwild SGD. Defaults are NCVis+'s:
+/// `min_dist` 0.001, learning rate 2, 50 epochs and on average 10 negatives
+/// per edge.
+///
+/// The kNN distances are ignored: NCVis uses the graph unweighted.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self, sorted by distance. A wider graph is cut to `k`,
+///   with a warning on stderr.
+/// * `params` - NCVis parameters
+/// * `seed` - Random seed. The layout is reproducible only on a one-thread
+///   Rayon pool (Hogwild), and depends on the pool size.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>`, `[n_dim][n_samples]`.
+///
+/// ### Errors
+///
+/// [`ManifoldsError::NcvisInvalidParam`] on fewer than three samples, an
+/// unknown initialisation, `n_epochs == 0`, `n_negative < 1` or a non-positive
+/// `init_scale`.
+///
+/// ### References
+///
+/// Artemenkov & Panov, WWW, 2020 (NCVis); Pedersen, 2026 (NCVis+,
+/// <https://github.com/SeanPedersen/ncvis-plus>)
+pub fn ncvis<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &NcvisParams<T>,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    let n = data.nrows();
+    let invalid = |param, value: f64, requirement| ManifoldsError::NcvisInvalidParam {
+        param,
+        value,
+        requirement,
+    };
+    if n < NCVIS_MIN_SAMPLES {
+        return Err(invalid("n_samples", n as f64, "must be at least 3"));
+    }
+    if params.optim_params.n_epochs == 0 {
+        return Err(invalid("n_epochs", 0.0, "must be at least 1"));
+    }
+    let n_negative = params.optim_params.n_negative.to_f64().unwrap_or(f64::NAN);
+    if n_negative.is_nan() || n_negative < 1.0 {
+        return Err(invalid("n_negative", n_negative, "must be at least 1"));
+    }
+    let init_scale = params.init_scale.to_f64().unwrap_or(f64::NAN);
+    if !(init_scale > 0.0 && init_scale.is_finite()) {
+        return Err(invalid(
+            "init_scale",
+            init_scale,
+            "must be positive and finite",
+        ));
+    }
+    let use_pca = match params.initialisation.to_lowercase().as_str() {
+        "pca" => true,
+        "random" => false,
+        _ => {
+            return Err(invalid(
+                "initialisation",
+                f64::NAN,
+                "must be \"pca\" or \"random\"",
+            ))
+        }
+    };
+
+    let verbosity = parse_verbosity_level(verbose);
+    let start_run = Instant::now();
+    if verbosity.normal_verbosity() {
+        println!(
+            "Running NCVis on {} samples ...",
+            n.separate_with_underscores()
+        );
+    }
+
+    let k = params.k.min(n - 1);
+    let knn_indices = match precomputed_knn {
+        Some((indices, distances)) => {
+            if verbosity.normal_verbosity() {
+                println!(" Using precomputed kNN graph");
+            }
+            truncate_knn(indices, distances, k).0
+        }
+        None => {
+            if verbosity.normal_verbosity() {
+                println!(" kNN search via {} (k = {}) ...", params.ann_type, k);
+            }
+            let start_knn = Instant::now();
+            let (indices, _) = run_ann_search(
+                data,
+                k,
+                params.ann_type.clone(),
+                &params.nn_params,
+                seed,
+                ann_verbose(verbosity),
+            )?;
+            if verbosity.normal_verbosity() {
+                println!(" ... kNN search in {:.2?}", start_knn.elapsed());
+            }
+            indices
+        }
+    };
+    let graph = symmetrise_knn(&knn_indices)?;
+    drop(knn_indices);
+
+    let start_init = Instant::now();
+    let mut embd = if use_pca {
+        pca_scores(data, params.n_dim, params.randomised, seed as u64)?
+    } else {
+        let mut rng = SmallRng::seed_from_u64(seed as u64);
+        (0..n)
+            .map(|_| {
+                (0..params.n_dim)
+                    .map(|_| StandardNormal.sample(&mut rng))
+                    .collect()
+            })
+            .collect()
+    };
+    scale_first_axis(&mut embd, params.init_scale);
+    if verbosity.normal_verbosity() {
+        println!(
+            " ... {} initialisation in {:.2?}",
+            params.initialisation,
+            start_init.elapsed()
+        );
+    }
+
+    let start_optim = Instant::now();
+    if verbosity.normal_verbosity() {
+        println!(
+            " Optimising via NCVis ({} epochs) ...",
+            params.optim_params.n_epochs
+        );
+    }
+    optimise_ncvis(
+        &mut embd,
+        &graph,
+        &params.optim_params,
+        seed as u64,
+        verbose,
+    )?;
+    if verbosity.normal_verbosity() {
+        println!(" ... optimised in {:.2?}", start_optim.elapsed());
+        println!("... finished NCVis in {:.2?}", start_run.elapsed());
+    }
+
+    Ok((0..params.n_dim)
+        .map(|d| embd.iter().map(|p| p[d]).collect())
+        .collect())
 }
 
 ////////////////////

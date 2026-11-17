@@ -173,7 +173,7 @@ where
     /// ### Returns
     ///
     /// Tuple of `(a, b)` according to the optimisation problem above.
-    fn fit_params(min_dist: T, spread: T, n_iter: Option<usize>) -> (T, T) {
+    pub(crate) fn fit_params(min_dist: T, spread: T, n_iter: Option<usize>) -> (T, T) {
         let n_iter = n_iter.unwrap_or(300);
         let n_points = 300;
 
