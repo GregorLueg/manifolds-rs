@@ -384,9 +384,9 @@ class PhateDiffusion:
             operator sparse.
         graph_symmetry: ``"add"``, ``"multiply"``, ``"mnn"`` or ``"none"``.
         n_svd: Singular vectors for spectral landmark selection.
-        k_means: k-means of the spectral landmark selection (not the IVF one in
-            `NeighbourParams`), ``"emeans"`` or ``"lloyd"``. ``None`` gives
-            e-means.
+        landmark_k_means: k-means of the spectral landmark selection (not the
+            IVF one in `NeighbourParams`), ``"emeans"`` or ``"lloyd"``.
+            ``None`` gives e-means.
         t_max: Largest diffusion time the VNE knee search will consider. Ignored
             when `t` is pinned.
     """
@@ -395,14 +395,14 @@ class PhateDiffusion:
     thresh: float | None = None
     graph_symmetry: str | None = None
     n_svd: int | None = None
-    k_means: str | None = None
+    landmark_k_means: str | None = None
     t_max: int | None = None
 
     @beartype
     def __post_init__(self) -> None:
-        """Reject an unknown `k_means` at construction, see `check_choice`."""
-        if self.k_means is not None:
-            check_choice(self.k_means, K_MEANS, name="k_means")
+        """Reject an unknown `landmark_k_means` at construction, see `check_choice`."""
+        if self.landmark_k_means is not None:
+            check_choice(self.landmark_k_means, K_MEANS, name="landmark_k_means")
 
 
 #############

@@ -815,7 +815,7 @@ class DiffusionMaps(BaseEmbedding):
                 self.landmark_method, LANDMARK_METHODS, name="landmark_method"
             ),
             "n_svd": self.n_svd,
-            "k_means": None
+            "landmark_k_means": None
             if self.landmark_k_means is None
             else check_choice(self.landmark_k_means, K_MEANS, name="landmark_k_means"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),

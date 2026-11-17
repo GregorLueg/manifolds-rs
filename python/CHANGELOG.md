@@ -23,7 +23,7 @@ Requires `manifolds-rs` 0.10.0.
 
 - `NeighbourParams(k_means=...)` and `NeighbourParamsGpu(k_means=...)`:
   `"emeans"` (default) or `"lloyd"` for the IVF and KmKNN centroids.
-- `PhateDiffusion(k_means=...)` and `DiffusionMaps(landmark_k_means=...)`: the
+- `PhateDiffusion(landmark_k_means=...)` and `DiffusionMaps(landmark_k_means=...)`: the
   same switch for the spectral landmark selection.
 - `optimiser="adam_v06"` for `UMAP` and `UMAPGpu`, and `"adam_v06_gpu"` for
   `UMAPGpu`: the umap-learn 0.6 Adam. `DensMAP` and `DensMAPGpu` reject both.

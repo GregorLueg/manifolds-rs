@@ -467,7 +467,7 @@ where
     }
     set(&mut p.landmark_method, r.get::<String>("landmark_method")?);
     p.n_svd = r.get::<usize>("n_svd")?.or(p.n_svd);
-    set(&mut p.k_means, r.get::<String>("k_means")?);
+    set(&mut p.k_means, r.get::<String>("landmark_k_means")?);
     set(&mut p.gamma, r.float::<T>("gamma")?);
     p.t = read_time(&mut r, &p.t)?;
     r.finish()
@@ -830,7 +830,7 @@ where
     p.n_landmarks = r.get::<usize>("n_landmarks")?.or(p.n_landmarks);
     set(&mut p.landmark_method, r.get::<String>("landmark_method")?);
     p.n_svd = r.get::<usize>("n_svd")?.or(p.n_svd);
-    set(&mut p.k_means, r.get::<String>("k_means")?);
+    set(&mut p.k_means, r.get::<String>("landmark_k_means")?);
     p.t = read_time(&mut r, &p.t)?;
     nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
     r.finish()?;

@@ -185,6 +185,6 @@ def test_explicit_epochs_beat_the_size_rule() -> None:
 
 def test_unknown_landmark_k_means_is_refused(X: np.ndarray) -> None:
     with pytest.raises(ValueError, match="k_means"):
-        mf.PhateDiffusion(k_means="kmeans++")
+        mf.PhateDiffusion(landmark_k_means="kmeans++")
     with pytest.raises(ValueError, match="landmark_k_means"):
         mf.DiffusionMaps(n_landmarks=50, landmark_k_means="kmeans++").fit_transform(X)
