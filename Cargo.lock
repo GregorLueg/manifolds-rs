@@ -130,9 +130,9 @@ checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
 name = "ann-search-rs"
-version = "0.13.0"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "948c05bf53aedfd58b48c5ea806beda9666ee42997c5f47f77a73dcee4ab692f"
+checksum = "85ec1c610b26928efaf241531f3a05b35be67c1462c2d1740a3a89ef6e99e2d2"
 dependencies = [
  "cubecl",
  "cubecl-utils-rs",
@@ -4090,7 +4090,7 @@ dependencies = [
  "cubecl-utils-rs",
  "faer",
  "faer-traits",
- "ndarray 0.16.1",
+ "ndarray 0.17.2",
  "num-traits",
  "rand 0.9.5",
  "rand_distr 0.5.1",
