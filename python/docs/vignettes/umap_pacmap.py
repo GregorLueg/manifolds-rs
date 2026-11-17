@@ -585,9 +585,9 @@ pl.DataFrame(
 # Global structure lands about where UMAP's does: the supergroups stay
 # together, the arrangement is a bit less faithful than PaCMAP's. Local
 # structure is the odd one out. NCVis keeps roughly twice the exact neighbours
-# of the other three, and the clusters come out visibly tighter. Drop the PCA start and the global score
-# collapses to nothing, with a ring of stray points that 50 epochs never pull
-# back in. Keep the PCA start.
+# of UMAP and PaCMAP, and the clusters come out visibly tighter. Drop the PCA
+# start and the global score collapses to nothing, with a ring of stray points
+# that 50 epochs never pull back in. Keep the PCA start.
 #
 # The swiss roll and the trajectory:
 
