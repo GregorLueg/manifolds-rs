@@ -43,6 +43,7 @@ algorithms cleanly. 5000 points, defaults throughout:
 | | neighbourhood preservation |
 | --- | --- |
 | `TSNE` | 0.83 |
+| `NCVis` | 0.72 |
 | `UMAP` | 0.67 |
 | `ForceAtlas2` | 0.59 |
 | `PHATE` | 0.37 |

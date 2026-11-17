@@ -27,6 +27,9 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
 **New**
 
+- `ncvis`: NCVis, Hogwild noise-contrastive SGD on the unweighted kNN graph,
+  with the NCVis+ defaults (PCA start, `min_dist` 0.001, learning rate 2, 10
+  negatives per edge). Reproducible at a fixed seed only on a one-thread pool.
 - `k_means` on `NearestNeighbourParams` and `NearestNeighbourParamsGpu`:
   `"emeans"` (default) or `"lloyd"` for the IVF and KmKNN centroids.
 - `nnd_n_trees` on `NearestNeighbourParams`: the number of trees seeding the

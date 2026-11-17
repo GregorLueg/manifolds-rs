@@ -19,3 +19,5 @@
 ::: manifolds_rs.DiffusionMaps
 
 ::: manifolds_rs.ForceAtlas2
+
+::: manifolds_rs.NCVis

@@ -566,6 +566,39 @@ let embedding = forceatlas2_from_graph(
 .unwrap();
 ```
 
+## NCVis
+
+NCVis ([Artemenkov & Panov, 2020](https://github.com/stat-ml/ncvis)) lays out
+the plain kNN graph, made undirected and unweighted, with noise-contrastive
+estimation: each edge pulls, uniform negatives push, and a normalisation
+constant is learned on the side. The defaults are
+[NCVis+](https://github.com/SeanPedersen/ncvis-plus)'s: a PCA start scaled to
+std 10 on its first axis (the other axes get the same factor), `min_dist`
+0.001, learning rate 2, 50 epochs and on average 10 negatives per edge, ramped
+up with the cube of progress.
+
+```rust
+use manifolds_rs::prelude::*;
+use manifolds_rs::*;
+
+let (data, labels) = generate_clustered_data(1000, 50, 5, 42);
+
+// k = 15, 20 negatives per edge: sharper local structure, more time
+let params = NcvisParams::new_default_2d(None, Some(20.0));
+
+let embedding = ncvis(
+    data.as_ref(),
+    None,    // precomputed kNN (None = compute internally)
+    &params,
+    42,      // seed
+    1,       // verbose
+)
+.unwrap();
+```
+
+The optimiser is Hogwild over all threads, so the same seed gives the same
+layout only on a one-thread Rayon pool. The kNN distances are ignored.
+
 ## Diffusion maps
 
 Classical diffusion maps embed the data via the top eigenvectors of a

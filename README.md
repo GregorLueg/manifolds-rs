@@ -32,6 +32,7 @@ estimators and scanpy-style `mf.umap(adata)`. Changes live in the
 | [LocalMAP](https://arxiv.org/abs/2412.15426) | `localmap` | default |
 | [ForceAtlas2](https://doi.org/10.1371/journal.pone.0098679) | `forceatlas2`, `forceatlas2_from_graph` | default |
 | [Diffusion maps](https://www.sciencedirect.com/science/article/pii/S1063520306000546) | `diffusion_maps` | default |
+| [NCVis](https://github.com/stat-ml/ncvis) ([NCVis+](https://github.com/SeanPedersen/ncvis-plus) defaults) | `ncvis` | default |
 
 Optimisers and approximations are picked by string:
 
@@ -48,7 +49,7 @@ Optimisers and approximations are picked by string:
 Distances: Euclidean and cosine. The `"nndescent"`, `"hnsw"` and `"exhaustive"` CPU
 searches also take Manhattan, which PHATE and landmark diffusion maps do not
 support. Initialisations: spectral (Lanczos), PCA,
-random, and for UMAP and densMAP the umap-learn 0.6 recursive one. Synthetic datasets (swiss roll, clusters, branching trajectories) ship
+random (NCVis takes PCA or random only), and for UMAP and densMAP the umap-learn 0.6 recursive one. Synthetic datasets (swiss roll, clusters, branching trajectories) ship
 with the crate for testing.
 
 ## Installation

@@ -56,7 +56,7 @@ Three things to get right. Build the graph as wide as the widest consumer needs:
 `3 * perplexity` for the t-SNE family, `n_near + 50` for `PaCMAP` and `6k + 5` for
 `PHATE`, since its kernel keeps anything just past the `k`-th neighbour.
 
-`UMAP`, `DensMAP` and `ForceAtlas2` cut a wider graph to `n_neighbors`, keeping the
+`UMAP`, `DensMAP`, `ForceAtlas2` and `NCVis` cut a wider graph to `n_neighbors`, keeping the
 nearest, and print a warning to stderr saying so. A graph you build yourself has to
 be sorted by distance for that to mean anything.
 
@@ -71,7 +71,7 @@ bit-identical embedding. It is a shortcut, not a different algorithm.
 ## Choosing a neighbour backend
 
 The default follows `k`. Estimators that ask for a small neighbourhood (UMAP,
-densMAP, diffusion maps, ForceAtlas2) default to `"nndescent"`. t-SNE, den-SNE
+densMAP, diffusion maps, ForceAtlas2, NCVis) default to `"nndescent"`. t-SNE, den-SNE
 and DREAMS ask for `3 * perplexity` neighbours, PaCMAP and LocalMAP for
 `n_near + 50` and PHATE for `6k + 5`, and those default to `"ivf"`, which holds up
 better at that size.

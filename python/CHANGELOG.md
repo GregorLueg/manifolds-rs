@@ -21,6 +21,8 @@ Requires `manifolds-rs` 0.10.0.
 
 **New**
 
+- `NCVis` and `NcvisOptim`: NCVis with the NCVis+ defaults. Hogwild, so a
+  fixed seed reproduces only with `set_num_threads(1)`.
 - `ann="rinnd"`: rinnd's NN-Descent as a CPU kNN backend, built into the wheel
   by default. Check with `rinnd_available()`.
 - `NeighbourParams(nnd_n_trees=...)`: trees seeding the `"nndescent"` and

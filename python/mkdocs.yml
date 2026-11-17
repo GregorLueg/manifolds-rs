@@ -1,5 +1,5 @@
 site_name: manifolds-rs
-site_description: UMAP, t-SNE, PHATE, PaCMAP, LocalMAP, diffusion maps and ForceAtlas2 for single-cell and computational biology, in Rust.
+site_description: UMAP, t-SNE, PHATE, PaCMAP, LocalMAP, diffusion maps, ForceAtlas2 and NCVis for single-cell and computational biology, in Rust.
 site_url: https://gregorlueg.github.io/manifolds-rs/
 repo_url: https://github.com/GregorLueg/manifolds-rs
 repo_name: GregorLueg/manifolds-rs
@@ -38,7 +38,7 @@ nav:
   - Vignettes:
       - Nearest neighbour searches: vignettes/knn_searches.ipynb
       - t-SNE, den-SNE and DREAMS: vignettes/tsne.ipynb
-      - UMAP, densMAP, PaCMAP, LocalMAP and ForceAtlas2: vignettes/umap_pacmap.ipynb
+      - UMAP, densMAP, PaCMAP, LocalMAP, ForceAtlas2 and NCVis: vignettes/umap_pacmap.ipynb
       - PHATE and diffusion maps: vignettes/phate_diffusion.ipynb
       - GPU acceleration: vignettes/gpu.ipynb
   - AnnData / scanpy: anndata.md

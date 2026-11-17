@@ -16,6 +16,7 @@ to pick without running all ten.
 | t-SNE clusters, but in a sensible arrangement | `DREAMS` |
 | You want the spectral embedding itself, not a layout of it | `DiffusionMaps` |
 | You want a force-directed graph layout, scanpy `draw_graph` style | `ForceAtlas2` |
+| t-SNE-like clusters on a lot of points, fast | `NCVis` |
 
 ## What each one is actually doing
 
@@ -78,6 +79,16 @@ epoch. `lin_log=True` pulls communities tighter; `scaling_ratio` spreads the
 whole layout. `graph_params.mix_weight` has to stay at 1, because the layout
 needs a symmetric graph. Two-dimensional only.
 
+**NCVis** is noise-contrastive estimation on the plain kNN graph, made
+undirected and unweighted. Each edge pulls its two points together and draws
+uniform negatives that push apart, with a normalisation constant learned on the
+side. The defaults are [NCVis+](https://github.com/SeanPedersen/ncvis-plus)'s,
+and the one that matters is the PCA start, scaled as a whole so the components
+keep their ratios: that is where the global arrangement comes from, and
+`init="random"` throws much of it away. `n_negative` is the time against local
+quality knob. The optimiser is hogwild, so a fixed seed reproduces only with
+`set_num_threads(1)`.
+
 ## Cost
 
 Rough ordering on the same data, dominated by different things:
@@ -91,6 +102,9 @@ Rough ordering on the same data, dominated by different things:
   per-edge update. The parallel Adam optimiser is the default.
   `optimiser="sgd_parallel"` runs the reference SGD lock-free over all
   threads, at the price of a different embedding on every run.
+- `NCVis` pays for the neighbour search, the PCA start and 50 epochs of
+  hogwild SGD. Every edge draws `n_negative` negatives on average, so that is
+  the knob that sets the layout time.
 - `PHATE` pays for the powering, the potential distances and the MDS, which is
   why it runs on 2048 landmarks by default. `n_landmarks=None` runs the full
   operator, whose dense distance matrix grows with the square of the sample count.
