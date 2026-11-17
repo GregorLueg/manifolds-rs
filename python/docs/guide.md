@@ -37,7 +37,7 @@ distances reach you.
 So a graph you build yourself and hand to `fit` should hold true distances too.
 
 Metrics available: `"euclidean"`/`"l2"`, `"cosine"` and `"manhattan"`/`"l1"`.
-Manhattan needs `"nndescent"`, `"hnsw"` or `"exhaustive"` as the backend. `PHATE`,
+Manhattan needs `"nndescent"`, `"rinnd"`, `"hnsw"` or `"exhaustive"` as the backend. `PHATE`,
 `PHATEGpu` and `DiffusionMaps` with landmarks raise `ValueError` on it.
 
 ## Reusing the neighbour graph
@@ -80,6 +80,13 @@ better at that size.
 surprises people who assume exact means slow. `"exhaustive"` is for ground
 truth. `"hnsw"`, `"annoy"` and `"balltree"` are there for the cases where they
 win.
+
+Default wheels also carry `"rinnd"`, the NN-Descent from
+[rinnd](https://github.com/lmcinnes/rinnd). Its SIMD kernels target x86 (AVX2),
+so on x86 it is worth trying in place of `"nndescent"`. `rinnd_available()` says
+whether your build has it. Both NN-Descents take `nnd_n_trees`, the number of
+trees seeding the graph; left at `None`, `"nndescent"` follows the umap-learn /
+scanpy rule and `"rinnd"` its own, which plants fewer.
 
 Each has its own knobs in `NeighbourParams`, and only the ones belonging to your
 chosen backend do anything. Setting `ef_search` while running `"annoy"` is

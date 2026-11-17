@@ -51,7 +51,8 @@ macro_rules! knn_arm {
 /// * `x` - Samples by features, C-contiguous float32 or float64.
 /// * `k` - Neighbours per point, excluding self.
 /// * `ann` - Backend: `"exhaustive"`, `"kmknn"`, `"balltree"`, `"annoy"`,
-///   `"hnsw"`, `"ivf"` or `"nndescent"`. Validated by the Python layer, since
+///   `"hnsw"`, `"ivf"` or `"nndescent"`, plus `"rinnd"` with the `rinnd`
+///   feature and the `*_mlx` keys in an MLX build. Validated by the Python layer, since
 ///   the core falls back to `"kmknn"` on an unrecognised name and only says so
 ///   on stderr.
 /// * `nn_params` - Backend-specific knobs, or `None` for the crate defaults.

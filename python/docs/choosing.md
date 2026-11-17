@@ -99,7 +99,7 @@ Rough ordering on the same data, dominated by different things:
 
 For all of them, past a few hundred thousand points the neighbour search
 dominates. The defaults (`"nndescent"`, `"ivf"` for the t-SNE family, PaCMAP, LocalMAP and PHATE)
-are built for that; `"hnsw"` is the alternative. Or build the graph once
+are built for that; `"hnsw"` is the alternative, and `"rinnd"` is worth a try on x86. Or build the graph once
 with [`knn_graph`](api/neighbours.md) and hand it to each estimator.
 
 ## What none of them do

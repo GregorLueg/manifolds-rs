@@ -70,6 +70,11 @@ np.array_equal(indices, indices_kmknn)
 # and casts the distances back to your dtype. Same recall, less memory traffic.
 # The knobs per backend live in `NeighbourParams`; only the fields of the
 # backend you picked do anything.
+#
+# Default wheels add `"rinnd"`, the NN-Descent from
+# [rinnd](https://github.com/lmcinnes/rinnd). Its SIMD kernels target x86 (AVX2),
+# so try it there; it is not in the timings below. `nnd_n_trees` sets the seeding
+# trees for both NN-Descents.
 
 # %%
 mf.NeighbourParams()
