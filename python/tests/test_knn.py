@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from conftest import reproducible
 
 import manifolds_rs as mf
 
-BACKENDS = ["exhaustive", "kmknn", "balltree", "annoy", "hnsw", "ivf", "nndescent"]
+BACKENDS = ["exhaustive", "kmknn", "balltree", "annoy", "hnsw", "ivf", "nndescent"] + (
+    ["rinnd"] if mf.rinnd_available() else []
+)
+
+needs_rinnd = pytest.mark.skipif(
+    not mf.rinnd_available(), reason="built without the rinnd feature"
+)
 
 
 @pytest.mark.parametrize("ann", BACKENDS)
@@ -111,25 +118,39 @@ def test_unknown_backend_is_refused(X: np.ndarray) -> None:
         mf.knn_graph(X, k=10, ann="faiss")
 
 
+@pytest.mark.parametrize("k_means", ["emeans", "lloyd"])
+def test_ivf_k_means_reaches_the_search(k_means: str, X: np.ndarray) -> None:
+    ind, _ = mf.knn_graph(
+        X, k=10, ann="ivf", nn_params=mf.NeighbourParams(k_means=k_means), seed=7
+    )
+    assert ind.shape == (X.shape[0], 10)
+
+
+def test_unknown_k_means_is_refused() -> None:
+    with pytest.raises(ValueError, match="k_means"):
+        mf.NeighbourParams(k_means="kmeans++")
+
+
 def test_empty_input_is_refused() -> None:
     with pytest.raises(ValueError, match="non-empty"):
         mf.knn_graph(np.zeros((0, 5)), k=10)
 
 
-@pytest.mark.parametrize("cls", [mf.UMAP, mf.DensMAP, mf.ForceAtlas2])
+@pytest.mark.parametrize("cls", [mf.UMAP, mf.DensMAP, mf.ForceAtlas2, mf.NCVis])
 def test_wider_graph_is_cut_to_n_neighbors(
     cls: type, X: np.ndarray, knn: tuple[np.ndarray, np.ndarray]
 ) -> None:
     ind, dist = knn
-    wide = cls(n_neighbors=15, n_epochs=20).fit_transform(
-        X, knn_indices=ind, knn_distances=dist
-    )
-    cut = cls(n_neighbors=15, n_epochs=20).fit_transform(
-        X, knn_indices=ind[:, :15], knn_distances=dist[:, :15]
-    )
-    other = cls(n_neighbors=30, n_epochs=20).fit_transform(
-        X, knn_indices=ind, knn_distances=dist
-    )
+    with reproducible(cls.__name__):
+        wide = cls(n_neighbors=15, n_epochs=20).fit_transform(
+            X, knn_indices=ind, knn_distances=dist
+        )
+        cut = cls(n_neighbors=15, n_epochs=20).fit_transform(
+            X, knn_indices=ind[:, :15], knn_distances=dist[:, :15]
+        )
+        other = cls(n_neighbors=30, n_epochs=20).fit_transform(
+            X, knn_indices=ind, knn_distances=dist
+        )
     assert np.array_equal(wide, cut)
     assert not np.array_equal(wide, other)
 
@@ -142,3 +163,30 @@ def test_phate_refuses_manhattan(X: np.ndarray) -> None:
 def test_landmark_diffusion_maps_refuse_manhattan(X: np.ndarray) -> None:
     with pytest.raises(ValueError, match="manhattan"):
         mf.DiffusionMaps(metric="manhattan", n_landmarks=50).fit_transform(X)
+
+
+@needs_rinnd
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+def test_rinnd_matches_exhaustive(metric: str, X: np.ndarray) -> None:
+    """High recall, and true distances in the same metric as the exact search."""
+    truth, truth_dist = mf.knn_graph(X, k=10, metric=metric, ann="exhaustive")
+    ind, dist = mf.knn_graph(X, k=10, metric=metric, ann="rinnd", seed=7)
+    hits = sum(len(set(a) & set(b)) for a, b in zip(ind, truth, strict=True))
+    assert hits / truth.size > 0.95
+    assert np.allclose(dist[:, 0], truth_dist[:, 0], rtol=1e-4, atol=1e-5)
+
+
+@needs_rinnd
+@pytest.mark.parametrize("ann", ["nndescent", "rinnd"])
+def test_nnd_n_trees_reaches_the_search(ann: str, X: np.ndarray) -> None:
+    params = mf.NeighbourParams(nnd_n_trees=2)
+    a = mf.knn_graph(X, k=10, ann=ann, nn_params=params, seed=7)
+    b = mf.knn_graph(X, k=10, ann=ann, nn_params=params, seed=7)
+    assert np.array_equal(a[0], b[0])
+
+
+@needs_rinnd
+def test_rinnd_drives_an_embedding(X: np.ndarray) -> None:
+    emb = mf.UMAP(ann="rinnd", n_epochs=20).fit_transform(X)
+    assert emb.shape == (X.shape[0], 2)
+    assert np.isfinite(emb).all()

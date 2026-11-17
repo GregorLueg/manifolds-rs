@@ -37,7 +37,7 @@ distances reach you.
 So a graph you build yourself and hand to `fit` should hold true distances too.
 
 Metrics available: `"euclidean"`/`"l2"`, `"cosine"` and `"manhattan"`/`"l1"`.
-Manhattan needs `"nndescent"`, `"hnsw"` or `"exhaustive"` as the backend. `PHATE`,
+Manhattan needs `"nndescent"`, `"rinnd"`, `"hnsw"` or `"exhaustive"` as the backend. `PHATE`,
 `PHATEGpu` and `DiffusionMaps` with landmarks raise `ValueError` on it.
 
 ## Reusing the neighbour graph
@@ -56,7 +56,7 @@ Three things to get right. Build the graph as wide as the widest consumer needs:
 `3 * perplexity` for the t-SNE family, `n_near + 50` for `PaCMAP` and `6k + 5` for
 `PHATE`, since its kernel keeps anything just past the `k`-th neighbour.
 
-`UMAP`, `DensMAP` and `ForceAtlas2` cut a wider graph to `n_neighbors`, keeping the
+`UMAP`, `DensMAP`, `ForceAtlas2` and `NCVis` cut a wider graph to `n_neighbors`, keeping the
 nearest, and print a warning to stderr saying so. A graph you build yourself has to
 be sorted by distance for that to mean anything.
 
@@ -71,14 +71,22 @@ bit-identical embedding. It is a shortcut, not a different algorithm.
 ## Choosing a neighbour backend
 
 The default follows `k`. Estimators that ask for a small neighbourhood (UMAP,
-densMAP, PHATE, diffusion maps, ForceAtlas2) default to `"nndescent"`. t-SNE,
-den-SNE and DREAMS ask for `3 * perplexity` neighbours and PaCMAP for `n_near + 50`,
-and those default to `"ivf"`, which holds up better at that size.
+densMAP, diffusion maps, ForceAtlas2, NCVis) default to `"nndescent"`. t-SNE, den-SNE
+and DREAMS ask for `3 * perplexity` neighbours, PaCMAP and LocalMAP for
+`n_near + 50` and PHATE for `6k + 5`, and those default to `"ivf"`, which holds up
+better at that size.
 
 `"kmknn"` is exact and holds up well into the hundreds of thousands, which
 surprises people who assume exact means slow. `"exhaustive"` is for ground
 truth. `"hnsw"`, `"annoy"` and `"balltree"` are there for the cases where they
 win.
+
+Default wheels also carry `"rinnd"`, the NN-Descent from
+[rinnd](https://github.com/lmcinnes/rinnd). Its SIMD kernels target x86 (AVX2),
+so on x86 it is worth trying in place of `"nndescent"`. `rinnd_available()` says
+whether your build has it. Both NN-Descents take `nnd_n_trees`, the number of
+trees seeding the graph; left at `None`, `"nndescent"` follows the umap-learn /
+scanpy rule and `"rinnd"` its own, which plants fewer.
 
 Each has its own knobs in `NeighbourParams`, and only the ones belonging to your
 chosen backend do anything. Setting `ef_search` while running `"annoy"` is
@@ -177,7 +185,9 @@ from 0.4.x at the same seed. 0.6.0 moved PCA initialisation and the randomised
 SVDs to float64, so float32 runs differ from 0.5.0. It also moved the neighbour
 search to float32, so float64 runs differ too. 0.6.1 fixed the automatic `t` of
 `PHATE` and `DiffusionMaps` from 5000 points up, and moved it to float64, so
-those runs differ from 0.6.0 unless `t` is pinned.
+those runs differ from 0.6.0 unless `t` is pinned. 0.7.0 changed the fuzzy
+graph bandwidth, the IVF and NN-Descent graphs and the k-means behind the
+spectral landmarks, so every estimator differs from 0.6.x at the same seed.
 
 ## Errors
 
@@ -194,6 +204,6 @@ those runs differ from 0.6.0 unless `t` is pinned.
 ## What is not in the wheel
 
 The MLX backends. They link mlx-c dynamically, so they only come with a source
-build on Apple Silicon; see [GPU](gpu.md#mlx-on-apple-silicon).
+build on Apple Silicon; see [GPU acceleration](vignettes/gpu.ipynb).
 
 Parametric UMAP exists in the crate but is not yet bound.

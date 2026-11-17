@@ -4,7 +4,7 @@ Dimensionality reduction for single-cell and computational biology. The
 [Rust crate](https://github.com/GregorLueg/manifolds-rs) does the work. This is a
 scikit-learn shaped layer over it.
 
-Nine algorithms on the CPU, five of them with GPU variants where the neighbour
+Eleven algorithms on the CPU, five of them with GPU variants where the neighbour
 search and the Adam update move to the device. No CUDA runtime to install: the
 GPU backend is wgpu, so it runs on Metal, Vulkan or DX12 and ships in the
 ordinary wheel.
@@ -53,11 +53,15 @@ in the group, so there is never a question of which wins.
 ## Where to go next
 
 - [Choosing an algorithm](choosing.md) if you don't already know which one you
-  want. Nine is a lot of choice and most of them are wrong for your problem.
+  want. Eleven is a lot of choice and most of them are wrong for your problem.
 - [Quickstart](quickstart.md) for worked examples over the synthetic generators,
   including how to score an embedding rather than squint at it.
-- [GPU](gpu.md) for the five device-accelerated estimators and what they
-  actually buy you.
+- The vignettes, worked through on the synthetic generators and timed against
+  the reference packages: [nearest neighbour searches](vignettes/knn_searches.ipynb),
+  [t-SNE, den-SNE and DREAMS](vignettes/tsne.ipynb),
+  [UMAP, densMAP, PaCMAP, LocalMAP, ForceAtlas2 and NCVis](vignettes/umap_pacmap.ipynb),
+  [PHATE and diffusion maps](vignettes/phate_diffusion.ipynb) and
+  [GPU acceleration](vignettes/gpu.ipynb).
 - [Guide](guide.md) for metrics, precision, threads, reusing the neighbour graph
   and the sharp edges.
 - [API reference](api/embeddings.md) for every parameter of every estimator,

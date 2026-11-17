@@ -24,6 +24,7 @@ def set_num_threads(n: int) -> None: ...
 def num_threads() -> int: ...
 def gpu_available() -> bool: ...
 def mlx_available() -> bool: ...
+def rinnd_available() -> bool: ...
 def knn_graph(
     x: np.ndarray,
     k: int,
@@ -129,6 +130,15 @@ def pacmap(
     seed: int = ...,
     verbose: int = ...,
 ) -> np.ndarray: ...
+def localmap(
+    x: np.ndarray,
+    params: dict[str, Any],
+    *,
+    knn_indices: np.ndarray | None = ...,
+    knn_distances: np.ndarray | None = ...,
+    seed: int = ...,
+    verbose: int = ...,
+) -> np.ndarray: ...
 def diffusion_maps(
     x: np.ndarray,
     params: dict[str, Any],
@@ -143,6 +153,15 @@ def forceatlas2(
     params: dict[str, Any],
     *,
     approx: str = ...,
+    knn_indices: np.ndarray | None = ...,
+    knn_distances: np.ndarray | None = ...,
+    seed: int = ...,
+    verbose: int = ...,
+) -> np.ndarray: ...
+def ncvis(
+    x: np.ndarray,
+    params: dict[str, Any],
+    *,
     knn_indices: np.ndarray | None = ...,
     knn_distances: np.ndarray | None = ...,
     seed: int = ...,

@@ -5,7 +5,7 @@
 # core version it vendored as `__core_version__` instead, which is the question
 # lockstep was actually answering.
 name = "manifolds-py"
-version = "0.6.1"
+version = "0.7.0"
 edition = "2021"
 authors = ["Gregor Lueg <gregorlueg@me.com>"]
 license = "MIT"
@@ -24,7 +24,7 @@ crate-type = ["cdylib"]
 ## On by default. The published wheel carries the GPU entry points, because the
 ## backend is wgpu rather than CUDA: there is no driver runtime to ship. Build
 ## with `--no-default-features` for a smaller CPU-only wheel.
-default = ["gpu"]
+default = ["gpu", "rinnd"]
 
 ## Bind `umap_gpu`, `densmap_gpu`, `tsne_gpu`, `dreams_gpu` and `phate_gpu`
 ## alongside the CPU embeddings.
@@ -40,6 +40,12 @@ gpu = ["manifolds-rs/gpu", "dep:cubecl"]
 ## then reports `False`.
 mlx = ["manifolds-rs/mlx"]
 
+## On by default: rinnd's NN-Descent as the `"rinnd"` CPU kNN backend, plugged
+## into the core through `ExternalKnn`. It lives here rather than in the core
+## because `rinnd-core` is only on GitHub, and a git dependency would block
+## `cargo publish` of manifolds-rs. This crate is never published.
+rinnd = ["dep:rinnd-core"]
+
 [dependencies]
 manifolds-rs = { path = "..", default-features = false, features = ["fft_tsne"] }
 # `cpu` is deliberately absent. CubeCL's software CPU runtime pulls a prebuilt
@@ -51,6 +57,7 @@ num-traits = "0.2"
 numpy = "0.29"
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py310"] }
 rayon = "1.11"
+rinnd-core = { git = "https://github.com/lmcinnes/rinnd", tag = "release-0.4.4", optional = true }
 
 # Profiles are only read from the workspace root, and this is its own workspace,
 # so the library crate's `lto = "thin"` does not reach here. Thin LTO gets

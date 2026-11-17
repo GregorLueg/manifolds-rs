@@ -22,17 +22,22 @@ from ._params import (
     ANN_CPU,
     FA2_APPROX,
     INITS,
+    K_MEANS,
     LANDMARK_METHODS,
     MDS_METHODS,
     METRICS,
+    NCVIS_INITS,
     PACMAP_OPTIMISERS,
     PHATE_LANDMARK_METHODS,
     PHATE_METRICS,
     SYMMETRIES,
     TSNE_APPROX,
+    UMAP_INITS,
     UMAP_OPTIMISERS,
+    V06_OPTIMISERS,
     DensParams,
     Fa2Optim,
+    NcvisOptim,
     NeighbourParams,
     PacmapOptim,
     PhateDiffusion,
@@ -71,11 +76,15 @@ class UMAP(BaseEmbedding):
         n_epochs: Optimisation epochs. ``None`` means 500, or 200 for the SGD
             optimisers above 10,000 samples, as umap-learn does.
         learning_rate: Initial learning rate.
-        init: ``"spectral"``, ``"pca"`` or ``"random"``.
+        init: ``"spectral"``, ``"pca"``, ``"random"`` or ``"recursive"`` (the
+            umap-learn 0.6 initialisation).
         ann: Neighbour backend. ``"nndescent"`` suits the small `k` here;
             ``"kmknn"`` is exact and fast up to a few hundred thousand points.
-        optimiser: ``"adam_parallel"``, ``"adam"``, ``"sgd"`` or
-            ``"sgd_parallel"``. The last is not reproducible run to run.
+        optimiser: ``"adam_parallel"``, ``"adam"``, ``"adam_v06"`` (the
+            umap-learn 0.6 Adam, not with `DensMAP`; with ``init="recursive"``
+            it takes the short warm-up umap-learn uses for a good start),
+            ``"sgd"`` or ``"sgd_parallel"``. The last is not reproducible run
+            to run.
         randomised: Use randomised SVD for the PCA initialisation. No effect
             under spectral or random init.
         init_range: Scale of the initial coordinates. ``None`` lets the core
@@ -90,6 +99,7 @@ class UMAP(BaseEmbedding):
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.umap
+    _OPTIMISERS: ClassVar[frozenset[str]] = UMAP_OPTIMISERS
 
     @beartype
     def __init__(
@@ -97,15 +107,15 @@ class UMAP(BaseEmbedding):
         n_components: int = 2,
         n_neighbors: int = 15,
         metric: str = "euclidean",
-        min_dist: float = 0.5,
-        spread: float = 1.0,
+        min_dist: int | float = 0.5,
+        spread: int | float = 1.0,
         n_epochs: int | None = None,
-        learning_rate: float = 1.0,
+        learning_rate: int | float = 1.0,
         init: str = "spectral",
         ann: str = "nndescent",
         optimiser: str = "adam_parallel",
         randomised: bool = False,
-        init_range: float | None = None,
+        init_range: int | float | None = None,
         seed: int = 42,
         verbose: int = 0,
         nn_params: NeighbourParams | None = None,
@@ -136,10 +146,10 @@ class UMAP(BaseEmbedding):
             "k": self.n_neighbors,
             "min_dist": self.min_dist,
             "spread": self.spread,
-            "initialisation": check_choice(self.init, INITS, name="init"),
+            "initialisation": check_choice(self.init, UMAP_INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
             "optimiser": check_choice(
-                self.optimiser, UMAP_OPTIMISERS, name="optimiser"
+                self.optimiser, self._OPTIMISERS, name="optimiser"
             ),
             "randomised": self.randomised,
             "init_range": self.init_range,
@@ -169,10 +179,12 @@ class DensMAP(UMAP):
         lambda_: Weight on the density term. ``0`` recovers plain UMAP.
         dens_params: Remaining density knobs. See `DensParams`.
 
-    Everything else is as `UMAP`.
+    Everything else is as `UMAP`, bar ``optimiser="adam_v06"``: the umap-learn
+    0.6 Adam has no density term.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.densmap
+    _OPTIMISERS: ClassVar[frozenset[str]] = UMAP_OPTIMISERS - V06_OPTIMISERS
 
     @beartype
     def __init__(
@@ -180,16 +192,16 @@ class DensMAP(UMAP):
         n_components: int = 2,
         n_neighbors: int = 15,
         metric: str = "euclidean",
-        min_dist: float = 0.5,
-        spread: float = 1.0,
-        lambda_: float = 2.0,
+        min_dist: int | float = 0.5,
+        spread: int | float = 1.0,
+        lambda_: int | float = 2.0,
         n_epochs: int | None = None,
-        learning_rate: float = 1.0,
+        learning_rate: int | float = 1.0,
         init: str = "spectral",
         ann: str = "nndescent",
         optimiser: str = "adam_parallel",
         randomised: bool = False,
-        init_range: float | None = None,
+        init_range: int | float | None = None,
         seed: int = 42,
         verbose: int = 0,
         nn_params: NeighbourParams | None = None,
@@ -268,15 +280,15 @@ class TSNE(BaseEmbedding):
     def __init__(
         self,
         n_components: int = 2,
-        perplexity: float = 30.0,
+        perplexity: int | float = 30.0,
         metric: str = "euclidean",
         n_epochs: int = 1000,
-        learning_rate: float | None = None,
+        learning_rate: int | float | None = None,
         init: str = "pca",
         ann: str = "ivf",
         approx: str = "barnes_hut",
         randomised: bool = True,
-        init_range: float | None = None,
+        init_range: int | float | None = None,
         seed: int = 42,
         verbose: int = 0,
         nn_params: NeighbourParams | None = None,
@@ -301,7 +313,7 @@ class TSNE(BaseEmbedding):
         check_choice(self.approx, TSNE_APPROX, name="approx")
         return {
             "n_dim": self.n_components,
-            "perplexity": self.perplexity,
+            "perplexity": float(self.perplexity),
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
             "randomised": self.randomised,
@@ -336,16 +348,16 @@ class DensNE(TSNE):
     def __init__(
         self,
         n_components: int = 2,
-        perplexity: float = 30.0,
+        perplexity: int | float = 30.0,
         metric: str = "euclidean",
-        lambda_: float = 0.1,
+        lambda_: int | float = 0.1,
         n_epochs: int = 1000,
-        learning_rate: float | None = None,
+        learning_rate: int | float | None = None,
         init: str = "pca",
         ann: str = "ivf",
         approx: str = "barnes_hut",
         randomised: bool = True,
-        init_range: float | None = None,
+        init_range: int | float | None = None,
         seed: int = 42,
         verbose: int = 0,
         nn_params: NeighbourParams | None = None,
@@ -403,16 +415,16 @@ class DREAMS(ReferenceEmbedding):
     def __init__(
         self,
         n_components: int = 2,
-        perplexity: float = 30.0,
+        perplexity: int | float = 30.0,
         metric: str = "euclidean",
-        lambda_: float = 0.15,
+        lambda_: int | float = 0.15,
         n_epochs: int = 1000,
-        learning_rate: float | None = None,
+        learning_rate: int | float | None = None,
         init: str = "pca",
         ann: str = "ivf",
         approx: str = "barnes_hut",
         randomised: bool = True,
-        init_range: float | None = None,
+        init_range: int | float | None = None,
         seed: int = 42,
         verbose: int = 0,
         nn_params: NeighbourParams | None = None,
@@ -438,7 +450,7 @@ class DREAMS(ReferenceEmbedding):
         check_choice(self.approx, TSNE_APPROX, name="approx")
         return {
             "n_dim": self.n_components,
-            "perplexity": self.perplexity,
+            "perplexity": float(self.perplexity),
             "lambda": self.lambda_,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
@@ -463,7 +475,9 @@ class PHATE(BaseEmbedding):
     survive this that t-SNE and UMAP tear apart.
 
     `t` defaults to the von Neumann entropy knee, which is the right answer more
-    often than a guess, and is worth pinning once you have looked at it.
+    often than a guess, and is worth pinning once you have looked at it. With
+    landmarks the knee can move with the seed, so pin `t` when runs need to
+    agree.
 
     Args:
         n_components: Output dimensionality.
@@ -500,9 +514,9 @@ class PHATE(BaseEmbedding):
         n_components: int = 2,
         k: int = 5,
         metric: str = "euclidean",
-        decay: float | None = 40.0,
+        decay: int | float | None = 40.0,
         t: int | None = None,
-        gamma: float = 1.0,
+        gamma: int | float = 1.0,
         n_landmarks: int | None = 2048,
         landmark_method: str = "spectral",
         mds: str = "sgd_dense",
@@ -606,11 +620,11 @@ class PaCMAP(BaseEmbedding):
         n_further: int = 20,
         metric: str = "euclidean",
         n_epochs: int = 450,
-        learning_rate: float = 1.0,
+        learning_rate: int | float = 1.0,
         init: str = "pca",
         ann: str = "ivf",
         optimiser: str = "adam_parallel",
-        range_: float | None = 0.01,
+        range_: int | float | None = 0.01,
         seed: int = 42,
         verbose: int = 0,
         nn_params: NeighbourParams | None = None,
@@ -654,6 +668,67 @@ class PaCMAP(BaseEmbedding):
         }
 
 
+class LocalMAP(PaCMAP):
+    """LocalMAP: PaCMAP with local repulsion in its last phase.
+
+    Phases 1 and 2 are PaCMAP's. In phase 3 the mid-near pairs drop out, the
+    near-pair pull is scaled by ``0.5 * max_distance / sqrt(1 + d)``, and every
+    10 epochs each point's further pairs are redrawn among the points within
+    `max_distance` of it in the embedding. Repulsion from close non-neighbours
+    is what pulls apart clusters that PaCMAP leaves touching.
+
+    Takes every PaCMAP argument, plus:
+
+    Args:
+        max_distance: Embedding distance beyond which phase 3 rejects a further
+            pair. Also sets the near-pair scaling.
+    """
+
+    _FN: ClassVar[Callable[..., Any]] = _core.localmap
+
+    @beartype
+    def __init__(
+        self,
+        n_components: int = 2,
+        n_near: int = 10,
+        n_mid_near: int = 5,
+        n_further: int = 20,
+        metric: str = "euclidean",
+        n_epochs: int = 450,
+        learning_rate: int | float = 1.0,
+        init: str = "pca",
+        ann: str = "ivf",
+        optimiser: str = "adam_parallel",
+        range_: int | float | None = 0.01,
+        max_distance: int | float = 10.0,
+        seed: int = 42,
+        verbose: int = 0,
+        nn_params: NeighbourParams | None = None,
+        optim_params: PacmapOptim | None = None,
+    ) -> None:
+        super().__init__(
+            n_components=n_components,
+            n_near=n_near,
+            n_mid_near=n_mid_near,
+            n_further=n_further,
+            metric=metric,
+            n_epochs=n_epochs,
+            learning_rate=learning_rate,
+            init=init,
+            ann=ann,
+            optimiser=optimiser,
+            range_=range_,
+            seed=seed,
+            verbose=verbose,
+            nn_params=nn_params,
+            optim_params=optim_params,
+        )
+        self.max_distance = max_distance
+
+    def _params(self, n_samples: int) -> dict[str, Any]:
+        return {**super()._params(n_samples), "max_distance": self.max_distance}
+
+
 class DiffusionMaps(BaseEmbedding):
     """Diffusion maps.
 
@@ -681,6 +756,8 @@ class DiffusionMaps(BaseEmbedding):
             operator.
         landmark_method: ``"spectral"``, ``"random"`` or ``"density"``.
         n_svd: Components for spectral landmark selection.
+        landmark_k_means: k-means of the spectral landmark selection,
+            ``"emeans"`` or ``"lloyd"``. ``None`` gives e-means.
         ann: Neighbour backend.
         seed: Fixes the landmark sampling.
         verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
@@ -695,14 +772,15 @@ class DiffusionMaps(BaseEmbedding):
         n_components: int = 2,
         k: int = 5,
         metric: str = "euclidean",
-        alpha: float = 1.0,
+        alpha: int | float = 1.0,
         t: int | None = None,
-        bandwidth_scale: float = 1.0,
-        thresh: float = 1e-4,
+        bandwidth_scale: int | float = 1.0,
+        thresh: int | float = 1e-4,
         graph_symmetry: str = "add",
         n_landmarks: int | None = None,
         landmark_method: str = "spectral",
         n_svd: int | None = None,
+        landmark_k_means: str | None = None,
         ann: str = "nndescent",
         seed: int = 42,
         verbose: int = 0,
@@ -719,6 +797,7 @@ class DiffusionMaps(BaseEmbedding):
         self.n_landmarks = n_landmarks
         self.landmark_method = landmark_method
         self.n_svd = n_svd
+        self.landmark_k_means = landmark_k_means
         self.ann = ann
         self.seed = seed
         self.verbose = verbose
@@ -740,6 +819,9 @@ class DiffusionMaps(BaseEmbedding):
                 self.landmark_method, LANDMARK_METHODS, name="landmark_method"
             ),
             "n_svd": self.n_svd,
+            "landmark_k_means": None
+            if self.landmark_k_means is None
+            else check_choice(self.landmark_k_means, K_MEANS, name="landmark_k_means"),
             "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
             "nn_params": merge(
                 self.nn_params,
@@ -792,14 +874,14 @@ class ForceAtlas2(BaseEmbedding):
         n_neighbors: int = 15,
         metric: str = "euclidean",
         n_epochs: int = 500,
-        scaling_ratio: float = 2.0,
-        gravity: float = 1.0,
+        scaling_ratio: int | float = 2.0,
+        gravity: int | float = 1.0,
         lin_log: bool = False,
         init: str = "spectral",
         ann: str = "nndescent",
         approx: str = "barnes_hut",
         randomised: bool = False,
-        init_range: float | None = None,
+        init_range: int | float | None = None,
         seed: int = 42,
         verbose: int = 0,
         nn_params: NeighbourParams | None = None,
@@ -842,5 +924,108 @@ class ForceAtlas2(BaseEmbedding):
                 scaling_ratio=self.scaling_ratio,
                 gravity=self.gravity,
                 lin_log=self.lin_log,
+            ),
+        }
+
+
+class NCVis(BaseEmbedding):
+    """NCVis: noise-contrastive estimation on the kNN graph.
+
+    The graph is the plain kNN graph made undirected, with no edge weights. Each
+    edge pulls its endpoints together and draws uniform negatives that push
+    apart, weighted by how likely the pair is data rather than noise under the
+    kernel ``1 / (1 + a d^(2b))`` and a normalisation constant learned along
+    the way. The negatives ramp up with the cube of progress, so most of them
+    land in the last epochs.
+
+    Defaults are NCVis+'s (Pedersen's fork of Artemenkov & Panov's NCVis): a
+    PCA start scaled to std 10 on its first axis, ``min_dist`` 0.001, a
+    learning rate of 2 and on average 10 negatives per edge. The PCA start is
+    what keeps the global structure; ``init="random"`` loses much of it.
+
+    The optimiser is lock-free (hogwild) over all threads, so a fixed seed
+    gives the same embedding only on one thread (`set_num_threads(1)`).
+
+    Args:
+        n_components: Output dimensionality.
+        n_neighbors: Neighbours per point. A wider precomputed graph is cut to
+            this, with a warning on stderr.
+        metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
+        n_epochs: Optimisation epochs.
+        n_negative: Mean negative samples per edge over the run. The time
+            against local quality knob.
+        min_dist: Fits the kernel together with `spread`, as in UMAP.
+        spread: Scale of the embedding relative to `min_dist`.
+        learning_rate: Initial learning rate, decayed as
+            ``1 - (epoch / n_epochs)^2``.
+        init: ``"pca"`` or ``"random"`` (standard normal).
+        init_scale: Standard deviation of the first initial axis. The other
+            axes get the same factor, so the PCA ratios are kept.
+        ann: Neighbour backend.
+        randomised: Use randomised SVD for the PCA initialisation.
+        seed: Fixes the initialisation and the negative sampling.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
+        nn_params: See `NeighbourParams`.
+        optim_params: Remaining optimiser knobs. See `NcvisOptim`.
+    """
+
+    _FN: ClassVar[Callable[..., Any]] = _core.ncvis
+
+    @beartype
+    def __init__(
+        self,
+        n_components: int = 2,
+        n_neighbors: int = 15,
+        metric: str = "euclidean",
+        n_epochs: int = 50,
+        n_negative: int | float = 10.0,
+        min_dist: int | float = 0.001,
+        spread: int | float = 1.0,
+        learning_rate: int | float = 2.0,
+        init: str = "pca",
+        init_scale: int | float = 10.0,
+        ann: str = "nndescent",
+        randomised: bool = False,
+        seed: int = 42,
+        verbose: int = 0,
+        nn_params: NeighbourParams | None = None,
+        optim_params: NcvisOptim | None = None,
+    ) -> None:
+        self.n_components = n_components
+        self.n_neighbors = n_neighbors
+        self.metric = metric
+        self.n_epochs = n_epochs
+        self.n_negative = n_negative
+        self.min_dist = min_dist
+        self.spread = spread
+        self.learning_rate = learning_rate
+        self.init = init
+        self.init_scale = init_scale
+        self.ann = ann
+        self.randomised = randomised
+        self.seed = seed
+        self.verbose = verbose
+        self.nn_params = nn_params
+        self.optim_params = optim_params
+
+    def _params(self, n_samples: int) -> dict[str, Any]:
+        return {
+            "n_dim": self.n_components,
+            "k": self.n_neighbors,
+            "min_dist": self.min_dist,
+            "spread": self.spread,
+            "initialisation": check_choice(self.init, NCVIS_INITS, name="init"),
+            "init_scale": self.init_scale,
+            "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
+            "randomised": self.randomised,
+            "nn_params": merge(
+                self.nn_params,
+                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+            ),
+            "optim_params": merge(
+                self.optim_params,
+                n_epochs=self.n_epochs,
+                n_negative=self.n_negative,
+                lr=self.learning_rate,
             ),
         }

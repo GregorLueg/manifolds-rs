@@ -6,3 +6,4 @@ __pycache__/
 site/
 .pytest_cache/
 .ruff_cache/
+.cache/

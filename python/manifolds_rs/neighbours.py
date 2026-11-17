@@ -5,7 +5,7 @@ most of the runtime. Build one here, hand it to as many embeddings as you like:
 
     >>> import manifolds_rs as mf
     >>> X, _ = mf.datasets.clustered(20_000, dim=50)
-    >>> ind, dist = mf.knn_graph(X, k=15, ann="hnsw")
+    >>> ind, dist = mf.knn_graph(X, k=60, ann="hnsw")
     >>> a = mf.UMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
     >>> b = mf.PaCMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
 
@@ -49,7 +49,8 @@ def knn_graph(
             ``"hnsw"``, ``"ivf"`` or ``"nndescent"``. ``"kmknn"`` is exact and
             holds up well into the hundreds of thousands; past that
             ``"nndescent"`` or ``"hnsw"``. An mlx build adds
-            ``"exhaustive_mlx"``, ``"ivf_mlx"`` and ``"nndescent_mlx"``.
+            ``"exhaustive_mlx"``, ``"ivf_mlx"`` and ``"nndescent_mlx"``. Default
+            builds add ``"rinnd"``, rinnd's NN-Descent, see `rinnd_available`.
         nn_params: Backend-specific knobs. See `NeighbourParams`.
         seed: Fixes anything randomised in the build.
         verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.

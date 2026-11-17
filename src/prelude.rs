@@ -7,7 +7,8 @@
 pub use crate::data::graph::UmapGraphParams;
 pub use crate::data::init::{initialise_embedding, parse_initialisation};
 pub use crate::data::nearest_neighbours::{
-    metric_returns_squared, parse_ann_search, run_ann_search, NearestNeighbourParams,
+    metric_returns_squared, parse_ann_search, parse_k_means, run_ann_search, ExternalKnn,
+    ExternalKnnFn, NearestNeighbourParams,
 };
 pub use crate::data::pacmap_pairs::PacmapPairs;
 pub use crate::data::structures::CoordinateList;
@@ -15,6 +16,7 @@ pub use crate::data::synthetic::*;
 pub use crate::errors::ManifoldsError;
 pub use crate::training::fa2_optimiser::Fa2OptimParams;
 pub use crate::training::mds_optimiser::{parse_mds_method, MdsMethod};
+pub use crate::training::ncvis_optimiser::{NcvisOptimParams, NCVIS_MIN_DIST, NCVIS_SPREAD};
 pub use crate::training::pacmap_optimiser::{parse_pacmap_optimiser, PacmapOptimParams};
 pub use crate::training::tsne_optimiser::TsneOptimParams;
 pub use crate::training::umap_optimisers::{UmapOptimParams, DEFAULT_MIN_DIST, DEFAULT_SPREAD};

@@ -3,6 +3,47 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.7.0
+
+Requires `manifolds-rs` 0.10.0.
+
+**Breaking changes**
+
+- The `min_dist` / `spread` curve fit converges fully. Slightly different
+  coordinates at the same seed: `UMAP`, `DensMAP`, `UMAPGpu` and `DensMAPGpu`.
+- The fuzzy graph's bandwidth search matches uwot and umap-learn. Different
+  coordinates than 0.6.1 at the same seed: `UMAP`, `DensMAP`, `UMAPGpu`,
+  `DensMAPGpu` and `ForceAtlas2`.
+- Different kNN graphs at the same seed from the IVF and NN-Descent backends
+  (`"ivf"`, `"ivf_gpu"`, `"nndescent"`, `"nndescent_gpu"`), and so from every
+  estimator: ann-search-rs 0.13.1 trains IVF with e-means and builds NN-Descent
+  differently. Recall is the same or better.
+- `PHATE`, `PHATEGpu` and `DiffusionMaps` pick their spectral landmarks with
+  e-means instead of Lloyd's. Different coordinates at the same seed.
+
+**New**
+
+- `NCVis` and `NcvisOptim`: NCVis with the NCVis+ defaults. Hogwild, so a
+  fixed seed reproduces only with `set_num_threads(1)`.
+- `ann="rinnd"`: rinnd's NN-Descent as a CPU kNN backend, built into the wheel
+  by default. Check with `rinnd_available()`.
+- `NeighbourParams(nnd_n_trees=...)`: trees seeding the `"nndescent"` and
+  `"rinnd"` graphs. `None` keeps each backend's default, so same results at the
+  same seed.
+- `NeighbourParams(k_means=...)` and `NeighbourParamsGpu(k_means=...)`:
+  `"emeans"` (default) or `"lloyd"` for the IVF and KmKNN centroids.
+- `PhateDiffusion(landmark_k_means=...)` and `DiffusionMaps(landmark_k_means=...)`: the
+  same switch for the spectral landmark selection.
+- `optimiser="adam_v06"` for `UMAP` and `UMAPGpu`, and `"adam_v06_gpu"` for
+  `UMAPGpu`: the umap-learn 0.6 Adam. `DensMAP` and `DensMAPGpu` reject both.
+- `init="recursive"` for `UMAP`, `DensMAP`, `UMAPGpu` and `DensMAPGpu`: the
+  umap-learn 0.6 recursive initialisation.
+- `LocalMAP`.
+- The t-SNE estimators take an `int` `perplexity`.
+- Faster `UMAP`, `DensMAP` and `PaCMAP` with the default optimisers. Same
+  coordinates as before at the same seed.
+- Vignettes in the docs.
+
 ## 0.6.1
 
 Requires `manifolds-rs` 0.9.1.

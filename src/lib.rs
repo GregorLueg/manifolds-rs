@@ -1,5 +1,5 @@
 //! Dimensionality reduction algorithms: UMAP, densMAP, t-SNE, den-SNE, DREAMS,
-//! PHATE, diffusion maps, PaCMAP and ForceAtlas2, plus parametric UMAP via a
+//! PHATE, diffusion maps, PaCMAP, LocalMAP, ForceAtlas2 and NCVis, plus parametric UMAP via a
 //! neural network encoder with the `parametric` feature.
 //!
 //! The `gpu` feature adds `*_gpu` entry points: kNN search on the device for all
@@ -27,6 +27,7 @@ use ann_search_rs::utils::dist::{parse_ann_dist, Dist};
 use ann_search_rs::utils::matrix_to_flat;
 use ann_search_rs::utils::nndescent_utils::ApplySortedUpdates;
 use faer::MatRef;
+use rand::{rngs::SmallRng, SeedableRng};
 use rand_distr::{Distribution, StandardNormal};
 use std::{default::Default, time::Instant};
 use thousands::*;
@@ -43,14 +44,18 @@ use crate::data::graph::*;
 use crate::data::init::*;
 use crate::data::nearest_neighbours::*;
 use crate::data::pacmap_pairs::*;
+use crate::data::recursive_init::recursive_layout;
 use crate::data::structures::*;
 use crate::prelude::*;
 use crate::training::fa2_optimiser::*;
 use crate::training::mds_optimiser::*;
+use crate::training::ncvis_optimiser::{optimise_ncvis, symmetrise_knn};
 use crate::training::pacmap_optimiser::{
-    optimise_pacmap, optimise_pacmap_parallel, PacMapOptimiser,
+    optimise_localmap, optimise_localmap_parallel, optimise_pacmap, optimise_pacmap_parallel,
+    PacMapOptimiser, LOCALMAP_MAX_DISTANCE,
 };
 use crate::training::tsne_optimiser::*;
+use crate::training::umap_optimiser_v06::optimise_embedding_adam_v06;
 use crate::training::umap_optimisers::*;
 use crate::utils::density::{DENSMAP_LAMBDA, DENSNE_LAMBDA};
 use crate::utils::diffusions::*;
@@ -74,6 +79,8 @@ use crate::parametric::parametric_train::*;
 use crate::training::tsne_optimiser_gpu::*;
 #[cfg(feature = "gpu")]
 use crate::training::umap_optimiser_gpu::*;
+#[cfg(feature = "gpu")]
+use crate::training::umap_optimiser_v06_gpu::optimise_embedding_adam_v06_gpu;
 #[cfg(feature = "fft_tsne")]
 use crate::utils::fft::FftFloat;
 
@@ -129,7 +136,8 @@ pub struct UmapParams<T> {
     /// Number of neighbours
     /// Defaults to `15`.
     pub k: usize,
-    /// Which optimiser to use: `"adam_parallel"` (default), `"adam"`, `"sgd"`,
+    /// Which optimiser to use: `"adam_parallel"` (default), `"adam"`,
+    /// `"adam_v06"` (umap-learn 0.6 Adam, no densMAP), `"sgd"`,
     /// `"sgd_parallel"`, or `"adam_mlx"` with the `mlx` feature.
     /// `"sgd_parallel"` is lock-free (hogwild) and so not reproducible run to
     /// run with more than one thread.
@@ -139,8 +147,8 @@ pub struct UmapParams<T> {
     /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// Defaults to `"nndescent"`.
     pub ann_type: String,
-    /// Which embedding initialisation to use: `"spectral"` (default), `"pca"`
-    /// or `"random"`.
+    /// Which embedding initialisation to use: `"spectral"` (default), `"pca"`,
+    /// `"random"` or `"recursive"` (umap-learn 0.6).
     pub initialisation: String,
     /// Optional initialisation range to use
     pub init_range: Option<T>,
@@ -359,7 +367,8 @@ where
 /// 1. Find k-nearest neighbours using approximate nearest neighbour search
 /// 2. Construct fuzzy simplicial set via smooth kNN distances
 /// 3. Symmetrise the graph using fuzzy set union
-/// 4. Initialise embedding via spectral decomposition
+/// 4. Initialise the embedding, spectral by default (or PCA, random or
+///    recursive)
 /// 5. Optimise embedding with the chosen optimiser, parallel Adam by default
 ///
 /// ### Params
@@ -518,7 +527,18 @@ where
 
     let start_init = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data)?;
+    let mut embd = match init_type {
+        EmbdInit::RecursiveInit { range } => recursive_layout(
+            &graph,
+            data,
+            umap_params.n_dim,
+            umap_params.optim_params.a,
+            umap_params.optim_params.b,
+            range,
+            seed as u64,
+        )?,
+        _ => initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data)?,
+    };
 
     if verbosity.normal_verbosity() {
         println!(" ... initialised in {:.2?}", start_init.elapsed());
@@ -539,6 +559,7 @@ where
                 UmapOptimiser::Sgd => "SGD",
                 UmapOptimiser::SgdParallel => "SGD (multi-threaded, lock-free)",
                 UmapOptimiser::AdamParallel => "Adam (multi-threaded)",
+                UmapOptimiser::AdamV06 => "Adam (umap-learn 0.6, multi-threaded)",
                 #[cfg(mlx_available)]
                 UmapOptimiser::AdamMlx => "Adam (MLX)",
             },
@@ -584,6 +605,22 @@ where
                 dens_state.as_ref(),
                 seed as u64,
                 verbose,
+            )?;
+        }
+        UmapOptimiser::AdamV06 => {
+            if dens_state.is_some() {
+                return Err(ManifoldsError::UnsupportedCombination {
+                    feature: "densMAP",
+                    context: "the \"adam_v06\" optimiser",
+                });
+            }
+            let good_init = umap_params.initialisation.eq_ignore_ascii_case("recursive");
+            optimise_embedding_adam_v06(
+                &mut embd,
+                &graph_adj,
+                &umap_params.optim_params,
+                good_init,
+                seed as u64,
             )?;
         }
         #[cfg(mlx_available)]
@@ -1631,7 +1668,8 @@ where
 ///
 /// The density term touches only the attractive part of the gradient; negative
 /// sampling is untouched. Works with all four CPU optimisers (`"sgd"`,
-/// `"sgd_parallel"`, `"adam"`, `"adam_parallel"`).
+/// `"sgd_parallel"`, `"adam"`, `"adam_parallel"`). The umap-learn 0.6 Adam
+/// (`"adam_v06"`) returns [`ManifoldsError::UnsupportedCombination`].
 ///
 /// ### Params
 ///
@@ -2944,6 +2982,7 @@ where
                 dist_metric,
                 seed,
                 phate_params.diffusion_params.n_svd,
+                &phate_params.diffusion_params.k_means,
                 &backend,
                 verbose,
             )?;
@@ -3582,12 +3621,47 @@ where
     StandardNormal: Distribution<T>,
     NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
 {
+    pacmap_family(data, precomputed_knn, params_pacmap, None, seed, verbose)
+}
+
+/// Shared body of PaCMAP and LocalMAP, which differ only in the optimiser.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features.
+/// * `precomputed_knn` - Optional precomputed kNN, with k >= `params.n_near`.
+/// * `params_pacmap` - PaCMAP parameters.
+/// * `max_distance` - LocalMAP's further-pair cut-off, `None` for PaCMAP.
+/// * `seed` - Seed for reproducibility.
+/// * `verbose` - Verbosity level.
+///
+/// ### Returns
+///
+/// Embedding with shape `[n_dim][n_samples]`.
+fn pacmap_family<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params_pacmap: &PacmapParams<T>,
+    max_distance: Option<T>,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
     let data_input = data.to_mat_input();
     let data = data_input.as_mat_ref();
     let n_samples = data.nrows();
 
     let verbosity = parse_verbosity_level(verbose);
-    let name = "PaCMAP";
+    let name = if max_distance.is_some() {
+        "LocalMAP"
+    } else {
+        "PaCMAP"
+    };
     let start_run = Instant::now();
     if verbosity.normal_verbosity() {
         println!(
@@ -3639,7 +3713,7 @@ where
     };
 
     if verbosity.normal_verbosity() {
-        println!(" Building PaCMAP pairs ...");
+        println!(" Building {} pairs ...", name);
     }
 
     let start_pairs = Instant::now();
@@ -3724,12 +3798,17 @@ where
 
     let start_optim = Instant::now();
 
-    match optimiser {
-        PacMapOptimiser::AdamParallel => {
-            optimise_pacmap_parallel(&mut embd, &pairs, &params_pacmap.optim_params, verbose)?;
+    let optim = &params_pacmap.optim_params;
+    match (optimiser, max_distance) {
+        (PacMapOptimiser::AdamParallel, None) => {
+            optimise_pacmap_parallel(&mut embd, &pairs, optim, verbose)?
         }
-        PacMapOptimiser::Adam => {
-            optimise_pacmap(&mut embd, &pairs, &params_pacmap.optim_params, verbose)?;
+        (PacMapOptimiser::Adam, None) => optimise_pacmap(&mut embd, &pairs, optim, verbose)?,
+        (PacMapOptimiser::AdamParallel, Some(d)) => {
+            optimise_localmap_parallel(&mut embd, &pairs, optim, d, seed as u64, verbose)?
+        }
+        (PacMapOptimiser::Adam, Some(d)) => {
+            optimise_localmap(&mut embd, &pairs, optim, d, seed as u64, verbose)?
         }
     }
 
@@ -3749,6 +3828,567 @@ where
     }
 
     Ok(transposed)
+}
+
+//////////////
+// LocalMAP //
+//////////////
+
+/// Parameters for LocalMAP dimensionality reduction.
+///
+/// PaCMAP's parameters plus `max_distance`, which only acts in phase 3.
+#[derive(Debug, Clone)]
+pub struct LocalMapParams<T> {
+    /// Output dimensionality. Defaults to `2`.
+    pub n_dim: usize,
+    /// (Approximate) Nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
+    /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
+    /// Defaults to `"ivf"`.
+    pub ann_type: String,
+    /// Which optimiser to use. Options are `"adam"` and `"adam_parallel"`.
+    pub optimiser: String,
+    /// Near pairs per point (attractive). The kNN search runs 50 wider, and the
+    /// pairs are the best of those by locally scaled distance. Default 10.
+    pub n_near: usize,
+    /// Mid-near pairs per point (attractive, phases 1 and 2 only). Default 5.
+    pub n_mid_near: usize,
+    /// Further pairs per point (repulsive). Default 20.
+    pub n_further: usize,
+    /// Embedding initialisation. Defaults to `"pca"`.
+    pub initialisation: String,
+    /// Scale of the initial embedding. For PCA, the multiplier on the scores.
+    pub range: Option<T>,
+    /// Embedding distance beyond which phase 3 rejects a further pair. Also
+    /// sets the near-pair force scaling, `0.5 * max_distance / sqrt(1 + d)`.
+    /// Default 10.
+    pub max_distance: T,
+    /// Nearest neighbour search parameters.
+    pub nn_params: NearestNeighbourParams<T>,
+    /// Optimiser parameters, shared with PaCMAP.
+    pub optim_params: PacmapOptimParams<T>,
+}
+
+impl<T> Default for LocalMapParams<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        let p = PacmapParams::<T>::default();
+        Self {
+            n_dim: p.n_dim,
+            ann_type: p.ann_type,
+            optimiser: p.optimiser,
+            n_near: p.n_near,
+            n_mid_near: p.n_mid_near,
+            n_further: p.n_further,
+            initialisation: p.initialisation,
+            range: p.range,
+            max_distance: T::from_f64(LOCALMAP_MAX_DISTANCE).unwrap(),
+            nn_params: p.nn_params,
+            optim_params: p.optim_params,
+        }
+    }
+}
+
+impl<T> LocalMapParams<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Generate a new instance of the LocalMAP parameters with full control
+    /// over every field.
+    ///
+    /// For sensible defaults, use [`LocalMapParams::default`] or
+    /// [`LocalMapParams::new_default_2d`] instead.
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - Number of dimensions for the embedding.
+    /// * `ann_type` - (Approximate) nearest neighbour method. See
+    ///   [`PacmapParams::new`].
+    /// * `optimiser` - `"adam"` or `"adam_parallel"`.
+    /// * `n_near` - Near pairs per point.
+    /// * `n_mid_near` - Mid-near pairs per point.
+    /// * `n_further` - Further pairs per point.
+    /// * `initialisation` - Embedding initialisation.
+    /// * `range` - Scale of the initial embedding.
+    /// * `max_distance` - Phase-3 further-pair cut-off in the embedding.
+    /// * `nn_params` - Nearest neighbour search parameters.
+    /// * `optim_params` - Optimiser parameters.
+    ///
+    /// ### Returns
+    ///
+    /// A fully specified set of LocalMAP parameters.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        n_dim: usize,
+        ann_type: String,
+        optimiser: String,
+        n_near: usize,
+        n_mid_near: usize,
+        n_further: usize,
+        initialisation: String,
+        range: Option<T>,
+        max_distance: T,
+        nn_params: NearestNeighbourParams<T>,
+        optim_params: PacmapOptimParams<T>,
+    ) -> Self {
+        Self {
+            n_dim,
+            ann_type,
+            optimiser,
+            n_near,
+            n_mid_near,
+            n_further,
+            initialisation,
+            range,
+            max_distance,
+            nn_params,
+            optim_params,
+        }
+    }
+
+    /// Default parameters for standard 2D visualisation.
+    ///
+    /// ### Params
+    ///
+    /// * `n_near` - Number of near pairs. Defaults to `10`.
+    /// * `max_distance` - Phase-3 further-pair cut-off. Defaults to `10`.
+    ///
+    /// ### Returns
+    ///
+    /// Hopefully sensible standard parameters for 2D visualisation.
+    pub fn new_default_2d(n_near: Option<usize>, max_distance: Option<T>) -> Self {
+        let default = Self::default();
+        Self {
+            n_near: n_near.unwrap_or(default.n_near),
+            max_distance: max_distance.unwrap_or(default.max_distance),
+            ..default
+        }
+    }
+}
+
+/// Run LocalMAP dimensionality reduction.
+///
+/// PaCMAP with a different last phase. Phases 1 and 2 are PaCMAP's, pairs,
+/// initialisation and schedule included. In phase 3 the mid-near pairs drop
+/// out, the near-pair force is scaled by `0.5 * max_distance / sqrt(1 + d)`,
+/// and every 10 epochs each point's further pairs are redrawn among the points
+/// within `max_distance` of it in the embedding. Local repulsion is what pulls
+/// apart clusters that PaCMAP leaves touching.
+///
+/// The resampler follows brisc, which counts every rejected draw towards the
+/// 100 trials per pair, where the original counts only some. Same seed, same
+/// result regardless of thread count.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Optional precomputed kNN, with k >= `params.n_near`,
+///   sorted by distance. Make it `params.n_near + 50` wide, as the internal
+///   search is.
+/// * `params` - LocalMAP parameters.
+/// * `seed` - Seed for reproducibility.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding as `Vec<Vec<T>>` with shape `[n_dim][n_samples]`.
+///
+/// ### Errors
+///
+/// [`ManifoldsError::NoData`] on an empty precomputed graph,
+/// [`ManifoldsError::NotEnoughNeighbours`] if it is narrower than `params.n_near`
+/// and [`ManifoldsError::LocalMapInvalidMaxDistance`] unless `max_distance` is
+/// positive and finite.
+///
+/// ### References
+///
+/// Wang et al. (2024): "Dimension Reduction with Locally Adjusted Graphs",
+/// arXiv:2412.15426
+pub fn localmap<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &LocalMapParams<T>,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    if !(params.max_distance > T::zero() && params.max_distance.is_finite()) {
+        return Err(ManifoldsError::LocalMapInvalidMaxDistance {
+            value: params.max_distance.to_f64().unwrap_or(f64::NAN),
+        });
+    }
+    let shared = PacmapParams {
+        n_dim: params.n_dim,
+        ann_type: params.ann_type.clone(),
+        optimiser: params.optimiser.clone(),
+        n_near: params.n_near,
+        n_mid_near: params.n_mid_near,
+        n_further: params.n_further,
+        initialisation: params.initialisation.clone(),
+        range: params.range,
+        nn_params: params.nn_params.clone(),
+        optim_params: params.optim_params.clone(),
+    };
+    pacmap_family(
+        data,
+        precomputed_knn,
+        &shared,
+        Some(params.max_distance),
+        seed,
+        verbose,
+    )
+}
+
+///////////
+// NCVis //
+///////////
+
+/// Minimum number of samples NCVis accepts: each point needs at least one
+/// neighbour and one other point to draw as a negative.
+const NCVIS_MIN_SAMPLES: usize = 3;
+
+/// Default standard deviation of the first axis of the NCVis initial layout.
+/// NCVis+ found smaller scales lose global structure and much larger ones keep
+/// the layout too close to PCA.
+pub const NCVIS_INIT_SCALE: f64 = 10.0;
+
+/// NCVis parameters
+#[derive(Debug, Clone)]
+pub struct NcvisParams<T> {
+    /// Number of embedding dimensions. Defaults to `2`.
+    pub n_dim: usize,
+    /// Number of neighbours. Defaults to `15`.
+    pub k: usize,
+    /// (Approximate) nearest neighbour method. One of `"exhaustive"`, `"ivf"`,
+    /// `"hnsw"`, `"nndescent"`, `"annoy"`, `"kmknn"` or `"balltree"`.
+    /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
+    /// Defaults to `"nndescent"`.
+    pub ann_type: String,
+    /// Initialisation: `"pca"` or `"random"` (standard normal). Defaults to
+    /// `"pca"`.
+    pub initialisation: String,
+    /// Standard deviation of the first axis of the initial layout; the other
+    /// axes are scaled by the same factor. Defaults to [`NCVIS_INIT_SCALE`].
+    pub init_scale: T,
+    /// Use randomised SVD for the PCA initialisation. Defaults to `false`.
+    pub randomised: bool,
+    /// Nearest neighbour parameters
+    pub nn_params: NearestNeighbourParams<T>,
+    /// NCVis optimisation parameters
+    pub optim_params: NcvisOptimParams<T>,
+}
+
+impl<T> Default for NcvisParams<T>
+where
+    T: ManifoldsFloat,
+{
+    fn default() -> Self {
+        Self {
+            n_dim: 2,
+            k: 15,
+            ann_type: "nndescent".to_string(),
+            initialisation: "pca".to_string(),
+            init_scale: T::from_f64(NCVIS_INIT_SCALE).unwrap(),
+            randomised: false,
+            nn_params: NearestNeighbourParams::default(),
+            optim_params: NcvisOptimParams::default(),
+        }
+    }
+}
+
+impl<T> NcvisParams<T>
+where
+    T: ManifoldsFloat,
+{
+    /// Create new NCVis parameters with full control over every field.
+    ///
+    /// ### Params
+    ///
+    /// * `n_dim` - Number of embedding dimensions.
+    /// * `k` - Number of neighbours.
+    /// * `ann_type` - (Approximate) nearest neighbour method. One of
+    ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
+    ///   `"kmknn"` or `"balltree"`.
+    ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
+    /// * `initialisation` - `"pca"` or `"random"`.
+    /// * `init_scale` - Standard deviation of the first initial axis.
+    /// * `randomised` - Whether randomised SVD is used for the PCA
+    ///   initialisation.
+    /// * `nn_params` - Nearest neighbour parameters.
+    /// * `optim_params` - NCVis optimisation parameters.
+    ///
+    /// ### Returns
+    ///
+    /// A fully specified set of NCVis parameters.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        n_dim: usize,
+        k: usize,
+        ann_type: String,
+        initialisation: String,
+        init_scale: T,
+        randomised: bool,
+        nn_params: NearestNeighbourParams<T>,
+        optim_params: NcvisOptimParams<T>,
+    ) -> Self {
+        Self {
+            n_dim,
+            k,
+            ann_type,
+            initialisation,
+            init_scale,
+            randomised,
+            nn_params,
+            optim_params,
+        }
+    }
+
+    /// Default parameters for standard 2D visualisation.
+    ///
+    /// ### Params
+    ///
+    /// * `k` - Number of neighbours. Defaults to `15`.
+    /// * `n_negative` - Mean negative samples per edge. Defaults to `10`;
+    ///   `20` buys local quality for about 1.6x the layout time (NCVis+).
+    ///
+    /// ### Returns
+    ///
+    /// Hopefully sensible standard parameters for 2D visualisation.
+    pub fn new_default_2d(k: Option<usize>, n_negative: Option<T>) -> Self {
+        let default = Self::default();
+        let optim_params = NcvisOptimParams {
+            n_negative: n_negative.unwrap_or(default.optim_params.n_negative),
+            ..default.optim_params.clone()
+        };
+        Self {
+            k: k.unwrap_or(default.k),
+            optim_params,
+            ..default
+        }
+    }
+}
+
+/// Centre a layout and scale it uniformly so its first axis has standard
+/// deviation `scale`.
+///
+/// Unlike [`pca_layout`], every axis gets the same factor, so the ratios
+/// between the principal components survive. That is what keeps NCVis's
+/// global structure.
+///
+/// ### Params
+///
+/// * `embd` - Layout `[n_samples][n_dim]`, modified in place
+/// * `scale` - Target standard deviation of axis 0
+fn scale_first_axis<T>(embd: &mut [Vec<T>], scale: T)
+where
+    T: ManifoldsFloat,
+{
+    let n = T::from_usize(embd.len()).unwrap();
+    let n_dim = embd[0].len();
+    let means: Vec<T> = (0..n_dim)
+        .map(|d| embd.iter().map(|p| p[d]).sum::<T>() / n)
+        .collect();
+    let var0 = embd
+        .iter()
+        .map(|p| (p[0] - means[0]) * (p[0] - means[0]))
+        .sum::<T>()
+        / n;
+    let std0 = var0.sqrt();
+    let factor = if std0 > T::zero() {
+        scale / std0
+    } else {
+        scale
+    };
+    for p in embd.iter_mut() {
+        for (v, &m) in p.iter_mut().zip(&means) {
+            *v = (*v - m) * factor;
+        }
+    }
+}
+
+/// Run NCVis
+///
+/// Symmetrises the unweighted kNN graph, starts from a PCA (or Gaussian)
+/// layout scaled to `init_scale` on its first axis, and optimises the NCVis
+/// noise-contrastive objective with Hogwild SGD. Defaults are NCVis+'s:
+/// `min_dist` 0.001, learning rate 2, 50 epochs and on average 10 negatives
+/// per edge.
+///
+/// The kNN distances are ignored: NCVis uses the graph unweighted.
+///
+/// ### Params
+///
+/// * `data` - Input data as samples x features. Accepts a faer matrix, an
+///   ndarray 2-D array (with the `ndarray` feature) or a row-major
+///   `(&[T], n_samples, n_features)` tuple. See [`ManifoldsMatrix`].
+/// * `precomputed_knn` - Precomputed k-nearest neighbours and distances. Needs
+///   to be a tuple of `(Vec<Vec<usize>>, Vec<Vec<T>>)` with indices and
+///   distances excluding self, sorted by distance. A wider graph is cut to `k`,
+///   with a warning on stderr.
+/// * `params` - NCVis parameters
+/// * `seed` - Random seed. The layout is reproducible only on a one-thread
+///   Rayon pool (Hogwild), and depends on the pool size.
+/// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
+///   verbosity.
+///
+/// ### Returns
+///
+/// Embedding coordinates as `Vec<Vec<T>>`, `[n_dim][n_samples]`.
+///
+/// ### Errors
+///
+/// [`ManifoldsError::NcvisInvalidParam`] on fewer than three samples, an
+/// unknown initialisation, `n_epochs == 0`, `n_negative < 1` or a non-positive
+/// `init_scale`.
+///
+/// ### References
+///
+/// Artemenkov & Panov, WWW, 2020 (NCVis); Pedersen, 2026 (NCVis+,
+/// <https://github.com/SeanPedersen/ncvis-plus>)
+pub fn ncvis<T>(
+    data: impl ManifoldsMatrix<T>,
+    precomputed_knn: PreComputedKnn<T>,
+    params: &NcvisParams<T>,
+    seed: usize,
+    verbose: usize,
+) -> Result<Vec<Vec<T>>, ManifoldsError>
+where
+    T: ManifoldsFloat,
+    HnswIndex<T>: HnswState<T>,
+    StandardNormal: Distribution<T>,
+    NNDescent<T>: ApplySortedUpdates<T> + NNDescentQuery<T>,
+{
+    let data_input = data.to_mat_input();
+    let data = data_input.as_mat_ref();
+    let n = data.nrows();
+    let invalid = |param, value: f64, requirement| ManifoldsError::NcvisInvalidParam {
+        param,
+        value,
+        requirement,
+    };
+    if n < NCVIS_MIN_SAMPLES {
+        return Err(invalid("n_samples", n as f64, "must be at least 3"));
+    }
+    if params.optim_params.n_epochs == 0 {
+        return Err(invalid("n_epochs", 0.0, "must be at least 1"));
+    }
+    let n_negative = params.optim_params.n_negative.to_f64().unwrap_or(f64::NAN);
+    if n_negative.is_nan() || n_negative < 1.0 {
+        return Err(invalid("n_negative", n_negative, "must be at least 1"));
+    }
+    let init_scale = params.init_scale.to_f64().unwrap_or(f64::NAN);
+    if !(init_scale > 0.0 && init_scale.is_finite()) {
+        return Err(invalid(
+            "init_scale",
+            init_scale,
+            "must be positive and finite",
+        ));
+    }
+    let use_pca = match params.initialisation.to_lowercase().as_str() {
+        "pca" => true,
+        "random" => false,
+        _ => {
+            return Err(invalid(
+                "initialisation",
+                f64::NAN,
+                "must be \"pca\" or \"random\"",
+            ))
+        }
+    };
+
+    let verbosity = parse_verbosity_level(verbose);
+    let start_run = Instant::now();
+    if verbosity.normal_verbosity() {
+        println!(
+            "Running NCVis on {} samples ...",
+            n.separate_with_underscores()
+        );
+    }
+
+    let k = params.k.min(n - 1);
+    let knn_indices = match precomputed_knn {
+        Some((indices, distances)) => {
+            if verbosity.normal_verbosity() {
+                println!(" Using precomputed kNN graph");
+            }
+            truncate_knn(indices, distances, k).0
+        }
+        None => {
+            if verbosity.normal_verbosity() {
+                println!(" kNN search via {} (k = {}) ...", params.ann_type, k);
+            }
+            let start_knn = Instant::now();
+            let (indices, _) = run_ann_search(
+                data,
+                k,
+                params.ann_type.clone(),
+                &params.nn_params,
+                seed,
+                ann_verbose(verbosity),
+            )?;
+            if verbosity.normal_verbosity() {
+                println!(" ... kNN search in {:.2?}", start_knn.elapsed());
+            }
+            indices
+        }
+    };
+    let graph = symmetrise_knn(&knn_indices)?;
+    drop(knn_indices);
+
+    let start_init = Instant::now();
+    let mut embd = if use_pca {
+        pca_scores(data, params.n_dim, params.randomised, seed as u64)?
+    } else {
+        let mut rng = SmallRng::seed_from_u64(seed as u64);
+        (0..n)
+            .map(|_| {
+                (0..params.n_dim)
+                    .map(|_| StandardNormal.sample(&mut rng))
+                    .collect()
+            })
+            .collect()
+    };
+    scale_first_axis(&mut embd, params.init_scale);
+    if verbosity.normal_verbosity() {
+        println!(
+            " ... {} initialisation in {:.2?}",
+            params.initialisation,
+            start_init.elapsed()
+        );
+    }
+
+    let start_optim = Instant::now();
+    if verbosity.normal_verbosity() {
+        println!(
+            " Optimising via NCVis ({} epochs) ...",
+            params.optim_params.n_epochs
+        );
+    }
+    optimise_ncvis(
+        &mut embd,
+        &graph,
+        &params.optim_params,
+        seed as u64,
+        verbose,
+    )?;
+    if verbosity.normal_verbosity() {
+        println!(" ... optimised in {:.2?}", start_optim.elapsed());
+        println!("... finished NCVis in {:.2?}", start_run.elapsed());
+    }
+
+    Ok((0..params.n_dim)
+        .map(|d| embd.iter().map(|p| p[d]).collect())
+        .collect())
 }
 
 ////////////////////
@@ -3799,6 +4439,9 @@ pub struct DiffusionMapsParams<T> {
     pub landmark_method: String,
     /// Components for spectral landmark selection (ignored otherwise)
     pub n_svd: Option<usize>,
+    /// k-means of the spectral landmark selection: `"emeans"` (default) or
+    /// `"lloyd"`.
+    pub k_means: String,
 }
 
 impl<T> Default for DiffusionMapsParams<T>
@@ -3819,6 +4462,7 @@ where
             n_landmarks: None,
             landmark_method: "spectral".to_string(),
             n_svd: None,
+            k_means: "emeans".to_string(),
         }
     }
 }
@@ -3855,6 +4499,8 @@ where
     /// * `landmark_method` - `"random"`, `"spectral"`, or `"density"`.
     /// * `n_svd` - SVD components for spectral landmark selection. Ignored
     ///   otherwise.
+    /// * `k_means` - k-means of the spectral landmark selection, `"emeans"` or
+    ///   `"lloyd"`.
     ///
     /// ### Returns
     ///
@@ -3873,6 +4519,7 @@ where
         n_landmarks: Option<usize>,
         landmark_method: String,
         n_svd: Option<usize>,
+        k_means: String,
     ) -> Self {
         Self {
             n_dim,
@@ -3887,6 +4534,7 @@ where
             n_landmarks,
             landmark_method,
             n_svd,
+            k_means,
         }
     }
 
@@ -4067,6 +4715,7 @@ where
         &dm_params.graph_symmetry,
         seed,
         dm_params.n_svd,
+        &dm_params.k_means,
         verbose,
     )?;
     if verbosity.normal_verbosity() {
@@ -4639,14 +5288,15 @@ pub struct UmapParamsGpu<T> {
     /// Defaults to `15`.
     pub k: usize,
     /// Which optimiser to use: `"adam_gpu"` (default), `"adam"`, `"sgd"`,
-    /// `"sgd_parallel"`, `"adam_parallel"`, or `"adam_mlx"` with the `mlx`
-    /// feature.
+    /// `"sgd_parallel"`, `"adam_parallel"`, `"adam_v06"` (umap-learn 0.6 Adam,
+    /// CPU), `"adam_v06_gpu"` (the same on the device), or `"adam_mlx"` with
+    /// the `mlx` feature. Both 0.6 optimisers are rejected for densMAP.
     pub optimiser: String,
     /// Which GPU nearest neighbour search to use. One of `"exhaustive_gpu"`,
     /// `"ivf_gpu"` or `"nndescent_gpu"`. Defaults to `"nndescent_gpu"`.
     pub ann_type: String,
-    /// Which embedding initialisation to use: `"spectral"` (default), `"pca"`
-    /// or `"random"`.
+    /// Which embedding initialisation to use: `"spectral"` (default), `"pca"`,
+    /// `"random"` or `"recursive"` (umap-learn 0.6).
     pub initialisation: String,
     /// Optional initialisation range
     pub init_range: Option<T>,
@@ -4697,7 +5347,7 @@ where
     ///
     /// * `n_dim` - How many dimensions to return.
     /// * `k` - How many neighbours to consider.
-    /// * `optimiser` - Which optimiser to use, e.g. `"adam_parallel"`.
+    /// * `optimiser` - Which optimiser to use, e.g. `"adam_gpu"`.
     /// * `ann_type` - Which GPU ANN search to use. One of `"exhaustive_gpu"`,
     ///   `"ivf_gpu"` or `"nndescent_gpu"`.
     /// * `initialisation` - Which embedding initialisation to use, e.g.
@@ -4872,8 +5522,9 @@ where
 /// Run UMAP with GPU-accelerated nearest neighbour search
 ///
 /// Identical to `umap` except the kNN graph is constructed on the GPU and, with
-/// the default `"adam_gpu"` optimiser, the Adam update runs there too. Graph
-/// construction and the initialisation stay on the CPU.
+/// the default `"adam_gpu"` optimiser, the Adam update runs there too, as does
+/// the umap-learn 0.6 Adam with `"adam_v06_gpu"`. Graph construction and the
+/// initialisation stay on the CPU.
 ///
 /// ### Params
 ///
@@ -5040,7 +5691,18 @@ where
 
     let start_init = Instant::now();
 
-    let mut embd = initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data)?;
+    let mut embd = match init_type {
+        EmbdInit::RecursiveInit { range } => recursive_layout(
+            &graph,
+            data,
+            umap_params.n_dim,
+            umap_params.optim_params.a,
+            umap_params.optim_params.b,
+            range,
+            seed as u64,
+        )?,
+        _ => initialise_embedding(&init_type, umap_params.n_dim, seed as u64, &graph, data)?,
+    };
 
     if verbosity.normal_verbosity() {
         println!(" ... initialised in {:.2?}", start_init.elapsed());
@@ -5062,6 +5724,8 @@ where
                 UmapOptimiserGpu::SgdParallel => "SGD (multi-threaded, lock-free)",
                 UmapOptimiserGpu::AdamParallel => "Adam (multi-threaded)",
                 UmapOptimiserGpu::AdamGpu => "Adam (GPU-accelerated)",
+                UmapOptimiserGpu::AdamV06 => "Adam (umap-learn 0.6, multi-threaded)",
+                UmapOptimiserGpu::AdamV06Gpu => "Adam (umap-learn 0.6, GPU-accelerated)",
                 #[cfg(mlx_available)]
                 UmapOptimiserGpu::AdamMlx => "Adam (MLX)",
             },
@@ -5119,6 +5783,51 @@ where
                 seed as u64,
                 verbose,
             )?;
+        }
+        UmapOptimiserGpu::AdamV06 | UmapOptimiserGpu::AdamV06Gpu => {
+            if dens_state.is_some() {
+                return Err(ManifoldsError::UnsupportedCombination {
+                    feature: "densMAP",
+                    context: "the \"adam_v06\" optimisers",
+                });
+            }
+            let good_init = umap_params.initialisation.eq_ignore_ascii_case("recursive");
+            if matches!(optimiser, UmapOptimiserGpu::AdamV06) {
+                optimise_embedding_adam_v06(
+                    &mut embd,
+                    &graph_adj,
+                    &umap_params.optim_params,
+                    good_init,
+                    seed as u64,
+                )?;
+            } else {
+                let mut embd_f32: Vec<Vec<f32>> = embd
+                    .iter()
+                    .map(|p| p.iter().map(|&x| x.to_f32().unwrap()).collect())
+                    .collect();
+                let graph_adj_f32: Vec<Vec<(usize, f32)>> = graph_adj
+                    .iter()
+                    .map(|edges| {
+                        edges
+                            .iter()
+                            .map(|&(j, w)| (j, w.to_f32().unwrap()))
+                            .collect()
+                    })
+                    .collect();
+                optimise_embedding_adam_v06_gpu(
+                    &mut embd_f32,
+                    &graph_adj_f32,
+                    &umap_params.optim_params.cast::<f32>(),
+                    good_init,
+                    device,
+                    seed as u64,
+                )?;
+                for (point, src) in embd.iter_mut().zip(&embd_f32) {
+                    for (coord, &x) in point.iter_mut().zip(src) {
+                        *coord = T::from(x).unwrap();
+                    }
+                }
+            }
         }
         UmapOptimiserGpu::AdamGpu => {
             // downcast to f32 for GPU here...
@@ -5263,7 +5972,9 @@ where
 ///
 /// The other optimiser choices (`"sgd"`, `"sgd_parallel"`, `"adam"`,
 /// `"adam_parallel"`) run the CPU density path; only the kNN search is
-/// GPU-accelerated for those.
+/// GPU-accelerated for those. The umap-learn 0.6 Adam (`"adam_v06"`,
+/// `"adam_v06_gpu"`) is not supported and returns
+/// [`ManifoldsError::UnsupportedCombination`].
 ///
 /// ### Params
 ///

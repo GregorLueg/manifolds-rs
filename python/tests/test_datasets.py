@@ -17,6 +17,12 @@ def test_swiss_roll_is_three_dimensional() -> None:
     assert X.dtype == np.float64
 
 
+@pytest.mark.parametrize("noise", [0, -0.1, float("nan")])
+def test_swiss_roll_rejects_non_positive_noise(noise: float) -> None:
+    with pytest.raises(ValueError, match="noise"):
+        mf.datasets.swiss_roll(100, noise=noise)
+
+
 def test_zero_density_bias_samples_uniformly() -> None:
     """`0.0` is the neutral value, so `t` should be flat across the roll."""
     _, t = mf.datasets.swiss_roll(4000, density_bias=0.0, seed=1)

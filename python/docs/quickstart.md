@@ -38,25 +38,28 @@ def preservation(X, embedding, k=15):
 ```
 
 Run that over the swiss roll, which is a genuine manifold, and it separates the
-algorithms cleanly. 5000 points, defaults throughout:
+algorithms cleanly. 5000 points, defaults throughout, mean over four dataset
+seeds:
 
 | | neighbourhood preservation |
 | --- | --- |
 | `TSNE` | 0.83 |
-| `UMAP` | 0.67 |
-| `ForceAtlas2` | 0.59 |
-| `PHATE` | 0.37 |
-| `PaCMAP` | 0.16 |
+| `PaCMAP` | 0.76 |
+| `NCVis` | 0.72 |
+| `UMAP` | 0.68 |
+| `ForceAtlas2` | 0.58 |
+| `PHATE` | 0.53 |
 
-That ordering is the local-versus-global trade-off, measured. t-SNE wins on
-local structure because that is the only thing it optimises.
+t-SNE wins on local structure because that is the only thing it optimises.
+PHATE comes last for the opposite reason: it is built for the smooth global
+picture, not for keeping each point's 15 nearest neighbours.
 
 Now run the same metric over 12 Gaussian clusters in 50D and it collapses for
-everyone: 0.07 for UMAP, 0.21 for t-SNE, 0.04 for PaCMAP. Meanwhile silhouette
-against the known labels is 0.89, 0.84 and 0.50.
+everyone: 0.02 for UMAP, 0.13 for t-SNE, 0.02 for PaCMAP. Meanwhile silhouette
+against the known labels is 0.91, 0.81 and 0.95.
 
-That is not four algorithms failing. Inside an isotropic Gaussian blob in 50
-dimensions there is no local ordering to preserve: which 15 of your 400
+That is not three algorithms failing. Inside an isotropic Gaussian blob in 50
+dimensions there is no local ordering to preserve: which 15 of your thousand-odd
 cluster-mates happen to be nearest is close to arbitrary, so no embedding can
 keep it. The clusters come apart perfectly regardless.
 

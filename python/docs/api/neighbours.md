@@ -7,3 +7,5 @@
 ::: manifolds_rs.num_threads
 
 ::: manifolds_rs.gpu_available
+
+::: manifolds_rs.rinnd_available

@@ -1,7 +1,7 @@
 # GPU estimators
 
 Present only in a build with the `gpu` feature, which is the default. See
-[GPU](../gpu.md) for what runs on the device and what does not.
+[GPU acceleration](../vignettes/gpu.ipynb) for what runs on the device and what does not.
 
 ::: manifolds_rs.UMAPGpu
 

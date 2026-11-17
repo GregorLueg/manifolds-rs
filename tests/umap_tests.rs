@@ -765,3 +765,93 @@ fn umap_integration_precomputed_graph_truncated_to_k() {
     assert_eq!(run(15, 40), run(15, 15));
     assert_ne!(run(15, 40), run(30, 40));
 }
+
+/// Ratio of the smallest centroid distance to the mean distance of a point to
+/// its own centroid, in a 2D embedding.
+///
+/// ### Params
+///
+/// * `embd` - Embedding as `[n_dim][n_samples]`
+/// * `labels` - Cluster label per sample, `0..n_clusters`
+///
+/// ### Returns
+///
+/// The separation ratio. Above 1 means the clusters sit further apart than
+/// they are wide.
+fn separation_ratio(embd: &[Vec<f64>], labels: &[usize]) -> f64 {
+    let n_clusters = labels.iter().max().unwrap() + 1;
+    let mut centres = vec![[0.0f64; 3]; n_clusters];
+    for (i, &l) in labels.iter().enumerate() {
+        centres[l][0] += embd[0][i];
+        centres[l][1] += embd[1][i];
+        centres[l][2] += 1.0;
+    }
+    for c in centres.iter_mut() {
+        c[0] /= c[2];
+        c[1] /= c[2];
+    }
+    let mut min_inter = f64::INFINITY;
+    for a in 0..n_clusters {
+        for b in (a + 1)..n_clusters {
+            let d = ((centres[a][0] - centres[b][0]).powi(2)
+                + (centres[a][1] - centres[b][1]).powi(2))
+            .sqrt();
+            min_inter = min_inter.min(d);
+        }
+    }
+    let intra = labels
+        .iter()
+        .enumerate()
+        .map(|(i, &l)| {
+            ((embd[0][i] - centres[l][0]).powi(2) + (embd[1][i] - centres[l][1]).powi(2)).sqrt()
+        })
+        .sum::<f64>()
+        / labels.len() as f64;
+    min_inter / intra
+}
+
+/// The umap-learn 0.6 Adam with the recursive initialisation through the `umap`
+/// entry point: finite, reproducible, and the clusters come apart
+#[test]
+fn umap_integration_adam_v06_recursive() {
+    let (data, labels) = create_diagnostic_data(50, 10, 123);
+
+    let params = UmapParams {
+        optimiser: "adam_v06".to_string(),
+        initialisation: "recursive".to_string(),
+        ann_type: "exhaustive".to_string(),
+        ..UmapParams::default()
+    };
+
+    let embd1 = umap(data.as_ref(), None, &params, 42, 0).unwrap();
+    let embd2 = umap(data.as_ref(), None, &params, 42, 0).unwrap();
+
+    assert!(embd1.iter().flatten().all(|x| x.is_finite()));
+    assert_eq!(
+        embd1, embd2,
+        "adam_v06 should be reproducible with one seed"
+    );
+
+    let ratio = separation_ratio(&embd1, &labels);
+    println!("adam_v06 + recursive separation ratio: {:.3}", ratio);
+    assert!(ratio > 1.0, "clusters not separated, ratio = {}", ratio);
+}
+
+/// The recursive initialisation also works with the default optimiser
+#[test]
+fn umap_integration_recursive_init_default_optimiser() {
+    let (data, labels) = create_diagnostic_data(50, 10, 123);
+
+    let params = UmapParams {
+        initialisation: "recursive".to_string(),
+        ann_type: "exhaustive".to_string(),
+        ..UmapParams::default()
+    };
+
+    let embd = umap(data.as_ref(), None, &params, 42, 0).unwrap();
+
+    assert!(embd.iter().flatten().all(|x| x.is_finite()));
+    let ratio = separation_ratio(&embd, &labels);
+    println!("adam_parallel + recursive separation ratio: {:.3}", ratio);
+    assert!(ratio > 1.0, "clusters not separated, ratio = {}", ratio);
+}

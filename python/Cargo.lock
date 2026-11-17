@@ -100,9 +100,9 @@ checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
 name = "ann-search-rs"
-version = "0.12.2"
+version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "277e1b1e1ae3aff1ad937410e8f43891d5efaea2075b733ad1793164233ff315"
+checksum = "85ec1c610b26928efaf241531f3a05b35be67c1462c2d1740a3a89ef6e99e2d2"
 dependencies = [
  "cubecl",
  "cubecl-utils-rs",
@@ -2873,7 +2873,7 @@ dependencies = [
 
 [[package]]
 name = "manifolds-py"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "cubecl",
  "faer",
@@ -2882,11 +2882,12 @@ dependencies = [
  "numpy",
  "pyo3",
  "rayon",
+ "rinnd-core",
 ]
 
 [[package]]
 name = "manifolds-rs"
-version = "0.9.1"
+version = "0.10.0"
 dependencies = [
  "ann-search-rs",
  "approx",
@@ -3428,6 +3429,15 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
+
+[[package]]
+name = "ordered-float"
+version = "4.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
+dependencies = [
+ "num-traits",
+]
 
 [[package]]
 name = "ordered-float"
@@ -3976,6 +3986,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_xoshiro"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f97cdb2a36ed4183de61b2f824cc45c9f1037f28afe0a322e9fff4c108b5aaa"
+dependencies = [
+ "rand_core 0.6.4",
+]
+
+[[package]]
 name = "range-alloc"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4151,6 +4170,19 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "rinnd-core"
+version = "0.1.0"
+source = "git+https://github.com/lmcinnes/rinnd?tag=release-0.4.4#a76aa8a5bc7f4407a6d6d2c8e85c958b307acc31"
+dependencies = [
+ "bytemuck",
+ "num-traits",
+ "ordered-float 4.6.0",
+ "rand 0.8.8",
+ "rand_xoshiro",
+ "rayon",
 ]
 
 [[package]]
@@ -5649,7 +5681,7 @@ dependencies = [
  "objc2-metal",
  "objc2-quartz-core",
  "once_cell",
- "ordered-float",
+ "ordered-float 5.5.0",
  "parking_lot",
  "portable-atomic",
  "portable-atomic-util",

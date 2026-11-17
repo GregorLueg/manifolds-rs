@@ -615,6 +615,7 @@ fn dm_integration_19_landmark_coverage() {
         "add",
         42,
         None,
+        "lloyd",
         0,
     )
     .unwrap();
@@ -752,4 +753,39 @@ fn dm_integration_25_phate_small_t_max() {
         matches!(res, Err(ManifoldsError::TMaxTooSmall { t_max: 2, min: 3 })),
         "{res:?}"
     );
+}
+
+/// Both k-means algorithms drive the spectral landmarks of PHATE and diffusion
+/// maps, and an unknown key falls back to e-means.
+#[test]
+fn spectral_landmarks_take_either_k_means() {
+    let (data, _) = create_diagnostic_data(100, 10, 42);
+
+    let dm = |k_means: &str| {
+        let params = DiffusionMapsParams {
+            k: 10,
+            n_landmarks: Some(60),
+            landmark_method: "spectral".to_string(),
+            k_means: k_means.to_string(),
+            ..DiffusionMapsParams::default()
+        };
+        diffusion_maps(data.as_ref(), None, params, 42, 0).unwrap()
+    };
+    let phate_run = |k_means: &str| {
+        let mut params = PhateParams::<f64> {
+            k: 10,
+            ..PhateParams::default()
+        };
+        params.diffusion_params.n_landmarks = Some(60);
+        params.diffusion_params.k_means = k_means.to_string();
+        phate(data.as_ref(), None, params, 42, 0).unwrap()
+    };
+
+    for k_means in ["emeans", "lloyd"] {
+        for emb in [dm(k_means), phate_run(k_means)] {
+            assert_eq!(emb[0].len(), data.nrows());
+            assert!(emb.iter().flatten().all(|x| x.is_finite()), "{k_means}");
+        }
+    }
+    assert_eq!(dm("not_a_k_means"), dm("emeans"));
 }

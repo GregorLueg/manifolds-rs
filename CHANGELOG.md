@@ -3,6 +3,56 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.10.0
+
+**Breaking changes**
+
+- The `(a, b)` curve fit behind `min_dist` / `spread` runs 1000 steps
+  instead of 300 and now reaches the least-squares optimum. Slightly different
+  `a` and `b`, so different coordinates at the same seed: UMAP, densMAP,
+  `umap_gpu`, `densmap_gpu` and parametric UMAP.
+- The fuzzy graph's bandwidth search targets `log2(k + 1)` as uwot and
+  umap-learn do, not `ln(k)`. Different coordinates than 0.9.1 at the same seed:
+  UMAP, densMAP, `umap_gpu`, `densmap_gpu`, parametric UMAP and ForceAtlas2.
+- ann-search-rs 0.13.1. IVF and KmKNN (CPU, wgpu, MLX) train their centroids
+  with e-means, and the NN-Descent graphs are built differently, so every
+  embedding gets a different kNN graph at the same seed. Recall is the same or
+  better.
+- PHATE and diffusion maps pick their spectral landmarks with e-means instead
+  of Lloyd's. Different coordinates at the same seed.
+- A `k_means` argument on `NearestNeighbourParams::new`,
+  `NearestNeighbourParamsGpu::new` (after `n_probes`), `PhateDiffusionParams::new`,
+  `DiffusionMapsParams::new`, `PhateLandmarks::build`, `build_with_backend` and
+  `DiffusionMapsLandmarks::build`. Struct literals of the four params need the
+  new field or `..Default::default()`.
+- An `nnd_n_trees` argument on `NearestNeighbourParams::new` (after `delta`).
+  Struct literals need the new `nnd_n_trees` and `external_knn` fields or
+  `..Default::default()`.
+
+**New**
+
+- `ncvis`: NCVis, Hogwild noise-contrastive SGD on the unweighted kNN graph,
+  with the NCVis+ defaults (PCA start, `min_dist` 0.001, learning rate 2, 10
+  negatives per edge). Reproducible at a fixed seed only on a one-thread pool.
+- `k_means` on `NearestNeighbourParams` and `NearestNeighbourParamsGpu`:
+  `"emeans"` (default) or `"lloyd"` for the IVF and KmKNN centroids.
+- `nnd_n_trees` on `NearestNeighbourParams`: the number of trees seeding the
+  NN-Descent graph. `None` keeps the default, so same results at the same seed.
+- `ExternalKnn` on `NearestNeighbourParams`: plug in a kNN backend from outside
+  the crate, picked by its `ann_type` name.
+- `k_means` on `PhateDiffusionParams` and `DiffusionMapsParams`: the same
+  switch for the spectral landmark selection.
+- `optimiser = "adam_v06"`: the umap-learn 0.6 Adam for UMAP (CPU only, not with
+  densMAP).
+- `initialisation = "recursive"`: the umap-learn 0.6 recursive label propagation
+  initialisation, for UMAP and densMAP.
+- `optimiser = "adam_v06_gpu"` for `umap_gpu`: the umap-learn 0.6 Adam on the
+  device. `umap_gpu` also takes the CPU `"adam_v06"`. `densmap_gpu` rejects
+  both.
+- LocalMAP: `localmap` and `LocalMapParams`.
+- Faster parallel Adam for UMAP and densMAP, and faster PaCMAP. Same
+  coordinates as before at the same seed.
+
 ## 0.9.1
 
 - Fix: the automatic `t` of PHATE and diffusion maps from 5000 points up used

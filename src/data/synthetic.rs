@@ -6,9 +6,33 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 
+use crate::errors::ManifoldsError;
+
 ///////////////
 // SwissRole //
 ///////////////
+
+/// Check the swiss roll noise half-width
+///
+/// ### Params
+///
+/// * `noise` - Half-width of the uniform noise
+///
+/// ### Returns
+///
+/// `Ok(())` if `noise` is positive and finite, otherwise
+/// `SyntheticInvalidParam`. Zero noise would leave an empty sampling range.
+fn check_noise(noise: f64) -> Result<(), ManifoldsError> {
+    if noise.is_finite() && noise > 0.0 {
+        Ok(())
+    } else {
+        Err(ManifoldsError::SyntheticInvalidParam {
+            param: "noise",
+            value: noise,
+            requirement: "it must be positive and finite",
+        })
+    }
+}
 
 /// Generate Swiss Roll dataset
 ///
@@ -18,13 +42,20 @@ use rand::{Rng, SeedableRng};
 /// ### Params
 ///
 /// * `n_samples` - Number of points
-/// * `noise` - Standard deviation of Gaussian noise added to the data
+/// * `noise` - Half-width of the uniform noise added to each coordinate. Must
+///   be positive and finite.
 /// * `seed` - Random seed for reproducibility
 ///
 /// ### Returns
 ///
-/// Matrix of shape (n_samples, 3)
-pub fn generate_swiss_roll(n_samples: usize, noise: f64, seed: u64) -> Mat<f64> {
+/// Matrix of shape (n_samples, 3), or `SyntheticInvalidParam` for an invalid
+/// `noise`.
+pub fn generate_swiss_roll(
+    n_samples: usize,
+    noise: f64,
+    seed: u64,
+) -> Result<Mat<f64>, ManifoldsError> {
+    check_noise(noise)?;
     let mut rng = StdRng::seed_from_u64(seed);
     let mut data = Mat::<f64>::zeros(n_samples, 3);
 
@@ -46,7 +77,7 @@ pub fn generate_swiss_roll(n_samples: usize, noise: f64, seed: u64) -> Mat<f64> 
         data[(i, 2)] = t * t.sin() + noise_z;
     }
 
-    data
+    Ok(data)
 }
 
 /// Generate Swiss Roll dataset with non-uniform sampling density
@@ -60,7 +91,8 @@ pub fn generate_swiss_roll(n_samples: usize, noise: f64, seed: u64) -> Mat<f64> 
 /// ### Params
 ///
 /// * `n_samples` - Number of points
-/// * `noise` - Standard deviation of Gaussian noise added to the data
+/// * `noise` - Half-width of the uniform noise added to each coordinate. Must
+///   be positive and finite.
 /// * `density_bias` - Sampling bias along `t`. `0.0` recovers uniform sampling;
 ///   higher values concentrate samples at the inner end of the roll. A value
 ///   of `2.5` mirrors the trajectory accumulation behaviour. Applied as the
@@ -70,13 +102,15 @@ pub fn generate_swiss_roll(n_samples: usize, noise: f64, seed: u64) -> Mat<f64> 
 ///
 /// ### Returns
 ///
-/// Tuple of (matrix of shape `(n_samples, 3)`, t parameter for each sample)
+/// Tuple of (matrix of shape `(n_samples, 3)`, t parameter for each sample),
+/// or `SyntheticInvalidParam` for an invalid `noise`.
 pub fn generate_swiss_roll_biased(
     n_samples: usize,
     noise: f64,
     density_bias: f64,
     seed: u64,
-) -> (Mat<f64>, Vec<f64>) {
+) -> Result<(Mat<f64>, Vec<f64>), ManifoldsError> {
+    check_noise(noise)?;
     let mut rng = StdRng::seed_from_u64(seed);
     let mut data = Mat::<f64>::zeros(n_samples, 3);
     let mut t_values = Vec::with_capacity(n_samples);
@@ -101,7 +135,7 @@ pub fn generate_swiss_roll_biased(
         t_values.push(t);
     }
 
-    (data, t_values)
+    Ok((data, t_values))
 }
 
 /////////////

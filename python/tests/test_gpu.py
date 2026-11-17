@@ -128,6 +128,13 @@ def test_cpu_backend_names_are_refused(X32: np.ndarray) -> None:
         mf.UMAPGpu(n_epochs=20, ann="hnsw").fit_transform(X32)
 
 
+@pytest.mark.parametrize("name", ["UMAPGpu", "TSNEGpu", "DREAMSGpu"])
+def test_manhattan_is_refused_on_the_gpu(name: str, X32: np.ndarray) -> None:
+    """The device kNN builders reject Manhattan, so refuse it before the call."""
+    with pytest.raises(ValueError, match="metric"):
+        getattr(mf, name)(metric="manhattan").fit_transform(X32)
+
+
 def test_precomputed_knn_is_accepted(X32: np.ndarray) -> None:
     ind, dist = mf.knn_graph(X32, k=15, ann="kmknn", seed=7)
     embedding = mf.UMAPGpu(n_epochs=20).fit_transform(
@@ -191,3 +198,29 @@ def test_phate_gpu_runs_and_casts_to_float32(X: np.ndarray) -> None:
 def test_phate_gpu_refuses_cpu_backend_names(X32: np.ndarray) -> None:
     with pytest.raises(ValueError, match="ann"):
         mf.PHATEGpu(ann="hnsw").fit_transform(X32)
+
+
+@pytest.mark.parametrize("optimiser", ["adam_v06", "adam_v06_gpu"])
+def test_umap_gpu_adam_v06_separates_clusters(
+    optimiser: str, clustered: tuple[np.ndarray, np.ndarray]
+) -> None:
+    """Both 0.6 Adam paths reach the core and give a usable embedding."""
+    X, labels = clustered
+    embedding = mf.UMAPGpu(optimiser=optimiser, init="recursive").fit_transform(X)
+    assert embedding.dtype == np.float32
+    assert np.isfinite(embedding).all()
+    assert separation(embedding, labels) > 1.0
+
+
+@pytest.mark.parametrize("optimiser", ["adam_v06", "adam_v06_gpu"])
+def test_densmap_gpu_refuses_adam_v06(optimiser: str, X32: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="optimiser"):
+        mf.DensMAPGpu(optimiser=optimiser).fit_transform(X32)
+
+
+@pytest.mark.parametrize("name", ["TSNEGpu", "DREAMSGpu"])
+def test_gpu_tsne_takes_an_int_perplexity(name: str, X32: np.ndarray) -> None:
+    assert build(name, perplexity=15).fit_transform(X32).shape == (
+        X32.shape[0],
+        2,
+    )

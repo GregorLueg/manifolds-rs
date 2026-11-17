@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "manifolds-rs"
-description = "UMAP, t-SNE, PHATE, PaCMAP, diffusion maps and ForceAtlas2 for single-cell and computational biology, in Rust."
+description = "UMAP, t-SNE, PHATE, PaCMAP, LocalMAP, diffusion maps, ForceAtlas2 and NCVis for single-cell and computational biology, in Rust."
 readme = "README.md"
 license = { text = "MIT" }
 authors = [{ name = "Gregor Lueg", email = "gregorlueg@me.com" }]
@@ -40,8 +40,25 @@ dev = [
 # extension present: `maturin develop --release` before `mkdocs build`.
 docs = [
     "mkdocs>=1.6",
+    "mkdocs-jupyter>=0.25",
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.27",
+]
+# Executes `docs/vignettes/*.py` into their `.ipynb` twins: `dev/vignettes.py`.
+# The reference packages are only there for the benchmark cells.
+vignettes = [
+    "click>=8.1",
+    "ipykernel>=6.29",
+    "jupytext>=1.16",
+    "nbclient>=0.10",
+    "nbformat>=5.10",
+    "matplotlib>=3.8",
+    "polars>=1.0",
+    "scikit-learn>=1.4",
+    "umap-learn>=0.5",
+    "openTSNE>=1.0",
+    "pacmap>=0.8",
+    "phate>=1.0",
 ]
 
 [tool.maturin]
@@ -54,6 +71,8 @@ include = ["manifolds_rs/py.typed", "manifolds_rs/*.pyi"]
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+# The executed notebooks are generated from the jupytext sources next to them.
+extend-exclude = ["docs/vignettes/*.ipynb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
@@ -66,6 +85,9 @@ ignore = ["N803"]
 # above. Only in tests: the package itself never binds it as a variable.
 # `N802` for the `X` / `X32` fixtures, which are named for what they hold.
 "tests/*" = ["N802", "N806"]
+# A bare expression at the end of a notebook cell is its displayed output;
+# markdown tables cannot wrap; warning filters go above the imports that warn.
+"docs/vignettes/*.py" = ["B018", "E402", "E501"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["manifolds_rs"]

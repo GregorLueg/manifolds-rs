@@ -166,6 +166,35 @@ pub enum ManifoldsError {
         requirement: &'static str,
     },
 
+    /// Error if an NCVis parameter is out of range
+    #[error("NCVis: {param} = {value} is invalid, {requirement}")]
+    NcvisInvalidParam {
+        /// Name of the parameter
+        param: &'static str,
+        /// Supplied value
+        value: f64,
+        /// What the parameter must satisfy
+        requirement: &'static str,
+    },
+
+    /// Error if a synthetic data generator parameter is out of range
+    #[error("Synthetic data: {param} = {value} is invalid, {requirement}")]
+    SyntheticInvalidParam {
+        /// Name of the parameter
+        param: &'static str,
+        /// Supplied value
+        value: f64,
+        /// What the parameter must satisfy
+        requirement: &'static str,
+    },
+
+    /// Error if LocalMAP's `max_distance` is not a positive finite number
+    #[error("LocalMAP: max_distance = {value} is invalid, it must be positive and finite")]
+    LocalMapInvalidMaxDistance {
+        /// Supplied value
+        value: f64,
+    },
+
     // -- pacmap
     /// If the pre-computed kNN does not have enough neighbours for the
     /// parameter settings
@@ -184,6 +213,16 @@ pub enum ManifoldsError {
         "densMAP/den-SNE: the local radii have no spread - the density correlation is undefined"
     )]
     DegenerateLocalRadii,
+
+    // -- UMAP --
+    /// Error if two settings that cannot be combined are both requested
+    #[error("{feature} is not supported together with {context}")]
+    UnsupportedCombination {
+        /// The requested feature
+        feature: &'static str,
+        /// The setting it clashes with
+        context: &'static str,
+    },
 
     // -- DREAMS --
     /// Error if the DREAMS regularisation strength is outside `[0, 1]`

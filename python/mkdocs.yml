@@ -1,5 +1,5 @@
 site_name: manifolds-rs
-site_description: UMAP, t-SNE, PHATE, PaCMAP, diffusion maps and ForceAtlas2 for single-cell and computational biology, in Rust.
+site_description: UMAP, t-SNE, PHATE, PaCMAP, LocalMAP, diffusion maps, ForceAtlas2 and NCVis for single-cell and computational biology, in Rust.
 site_url: https://gregorlueg.github.io/manifolds-rs/
 repo_url: https://github.com/GregorLueg/manifolds-rs
 repo_name: GregorLueg/manifolds-rs
@@ -35,7 +35,12 @@ nav:
   - Home: index.md
   - Choosing an algorithm: choosing.md
   - Quickstart: quickstart.md
-  - GPU: gpu.md
+  - Vignettes:
+      - Nearest neighbour searches: vignettes/knn_searches.ipynb
+      - t-SNE, den-SNE and DREAMS: vignettes/tsne.ipynb
+      - UMAP, densMAP, PaCMAP, LocalMAP, ForceAtlas2 and NCVis: vignettes/umap_pacmap.ipynb
+      - PHATE and diffusion maps: vignettes/phate_diffusion.ipynb
+      - GPU acceleration: vignettes/gpu.ipynb
   - AnnData / scanpy: anndata.md
   - Guide: guide.md
   - API reference:
@@ -62,6 +67,11 @@ markdown_extensions:
 
 plugins:
   - search
+  # The `.ipynb` carry their outputs (`dev/vignettes.py execute`); the `.py`
+  # sources stay out of the site.
+  - mkdocs-jupyter:
+      execute: false
+      include: ["vignettes/*.ipynb"]
   - mkdocstrings:
       handlers:
         python:
@@ -90,3 +100,7 @@ plugins:
 # `mkdocs serve` picks up a docstring edit without a restart.
 watch:
   - manifolds_rs
+
+# The jupytext sources; the executed `.ipynb` next to them are what renders.
+exclude_docs: |
+  vignettes/*.py

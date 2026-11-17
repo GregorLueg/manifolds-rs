@@ -8,7 +8,7 @@ Dimensionality reduction for single-cell and computational biology. The
 [Rust crate](https://github.com/GregorLueg/manifolds-rs) does the work; this is
 a scikit-learn shaped layer over it.
 
-Nine algorithms on the CPU, five of them with GPU variants where the neighbour
+Ten algorithms on the CPU, five of them with GPU variants where the neighbour
 search and the optimiser (UMAP's Adam, t-SNE's three-kernel FFT) move to the
 device. Scanpy-style `mf.umap(adata)` and `mf.tsne(adata)` for `AnnData`. No
 CUDA runtime to install: the GPU backend is wgpu, so it runs on Metal, Vulkan or
@@ -56,8 +56,10 @@ requirement.
 | `DREAMS` | t-SNE pulled towards a global reference (PCA, or any layout you pass), so the clusters keep a sensible arrangement. |
 | `PHATE` | Continuous structure. Trajectories and branch points survive this. |
 | `PaCMAP` | Global structure without leaning on a spectral init. Three pair types. |
+| `LocalMAP` | PaCMAP with a locally adjusted final phase, so clusters PaCMAP leaves touching come apart. |
 | `DiffusionMaps` | The spectral embedding PHATE is built on. |
 | `ForceAtlas2` | Gephi's force-directed layout on the kNN graph, as in scanpy's `draw_graph`. 2-D only. |
+| `NCVis` | Noise-contrastive layout on the unweighted kNN graph from a PCA start. t-SNE-like clusters, cheap, keeps the PCA arrangement. Hogwild, so reproducible only on one thread. |
 | `UMAPGpu`, `DensMAPGpu`, `TSNEGpu`, `DREAMSGpu`, `PHATEGpu` | The same, with the neighbour search on the device. `TSNEGpu(approx="fft_3k_gpu")` runs the optimiser there too, `PHATEGpu` the spectral landmark selection. |
 
 ## AnnData
@@ -106,7 +108,7 @@ Running several embeddings over the same data? Build the graph once. On anything
 large the search is most of the runtime.
 
 ```python
-ind, dist = mf.knn_graph(X, k=15, ann="hnsw")
+ind, dist = mf.knn_graph(X, k=60, ann="hnsw")
 
 a = mf.UMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)
 b = mf.PaCMAP().fit_transform(X, knn_indices=ind, knn_distances=dist)

@@ -29,31 +29,34 @@ estimators and scanpy-style `mf.umap(adata)`. Changes live in the
 | [DREAMS](https://arxiv.org/abs/2508.13747) | `dreams`, `dreams_gpu` | default, `gpu` |
 | [PHATE](https://pmc.ncbi.nlm.nih.gov/articles/PMC7073148/) | `phate`, `phate_gpu` | default, `gpu` |
 | [PaCMAP](https://arxiv.org/abs/2012.04456) | `pacmap` | default |
+| [LocalMAP](https://arxiv.org/abs/2412.15426) | `localmap` | default |
 | [ForceAtlas2](https://doi.org/10.1371/journal.pone.0098679) | `forceatlas2`, `forceatlas2_from_graph` | default |
 | [Diffusion maps](https://www.sciencedirect.com/science/article/pii/S1063520306000546) | `diffusion_maps` | default |
+| [NCVis](https://github.com/stat-ml/ncvis) ([NCVis+](https://github.com/SeanPedersen/ncvis-plus) defaults) | `ncvis` | default |
 
 Optimisers and approximations are picked by string:
 
 | What | Options |
 |---|---|
-| UMAP optimiser | `"adam_parallel"` (default), `"adam"`, `"sgd"`, `"sgd_parallel"`, `"adam_gpu"`, `"adam_mlx"` |
+| UMAP optimiser | `"adam_parallel"` (default), `"adam"`, `"adam_v06"`, `"sgd"`, `"sgd_parallel"`, `"adam_gpu"`, `"adam_v06_gpu"`, `"adam_mlx"` |
 | t-SNE repulsion | `"bh"`, `"qd"`, `"fft"`, `"fft_3k"`, `"fft_3k_gpu"`, `"fft_3k_mlx"` |
 | PHATE landmarks | `"spectral"` (default), `"random"`, `"density"`, `"spectral_mlx"` |
 | kNN, CPU | `"nndescent"` (default), `"ivf"` (default for the t-SNE family), `"kmknn"`, `"exhaustive"`, `"hnsw"`, `"annoy"`, `"balltree"` |
 | kNN, wgpu | `"nndescent_gpu"` (default), `"ivf_gpu"` (default for t-SNE), `"exhaustive_gpu"` |
 | kNN, MLX | `"nndescent_mlx"`, `"ivf_mlx"`, `"exhaustive_mlx"` |
+| k-means (IVF, KmKNN, spectral landmarks) | `"emeans"` (default), `"lloyd"` |
 
 Distances: Euclidean and cosine. The `"nndescent"`, `"hnsw"` and `"exhaustive"` CPU
 searches also take Manhattan, which PHATE and landmark diffusion maps do not
 support. Initialisations: spectral (Lanczos), PCA,
-random. Synthetic datasets (swiss roll, clusters, branching trajectories) ship
+random (NCVis takes PCA or random only), and for UMAP and densMAP the umap-learn 0.6 recursive one. Synthetic datasets (swiss roll, clusters, branching trajectories) ship
 with the crate for testing.
 
 ## Installation
 
 ```toml
 [dependencies]
-manifolds-rs = { version = "0.9", features = ["gpu"] }
+manifolds-rs = { version = "0.10", features = ["gpu"] }
 ```
 
 Optional features:
@@ -136,7 +139,7 @@ brew install mlx-c
 ```
 
 ```toml
-manifolds-rs = { version = "0.9", features = ["mlx"] }
+manifolds-rs = { version = "0.10", features = ["mlx"] }
 ```
 
 MLX is not a separate set of entry points. The CPU ones take the MLX names:

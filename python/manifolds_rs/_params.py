@@ -24,6 +24,7 @@ from typing import Any
 from beartype import beartype
 
 from . import _manifolds
+from ._validate import check_choice
 
 ###########
 # Globals #
@@ -33,11 +34,21 @@ from . import _manifolds
 #: `mlx` feature and the core found mlx-c. Fixed at build time.
 _MLX = _manifolds.mlx_available()
 
+#: Whether ``"rinnd"`` is accepted: the extension was built with the `rinnd`
+#: feature (on by default). Fixed at build time.
+_RINND = _manifolds.rinnd_available()
+
+#: The MLX neighbour backends, accepted by both the CPU and GPU estimators.
+_MLX_ANN: frozenset[str] = frozenset({"exhaustive_mlx", "ivf_mlx", "nndescent_mlx"})
+
 #: CPU neighbour backends, from `parse_ann_search`. The `*_mlx` ones run on the
-#: Apple GPU through MLX and only exist in an `mlx` build.
-ANN_CPU: frozenset[str] = frozenset(
-    {"exhaustive", "kmknn", "balltree", "annoy", "hnsw", "ivf", "nndescent"}
-) | (frozenset({"exhaustive_mlx", "ivf_mlx", "nndescent_mlx"}) if _MLX else frozenset())
+#: Apple GPU through MLX and only exist in an `mlx` build. ``"rinnd"`` is added
+#: by the bindings, not the core, and only exists in a `rinnd` build.
+ANN_CPU: frozenset[str] = (
+    frozenset({"exhaustive", "kmknn", "balltree", "annoy", "hnsw", "ivf", "nndescent"})
+    | (_MLX_ANN if _MLX else frozenset())
+    | (frozenset({"rinnd"}) if _RINND else frozenset())
+)
 
 #: GPU neighbour backends, from `parse_ann_search_gpu`. The unsuffixed aliases
 #: are accepted by the core, so they are accepted here.
@@ -50,7 +61,7 @@ ANN_GPU: frozenset[str] = frozenset(
         "ivf",
         "nndescent",
     }
-) | (frozenset({"exhaustive_mlx", "ivf_mlx", "nndescent_mlx"}) if _MLX else frozenset())
+) | (_MLX_ANN if _MLX else frozenset())
 
 #: Distance metrics, from `ann_search_rs::utils::dist::parse_ann_dist`. Note
 #: ``"euclidean"`` and ``"l2"`` are the same metric, as are ``"manhattan"`` and
@@ -60,20 +71,47 @@ METRICS: frozenset[str] = frozenset({"euclidean", "l2", "cosine", "manhattan", "
 #: As `METRICS`, for PHATE: the potential distances have no Manhattan path.
 PHATE_METRICS: frozenset[str] = METRICS - {"manhattan", "l1"}
 
+#: As `METRICS`, for the GPU estimators: the device kNN builders reject
+#: Manhattan.
+GPU_METRICS: frozenset[str] = METRICS - {"manhattan", "l1"}
+
+#: k-means algorithms, from `parse_k_means`: the IVF and KmKNN centroids and the
+#: spectral landmark selection of PHATE and diffusion maps.
+K_MEANS: frozenset[str] = frozenset({"emeans", "e-means", "lloyd"})
+
 #: Embedding initialisations, from `parse_initialisation`.
 INITS: frozenset[str] = frozenset({"spectral", "pca", "random"})
 
-#: GPU UMAP optimisers, from `parse_umap_optimiser_gpu`. `"adam_gpu"` keeps the
-#: update on the device; the CPU names still work and pull the embedding back each
-#: epoch.
+#: As `INITS`, for UMAP and densMAP: ``"recursive"`` is the umap-learn 0.6
+#: label propagation initialisation and needs the UMAP graph.
+UMAP_INITS: frozenset[str] = INITS | {"recursive"}
+
+#: NCVis initialisations: PCA or a standard normal draw, both scaled so the
+#: first axis has the requested standard deviation.
+NCVIS_INITS: frozenset[str] = frozenset({"pca", "random"})
+
+#: GPU UMAP optimisers, from `parse_umap_optimiser_gpu`. `"adam_gpu"` and
+#: `"adam_v06_gpu"` keep the update on the device; the CPU names still work and
+#: pull the embedding back each epoch.
 UMAP_OPTIMISERS_GPU: frozenset[str] = frozenset(
-    {"adam", "sgd", "sgd_parallel", "adam_parallel", "adam_gpu"}
+    {
+        "adam",
+        "sgd",
+        "sgd_parallel",
+        "adam_parallel",
+        "adam_gpu",
+        "adam_v06",
+        "adam_v06_gpu",
+    }
 ) | (frozenset({"adam_mlx"}) if _MLX else frozenset())
 
 #: UMAP optimisers, from `parse_umap_optimiser`.
 UMAP_OPTIMISERS: frozenset[str] = frozenset(
-    {"adam", "sgd", "sgd_parallel", "adam_parallel"}
+    {"adam", "sgd", "sgd_parallel", "adam_parallel", "adam_v06"}
 ) | (frozenset({"adam_mlx"}) if _MLX else frozenset())
+
+#: The umap-learn 0.6 Adam optimisers. densMAP rejects them in the core.
+V06_OPTIMISERS: frozenset[str] = frozenset({"adam_v06", "adam_v06_gpu"})
 
 #: The SGD optimisers, which drop to `SGD_EPOCHS_LARGE` epochs on large data.
 SGD_OPTIMISERS: frozenset[str] = frozenset({"sgd", "sgd_parallel"})
@@ -85,7 +123,7 @@ SGD_SMALL_N: int = 10_000
 #: Epochs for the SGD optimisers above `SGD_SMALL_N` samples.
 SGD_EPOCHS_LARGE: int = 200
 
-#: PaCMAP optimisers, from `parse_pacmap_optimiser`.
+#: PaCMAP and LocalMAP optimisers, from `parse_pacmap_optimiser`.
 PACMAP_OPTIMISERS: frozenset[str] = frozenset({"adam", "adam_parallel"})
 
 #: MDS backends for PHATE, from `parse_mds_method`.
@@ -153,11 +191,17 @@ class NeighbourParams:
         m: HNSW. Edges per node on the upper layers, ``2 * m`` on layer 0.
         ef_construction: HNSW. Candidate list width during the build.
         ef_search: HNSW. Beam width at query time, the recall knob.
-        delta: NN-Descent. Convergence threshold, as a fraction of neighbours
-            updated in an iteration.
+        delta: NN-Descent and rinnd. Convergence threshold, as a fraction of
+            neighbours updated in an iteration.
+        nnd_n_trees: NN-Descent and rinnd. Random projection trees seeding the
+            graph. ``None`` gives ``5 + sqrt(n) / 20``, capped at 64, for
+            ``"nndescent"`` (the umap-learn / scanpy rule) and
+            ``clamp(round(2 * log10(n)), 3, 12)`` for ``"rinnd"``.
         bt_budget: Ball tree. Fraction of the dataset to visit per query.
         n_list: IVF. Voronoi cells. ``None`` gives ``sqrt(n)``.
         n_probes: IVF. Cells visited per query. ``None`` gives ``sqrt(n_list)``.
+        k_means: IVF and KmKNN. k-means training the centroids, ``"emeans"``
+            or ``"lloyd"``. ``None`` gives e-means.
     """
 
     n_tree: int | None = None
@@ -165,10 +209,18 @@ class NeighbourParams:
     m: int | None = None
     ef_construction: int | None = None
     ef_search: int | None = None
-    delta: float | None = None
-    bt_budget: float | None = None
+    delta: int | float | None = None
+    nnd_n_trees: int | None = None
+    bt_budget: int | float | None = None
     n_list: int | None = None
     n_probes: int | None = None
+    k_means: str | None = None
+
+    @beartype
+    def __post_init__(self) -> None:
+        """Reject an unknown `k_means` at construction, see `check_choice`."""
+        if self.k_means is not None:
+            check_choice(self.k_means, K_MEANS, name="k_means")
 
 
 @dataclass(frozen=True)
@@ -181,6 +233,8 @@ class NeighbourParamsGpu:
     Attributes:
         n_list: IVF-GPU. Voronoi cells. ``None`` gives ``sqrt(n)``.
         n_probes: IVF-GPU. Cells visited per query.
+        k_means: IVF-GPU. k-means training the centroids, ``"emeans"`` or
+            ``"lloyd"``. ``None`` gives e-means.
         k_build: NN-Descent-GPU. Working degree of the descent. ``None`` gives
             ``1.5 * k``.
         n_tree: NN-Descent-GPU. Trees used to seed the graph.
@@ -190,10 +244,17 @@ class NeighbourParamsGpu:
 
     n_list: int | None = None
     n_probes: int | None = None
+    k_means: str | None = None
     k_build: int | None = None
     n_tree: int | None = None
-    delta: float | None = None
-    rho: float | None = None
+    delta: int | float | None = None
+    rho: int | float | None = None
+
+    @beartype
+    def __post_init__(self) -> None:
+        """Reject an unknown `k_means` at construction, see `check_choice`."""
+        if self.k_means is not None:
+            check_choice(self.k_means, K_MEANS, name="k_means")
 
 
 @dataclass(frozen=True)
@@ -209,9 +270,9 @@ class UmapGraph:
             during symmetrisation. ``1.0`` is the plain union.
     """
 
-    bandwidth: float | None = None
-    local_connectivity: float | None = None
-    mix_weight: float | None = None
+    bandwidth: int | float | None = None
+    local_connectivity: int | float | None = None
+    mix_weight: int | float | None = None
 
 
 @dataclass(frozen=True)
@@ -226,18 +287,19 @@ class UmapOptim:
         gamma: Weight on the repulsive term.
         neg_sample_rate: Negative samples drawn per positive edge.
         beta1: Adam first-moment decay. The crate uses 0.5 for UMAP rather than
-            the usual 0.9.
-        beta2: Adam second-moment decay.
-        eps: Adam denominator epsilon.
+            the usual 0.9. Ignored by ``"adam_v06"`` / ``"adam_v06_gpu"``, which
+            keep umap-learn's constants.
+        beta2: Adam second-moment decay. Ignored by the 0.6 Adam, as `beta1`.
+        eps: Adam denominator epsilon. Ignored by the 0.6 Adam, as `beta1`.
     """
 
-    a: float | None = None
-    b: float | None = None
-    gamma: float | None = None
+    a: int | float | None = None
+    b: int | float | None = None
+    gamma: int | float | None = None
     neg_sample_rate: int | None = None
-    beta1: float | None = None
-    beta2: float | None = None
-    eps: float | None = None
+    beta1: int | float | None = None
+    beta2: int | float | None = None
+    eps: int | float | None = None
 
 
 @dataclass(frozen=True)
@@ -260,16 +322,16 @@ class TsneOptim:
     """
 
     early_exag_iter: int | None = None
-    early_exag_factor: float | None = None
-    late_exag_factor: float | None = None
-    theta: float | None = None
+    early_exag_factor: int | float | None = None
+    late_exag_factor: int | float | None = None
+    theta: int | float | None = None
     n_interp_points: int | None = None
     max_depth: int | None = None
 
 
 @dataclass(frozen=True)
 class PacmapOptim:
-    """PaCMAP optimiser knobs beyond the epochs and learning rate.
+    """PaCMAP and LocalMAP optimiser knobs beyond the epochs and learning rate.
 
     The three phases are what PaCMAP does instead of early exaggeration: the
     mid-near weight starts high, decays across phase 1, holds low through phase 2,
@@ -283,9 +345,9 @@ class PacmapOptim:
         phase2_end: Last epoch of the decay phase.
     """
 
-    beta1: float | None = None
-    beta2: float | None = None
-    eps: float | None = None
+    beta1: int | float | None = None
+    beta2: int | float | None = None
+    eps: int | float | None = None
     phase1_end: int | None = None
     phase2_end: int | None = None
 
@@ -311,9 +373,26 @@ class Fa2Optim:
 
     strong_gravity: bool | None = None
     dissuade_hubs: bool | None = None
-    edge_weight_influence: float | None = None
-    jitter_tolerance: float | None = None
-    theta: float | None = None
+    edge_weight_influence: int | float | None = None
+    jitter_tolerance: int | float | None = None
+    theta: int | float | None = None
+
+
+@dataclass(frozen=True)
+class NcvisOptim:
+    """NCVis optimiser knobs beyond the epochs, negatives and learning rate.
+
+    Attributes:
+        a: Kernel numerator of ``q(d) = 1 / (1 + a d^(2b))``. Fitted from
+            ``min_dist`` and ``spread`` unless you set it. ``a = b = 1`` is the
+            Cauchy kernel, which skips a ``powf`` per sample.
+        b: Kernel exponent. See `a`.
+        lr_q: Step size of the learned log normalisation constant.
+    """
+
+    a: int | float | None = None
+    b: int | float | None = None
+    lr_q: int | float | None = None
 
 
 @dataclass(frozen=True)
@@ -327,8 +406,8 @@ class DensParams:
             which keeps the correlation defined when the spread is tiny.
     """
 
-    frac: float | None = None
-    var_shift: float | None = None
+    frac: int | float | None = None
+    var_shift: int | float | None = None
 
 
 @dataclass(frozen=True)
@@ -341,15 +420,25 @@ class PhateDiffusion:
             operator sparse.
         graph_symmetry: ``"add"``, ``"multiply"``, ``"mnn"`` or ``"none"``.
         n_svd: Singular vectors for spectral landmark selection.
+        landmark_k_means: k-means of the spectral landmark selection (not the
+            IVF one in `NeighbourParams`), ``"emeans"`` or ``"lloyd"``.
+            ``None`` gives e-means.
         t_max: Largest diffusion time the VNE knee search will consider. Ignored
             when `t` is pinned.
     """
 
-    bandwidth_scale: float | None = None
-    thresh: float | None = None
+    bandwidth_scale: int | float | None = None
+    thresh: int | float | None = None
     graph_symmetry: str | None = None
     n_svd: int | None = None
+    landmark_k_means: str | None = None
     t_max: int | None = None
+
+    @beartype
+    def __post_init__(self) -> None:
+        """Reject an unknown `landmark_k_means` at construction, see `check_choice`."""
+        if self.landmark_k_means is not None:
+            check_choice(self.landmark_k_means, K_MEANS, name="landmark_k_means")
 
 
 #############

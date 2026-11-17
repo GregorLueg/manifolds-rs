@@ -65,11 +65,15 @@ impl From<ManErr> for PyErr {
             | ManifoldsError::NotEnoughNeighbours { .. }
             | ManifoldsError::DegenerateLocalRadii
             | ManifoldsError::Fa2InvalidParam { .. }
+            | ManifoldsError::NcvisInvalidParam { .. }
+            | ManifoldsError::SyntheticInvalidParam { .. }
             | ManifoldsError::DreamsInvalidLambda { .. }
             | ManifoldsError::DreamsReferenceMismatch { .. }
             | ManifoldsError::DreamsDegenerateReference
             | ManifoldsError::MetricNotSupported { .. }
             | ManifoldsError::TsneOptimiserNeedsFft { .. }
+            | ManifoldsError::LocalMapInvalidMaxDistance { .. }
+            | ManifoldsError::UnsupportedCombination { .. }
             | ManifoldsError::AnnSearchRsError(_) => PyValueError::new_err(msg),
 
             // Numerical routines that ran but did not get there. Usually

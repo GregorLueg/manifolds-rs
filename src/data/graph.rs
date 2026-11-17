@@ -497,14 +497,16 @@ where
 /// Smooth kNN distances via binary search to find sigma for each point
 ///
 /// For each point, finds the bandwidth (sigma) such that the sum of
-/// similarities to its k nearest neighbours approximates log(k). Uses binary
-/// search for efficiency.
+/// similarities to its k nearest neighbours approximates `log2(k + 1)`, the
+/// target of uwot and umap-learn, both of which count the point itself as a
+/// neighbour. Uses binary search for efficiency.
 ///
 /// ### Params
 ///
 /// * `dist` - kNN distance matrix where each row contains distances to k
 ///   nearest neighbours
-/// * `k` - Number of nearest neighbours (used to compute target = ln(k))
+/// * `k` - Number of nearest neighbours, excluding self (target =
+///   `log2(k + 1)`)
 /// * `local_connectivity` - Number of nearest neighbours to assume are at
 ///   distance zero (typically 1.0). Allows for local manifold structure.
 /// * `bandwidth` - Convergence tolerance for binary search (typically 1e-5)
@@ -530,7 +532,7 @@ where
     T: ManifoldsFloat,
 {
     let n = dist.len();
-    let target = (k as f64).ln();
+    let target = ((k + 1) as f64).log2();
     let tol = as_f64(bandwidth);
     let two = T::one() + T::one();
     let widest_row = dist.iter().map(|row| row.len()).max().unwrap_or(0);
@@ -1462,6 +1464,20 @@ mod test_data_gen {
         // Sigmas should be positive
         for sigma in sigmas.iter() {
             assert!(*sigma > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_smooth_knn_dist_hits_log2_target() {
+        let dist = vec![vec![0.5, 0.9, 1.4, 2.0, 2.2], vec![1.0, 1.1, 1.3, 3.0, 4.0]];
+        let k = 5;
+        let (sigmas, rhos) = smooth_knn_dist(&dist, k, 1.0, 1e-5, 64);
+        for ((row, sigma), rho) in dist.iter().zip(&sigmas).zip(&rhos) {
+            let psum: f64 = row
+                .iter()
+                .map(|d| (-(d - rho).max(0.0) / sigma).exp())
+                .sum();
+            assert_relative_eq!(psum, ((k + 1) as f64).log2(), epsilon = 1e-4);
         }
     }
 

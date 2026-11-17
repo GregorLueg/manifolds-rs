@@ -31,6 +31,8 @@ mod error;
 mod gpu_probe;
 mod params;
 mod pool;
+#[cfg(feature = "rinnd")]
+mod rinnd_knn;
 
 /////////////////
 // Entry points //
@@ -78,6 +80,7 @@ fn _manifolds(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pool::num_threads, m)?)?;
     m.add_function(wrap_pyfunction!(gpu_probe::gpu_available, m)?)?;
     m.add_function(wrap_pyfunction!(gpu_probe::mlx_available, m)?)?;
+    m.add_function(wrap_pyfunction!(gpu_probe::rinnd_available, m)?)?;
 
     m.add_function(wrap_pyfunction!(knn::knn_graph, m)?)?;
 
@@ -93,8 +96,10 @@ fn _manifolds(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(embed::dreams, m)?)?;
     m.add_function(wrap_pyfunction!(embed::phate, m)?)?;
     m.add_function(wrap_pyfunction!(embed::pacmap, m)?)?;
+    m.add_function(wrap_pyfunction!(embed::localmap, m)?)?;
     m.add_function(wrap_pyfunction!(embed::diffusion_maps, m)?)?;
     m.add_function(wrap_pyfunction!(embed::forceatlas2, m)?)?;
+    m.add_function(wrap_pyfunction!(embed::ncvis, m)?)?;
 
     #[cfg(feature = "gpu")]
     {

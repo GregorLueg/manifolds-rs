@@ -255,3 +255,24 @@ fn densmap_gpu_integration_05_agrees_with_cpu() {
 
     println!("✓ GPU and CPU densMAP agree on density preservation");
 }
+
+/// Test 6: densMAP on the GPU refuses both umap-learn 0.6 Adam optimisers
+#[test]
+fn densmap_gpu_integration_06_rejects_adam_v06() {
+    let (data, _) = create_diagnostic_data(40, 10, 42);
+    let data = mat_to_f32(data);
+
+    for optimiser in ["adam_v06", "adam_v06_gpu"] {
+        let mut params = DensmapParamsGpu::<f32>::default();
+        params.umap_params.optimiser = optimiser.to_string();
+        params.umap_params.ann_type = "exhaustive_gpu".to_string();
+
+        let device = WgpuDevice::default();
+        let res = densmap_gpu::<f32>(data.as_ref(), None, &params, device.into(), 42, 0);
+        assert!(
+            matches!(res, Err(ManifoldsError::UnsupportedCombination { .. })),
+            "{optimiser}: expected UnsupportedCombination, got {:?}",
+            res.map(|_| ())
+        );
+    }
+}

@@ -1,5 +1,6 @@
 //! Optimisers for UMAP fitting. Contains the SGD, a lock-free parallel SGD,
-//! Adam and a parallel Adam variant
+//! Adam and a fused per-node parallel Adam variant. The Adam paths specialise on
+//! 2D embeddings.
 
 use rand::{
     rngs::SmallRng,
@@ -28,6 +29,11 @@ pub const DEFAULT_MIN_DIST: f64 = 0.5;
 
 /// Spread the default curve is fitted to. See [`DEFAULT_MIN_DIST`].
 pub const DEFAULT_SPREAD: f64 = 1.0;
+
+/// Gradient steps of the `(a, b)` curve fit. Fewer stop short of the
+/// least-squares optimum at small `min_dist`; this many land within 2e-4 of it
+/// across the usual `min_dist` / `spread` range, and the fit costs milliseconds.
+pub(crate) const AB_FIT_ITER: usize = 1000;
 
 /// Upper end of the fine `x^b` table in [`SplitPowLut`]. Squared distances of
 /// connected points sit well inside it.
@@ -167,13 +173,13 @@ where
     ///
     /// * `min_dist` - Minimum distance parameter
     /// * `spread` - Effective scale of embedded points
-    /// * `n_iter` - Number of optimisation iterations (default: 300)
+    /// * `n_iter` - Number of optimisation iterations (default: [`AB_FIT_ITER`])
     ///
     /// ### Returns
     ///
     /// Tuple of `(a, b)` according to the optimisation problem above.
-    fn fit_params(min_dist: T, spread: T, n_iter: Option<usize>) -> (T, T) {
-        let n_iter = n_iter.unwrap_or(300);
+    pub(crate) fn fit_params(min_dist: T, spread: T, n_iter: Option<usize>) -> (T, T) {
+        let n_iter = n_iter.unwrap_or(AB_FIT_ITER);
         let n_points = 300;
 
         // Generate x values from 0 to spread * 3
@@ -291,6 +297,8 @@ pub enum UmapOptimiser {
     Sgd,
     /// Lock-free parallel stochastic gradient descent (hogwild)
     SgdParallel,
+    /// The umap-learn 0.6 Adam, see [`crate::training::umap_optimiser_v06`]
+    AdamV06,
     /// Adam on the GPU via MLX (Apple Silicon, `mlx` feature)
     #[cfg(mlx_available)]
     AdamMlx,
@@ -301,8 +309,8 @@ pub enum UmapOptimiser {
 /// ### Params
 ///
 /// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`,
-///   `"sgd"` or `"sgd_parallel"`, plus `"adam_mlx"` when the MLX backend is
-///   compiled in.
+///   `"adam_v06"`, `"sgd"` or `"sgd_parallel"`, plus `"adam_mlx"` when the MLX
+///   backend is compiled in.
 ///
 /// ### Return
 ///
@@ -313,6 +321,7 @@ pub fn parse_umap_optimiser(s: &str) -> Option<UmapOptimiser> {
         "sgd" => Some(UmapOptimiser::Sgd),
         "sgd_parallel" => Some(UmapOptimiser::SgdParallel),
         "adam_parallel" => Some(UmapOptimiser::AdamParallel),
+        "adam_v06" => Some(UmapOptimiser::AdamV06),
         #[cfg(mlx_available)]
         "adam_mlx" => Some(UmapOptimiser::AdamMlx),
         _ => None,
@@ -448,7 +457,7 @@ where
 /// second, coarser table covers `[POW_LUT_NEAR_MAX, POW_LUT_FAR_MAX]`; its step
 /// is wide in absolute terms but small relative to `x` there, so the linear
 /// interpolation stays accurate. Beyond that, `powf`.
-struct SplitPowLut<T> {
+pub(crate) struct SplitPowLut<T> {
     /// Table over `[0, POW_LUT_NEAR_MAX]`.
     near: FastPowLut<T>,
     /// Table over `[0, POW_LUT_FAR_MAX]`, only read above `POW_LUT_NEAR_MAX`.
@@ -472,7 +481,7 @@ where
     /// ### Returns
     ///
     /// The two-range table.
-    fn new(b: T) -> Self {
+    pub(crate) fn new(b: T) -> Self {
         Self {
             near: FastPowLut::new(b, POW_LUT_NEAR_MAX, POW_LUT_SIZE),
             far: FastPowLut::new(b, POW_LUT_FAR_MAX, POW_LUT_SIZE),
@@ -491,7 +500,7 @@ where
     ///
     /// `x^b`, interpolated from the matching table.
     #[inline(always)]
-    fn get(&self, x: T) -> T {
+    pub(crate) fn get(&self, x: T) -> T {
         if self.b_is_one {
             x
         } else if x < self.split {
@@ -788,7 +797,7 @@ where
 ///   position and applied as one summed step, instead of moving the source
 ///   after each. This breaks the serial dependency between samples, so their
 ///   loads and arithmetic overlap.
-/// - `x^b` comes from a lookup table ([`SplitPowLut`]) rather than `powf`.
+/// - `x^b` comes from a lookup table (`SplitPowLut`) rather than `powf`.
 ///
 /// With one Rayon thread the result is identical to [`optimise_embedding_sgd`].
 /// With more, it is not reproducible run to run for a fixed seed: the RNG
@@ -1112,7 +1121,105 @@ where
             }
         };
 
-        if parallel {
+        // plain UMAP in 2D: as `update_node`, with the coordinates and the
+        // repulsive sum in registers
+        let (shared2, _) = embd_shared.as_chunks::<2>();
+        let update_node_2d =
+            |negs: &mut Vec<usize>, i: usize, sched: &mut [EdgeSchedule<T>], rng: &mut SmallRng| {
+                let load = |p: &[T::Atomic; 2]| [T::load_relaxed(&p[0]), T::load_relaxed(&p[1])];
+                let row_start = row_ptr[i];
+                let mut moved = false;
+                let mut y_i = load(&shared2[i]);
+
+                for (e, st) in sched.iter_mut().enumerate() {
+                    if st.next > epoch_t {
+                        continue;
+                    }
+                    moved = true;
+
+                    let edge_idx = row_start + e;
+                    let j = targets[edge_idx] as usize;
+                    let per_neg = epochs_per_sample[edge_idx] / neg_sample_rate_t;
+
+                    let y_j = load(&shared2[j]);
+                    let (d0, d1) = (y_i[0] - y_j[0], y_i[1] - y_j[1]);
+                    let dist_sq = zero + d0 * d0 + d1 * d1;
+
+                    if dist_sq >= dist_sq_threshold {
+                        let dist_sq_b = pow_lut.get(dist_sq);
+                        let denom = one + consts.a * dist_sq_b;
+                        let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
+                        for d in 0..2 {
+                            let grad_d = (grad_coeff * (y_j[d] - y_i[d]))
+                                .max(-consts.clip_val)
+                                .min(consts.clip_val);
+                            y_i[d] += grad_d * lr;
+                            T::store_relaxed(&shared2[j][d], y_j[d] - grad_d * lr);
+                        }
+                    }
+
+                    st.next += epochs_per_sample[edge_idx];
+
+                    let n_neg_samples = ((epoch_t - st.next_neg) / per_neg)
+                        .floor()
+                        .to_usize()
+                        .unwrap_or(0);
+
+                    negs.clear();
+                    for _ in 0..n_neg_samples {
+                        let k = rng.random_range(0..n);
+                        prefetch_read(&shared2[k]);
+                        negs.push(k);
+                    }
+
+                    let mut rep = [zero; 2];
+                    for &k in negs.iter() {
+                        if k == i {
+                            continue;
+                        }
+                        let y_k = load(&shared2[k]);
+                        let (d0, d1) = (y_i[0] - y_k[0], y_i[1] - y_k[1]);
+                        let dist_sq_safe = zero + d0 * d0 + d1 * d1 + rep_eps;
+                        let dist_sq_b = pow_lut.get(dist_sq_safe);
+                        let denom = dist_sq_safe * (one + consts.a * dist_sq_b);
+                        let grad_coeff = (consts.two_gamma_b / denom)
+                            .max(-consts.clip_val)
+                            .min(consts.clip_val);
+                        rep[0] += grad_coeff * d0;
+                        rep[1] += grad_coeff * d1;
+                    }
+                    y_i[0] += rep[0] * lr;
+                    y_i[1] += rep[1] * lr;
+
+                    st.next_neg += T::from(n_neg_samples).unwrap() * per_neg;
+                }
+
+                if moved {
+                    T::store_relaxed(&shared2[i][0], y_i[0]);
+                    T::store_relaxed(&shared2[i][1], y_i[1]);
+                }
+            };
+
+        if n_dim == 2 && dens_ctx.is_none() {
+            if parallel {
+                node_schedules
+                    .par_iter_mut()
+                    .zip(rng_states.par_iter_mut())
+                    .enumerate()
+                    .for_each_init(Vec::new, |negs, (i, (sched, rng))| {
+                        update_node_2d(negs, i, sched, rng)
+                    });
+            } else {
+                let mut negs = Vec::new();
+                for (i, (sched, rng)) in node_schedules
+                    .iter_mut()
+                    .zip(rng_states.iter_mut())
+                    .enumerate()
+                {
+                    update_node_2d(&mut negs, i, sched, rng);
+                }
+            }
+        } else if parallel {
             node_schedules
                 .par_iter_mut()
                 .zip(rng_states.par_iter_mut())
@@ -1178,11 +1285,46 @@ where
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
 ///
+/// ### Returns
+///
+/// `Ok(())`, `NoData` on an empty embedding, or a graph size or empty graph
+/// error.
+///
 /// ### Notes
 ///
 /// - Updates are applied immediately (not batched)
 /// - Linear learning rate decay schedule
+/// - 2D embeddings dispatch to a version with the dimension fixed at compile
+///   time
 pub fn optimise_embedding_adam<T>(
+    embd: &mut [Vec<T>],
+    graph: &[Vec<(usize, T)>],
+    params: &UmapOptimParams<T>,
+    dens: Option<&DensState<T>>,
+    seed: u64,
+    verbose: usize,
+) -> Result<(), ManifoldsError>
+where
+    T: ManifoldsFloat,
+{
+    match embd.first().map(Vec::len) {
+        Some(2) => adam_impl::<T, 2>(embd, graph, params, dens, seed, verbose),
+        _ => adam_impl::<T, 0>(embd, graph, params, dens, seed, verbose),
+    }
+}
+
+/// Body of [`optimise_embedding_adam`]. A non-zero `D` fixes the embedding
+/// dimensions at compile time, so the per-coordinate loops unroll.
+///
+/// ### Params
+///
+/// See [`optimise_embedding_adam`]; `D` must be `0` or the embedding's
+/// dimensions.
+///
+/// ### Returns
+///
+/// See [`optimise_embedding_adam`].
+fn adam_impl<T, const D: usize>(
     embd: &mut [Vec<T>],
     graph: &[Vec<(usize, T)>],
     params: &UmapOptimParams<T>,
@@ -1197,7 +1339,7 @@ where
     if n == 0 {
         return Err(ManifoldsError::NoData);
     }
-    let n_dim = embd[0].len();
+    let n_dim = if D == 0 { embd[0].len() } else { D };
     let verbosity = parse_verbosity_level(verbose);
     let mut dens_scratch = dens.map(|_| UmapDensScratch::<T>::new(n));
 
@@ -1429,8 +1571,11 @@ where
 /// Implements uwot's `BatchUpdate` with `NodeWorker` behaviour:
 ///
 /// - Parallelises over nodes using Rayon
-/// - Accumulates gradients per node per epoch safely via chunking
-/// - Applies Adam updates and edge schedules in parallel
+/// - Each node gathers its gradient from the frozen embedding of the epoch and
+///   applies Adam in the same pass, writing to a second buffer that swaps in
+///   at the end of the epoch
+/// - Plain 2D embeddings take a dedicated loop on `[T; 2]` points; densMAP
+///   epochs and other dimensions use the generic loop
 /// - Utilises CSR (Compressed Sparse Row) graph structures for cache locality
 /// - Utilises LUTs to avoid expensive float powers
 ///
@@ -1446,6 +1591,10 @@ where
 /// * `seed` - Random seed
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
 ///   verbosity.
+///
+/// ### Returns
+///
+/// `Ok(())`, `NoData` on an empty embedding, or a CSR size error.
 ///
 /// ### References
 ///
@@ -1514,8 +1663,9 @@ where
     let one_minus_beta1 = T::one() - params.beta1;
     let one_minus_beta2 = T::one() - params.beta2;
 
-    let mut node_gradients_all: Vec<T> = vec![T::zero(); n * n_dim];
-    let mut node_has_update: Vec<bool> = vec![false; n];
+    // each node writes its new position here, as the other nodes still read
+    // its old one; the buffers swap every epoch
+    let mut embd_next: Vec<T> = vec![T::zero(); n * n_dim];
 
     // stateful RNG instantiated once per thread/node - should be faster ... ?
     let mut node_rngs: Vec<SmallRng> = (0..n)
@@ -1526,9 +1676,6 @@ where
         let lr = lr_schedule[epoch];
         let epoch_t = T::from(epoch).unwrap();
         let (ad_scale, epsc) = bias_corrections[epoch];
-
-        // reset state
-        node_has_update.fill(false);
 
         // pass 0: embedding local radii over every edge, then the correlation
         // statistics. Reads the same frozen embd_flat as the gradient pass, so
@@ -1549,161 +1696,238 @@ where
             _ => None,
         };
 
-        // safely partition gradients per node
-        node_gradients_all
-            .par_chunks_exact_mut(n_dim)
-            .zip(node_has_update.par_iter_mut())
-            .zip(node_rngs.par_iter_mut())
-            .enumerate()
-            .for_each_init(Vec::new, |negs, (node_i, per_node)| {
-                let ((node_grad, has_update), rng) = per_node;
-                // Clear old gradients
-                for g in node_grad.iter_mut() {
-                    *g = T::zero();
-                }
+        // gradient and Adam step fused per node
+        if n_dim == 2 && dens_ctx.is_none() {
+            let (old2, _) = embd_flat.as_chunks::<2>();
+            let (next2, _) = embd_next.as_chunks_mut::<2>();
+            let (m2, _) = m.as_chunks_mut::<2>();
+            let (v2, _) = v.as_chunks_mut::<2>();
+            let two = T::from(2.0).unwrap();
+            next2
+                .par_iter_mut()
+                .zip(m2.par_iter_mut())
+                .zip(v2.par_iter_mut())
+                .zip(node_rngs.par_iter_mut())
+                .enumerate()
+                .for_each_init(Vec::new, |negs, (node_i, per_node)| {
+                    let (((out, m_node), v_node), rng) = per_node;
+                    let yi = old2[node_i];
+                    let mut g = [T::zero(); 2];
+                    let mut local_has_updates = false;
 
-                let mut local_has_updates = false;
-                let base_i = node_i * n_dim;
+                    let start_idx = csr.node_edge_offsets[node_i] as usize;
+                    let end_idx = csr.node_edge_offsets[node_i + 1] as usize;
 
-                let start_idx = csr.node_edge_offsets[node_i] as usize;
-                let end_idx = csr.node_edge_offsets[node_i + 1] as usize;
+                    for (&edge_idx, &other_node) in csr.csr_edge_idx[start_idx..end_idx]
+                        .iter()
+                        .zip(&csr.csr_other_node[start_idx..end_idx])
+                    {
+                        let edge_idx = edge_idx as usize;
+                        let other_node = other_node as usize;
+                        if epoch_of_next_sample[edge_idx] > epoch_t {
+                            continue;
+                        }
+                        local_has_updates = true;
 
-                for (&edge_idx, &other_node) in csr.csr_edge_idx[start_idx..end_idx]
-                    .iter()
-                    .zip(&csr.csr_other_node[start_idx..end_idx])
-                {
-                    let edge_idx = edge_idx as usize;
-                    let other_node = other_node as usize;
-                    if epoch_of_next_sample[edge_idx] > epoch_t {
-                        continue;
+                        let yo = old2[other_node];
+                        let (d0, d1) = (yi[0] - yo[0], yi[1] - yo[1]);
+                        let dist_sq = T::zero() + d0 * d0 + d1 * d1;
+                        if dist_sq >= dist_sq_threshold {
+                            let dist_sq_b = if b_is_one { dist_sq } else { lut.get(dist_sq) };
+                            let denom = T::one() + consts.a * dist_sq_b;
+                            let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
+                            g[0] += two * grad_coeff * (yo[0] - yi[0]);
+                            g[1] += two * grad_coeff * (yo[1] - yi[1]);
+                        }
+
+                        if node_i < other_node {
+                            let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
+                                / (csr.epochs_per_sample[edge_idx] / neg_sample_rate_t))
+                                .floor()
+                                .to_usize()
+                                .unwrap_or(0);
+
+                            negs.clear();
+                            for _ in 0..n_neg_samples {
+                                let k = rng.random_range(0..n);
+                                prefetch_read(&old2[k]);
+                                negs.push(k);
+                            }
+
+                            for &k in negs.iter() {
+                                if k == node_i {
+                                    continue;
+                                }
+                                let yk = old2[k];
+                                let (d0, d1) = (yi[0] - yk[0], yi[1] - yk[1]);
+                                let dist_sq_safe = T::zero() + d0 * d0 + d1 * d1 + consts.eps;
+                                let dist_sq_b = if b_is_one {
+                                    dist_sq_safe
+                                } else {
+                                    lut.get(dist_sq_safe)
+                                };
+                                let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
+                                let grad_coeff = (consts.two_gamma_b / denom)
+                                    .max(-consts.clip_val)
+                                    .min(consts.clip_val);
+                                g[0] += grad_coeff * d0;
+                                g[1] += grad_coeff * d1;
+                            }
+                        }
                     }
 
-                    local_has_updates = true;
-                    let base_other = other_node * n_dim;
-
-                    let mut dist_sq = T::zero();
-                    for d in 0..n_dim {
-                        let diff = embd_flat[base_i + d] - embd_flat[base_other + d];
-                        dist_sq += diff * diff;
+                    if !local_has_updates {
+                        *out = yi;
+                        return;
                     }
+                    for d in 0..2 {
+                        m_node[d] += one_minus_beta1 * (g[d] - m_node[d]);
+                        v_node[d] += one_minus_beta2 * (g[d] * g[d] - v_node[d]);
+                        out[d] = yi[d] + lr * ad_scale * m_node[d] / (v_node[d].sqrt() + epsc);
+                    }
+                });
+            std::mem::swap(&mut embd_flat, &mut embd_next);
+        } else {
+            embd_next
+                .par_chunks_exact_mut(n_dim)
+                .zip(m.par_chunks_exact_mut(n_dim))
+                .zip(v.par_chunks_exact_mut(n_dim))
+                .zip(node_rngs.par_iter_mut())
+                .enumerate()
+                .for_each_init(Vec::new, |negs, (node_i, per_node)| {
+                    let (((node_grad, m_node), v_node), rng) = per_node;
+                    node_grad.fill(T::zero());
 
-                    if dist_sq >= dist_sq_threshold {
-                        let dist_sq_b = if b_is_one { dist_sq } else { lut.get(dist_sq) };
-                        let denom = T::one() + consts.a * dist_sq_b;
-                        let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
-                        let two = T::from(2.0).unwrap();
+                    let mut local_has_updates = false;
+                    let base_i = node_i * n_dim;
 
+                    let start_idx = csr.node_edge_offsets[node_i] as usize;
+                    let end_idx = csr.node_edge_offsets[node_i + 1] as usize;
+
+                    for (&edge_idx, &other_node) in csr.csr_edge_idx[start_idx..end_idx]
+                        .iter()
+                        .zip(&csr.csr_other_node[start_idx..end_idx])
+                    {
+                        let edge_idx = edge_idx as usize;
+                        let other_node = other_node as usize;
+                        if epoch_of_next_sample[edge_idx] > epoch_t {
+                            continue;
+                        }
+
+                        local_has_updates = true;
+                        let base_other = other_node * n_dim;
+
+                        let mut dist_sq = T::zero();
                         for d in 0..n_dim {
-                            let delta = embd_flat[base_other + d] - embd_flat[base_i + d];
-                            node_grad[d] += two * grad_coeff * delta;
+                            let diff = embd_flat[base_i + d] - embd_flat[base_other + d];
+                            dist_sq += diff * diff;
                         }
 
-                        // densMAP. The outer factor 2 mirrors the attractive
-                        // term above: the reference visits each undirected edge
-                        // from both COO directions, this CSR walk visits it
-                        // once per endpoint. Signed along (y_i - y_other), i.e.
-                        // opposite to the attractive delta, since this is
-                        // ascent on the correlation.
-                        if let Some(scratch) = dens_ctx {
-                            let cor = density_edge_coeff(
-                                node_i,
-                                other_node,
-                                csr.mu[edge_idx],
-                                dist_sq,
-                                dist_sq_b,
-                                denom,
-                                &consts,
-                                scratch,
-                            );
-                            let two_cor = two * cor;
+                        if dist_sq >= dist_sq_threshold {
+                            let dist_sq_b = if b_is_one { dist_sq } else { lut.get(dist_sq) };
+                            let denom = T::one() + consts.a * dist_sq_b;
+                            let grad_coeff = consts.two_a_b * dist_sq_b / (dist_sq * denom);
+                            let two = T::from(2.0).unwrap();
 
                             for d in 0..n_dim {
-                                let delta = embd_flat[base_i + d] - embd_flat[base_other + d];
-                                node_grad[d] += two
-                                    * (two_cor * delta).max(-consts.clip_val).min(consts.clip_val);
+                                let delta = embd_flat[base_other + d] - embd_flat[base_i + d];
+                                node_grad[d] += two * grad_coeff * delta;
+                            }
+
+                            // densMAP. The outer factor 2 mirrors the attractive
+                            // term above: the reference visits each undirected edge
+                            // from both COO directions, this CSR walk visits it
+                            // once per endpoint. Signed along (y_i - y_other), i.e.
+                            // opposite to the attractive delta, since this is
+                            // ascent on the correlation.
+                            if let Some(scratch) = dens_ctx {
+                                let cor = density_edge_coeff(
+                                    node_i,
+                                    other_node,
+                                    csr.mu[edge_idx],
+                                    dist_sq,
+                                    dist_sq_b,
+                                    denom,
+                                    &consts,
+                                    scratch,
+                                );
+                                let two_cor = two * cor;
+
+                                for d in 0..n_dim {
+                                    let delta = embd_flat[base_i + d] - embd_flat[base_other + d];
+                                    node_grad[d] += two
+                                        * (two_cor * delta)
+                                            .max(-consts.clip_val)
+                                            .min(consts.clip_val);
+                                }
+                            }
+                        }
+
+                        // the smaller endpoint owns the edge's negative samples
+                        if node_i < other_node {
+                            let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
+                                / (csr.epochs_per_sample[edge_idx] / neg_sample_rate_t))
+                                .floor()
+                                .to_usize()
+                                .unwrap_or(0);
+
+                            // draw and prefetch every sample before evaluating any,
+                            // in the original draw order
+                            negs.clear();
+                            for _ in 0..n_neg_samples {
+                                let k = rng.random_range(0..n);
+                                prefetch_read(&embd_flat[k * n_dim]);
+                                negs.push(k);
+                            }
+
+                            for &k in negs.iter() {
+                                if k == node_i {
+                                    continue;
+                                }
+
+                                let base_k = k * n_dim;
+
+                                let mut dist_sq = T::zero();
+                                for d in 0..n_dim {
+                                    let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
+                                    dist_sq += diff * diff;
+                                }
+
+                                let dist_sq_safe = dist_sq + consts.eps;
+                                let dist_sq_b = if b_is_one {
+                                    dist_sq_safe
+                                } else {
+                                    lut.get(dist_sq_safe)
+                                };
+
+                                let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
+                                let grad_coeff = (consts.two_gamma_b / denom)
+                                    .max(-consts.clip_val)
+                                    .min(consts.clip_val);
+
+                                for d in 0..n_dim {
+                                    let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
+                                    node_grad[d] += grad_coeff * delta;
+                                }
                             }
                         }
                     }
 
-                    // the smaller endpoint owns the edge's negative samples
-                    if node_i < other_node {
-                        let n_neg_samples = ((epoch_t - epoch_of_next_neg_sample[edge_idx])
-                            / (csr.epochs_per_sample[edge_idx] / neg_sample_rate_t))
-                            .floor()
-                            .to_usize()
-                            .unwrap_or(0);
-
-                        // draw and prefetch every sample before evaluating any,
-                        // in the original draw order
-                        negs.clear();
-                        for _ in 0..n_neg_samples {
-                            let k = rng.random_range(0..n);
-                            prefetch_read(&embd_flat[k * n_dim]);
-                            negs.push(k);
-                        }
-
-                        for &k in negs.iter() {
-                            if k == node_i {
-                                continue;
-                            }
-
-                            let base_k = k * n_dim;
-
-                            let mut dist_sq = T::zero();
-                            for d in 0..n_dim {
-                                let diff = embd_flat[base_i + d] - embd_flat[base_k + d];
-                                dist_sq += diff * diff;
-                            }
-
-                            let dist_sq_safe = dist_sq + consts.eps;
-                            let dist_sq_b = if b_is_one {
-                                dist_sq_safe
-                            } else {
-                                lut.get(dist_sq_safe)
-                            };
-
-                            let denom = dist_sq_safe * (T::one() + consts.a * dist_sq_b);
-                            let grad_coeff = (consts.two_gamma_b / denom)
-                                .max(-consts.clip_val)
-                                .min(consts.clip_val);
-
-                            for d in 0..n_dim {
-                                let delta = embd_flat[base_i + d] - embd_flat[base_k + d];
-                                node_grad[d] += grad_coeff * delta;
-                            }
-                        }
+                    let embd_node = &embd_flat[base_i..base_i + n_dim];
+                    if !local_has_updates {
+                        node_grad.copy_from_slice(embd_node);
+                        return;
                     }
-                }
-
-                if local_has_updates {
-                    *has_update = true;
-                }
-            });
-
-        // parallelise Adam moments and embedding updates
-        node_gradients_all
-            .par_chunks_exact_mut(n_dim)
-            .zip(m.par_chunks_exact_mut(n_dim))
-            .zip(v.par_chunks_exact_mut(n_dim))
-            .zip(embd_flat.par_chunks_exact_mut(n_dim))
-            .zip(node_has_update.par_iter())
-            .for_each(|((((grad, m_node), v_node), embd_node), &has_update)| {
-                if !has_update {
-                    return;
-                }
-
-                for d in 0..n_dim {
-                    let g = grad[d];
-
-                    let m_old = m_node[d];
-                    m_node[d] += one_minus_beta1 * (g - m_old);
-
-                    let v_old = v_node[d];
-                    v_node[d] += one_minus_beta2 * (g * g - v_old);
-
-                    embd_node[d] += lr * ad_scale * m_node[d] / (v_node[d].sqrt() + epsc);
-                }
-            });
+                    for d in 0..n_dim {
+                        let g = node_grad[d];
+                        m_node[d] += one_minus_beta1 * (g - m_node[d]);
+                        v_node[d] += one_minus_beta2 * (g * g - v_node[d]);
+                        node_grad[d] =
+                            embd_node[d] + lr * ad_scale * m_node[d] / (v_node[d].sqrt() + epsc);
+                    }
+                });
+            std::mem::swap(&mut embd_flat, &mut embd_next);
+        }
 
         // parallelise edge schedules
         epoch_of_next_sample
@@ -2406,6 +2630,36 @@ mod test_umap_optimiser {
             .build()
             .expect("one-thread pool")
             .install(f)
+    }
+
+    #[test]
+    fn test_general_path_matches_2d_path() {
+        // a zero third axis gets zero gradient and zero step and adds exact
+        // zeros to every distance, so the general n_dim path must reproduce
+        // the 2D path bit for bit
+        let (graph, embd2) = random_graph_and_embedding(200, 8, 5);
+        let embd3: Vec<Vec<f64>> = embd2.iter().map(|p| vec![p[0], p[1], 0.0]).collect();
+        let params = UmapOptimParams {
+            n_epochs: 100,
+            ..UmapOptimParams::default_2d()
+        };
+
+        type Run = fn(&mut [Vec<f64>], &[Vec<(usize, f64)>], &UmapOptimParams<f64>);
+        let runs: [Run; 3] = [
+            |e, g, p| optimise_embedding_adam(e, g, p, None, 42, 0).unwrap(),
+            |e, g, p| optimise_embedding_adam_parallel(e, g, p, None, 42, 0).unwrap(),
+            |e, g, p| optimise_embedding_sgd(e, g, p, None, 42, 0).unwrap(),
+        ];
+        for run in runs {
+            let mut a = embd2.clone();
+            let mut b = embd3.clone();
+            run(&mut a, &graph, &params);
+            run(&mut b, &graph, &params);
+            for (pa, pb) in a.iter().zip(&b) {
+                assert_eq!(pa[..], pb[..2]);
+                assert_eq!(pb[2], 0.0);
+            }
+        }
     }
 
     #[test]

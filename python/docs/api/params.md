@@ -17,6 +17,8 @@ at `None` is not sent, and the crate's default applies.
 
 ::: manifolds_rs.Fa2Optim
 
+::: manifolds_rs.NcvisOptim
+
 ::: manifolds_rs.DensParams
 
 ::: manifolds_rs.PhateDiffusion

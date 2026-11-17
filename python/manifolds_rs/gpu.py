@@ -35,14 +35,16 @@ from . import _manifolds as _core
 from ._base import BaseEmbedding, ReferenceEmbedding
 from ._params import (
     ANN_GPU,
+    GPU_METRICS,
     INITS,
     MDS_METHODS,
-    METRICS,
     PHATE_LANDMARK_METHODS,
     PHATE_METRICS,
     SYMMETRIES,
     TSNE_APPROX_GPU,
+    UMAP_INITS,
     UMAP_OPTIMISERS_GPU,
+    V06_OPTIMISERS,
     DensParams,
     NeighbourParamsGpu,
     PhateDiffusion,
@@ -87,12 +89,14 @@ class UMAPGpu(BaseEmbedding):
         n_epochs: Optimisation epochs. ``None`` means 500, or 200 for the SGD
             optimisers above 10,000 samples, as umap-learn does.
         learning_rate: Initial learning rate.
-        init: ``"spectral"``, ``"pca"`` or ``"random"``. Computed on the CPU
-            either way.
+        init: ``"spectral"``, ``"pca"``, ``"random"`` or ``"recursive"`` (the
+            umap-learn 0.6 initialisation). Computed on the CPU either way.
         ann: ``"nndescent_gpu"``, ``"ivf_gpu"`` or ``"exhaustive_gpu"``.
-        optimiser: ``"adam_gpu"`` keeps the update on the device. The CPU names
-            still work and pull the embedding back each epoch, which is only
-            worth it for debugging.
+        optimiser: ``"adam_gpu"`` keeps the update on the device, as does
+            ``"adam_v06_gpu"`` (the umap-learn 0.6 Adam). The CPU names
+            (``"adam_parallel"``, ``"adam"``, ``"adam_v06"``, ``"sgd"``,
+            ``"sgd_parallel"``) still work and run the optimisation on the CPU
+            after the GPU neighbour search.
         randomised: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation and the negative sampling.
@@ -103,6 +107,7 @@ class UMAPGpu(BaseEmbedding):
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.umap_gpu
+    _OPTIMISERS: ClassVar[frozenset[str]] = UMAP_OPTIMISERS_GPU
     _BASE_DTYPE: ClassVar[np.dtype | None] = _GPU_DTYPE
 
     @beartype
@@ -111,15 +116,15 @@ class UMAPGpu(BaseEmbedding):
         n_components: int = 2,
         n_neighbors: int = 15,
         metric: str = "euclidean",
-        min_dist: float = 0.5,
-        spread: float = 1.0,
+        min_dist: int | float = 0.5,
+        spread: int | float = 1.0,
         n_epochs: int | None = None,
-        learning_rate: float = 1.0,
+        learning_rate: int | float = 1.0,
         init: str = "spectral",
         ann: str = "nndescent_gpu",
         optimiser: str = "adam_gpu",
         randomised: bool = False,
-        init_range: float | None = None,
+        init_range: int | float | None = None,
         seed: int = 42,
         verbose: int = 0,
         nn_params: NeighbourParamsGpu | None = None,
@@ -150,16 +155,16 @@ class UMAPGpu(BaseEmbedding):
             "k": self.n_neighbors,
             "min_dist": self.min_dist,
             "spread": self.spread,
-            "initialisation": check_choice(self.init, INITS, name="init"),
+            "initialisation": check_choice(self.init, UMAP_INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
             "optimiser": check_choice(
-                self.optimiser, UMAP_OPTIMISERS_GPU, name="optimiser"
+                self.optimiser, self._OPTIMISERS, name="optimiser"
             ),
             "randomised": self.randomised,
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,
-                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+                dist_metric=check_choice(self.metric, GPU_METRICS, name="metric"),
             ),
             "graph_params": merge(self.graph_params),
             "optim_params": merge(
@@ -180,10 +185,12 @@ class DensMAPGpu(UMAPGpu):
         lambda_: Weight on the density term. ``0`` recovers plain UMAP.
         dens_params: Remaining density knobs. See `DensParams`.
 
-    Everything else is as `UMAPGpu`.
+    Everything else is as `UMAPGpu`, bar ``"adam_v06"`` and ``"adam_v06_gpu"``:
+    the umap-learn 0.6 Adam has no density term.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.densmap_gpu
+    _OPTIMISERS: ClassVar[frozenset[str]] = UMAP_OPTIMISERS_GPU - V06_OPTIMISERS
 
     @beartype
     def __init__(
@@ -191,16 +198,16 @@ class DensMAPGpu(UMAPGpu):
         n_components: int = 2,
         n_neighbors: int = 15,
         metric: str = "euclidean",
-        min_dist: float = 0.5,
-        spread: float = 1.0,
-        lambda_: float = 2.0,
+        min_dist: int | float = 0.5,
+        spread: int | float = 1.0,
+        lambda_: int | float = 2.0,
         n_epochs: int | None = None,
-        learning_rate: float = 1.0,
+        learning_rate: int | float = 1.0,
         init: str = "spectral",
         ann: str = "nndescent_gpu",
         optimiser: str = "adam_gpu",
         randomised: bool = False,
-        init_range: float | None = None,
+        init_range: int | float | None = None,
         seed: int = 42,
         verbose: int = 0,
         nn_params: NeighbourParamsGpu | None = None,
@@ -275,15 +282,15 @@ class TSNEGpu(BaseEmbedding):
     def __init__(
         self,
         n_components: int = 2,
-        perplexity: float = 30.0,
+        perplexity: int | float = 30.0,
         metric: str = "euclidean",
         n_epochs: int = 1000,
-        learning_rate: float | None = None,
+        learning_rate: int | float | None = None,
         init: str = "pca",
         ann: str = "ivf_gpu",
         approx: str = "barnes_hut",
         randomised: bool = True,
-        init_range: float | None = None,
+        init_range: int | float | None = None,
         seed: int = 42,
         verbose: int = 0,
         nn_params: NeighbourParamsGpu | None = None,
@@ -308,14 +315,14 @@ class TSNEGpu(BaseEmbedding):
         check_choice(self.approx, TSNE_APPROX_GPU, name="approx")
         return {
             "n_dim": self.n_components,
-            "perplexity": self.perplexity,
+            "perplexity": float(self.perplexity),
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
             "randomised": self.randomised,
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,
-                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+                dist_metric=check_choice(self.metric, GPU_METRICS, name="metric"),
             ),
             "optim_params": merge(
                 self.optim_params, n_epochs=self.n_epochs, lr=self.learning_rate
@@ -346,16 +353,16 @@ class DREAMSGpu(ReferenceEmbedding):
     def __init__(
         self,
         n_components: int = 2,
-        perplexity: float = 30.0,
+        perplexity: int | float = 30.0,
         metric: str = "euclidean",
-        lambda_: float = 0.15,
+        lambda_: int | float = 0.15,
         n_epochs: int = 1000,
-        learning_rate: float | None = None,
+        learning_rate: int | float | None = None,
         init: str = "pca",
         ann: str = "ivf_gpu",
         approx: str = "barnes_hut",
         randomised: bool = True,
-        init_range: float | None = None,
+        init_range: int | float | None = None,
         seed: int = 42,
         verbose: int = 0,
         nn_params: NeighbourParamsGpu | None = None,
@@ -381,7 +388,7 @@ class DREAMSGpu(ReferenceEmbedding):
         check_choice(self.approx, TSNE_APPROX_GPU, name="approx")
         return {
             "n_dim": self.n_components,
-            "perplexity": self.perplexity,
+            "perplexity": float(self.perplexity),
             "lambda": self.lambda_,
             "initialisation": check_choice(self.init, INITS, name="init"),
             "ann_type": check_choice(self.ann, ANN_GPU, name="ann"),
@@ -389,7 +396,7 @@ class DREAMSGpu(ReferenceEmbedding):
             "init_range": self.init_range,
             "nn_params": merge(
                 self.nn_params,
-                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+                dist_metric=check_choice(self.metric, GPU_METRICS, name="metric"),
             ),
             "optim_params": merge(
                 self.optim_params, n_epochs=self.n_epochs, lr=self.learning_rate
@@ -438,9 +445,9 @@ class PHATEGpu(BaseEmbedding):
         n_components: int = 2,
         k: int = 5,
         metric: str = "euclidean",
-        decay: float | None = 40.0,
+        decay: int | float | None = 40.0,
         t: int | None = None,
-        gamma: float = 1.0,
+        gamma: int | float = 1.0,
         n_landmarks: int | None = 2048,
         landmark_method: str = "spectral",
         mds: str = "sgd_dense",

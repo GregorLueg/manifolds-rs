@@ -15,8 +15,8 @@
 
 use manifolds_rs::prelude::*;
 use manifolds_rs::{
-    DensmapParams, DensneParams, DiffusionMapsParams, DreamsParams, Fa2Params, PacmapParams,
-    PhateParams, TsneParams, UmapParams,
+    DensmapParams, DensneParams, DiffusionMapsParams, DreamsParams, Fa2Params, LocalMapParams,
+    NcvisParams, PacmapParams, PhateParams, TsneParams, UmapParams,
 };
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -258,7 +258,46 @@ where
     set(&mut p.bt_budget, r.float::<T>("bt_budget")?);
     p.n_list = r.get::<usize>("n_list")?.or(p.n_list);
     p.n_probes = r.get::<usize>("n_probes")?.or(p.n_probes);
+    set(&mut p.k_means, r.get::<String>("k_means")?);
+    p.nnd_n_trees = r.get::<usize>("nnd_n_trees")?.or(p.nnd_n_trees);
     r.finish()
+}
+
+/// Fill the `nn_params` group if present, and attach the backends this crate
+/// adds to the core's.
+///
+/// The attaching happens whether or not the group was given, so `"rinnd"`
+/// works with the crate defaults too.
+///
+/// ### Params
+///
+/// * `r` - Reader over the parent parameter dictionary.
+/// * `p` - Struct holding the crate defaults, overwritten in place.
+///
+/// ### Returns
+///
+/// Nothing, or the first bad or unknown key.
+pub(crate) fn nn_group<T>(r: &mut Reader<'_, '_>, p: &mut NearestNeighbourParams<T>) -> PyResult<()>
+where
+    T: ManifoldsFloat,
+{
+    nested(r, "nn_params", p, fill_nn)?;
+    attach_backends(p);
+    Ok(())
+}
+
+/// Attach the kNN backends that live in this crate rather than the core.
+///
+/// ### Params
+///
+/// * `p` - Neighbour parameters, modified in place.
+pub(crate) fn attach_backends<T>(p: &mut NearestNeighbourParams<T>) {
+    #[cfg(feature = "rinnd")]
+    {
+        p.external_knn = Some(crate::rinnd_knn::RINND);
+    }
+    #[cfg(not(feature = "rinnd"))]
+    let _ = p;
 }
 
 /// Fill [`UmapGraphParams`] from a dictionary.
@@ -466,6 +505,7 @@ where
     }
     set(&mut p.landmark_method, r.get::<String>("landmark_method")?);
     p.n_svd = r.get::<usize>("n_svd")?.or(p.n_svd);
+    set(&mut p.k_means, r.get::<String>("landmark_k_means")?);
     set(&mut p.gamma, r.float::<T>("gamma")?);
     p.t = read_time(&mut r, &p.t)?;
     r.finish()
@@ -549,7 +589,7 @@ where
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
-    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(&mut r, &mut p.nn_params)?;
     nested(&mut r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(&mut r, "optim_params", &mut p.optim_params, fill_umap_optim)?;
     r.finish()?;
@@ -663,7 +703,7 @@ where
     let mut p = PhateParams::<T>::default();
     let mut r = Reader::new(d, "PhateParams");
     phate_into(&mut r, &mut p)?;
-    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(&mut r, &mut p.nn_params)?;
     r.finish()?;
     Ok(p)
 }
@@ -752,7 +792,47 @@ where
     if range_given {
         p.range = range;
     }
-    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(&mut r, &mut p.nn_params)?;
+    nested(
+        &mut r,
+        "optim_params",
+        &mut p.optim_params,
+        fill_pacmap_optim,
+    )?;
+    r.finish()?;
+    Ok(p)
+}
+
+/// Build [`LocalMapParams`] from a dictionary.
+///
+/// ### Params
+///
+/// * `d` - The full parameter dictionary sent by the Python layer.
+///
+/// ### Returns
+///
+/// A fully specified parameter struct, or the first bad or unknown key.
+pub(crate) fn localmap<T>(d: &Bound<'_, PyDict>) -> PyResult<LocalMapParams<T>>
+where
+    T: ManifoldsFloat,
+{
+    let mut p = LocalMapParams::<T>::default();
+    let mut r = Reader::new(d, "LocalMapParams");
+    set(&mut p.n_dim, r.get::<usize>("n_dim")?);
+    set(&mut p.ann_type, r.get::<String>("ann_type")?);
+    set(&mut p.optimiser, r.get::<String>("optimiser")?);
+    set(&mut p.n_near, r.get::<usize>("n_near")?);
+    set(&mut p.n_mid_near, r.get::<usize>("n_mid_near")?);
+    set(&mut p.n_further, r.get::<usize>("n_further")?);
+    set(&mut p.initialisation, r.get::<String>("initialisation")?);
+    // an explicit `None` hands the range to the initialisation, as for PaCMAP
+    let range_given = r.present("range");
+    let range = r.float::<T>("range")?;
+    if range_given {
+        p.range = range;
+    }
+    set(&mut p.max_distance, r.float::<T>("max_distance")?);
+    nn_group(&mut r, &mut p.nn_params)?;
     nested(
         &mut r,
         "optim_params",
@@ -788,8 +868,9 @@ where
     p.n_landmarks = r.get::<usize>("n_landmarks")?.or(p.n_landmarks);
     set(&mut p.landmark_method, r.get::<String>("landmark_method")?);
     p.n_svd = r.get::<usize>("n_svd")?.or(p.n_svd);
+    set(&mut p.k_means, r.get::<String>("landmark_k_means")?);
     p.t = read_time(&mut r, &p.t)?;
-    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(&mut r, &mut p.nn_params)?;
     r.finish()?;
     Ok(p)
 }
@@ -814,11 +895,83 @@ where
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
-    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(&mut r, &mut p.nn_params)?;
     nested(&mut r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(&mut r, "optim_params", &mut p.optim_params, fill_fa2_optim)?;
     r.finish()?;
     Ok(p)
+}
+
+/// Build [`NcvisParams`] from a dictionary.
+///
+/// `min_dist` and `spread` sit at the top level and seed the crate's curve fit,
+/// as for UMAP; `a` and `b` in `optim_params` override the fit.
+///
+/// ### Params
+///
+/// * `d` - The full parameter dictionary sent by the Python layer.
+///
+/// ### Returns
+///
+/// A fully specified parameter struct, or the first bad or unknown key.
+pub(crate) fn ncvis<T>(d: &Bound<'_, PyDict>) -> PyResult<NcvisParams<T>>
+where
+    T: ManifoldsFloat,
+{
+    let mut p = NcvisParams::<T>::default();
+    let mut r = Reader::new(d, "NcvisParams");
+    let min_dist = r.float::<T>("min_dist")?;
+    let spread = r.float::<T>("spread")?;
+    if min_dist.is_some() || spread.is_some() {
+        p.optim_params = NcvisOptimParams::from_min_dist_spread(
+            min_dist.unwrap_or(T::from_f64(NCVIS_MIN_DIST).unwrap()),
+            spread.unwrap_or(T::from_f64(NCVIS_SPREAD).unwrap()),
+            None,
+            None,
+            None,
+            None,
+        );
+    }
+    set(&mut p.n_dim, r.get::<usize>("n_dim")?);
+    set(&mut p.k, r.get::<usize>("k")?);
+    set(&mut p.ann_type, r.get::<String>("ann_type")?);
+    set(&mut p.initialisation, r.get::<String>("initialisation")?);
+    set(&mut p.init_scale, r.float::<T>("init_scale")?);
+    set(&mut p.randomised, r.get::<bool>("randomised")?);
+    nn_group(&mut r, &mut p.nn_params)?;
+    nested(
+        &mut r,
+        "optim_params",
+        &mut p.optim_params,
+        fill_ncvis_optim,
+    )?;
+    r.finish()?;
+    Ok(p)
+}
+
+/// Fill [`NcvisOptimParams`] from a dictionary.
+///
+/// ### Params
+///
+/// * `d` - The `optim_params` group.
+/// * `p` - Struct holding the fitted curve and the crate defaults, overwritten
+///   in place.
+///
+/// ### Returns
+///
+/// Nothing, or the first bad or unknown key.
+fn fill_ncvis_optim<T>(d: &Bound<'_, PyDict>, p: &mut NcvisOptimParams<T>) -> PyResult<()>
+where
+    T: ManifoldsFloat,
+{
+    let mut r = Reader::new(d, "optim_params");
+    set(&mut p.n_epochs, r.get::<usize>("n_epochs")?);
+    set(&mut p.n_negative, r.float::<T>("n_negative")?);
+    set(&mut p.a, r.float::<T>("a")?);
+    set(&mut p.b, r.float::<T>("b")?);
+    set(&mut p.lr, r.float::<T>("lr")?);
+    set(&mut p.lr_q, r.float::<T>("lr_q")?);
+    r.finish()
 }
 
 /////////////
@@ -850,7 +1003,7 @@ where
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
-    nested(r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(r, &mut p.nn_params)?;
     nested(r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(r, "optim_params", &mut p.optim_params, fill_umap_optim)?;
     Ok(())
@@ -879,7 +1032,7 @@ where
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
-    nested(r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(r, &mut p.nn_params)?;
     nested(r, "optim_params", &mut p.optim_params, fill_tsne_optim)?;
     Ok(())
 }
@@ -890,8 +1043,8 @@ where
 
 /// Fill [`NearestNeighbourParamsGpu`] from a dictionary.
 ///
-/// A different struct from the CPU one, not a subset: the GPU backends take
-/// CAGRA build degrees and beam-search budgets that have no CPU counterpart.
+/// A different struct from the CPU one, not a subset: the device NN-Descent has
+/// its own working degree and sampling rate (`k_build`, `rho`).
 ///
 /// ### Params
 ///
@@ -913,6 +1066,7 @@ where
     set(&mut p.dist_metric, r.get::<String>("dist_metric")?);
     p.n_list = r.get::<usize>("n_list")?.or(p.n_list);
     p.n_probes = r.get::<usize>("n_probes")?.or(p.n_probes);
+    set(&mut p.k_means, r.get::<String>("k_means")?);
     p.k_build = r.get::<usize>("k_build")?.or(p.k_build);
     p.n_tree = r.get::<usize>("n_tree")?.or(p.n_tree);
     set(&mut p.delta, r.float::<T>("delta")?);

@@ -29,6 +29,7 @@ macro_rules! knn_arm {
         if let Some(d) = $dict {
             params::fill_nn(d, &mut nn)?;
         }
+        params::attach_backends(&mut nn);
         let ann = $ann.to_string();
         let (indices, distances) = $py
             .detach(|| {
@@ -50,9 +51,10 @@ macro_rules! knn_arm {
 /// * `x` - Samples by features, C-contiguous float32 or float64.
 /// * `k` - Neighbours per point, excluding self.
 /// * `ann` - Backend: `"exhaustive"`, `"kmknn"`, `"balltree"`, `"annoy"`,
-///   `"hnsw"`, `"ivf"` or `"nndescent"`. Validated by the Python layer, since
+///   `"hnsw"`, `"ivf"` or `"nndescent"`, plus `"rinnd"` with the `rinnd`
+///   feature and the `*_mlx` keys in an MLX build. Validated by the Python layer, since
 ///   the core falls back to `"kmknn"` on an unrecognised name and only says so
-///   on stdout.
+///   on stderr.
 /// * `nn_params` - Backend-specific knobs, or `None` for the crate defaults.
 /// * `seed` - Fixes anything randomised in the build.
 /// * `verbose` - `0` silent, `1` normal, `2` detailed.

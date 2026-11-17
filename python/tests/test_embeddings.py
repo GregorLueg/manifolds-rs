@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from conftest import cpu_estimators, fast
+from conftest import cpu_estimators, fast, reproducible
 
 import manifolds_rs as mf
 from manifolds_rs import BaseEmbedding
@@ -38,8 +38,9 @@ def test_float64_in_float64_out(
 def test_same_seed_gives_identical_embedding(
     name: str, cls: type[BaseEmbedding], X: np.ndarray
 ) -> None:
-    a = fast(cls, seed=3).fit_transform(X)
-    b = fast(cls, seed=3).fit_transform(X)
+    with reproducible(name):
+        a = fast(cls, seed=3).fit_transform(X)
+        b = fast(cls, seed=3).fit_transform(X)
     assert np.array_equal(a, b)
 
 
@@ -154,3 +155,64 @@ def test_cpu_fft_tsne_runs(
     assert embedding.shape == (X.shape[0], 2)
     assert embedding.dtype == dtype
     assert np.isfinite(embedding).all()
+
+
+@pytest.mark.parametrize("init", ["spectral", "recursive"])
+def test_umap_adam_v06_runs_and_reproduces(init: str, X: np.ndarray) -> None:
+    """The umap-learn 0.6 Adam reaches the core, with either initialisation."""
+    est = mf.UMAP(n_epochs=20, optimiser="adam_v06", init=init)
+    first = est.fit_transform(X)
+    assert first.shape == (X.shape[0], 2)
+    assert np.isfinite(first).all()
+    assert np.array_equal(first, est.fit_transform(X))
+
+
+@pytest.mark.parametrize("cls", [mf.UMAP, mf.DensMAP])
+def test_recursive_init_differs_from_spectral(
+    cls: type[BaseEmbedding], X: np.ndarray
+) -> None:
+    """`init="recursive"` is routed to the core, not silently mapped to spectral."""
+    recursive = fast(cls, init="recursive").fit_transform(X)
+    spectral = fast(cls, init="spectral").fit_transform(X)
+    assert np.isfinite(recursive).all()
+    assert not np.array_equal(recursive, spectral)
+
+
+def test_densmap_refuses_adam_v06_before_the_core(X: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="optimiser"):
+        mf.DensMAP(optimiser="adam_v06").fit_transform(X)
+
+
+@pytest.mark.parametrize("cls", [mf.PaCMAP, mf.LocalMAP])
+def test_init_recursive_is_refused_outside_umap(
+    cls: type[BaseEmbedding], X: np.ndarray
+) -> None:
+    with pytest.raises(ValueError, match="init"):
+        fast(cls, init="recursive").fit_transform(X)
+
+
+def test_localmap_differs_from_pacmap(X: np.ndarray) -> None:
+    """LocalMAP only departs from PaCMAP in phase three, which starts after
+    epoch 200, so these run the full default schedule."""
+    pacmap = mf.PaCMAP().fit_transform(X)
+    localmap = mf.LocalMAP().fit_transform(X)
+    assert not np.array_equal(pacmap, localmap)
+
+
+def test_localmap_max_distance_is_routed(X: np.ndarray) -> None:
+    near = mf.LocalMAP(max_distance=1.0).fit_transform(X)
+    far = mf.LocalMAP(max_distance=50.0).fit_transform(X)
+    assert not np.array_equal(near, far)
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0])
+def test_localmap_refuses_a_bad_max_distance(bad: float, X: np.ndarray) -> None:
+    with pytest.raises(ValueError, match="max_distance"):
+        fast(mf.LocalMAP, max_distance=bad).fit_transform(X)
+
+
+@pytest.mark.parametrize("cls", [mf.TSNE, mf.DensNE, mf.DREAMS])
+def test_int_perplexity_matches_float(cls: type[BaseEmbedding], X: np.ndarray) -> None:
+    as_int = fast(cls, perplexity=20).fit_transform(X)
+    as_float = fast(cls, perplexity=20.0).fit_transform(X)
+    assert np.array_equal(as_int, as_float)
