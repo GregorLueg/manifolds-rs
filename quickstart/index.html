@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="UMAP, t-SNE, PHATE, PaCMAP, diffusion maps and ForceAtlas2 for single-cell and computational biology, in Rust.">
+        <meta name="description" content="UMAP, t-SNE, PHATE, PaCMAP, LocalMAP, diffusion maps, ForceAtlas2 and NCVis for single-cell and computational biology, in Rust.">
       
       
       
@@ -16,7 +16,7 @@
         <link rel="prev" href="../choosing/">
       
       
-        <link rel="next" href="../gpu/">
+        <link rel="next" href="../vignettes/knn_searches/">
       
       
         
@@ -466,15 +466,67 @@
   
   
   
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Vignettes
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Vignettes
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
     <li class="md-nav__item">
-      <a href="../gpu/" class="md-nav__link">
+      <a href="../vignettes/knn_searches/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    GPU
+    Nearest neighbour searches
   
 
     
@@ -483,6 +535,126 @@
   
 
       </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vignettes/tsne/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    t-SNE, den-SNE and DREAMS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vignettes/umap_pacmap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    UMAP, densMAP, PaCMAP, LocalMAP, ForceAtlas2 and NCVis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vignettes/phate_diffusion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PHATE and diffusion maps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vignettes/gpu/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GPU acceleration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
     </li>
   
 
@@ -954,7 +1126,8 @@ truth, so use it.</p>
 <a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>    <span class="k">return</span> <span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">([</span><span class="nb">len</span><span class="p">(</span><span class="nb">set</span><span class="p">(</span><span class="n">a</span><span class="p">)</span> <span class="o">&amp;</span> <span class="nb">set</span><span class="p">(</span><span class="n">b</span><span class="p">))</span> <span class="k">for</span> <span class="n">a</span><span class="p">,</span> <span class="n">b</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">hi</span><span class="p">,</span> <span class="n">lo</span><span class="p">)])</span> <span class="o">/</span> <span class="n">k</span>
 </code></pre></div>
 <p>Run that over the swiss roll, which is a genuine manifold, and it separates the
-algorithms cleanly. 5000 points, defaults throughout:</p>
+algorithms cleanly. 5000 points, defaults throughout, mean over four dataset
+seeds:</p>
 <table>
 <thead>
 <tr>
@@ -968,30 +1141,35 @@ algorithms cleanly. 5000 points, defaults throughout:</p>
 <td>0.83</td>
 </tr>
 <tr>
+<td><code>PaCMAP</code></td>
+<td>0.76</td>
+</tr>
+<tr>
+<td><code>NCVis</code></td>
+<td>0.72</td>
+</tr>
+<tr>
 <td><code>UMAP</code></td>
-<td>0.67</td>
+<td>0.68</td>
 </tr>
 <tr>
 <td><code>ForceAtlas2</code></td>
-<td>0.59</td>
+<td>0.58</td>
 </tr>
 <tr>
 <td><code>PHATE</code></td>
-<td>0.37</td>
-</tr>
-<tr>
-<td><code>PaCMAP</code></td>
-<td>0.16</td>
+<td>0.53</td>
 </tr>
 </tbody>
 </table>
-<p>That ordering is the local-versus-global trade-off, measured. t-SNE wins on
-local structure because that is the only thing it optimises.</p>
+<p>t-SNE wins on local structure because that is the only thing it optimises.
+PHATE comes last for the opposite reason: it is built for the smooth global
+picture, not for keeping each point's 15 nearest neighbours.</p>
 <p>Now run the same metric over 12 Gaussian clusters in 50D and it collapses for
-everyone: 0.07 for UMAP, 0.21 for t-SNE, 0.04 for PaCMAP. Meanwhile silhouette
-against the known labels is 0.89, 0.84 and 0.50.</p>
-<p>That is not four algorithms failing. Inside an isotropic Gaussian blob in 50
-dimensions there is no local ordering to preserve: which 15 of your 400
+everyone: 0.02 for UMAP, 0.13 for t-SNE, 0.02 for PaCMAP. Meanwhile silhouette
+against the known labels is 0.91, 0.81 and 0.95.</p>
+<p>That is not three algorithms failing. Inside an isotropic Gaussian blob in 50
+dimensions there is no local ordering to preserve: which 15 of your thousand-odd
 cluster-mates happen to be nearest is close to arbitrary, so no embedding can
 keep it. The clusters come apart perfectly regardless.</p>
 <p>The lesson is to pick the metric that matches what you are claiming. Quote
@@ -1114,5 +1292,112 @@ not pass at all is the same as passing an empty one. A misspelled field is a
       <script src="../assets/javascripts/bundle.a5f9d56c.min.js"></script>
       
     
-  </body>
+  <script data-mkdocs-jupyter-mathjax="{&quot;url&quot;: &quot;https://cdn.jsdelivr.net/npm/mathjax@4.1.3/tex-mml-chtml.js&quot;, &quot;version&quot;: 4}">
+/* Shared by full pages and Material's instant navigation. */
+(() => {
+  const config = JSON.parse(document.currentScript.dataset.mkdocsJupyterMathjax);
+  if (window.mkdocsJupyterMathJax) return;
+
+  let loading;
+  let queue = Promise.resolve();
+  let previous = [];
+
+  const ready = async () => {
+    if (!loading) {
+      loading = (async () => {
+        let math = window.MathJax;
+        if (!math?.typesetPromise) {
+          const url = new URL(config.url, document.baseURI).href;
+          const existing = Array.from(document.scripts).find(script =>
+            script.src && (script.src === url || script.id === 'MathJax-script' ||
+              (/mathjax/i.test(script.src) &&
+               /\/(?:MathJax|latest|(?:tex|mml)(?:-mml)?-(?:chtml|svg))\.js(?:[?#]|$)/i.test(script.src))));
+          if (existing) {
+            if (!math?.startup?.promise) {
+              await new Promise((resolve, reject) => {
+                existing.addEventListener('load', resolve, { once: true });
+                existing.addEventListener('error', reject, { once: true });
+              });
+            }
+          } else {
+            // Keep site macros, delimiters and startup hooks when supplied.
+            const options = math || {};
+            window.MathJax = {
+              ...options,
+              loader: {
+                ...options.loader,
+                load: Array.from(new Set(['ui/safe', ...(options.loader?.load || [])]))
+              },
+              startup: { typeset: false, ...options.startup },
+              tex: {
+                tags: 'ams',
+                useLabelIds: true,
+                inlineMath: [['$', '$'], ['\\(', '\\)']],
+                displayMath: [['$$', '$$'], ['\\[', '\\]']],
+                processEscapes: true,
+                processEnvironments: true,
+                ...options.tex
+              }
+            };
+            await new Promise((resolve, reject) => {
+              const script = document.createElement('script');
+              script.src = config.url;
+              script.id = 'MathJax-script';
+              script.async = true;
+              script.onload = resolve;
+              script.onerror = reject;
+              document.head.appendChild(script);
+            });
+          }
+        }
+        math = window.MathJax;
+        await math.startup.promise;
+        return math;
+      })();
+    }
+    const math = await loading;
+    // A site owner can extend the v3 queue again on each navigation.
+    await math.startup.promise;
+    return math;
+  };
+
+  const unrendered = node => {
+    if (node.matches('mjx-container')) return [];
+    if (!node.querySelector('mjx-container')) return [node];
+    // In v3, scanning generated assistive MathML again produces nested output.
+    return Array.from(node.children).flatMap(unrendered);
+  };
+
+  const refresh = () => {
+    // A separate chain also serializes v3, without changing v4's startup promise.
+    queue = queue.then(async () => {
+      const notebooks = Array.from(document.querySelectorAll('.jupyter-wrapper'));
+      if (!notebooks.length && !previous.length) return;
+      if (notebooks.length === previous.length &&
+          notebooks.every((node, index) => node === previous[index])) return;
+      const math = await ready();
+      if (previous.length) {
+        math.typesetClear(previous);
+        math.texReset();
+      }
+      previous = notebooks.filter(node => node.isConnected);
+      const pending = previous.flatMap(unrendered);
+      if (pending.length) await math.typesetPromise(pending);
+    }).catch(error => console.error('mkdocs-jupyter: MathJax rendering failed', error));
+    return queue;
+  };
+
+  window.mkdocsJupyterMathJax = { refresh };
+  const start = () => {
+    if (typeof document$ !== 'undefined') document$.subscribe(refresh);
+    else refresh();
+  };
+  // Theme bundles and user-provided MathJax scripts can follow notebook content.
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start, { once: true });
+  } else start();
+})();
+
+</script>
+</body>
 </html>
