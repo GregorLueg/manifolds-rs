@@ -56,7 +56,8 @@ np.array_equal(indices, indices_kmknn)
 #
 # The package is built for large data and pulls its approximate searches from
 # [ann-search-rs](https://github.com/GregorLueg/ann-search-rs). Five of them
-# are exposed, on top of the two exact ones:
+# are exposed, on top of the two exact ones. Default wheels add a sixth,
+# `"rinnd"`, from Leland McInnes' [rinnd](https://github.com/lmcinnes/rinnd):
 #
 # | Method | Class | Use case |
 # | --- | --- | --- |
@@ -64,17 +65,13 @@ np.array_equal(indices, indices_kmknn)
 # | `"annoy"` | Tree | A single-cell classic. Scales to a few hundred thousand points at low dimensionality. |
 # | `"hnsw"` | Graph | Large data (500k and up), any dimensionality. Slower build, fast queries. The build uses a benign race. |
 # | `"nndescent"` | Graph | The all-rounder from 100k points on. Default for UMAP, densMAP, ForceAtlas2 and diffusion maps. |
+# | `"rinnd"` | Graph | rinnd's NN-Descent. Its SIMD kernels are tuned for x86 (AVX2), so it is the one to try there. `mf.rinnd_available()` says whether your build has it. |
 # | `"ivf"` | Cluster | The index behind FAISS. Large data, any dimensionality. `n_probes` trades recall for speed. Default for the t-SNE family, PaCMAP, LocalMAP and PHATE. |
 #
 # Every backend bar `"exhaustive"` searches in float32, whatever you hand it,
 # and casts the distances back to your dtype. Same recall, less memory traffic.
 # The knobs per backend live in `NeighbourParams`; only the fields of the
 # backend you picked do anything.
-#
-# Default wheels add `"rinnd"`, the NN-Descent from
-# [rinnd](https://github.com/lmcinnes/rinnd). Its SIMD kernels target x86 (AVX2),
-# so try it there; it is not in the timings below. `nnd_n_trees` sets the seeding
-# trees for both NN-Descents.
 
 # %%
 mf.NeighbourParams()
@@ -86,6 +83,8 @@ mf.NeighbourParams()
 
 # %%
 BACKENDS = ["exhaustive", "kmknn", "balltree", "annoy", "hnsw", "nndescent", "ivf"]
+if mf.rinnd_available():
+    BACKENDS.insert(-1, "rinnd")
 
 
 def timed(fn) -> float:
@@ -119,7 +118,8 @@ pl.DataFrame(
 # the `O(N^2)` in no time at that size. From 50k on NN-Descent and IVF are the
 # fastest, and the gap grows with N. kMkNN, which is exact, is close behind at
 # 50k and takes a quarter to a sixth of the exhaustive time on this tightly
-# clustered data.
+# clustered data. rinnd trails the other NN-Descent here, level with kMkNN,
+# without its x86 kernels (more on that below).
 #
 # Annoy and HNSW are no faster than exhaustive here: a one-off self-query at
 # `k = 10` never pays back their index build. They earn their keep at larger N,
@@ -162,9 +162,84 @@ pl.DataFrame([precision(ann) for ann in BACKENDS[1:]]).with_columns(
 # Look at the distance ratio before you panic about a recall number. The
 # synthetic clusters are tight, so lots of points sit at nearly identical
 # distances and swapping one for another costs nothing. For manifold learning
-# that is exactly the kind of miss you don't care about. For a much deeper
+# that is exactly the kind of miss you don't care about. rinnd is the clearest
+# case: the lowest recall in the table, but its misses still sit within a
+# percent of the true distances. Part of that gap is its smaller forest, see
+# the next section. For a much deeper
 # comparison of the methods, see the
 # [ann-search-rs benchmarks](https://github.com/GregorLueg/ann-search-rs).
+
+# %% [markdown]
+# ### Seeding NN-Descent
+#
+# Both NN-Descents start the same way. A forest of random projection trees
+# splits the data into small leaves, every point takes its leaf mates as its
+# first guess at its neighbours, and the descent then refines that graph by
+# checking neighbours of neighbours until few edges change. More trees means a
+# better first guess and fewer descent iterations, at a higher upfront cost.
+#
+# The two disagree on how many trees to plant. `"nndescent"` follows scanpy
+# (and umap-learn's compatibility layout): `5 + sqrt(n) / 20`, capped at 64.
+# `"rinnd"` follows PyNNDescent's own default: `2 * log10(n)`, clamped to
+# `[3, 12]`. So the ann-search-rs index bets on the forest, with a count that
+# grows with the square root of the data, and rinnd bets on the descent, with a
+# count that barely moves. The gap opens up with the data: about 1.5x at 25k
+# points, twice the trees at 100k, and nearly five times at a million cells.
+
+# %%
+pl.DataFrame({"n": [1_000, 25_000, 100_000, 1_000_000, 5_000_000]}).with_columns(
+    nndescent=(5 + (pl.col("n").sqrt() / 20).round()).clip(upper_bound=64),
+    rinnd=(2 * pl.col("n").log10()).round().clip(3, 12),
+).cast(pl.Int64)
+
+# %% [markdown]
+# `nnd_n_trees` in `NeighbourParams` overrides either. Here both NN-Descents run
+# at their own default and at the other one's, on 100k points at `k = 15`:
+
+# %%
+X_100k, _ = mf.datasets.clustered(100_000)
+truth_100k, truth_dist_100k = mf.knn_graph(X_100k, k=15, ann="kmknn")
+
+# The two defaults at n = 100k, as in the table above.
+n = X_100k.shape[0]
+DEFAULT_TREES = {
+    "nndescent": min(64, 5 + round(n**0.5 / 20)),
+    "rinnd": max(3, min(12, round(2 * np.log10(n)))),
+}
+
+
+def seeded(ann: str, n_trees: int) -> dict[str, float | str | bool]:
+    """Wall time, recall and mean distance ratio of one NN-Descent."""
+    params = mf.NeighbourParams(nnd_n_trees=n_trees)
+    start = time.perf_counter()
+    idx, dist = mf.knn_graph(X_100k, k=15, ann=ann, nn_params=params)
+    elapsed = time.perf_counter() - start
+    hits = sum(len(set(a) & set(b)) for a, b in zip(idx, truth_100k, strict=True))
+    return {
+        "method": ann,
+        "n_trees": n_trees,
+        "default": n_trees == DEFAULT_TREES[ann],
+        "seconds": elapsed,
+        "recall": hits / truth_100k.size,
+        "dist_ratio": float(np.mean(dist / truth_dist_100k)),
+    }
+
+
+methods = ["nndescent", "rinnd"] if mf.rinnd_available() else ["nndescent"]
+pl.DataFrame(
+    [seeded(ann, t) for ann in methods for t in DEFAULT_TREES.values()]
+).with_columns(pl.col("seconds").round(3), pl.col("recall", "dist_ratio").round(4))
+
+# %% [markdown]
+# On this data the tree count moves rinnd more than it moves `"nndescent"`.
+# Giving rinnd the scanpy count buys recall at a modest extra cost, while cutting
+# `"nndescent"` down to rinnd's count saves a little time and loses very little.
+# The distance ratio barely moves for either: the extra misses are near-ties.
+#
+# These docs render on Apple Silicon, where rinnd's AVX2 kernels do not run and
+# ann-search-rs gets Accelerate for its GEMMs. So read the timings as one
+# machine's, not a ranking. On x86 the picture can flip, and that is where
+# `"rinnd"` is worth a benchmark on your own data.
 
 # %% [markdown]
 # ## Build once, embed many times
