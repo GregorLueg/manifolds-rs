@@ -18,6 +18,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 use crate::convert::mat_to_numpy;
+use crate::error::ManErr;
 
 ///////////
 // Types //
@@ -64,7 +65,8 @@ pub fn swiss_roll(
     density_bias: f64,
     seed: u64,
 ) -> PyResult<Parameterised<'_>> {
-    let (mat, t) = generate_swiss_roll_biased(n_samples, noise, density_bias, seed);
+    let (mat, t) =
+        generate_swiss_roll_biased(n_samples, noise, density_bias, seed).map_err(ManErr)?;
     Ok((mat_to_numpy(py, &mat)?, t.into_pyarray(py)))
 }
 

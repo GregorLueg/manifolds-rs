@@ -35,7 +35,8 @@ def swiss_roll(
 
     Args:
         n_samples: Number of points.
-        noise: Standard deviation of the noise added to the surface.
+        noise: Half-width of the uniform noise added to each coordinate.
+            Must be positive; zero raises a ``ValueError``.
         density_bias: Sampling bias along the roll. ``0.0`` samples uniformly;
             higher values pile points up at the inner end, which is what makes
             an embedding's density handling visible. ``2.5`` roughly matches

@@ -177,6 +177,17 @@ pub enum ManifoldsError {
         requirement: &'static str,
     },
 
+    /// Error if a synthetic data generator parameter is out of range
+    #[error("Synthetic data: {param} = {value} is invalid, {requirement}")]
+    SyntheticInvalidParam {
+        /// Name of the parameter
+        param: &'static str,
+        /// Supplied value
+        value: f64,
+        /// What the parameter must satisfy
+        requirement: &'static str,
+    },
+
     /// Error if LocalMAP's `max_distance` is not a positive finite number
     #[error("LocalMAP: max_distance = {value} is invalid, it must be positive and finite")]
     LocalMapInvalidMaxDistance {

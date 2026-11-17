@@ -66,6 +66,7 @@ impl From<ManErr> for PyErr {
             | ManifoldsError::DegenerateLocalRadii
             | ManifoldsError::Fa2InvalidParam { .. }
             | ManifoldsError::NcvisInvalidParam { .. }
+            | ManifoldsError::SyntheticInvalidParam { .. }
             | ManifoldsError::DreamsInvalidLambda { .. }
             | ManifoldsError::DreamsReferenceMismatch { .. }
             | ManifoldsError::DreamsDegenerateReference
