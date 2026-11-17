@@ -23,8 +23,8 @@ from ._validate import check_choice
 def swiss_roll(
     n_samples: int = 5000,
     *,
-    noise: float = 0.05,
-    density_bias: float = 0.0,
+    noise: int | float = 0.05,
+    density_bias: int | float = 0.0,
     seed: int = 42,
 ) -> tuple[np.ndarray, np.ndarray]:
     """A 2-D manifold rolled up in 3-D.
@@ -75,7 +75,7 @@ def trajectory(
     *,
     topology: str = "bifurcation",
     dim: int = 50,
-    noise: float = 0.1,
+    noise: int | float = 0.1,
     seed: int = 42,
 ) -> tuple[np.ndarray, np.ndarray]:
     """A branching differentiation trajectory.
@@ -111,9 +111,9 @@ def hierarchical(
     dim: int = 50,
     n_supergroups: int = 4,
     n_subclusters: int = 5,
-    supergroup_spread: float = 15.0,
-    subcluster_spread: float = 3.0,
-    point_std: float = 0.5,
+    supergroup_spread: int | float = 15.0,
+    subcluster_spread: int | float = 3.0,
+    point_std: int | float = 0.5,
     seed: int = 42,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Clusters within clusters.

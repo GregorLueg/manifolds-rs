@@ -209,9 +209,9 @@ class NeighbourParams:
     m: int | None = None
     ef_construction: int | None = None
     ef_search: int | None = None
-    delta: float | None = None
+    delta: int | float | None = None
     nnd_n_trees: int | None = None
-    bt_budget: float | None = None
+    bt_budget: int | float | None = None
     n_list: int | None = None
     n_probes: int | None = None
     k_means: str | None = None
@@ -247,8 +247,8 @@ class NeighbourParamsGpu:
     k_means: str | None = None
     k_build: int | None = None
     n_tree: int | None = None
-    delta: float | None = None
-    rho: float | None = None
+    delta: int | float | None = None
+    rho: int | float | None = None
 
     @beartype
     def __post_init__(self) -> None:
@@ -270,9 +270,9 @@ class UmapGraph:
             during symmetrisation. ``1.0`` is the plain union.
     """
 
-    bandwidth: float | None = None
-    local_connectivity: float | None = None
-    mix_weight: float | None = None
+    bandwidth: int | float | None = None
+    local_connectivity: int | float | None = None
+    mix_weight: int | float | None = None
 
 
 @dataclass(frozen=True)
@@ -293,13 +293,13 @@ class UmapOptim:
         eps: Adam denominator epsilon. Ignored by the 0.6 Adam, as `beta1`.
     """
 
-    a: float | None = None
-    b: float | None = None
-    gamma: float | None = None
+    a: int | float | None = None
+    b: int | float | None = None
+    gamma: int | float | None = None
     neg_sample_rate: int | None = None
-    beta1: float | None = None
-    beta2: float | None = None
-    eps: float | None = None
+    beta1: int | float | None = None
+    beta2: int | float | None = None
+    eps: int | float | None = None
 
 
 @dataclass(frozen=True)
@@ -322,9 +322,9 @@ class TsneOptim:
     """
 
     early_exag_iter: int | None = None
-    early_exag_factor: float | None = None
-    late_exag_factor: float | None = None
-    theta: float | None = None
+    early_exag_factor: int | float | None = None
+    late_exag_factor: int | float | None = None
+    theta: int | float | None = None
     n_interp_points: int | None = None
     max_depth: int | None = None
 
@@ -345,9 +345,9 @@ class PacmapOptim:
         phase2_end: Last epoch of the decay phase.
     """
 
-    beta1: float | None = None
-    beta2: float | None = None
-    eps: float | None = None
+    beta1: int | float | None = None
+    beta2: int | float | None = None
+    eps: int | float | None = None
     phase1_end: int | None = None
     phase2_end: int | None = None
 
@@ -373,9 +373,9 @@ class Fa2Optim:
 
     strong_gravity: bool | None = None
     dissuade_hubs: bool | None = None
-    edge_weight_influence: float | None = None
-    jitter_tolerance: float | None = None
-    theta: float | None = None
+    edge_weight_influence: int | float | None = None
+    jitter_tolerance: int | float | None = None
+    theta: int | float | None = None
 
 
 @dataclass(frozen=True)
@@ -390,9 +390,9 @@ class NcvisOptim:
         lr_q: Step size of the learned log normalisation constant.
     """
 
-    a: float | None = None
-    b: float | None = None
-    lr_q: float | None = None
+    a: int | float | None = None
+    b: int | float | None = None
+    lr_q: int | float | None = None
 
 
 @dataclass(frozen=True)
@@ -406,8 +406,8 @@ class DensParams:
             which keeps the correlation defined when the spread is tiny.
     """
 
-    frac: float | None = None
-    var_shift: float | None = None
+    frac: int | float | None = None
+    var_shift: int | float | None = None
 
 
 @dataclass(frozen=True)
@@ -427,8 +427,8 @@ class PhateDiffusion:
             when `t` is pinned.
     """
 
-    bandwidth_scale: float | None = None
-    thresh: float | None = None
+    bandwidth_scale: int | float | None = None
+    thresh: int | float | None = None
     graph_symmetry: str | None = None
     n_svd: int | None = None
     landmark_k_means: str | None = None
