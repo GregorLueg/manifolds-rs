@@ -44,6 +44,16 @@ pub fn mlx_available() -> bool {
     manifolds_rs::MLX_AVAILABLE
 }
 
+/// Whether the `"rinnd"` kNN backend is compiled in.
+///
+/// ### Returns
+///
+/// `True` when this build has the `rinnd` feature. Fixed at build time.
+#[pyfunction]
+pub fn rinnd_available() -> bool {
+    cfg!(feature = "rinnd")
+}
+
 /// Try to stand up a wgpu client on the default device.
 ///
 /// ### Returns

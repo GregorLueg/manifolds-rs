@@ -45,6 +45,41 @@ pub enum AnnSearch {
     /// NNDescent on MLX (Apple Silicon, `mlx` feature)
     #[cfg(mlx_available)]
     NNDescentMlx,
+    /// A backend from outside this crate, see [`ExternalKnn`]
+    External(ExternalKnn),
+}
+
+/// Signature of an external kNN backend plugged in via [`ExternalKnn`].
+///
+/// Arguments in order: row-major `f32` data, number of samples, number of
+/// features, neighbours to return (self included, the caller removes it),
+/// distance metric name, NN-Descent seeding trees (`None` for the backend's
+/// default), convergence delta, seed and verbosity. Must return rows sorted by
+/// distance ascending. For `"euclidean"` the distances must be squared, as
+/// [`run_ann_search`] takes the square root afterwards.
+pub type ExternalKnnFn = fn(
+    &[f32],
+    usize,
+    usize,
+    usize,
+    &str,
+    Option<usize>,
+    f64,
+    usize,
+    Verbosity,
+) -> ManifoldsKnnResults<f32>;
+
+/// A kNN backend that lives outside this crate, selected by `ann_type`.
+///
+/// Lets a downstream crate add a backend this crate cannot depend on (e.g. one
+/// that is not on crates.io) while keeping k resolution, self removal and the
+/// Euclidean square root in [`run_ann_search`].
+#[derive(Debug, Clone, Copy)]
+pub struct ExternalKnn {
+    /// The `ann_type` key that selects this backend, matched case-insensitively
+    pub name: &'static str,
+    /// The search itself
+    pub run: ExternalKnnFn,
 }
 
 /// Parameters for the nearest neighbour search
@@ -67,6 +102,10 @@ pub struct NearestNeighbourParams<T> {
     /// NNDescent: convergence criterion. If less than these percentage of
     /// neighbours have been updated, the algorithm counts as converged.
     pub delta: T,
+    /// NNDescent: number of trees seeding the graph. `None` uses the backend's
+    /// default: `5 + sqrt(n) / 20`, capped at 64 (the umap-learn / scanpy rule)
+    /// for `"nndescent"`; an external backend applies its own.
+    pub nnd_n_trees: Option<usize>,
     /// BallTree: Proportions of N to search in the BallTree
     pub bt_budget: T,
     /// IVF: Number of lists, clusters to use. If not provided, will default
@@ -77,6 +116,9 @@ pub struct NearestNeighbourParams<T> {
     /// IVF / KmKNN: k-means algorithm training the centroids, `"emeans"`
     /// (default) or `"lloyd"`.
     pub k_means: String,
+    /// Optional backend from outside this crate, used when `ann_type` matches
+    /// its name. Not set by [`NearestNeighbourParams::new`]; assign the field.
+    pub external_knn: Option<ExternalKnn>,
 }
 
 impl<T> NearestNeighbourParams<T> {
@@ -105,6 +147,8 @@ impl<T> NearestNeighbourParams<T> {
     /// **NN Descent**
     ///
     /// * `delta` - Early termination criterion.
+    /// * `nnd_n_trees` - Trees seeding the graph. `None` for the backend's
+    ///   default.
     ///
     /// **BallTree**
     ///
@@ -128,6 +172,7 @@ impl<T> NearestNeighbourParams<T> {
         ef_search: usize,
         // nndescent
         delta: T,
+        nnd_n_trees: Option<usize>,
         // balltree
         bt_budget: T,
         // ivf / kmknn
@@ -143,10 +188,12 @@ impl<T> NearestNeighbourParams<T> {
             ef_construction,
             ef_search,
             delta,
+            nnd_n_trees,
             bt_budget,
             n_list,
             n_probes,
             k_means,
+            external_knn: None,
         }
     }
 }
@@ -172,12 +219,14 @@ where
             ef_search: 100,
             // nndescent
             delta: T::from(0.001).unwrap(),
+            nnd_n_trees: None,
             // balltree
             bt_budget: T::from(0.1).unwrap(),
             // ivf
             n_list: None,
             n_probes: None,
             k_means: "emeans".to_string(),
+            external_knn: None,
         }
     }
 }
@@ -393,7 +442,8 @@ where
 /// * `ann_type` - Which approximate nearest neighbour search to use. One of
 ///   `"annoy"`, `"balltree"`, `"exhaustive"`, `"hnsw"`, `"ivf"`, `"kmknn"` or
 ///   `"nndescent"`. With the MLX backend compiled in also `"exhaustive_mlx"`,
-///   `"ivf_mlx"` and `"nndescent_mlx"`.
+///   `"ivf_mlx"` and `"nndescent_mlx"`. The name of
+///   `params_nn.external_knn`, if set, selects that backend.
 /// * `params_nn` - The parameters for the approximate nearest neighbour search.
 /// * `seed` - Seed for reproducibility.
 /// * `verbose` - If `0` -> silent or `1` for normal verbosity, `2` for detailed
@@ -420,18 +470,49 @@ where
 {
     let verbosity = parse_verbosity_level(verbose);
 
-    let ann_search = parse_ann_search(&ann_type).unwrap_or_else(|| {
-        eprintln!(
-            "Warning: unrecognised approximate nearest neighbour method provided: {:?}. Default to KmKnn.",
-            ann_type
-        );
-        AnnSearch::default()
-    });
+    let external = params_nn
+        .external_knn
+        .filter(|e| e.name.eq_ignore_ascii_case(&ann_type));
+
+    let ann_search = match external {
+        Some(ext) => AnnSearch::External(ext),
+        None => parse_ann_search(&ann_type).unwrap_or_else(|| {
+            eprintln!(
+                "Warning: unrecognised approximate nearest neighbour method provided: {:?}. Default to KmKnn.",
+                ann_type
+            );
+            AnnSearch::default()
+        }),
+    };
 
     let k_means_params =
         KMeansTrainingParams::default().with_algorithm(parse_k_means(&params_nn.k_means));
 
     let (knn_indices, knn_dist) = match ann_search {
+        AnnSearch::External(ext) => {
+            let (n, dim) = (data.nrows(), data.ncols());
+            let mut flat = vec![0.0_f32; n * dim];
+            flat.par_chunks_exact_mut(dim.max(1))
+                .enumerate()
+                .for_each(|(i, row)| {
+                    for (j, v) in row.iter_mut().enumerate() {
+                        *v = data[(i, j)].to_f32().unwrap();
+                    }
+                });
+            let (indices, dist) = (ext.run)(
+                &flat,
+                n,
+                dim,
+                k + 1,
+                &params_nn.dist_metric,
+                params_nn.nnd_n_trees,
+                params_nn.delta.to_f64().unwrap(),
+                seed,
+                verbosity,
+            )?;
+
+            cast_knn(Ok((indices, Some(dist))))?
+        }
         AnnSearch::Annoy => {
             let index = build_annoy_index::<f32>(
                 cast_matrix_to_fp32(data),
@@ -472,7 +553,7 @@ where
                 k,
                 None,
                 None,
-                None,
+                params_nn.nnd_n_trees,
                 params_nn.delta.to_f64().unwrap(),
                 false,
                 true,
@@ -583,7 +664,7 @@ where
                 Some(k),
                 None,
                 None,
-                None,
+                params_nn.nnd_n_trees,
                 params_nn.delta.to_f32(),
                 None,
                 None,

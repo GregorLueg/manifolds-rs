@@ -50,6 +50,7 @@ from ._manifolds import (
     gpu_available,
     mlx_available,
     num_threads,
+    rinnd_available,
     set_num_threads,
 )
 from ._params import (
@@ -108,6 +109,7 @@ __all__ = [
     "knn_graph",
     "mlx_available",
     "num_threads",
+    "rinnd_available",
     "set_num_threads",
     "tsne",
     "umap",

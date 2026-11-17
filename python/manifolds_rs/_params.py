@@ -34,11 +34,21 @@ from ._validate import check_choice
 #: `mlx` feature and the core found mlx-c. Fixed at build time.
 _MLX = _manifolds.mlx_available()
 
+#: Whether ``"rinnd"`` is accepted: the extension was built with the `rinnd`
+#: feature (on by default). Fixed at build time.
+_RINND = _manifolds.rinnd_available()
+
+#: The MLX neighbour backends, accepted by both the CPU and GPU estimators.
+_MLX_ANN: frozenset[str] = frozenset({"exhaustive_mlx", "ivf_mlx", "nndescent_mlx"})
+
 #: CPU neighbour backends, from `parse_ann_search`. The `*_mlx` ones run on the
-#: Apple GPU through MLX and only exist in an `mlx` build.
-ANN_CPU: frozenset[str] = frozenset(
-    {"exhaustive", "kmknn", "balltree", "annoy", "hnsw", "ivf", "nndescent"}
-) | (frozenset({"exhaustive_mlx", "ivf_mlx", "nndescent_mlx"}) if _MLX else frozenset())
+#: Apple GPU through MLX and only exist in an `mlx` build. ``"rinnd"`` is added
+#: by the bindings, not the core, and only exists in a `rinnd` build.
+ANN_CPU: frozenset[str] = (
+    frozenset({"exhaustive", "kmknn", "balltree", "annoy", "hnsw", "ivf", "nndescent"})
+    | (_MLX_ANN if _MLX else frozenset())
+    | (frozenset({"rinnd"}) if _RINND else frozenset())
+)
 
 #: GPU neighbour backends, from `parse_ann_search_gpu`. The unsuffixed aliases
 #: are accepted by the core, so they are accepted here.
@@ -51,7 +61,7 @@ ANN_GPU: frozenset[str] = frozenset(
         "ivf",
         "nndescent",
     }
-) | (frozenset({"exhaustive_mlx", "ivf_mlx", "nndescent_mlx"}) if _MLX else frozenset())
+) | (_MLX_ANN if _MLX else frozenset())
 
 #: Distance metrics, from `ann_search_rs::utils::dist::parse_ann_dist`. Note
 #: ``"euclidean"`` and ``"l2"`` are the same metric, as are ``"manhattan"`` and
@@ -177,8 +187,12 @@ class NeighbourParams:
         m: HNSW. Edges per node on the upper layers, ``2 * m`` on layer 0.
         ef_construction: HNSW. Candidate list width during the build.
         ef_search: HNSW. Beam width at query time, the recall knob.
-        delta: NN-Descent. Convergence threshold, as a fraction of neighbours
-            updated in an iteration.
+        delta: NN-Descent and rinnd. Convergence threshold, as a fraction of
+            neighbours updated in an iteration.
+        nnd_n_trees: NN-Descent and rinnd. Random projection trees seeding the
+            graph. ``None`` gives ``5 + sqrt(n) / 20``, capped at 64, for
+            ``"nndescent"`` (the umap-learn / scanpy rule) and
+            ``clamp(round(2 * log10(n)), 3, 12)`` for ``"rinnd"``.
         bt_budget: Ball tree. Fraction of the dataset to visit per query.
         n_list: IVF. Voronoi cells. ``None`` gives ``sqrt(n)``.
         n_probes: IVF. Cells visited per query. ``None`` gives ``sqrt(n_list)``.
@@ -192,6 +206,7 @@ class NeighbourParams:
     ef_construction: int | None = None
     ef_search: int | None = None
     delta: float | None = None
+    nnd_n_trees: int | None = None
     bt_budget: float | None = None
     n_list: int | None = None
     n_probes: int | None = None

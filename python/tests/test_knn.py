@@ -7,7 +7,13 @@ import pytest
 
 import manifolds_rs as mf
 
-BACKENDS = ["exhaustive", "kmknn", "balltree", "annoy", "hnsw", "ivf", "nndescent"]
+BACKENDS = ["exhaustive", "kmknn", "balltree", "annoy", "hnsw", "ivf", "nndescent"] + (
+    ["rinnd"] if mf.rinnd_available() else []
+)
+
+needs_rinnd = pytest.mark.skipif(
+    not mf.rinnd_available(), reason="built without the rinnd feature"
+)
 
 
 @pytest.mark.parametrize("ann", BACKENDS)
@@ -155,3 +161,30 @@ def test_phate_refuses_manhattan(X: np.ndarray) -> None:
 def test_landmark_diffusion_maps_refuse_manhattan(X: np.ndarray) -> None:
     with pytest.raises(ValueError, match="manhattan"):
         mf.DiffusionMaps(metric="manhattan", n_landmarks=50).fit_transform(X)
+
+
+@needs_rinnd
+@pytest.mark.parametrize("metric", ["euclidean", "cosine"])
+def test_rinnd_matches_exhaustive(metric: str, X: np.ndarray) -> None:
+    """High recall, and true distances in the same metric as the exact search."""
+    truth, truth_dist = mf.knn_graph(X, k=10, metric=metric, ann="exhaustive")
+    ind, dist = mf.knn_graph(X, k=10, metric=metric, ann="rinnd", seed=7)
+    hits = sum(len(set(a) & set(b)) for a, b in zip(ind, truth, strict=True))
+    assert hits / truth.size > 0.95
+    assert np.allclose(dist[:, 0], truth_dist[:, 0], rtol=1e-4, atol=1e-5)
+
+
+@needs_rinnd
+@pytest.mark.parametrize("ann", ["nndescent", "rinnd"])
+def test_nnd_n_trees_reaches_the_search(ann: str, X: np.ndarray) -> None:
+    params = mf.NeighbourParams(nnd_n_trees=2)
+    a = mf.knn_graph(X, k=10, ann=ann, nn_params=params, seed=7)
+    b = mf.knn_graph(X, k=10, ann=ann, nn_params=params, seed=7)
+    assert np.array_equal(a[0], b[0])
+
+
+@needs_rinnd
+def test_rinnd_drives_an_embedding(X: np.ndarray) -> None:
+    emb = mf.UMAP(ann="rinnd", n_epochs=20).fit_transform(X)
+    assert emb.shape == (X.shape[0], 2)
+    assert np.isfinite(emb).all()

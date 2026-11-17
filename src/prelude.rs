@@ -7,7 +7,8 @@
 pub use crate::data::graph::UmapGraphParams;
 pub use crate::data::init::{initialise_embedding, parse_initialisation};
 pub use crate::data::nearest_neighbours::{
-    metric_returns_squared, parse_ann_search, parse_k_means, run_ann_search, NearestNeighbourParams,
+    metric_returns_squared, parse_ann_search, parse_k_means, run_ann_search, ExternalKnn,
+    ExternalKnnFn, NearestNeighbourParams,
 };
 pub use crate::data::pacmap_pairs::PacmapPairs;
 pub use crate::data::structures::CoordinateList;

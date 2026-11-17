@@ -49,7 +49,8 @@ def knn_graph(
             ``"hnsw"``, ``"ivf"`` or ``"nndescent"``. ``"kmknn"`` is exact and
             holds up well into the hundreds of thousands; past that
             ``"nndescent"`` or ``"hnsw"``. An mlx build adds
-            ``"exhaustive_mlx"``, ``"ivf_mlx"`` and ``"nndescent_mlx"``.
+            ``"exhaustive_mlx"``, ``"ivf_mlx"`` and ``"nndescent_mlx"``. Default
+            builds add ``"rinnd"``, rinnd's NN-Descent, see `rinnd_available`.
         nn_params: Backend-specific knobs. See `NeighbourParams`.
         seed: Fixes anything randomised in the build.
         verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.

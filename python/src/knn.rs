@@ -29,6 +29,7 @@ macro_rules! knn_arm {
         if let Some(d) = $dict {
             params::fill_nn(d, &mut nn)?;
         }
+        params::attach_backends(&mut nn);
         let ann = $ann.to_string();
         let (indices, distances) = $py
             .detach(|| {

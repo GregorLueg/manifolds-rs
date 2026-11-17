@@ -259,7 +259,45 @@ where
     p.n_list = r.get::<usize>("n_list")?.or(p.n_list);
     p.n_probes = r.get::<usize>("n_probes")?.or(p.n_probes);
     set(&mut p.k_means, r.get::<String>("k_means")?);
+    p.nnd_n_trees = r.get::<usize>("nnd_n_trees")?.or(p.nnd_n_trees);
     r.finish()
+}
+
+/// Fill the `nn_params` group if present, and attach the backends this crate
+/// adds to the core's.
+///
+/// The attaching happens whether or not the group was given, so `"rinnd"`
+/// works with the crate defaults too.
+///
+/// ### Params
+///
+/// * `r` - Reader over the parent parameter dictionary.
+/// * `p` - Struct holding the crate defaults, overwritten in place.
+///
+/// ### Returns
+///
+/// Nothing, or the first bad or unknown key.
+pub(crate) fn nn_group<T>(r: &mut Reader<'_, '_>, p: &mut NearestNeighbourParams<T>) -> PyResult<()>
+where
+    T: ManifoldsFloat,
+{
+    nested(r, "nn_params", p, fill_nn)?;
+    attach_backends(p);
+    Ok(())
+}
+
+/// Attach the kNN backends that live in this crate rather than the core.
+///
+/// ### Params
+///
+/// * `p` - Neighbour parameters, modified in place.
+pub(crate) fn attach_backends<T>(p: &mut NearestNeighbourParams<T>) {
+    #[cfg(feature = "rinnd")]
+    {
+        p.external_knn = Some(crate::rinnd_knn::RINND);
+    }
+    #[cfg(not(feature = "rinnd"))]
+    let _ = p;
 }
 
 /// Fill [`UmapGraphParams`] from a dictionary.
@@ -551,7 +589,7 @@ where
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
-    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(&mut r, &mut p.nn_params)?;
     nested(&mut r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(&mut r, "optim_params", &mut p.optim_params, fill_umap_optim)?;
     r.finish()?;
@@ -665,7 +703,7 @@ where
     let mut p = PhateParams::<T>::default();
     let mut r = Reader::new(d, "PhateParams");
     phate_into(&mut r, &mut p)?;
-    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(&mut r, &mut p.nn_params)?;
     r.finish()?;
     Ok(p)
 }
@@ -754,7 +792,7 @@ where
     if range_given {
         p.range = range;
     }
-    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(&mut r, &mut p.nn_params)?;
     nested(
         &mut r,
         "optim_params",
@@ -794,7 +832,7 @@ where
         p.range = range;
     }
     set(&mut p.max_distance, r.float::<T>("max_distance")?);
-    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(&mut r, &mut p.nn_params)?;
     nested(
         &mut r,
         "optim_params",
@@ -832,7 +870,7 @@ where
     p.n_svd = r.get::<usize>("n_svd")?.or(p.n_svd);
     set(&mut p.k_means, r.get::<String>("landmark_k_means")?);
     p.t = read_time(&mut r, &p.t)?;
-    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(&mut r, &mut p.nn_params)?;
     r.finish()?;
     Ok(p)
 }
@@ -857,7 +895,7 @@ where
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
-    nested(&mut r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(&mut r, &mut p.nn_params)?;
     nested(&mut r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(&mut r, "optim_params", &mut p.optim_params, fill_fa2_optim)?;
     r.finish()?;
@@ -893,7 +931,7 @@ where
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
-    nested(r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(r, &mut p.nn_params)?;
     nested(r, "graph_params", &mut p.graph_params, fill_umap_graph)?;
     nested(r, "optim_params", &mut p.optim_params, fill_umap_optim)?;
     Ok(())
@@ -922,7 +960,7 @@ where
     set(&mut p.initialisation, r.get::<String>("initialisation")?);
     p.init_range = r.float::<T>("init_range")?.or(p.init_range);
     set(&mut p.randomised, r.get::<bool>("randomised")?);
-    nested(r, "nn_params", &mut p.nn_params, fill_nn)?;
+    nn_group(r, &mut p.nn_params)?;
     nested(r, "optim_params", &mut p.optim_params, fill_tsne_optim)?;
     Ok(())
 }

@@ -211,6 +211,97 @@ fn nndescent_fills_large_k() {
     assert!(idx.iter().all(|r| r.len() == k), "rows came back short");
 }
 
+#[test]
+fn nndescent_explicit_n_trees() {
+    let (data, _) = commons::create_diagnostic_data(60, 10, 42);
+    let k = 10;
+    let params = NearestNeighbourParams {
+        nnd_n_trees: Some(2),
+        ..NearestNeighbourParams::<f64>::default()
+    };
+
+    let truth = run_ann_search(data.as_ref(), k, "exhaustive".to_string(), &params, 42, 0)
+        .unwrap()
+        .0;
+    let run = || run_ann_search(data.as_ref(), k, "nndescent".to_string(), &params, 42, 0).unwrap();
+    let (idx, _) = run();
+
+    assert_eq!(run().0, idx);
+    let r = recall(&idx, &truth, k);
+    assert!(r > 0.9, "recall {r} is too low");
+}
+
+//////////////////
+// External kNN //
+//////////////////
+
+/// Brute-force squared Euclidean kNN, self included, as an [`ExternalKnnFn`].
+///
+/// ### Params
+///
+/// * `data` - Row-major samples
+/// * `n` - Number of samples
+/// * `dim` - Number of features
+/// * `k` - Neighbours per row, self included
+///
+/// ### Returns
+///
+/// Sorted rows of indices and squared distances.
+#[allow(clippy::too_many_arguments)]
+fn brute_force_external(
+    data: &[f32],
+    n: usize,
+    dim: usize,
+    k: usize,
+    _metric: &str,
+    _n_trees: Option<usize>,
+    _delta: f64,
+    _seed: usize,
+    _verbosity: Verbosity,
+) -> ManifoldsKnnResults<f32> {
+    let rows = (0..n).map(|i| {
+        let a = &data[i * dim..(i + 1) * dim];
+        let mut d: Vec<(usize, f32)> = (0..n)
+            .map(|j| {
+                let b = &data[j * dim..(j + 1) * dim];
+                (j, a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum())
+            })
+            .collect();
+        d.sort_by(|x, y| x.1.partial_cmp(&y.1).unwrap());
+        d.truncate(k);
+        d.into_iter().unzip::<_, _, Vec<_>, Vec<_>>()
+    });
+    Ok(rows.unzip())
+}
+
+#[test]
+fn external_knn_is_used_and_post_processed() {
+    // The hook hands back self and squared distances; `run_ann_search` must
+    // drop the one and take the root of the other, as for its own backends.
+    let (data, _) = commons::create_diagnostic_data(40, 8, 42);
+    let k = 5;
+    let params = NearestNeighbourParams {
+        external_knn: Some(ExternalKnn {
+            name: "brute",
+            run: brute_force_external,
+        }),
+        ..NearestNeighbourParams::<f64>::default()
+    };
+
+    let (idx, dist) =
+        run_ann_search(data.as_ref(), k, "Brute".to_string(), &params, 42, 0).unwrap();
+    let (truth, _) =
+        run_ann_search(data.as_ref(), k, "exhaustive".to_string(), &params, 42, 0).unwrap();
+
+    assert_eq!(idx, truth);
+    let expected = brute_force_euclidean(&data, k);
+    for (got, want) in dist.iter().zip(&expected) {
+        for (g, w) in got.iter().zip(want) {
+            approx::assert_relative_eq!(g, w, epsilon = 1e-4);
+        }
+    }
+}
+
 /////////
 // IVF //
 /////////
