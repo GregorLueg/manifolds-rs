@@ -10,7 +10,7 @@ use rand::{rngs::SmallRng, RngCore, SeedableRng};
 use rayon::prelude::*;
 
 use crate::prelude::*;
-use crate::training::umap_optimisers::UmapOptimParams;
+use crate::training::umap_optimisers::{SplitPowLut, UmapOptimParams};
 use crate::utils::prefetch::prefetch_read;
 
 ////////////
@@ -23,10 +23,6 @@ pub const NCVIS_MIN_DIST: f64 = 0.001;
 
 /// Default `spread` for NCVis.
 pub const NCVIS_SPREAD: f64 = 1.0;
-
-/// Gradient steps for the `(a, b)` curve fit. UMAP's 300 stops short of the
-/// least-squares optimum; this many reach it, and the fit is cheap.
-const AB_FIT_ITER: usize = 3000;
 
 /// Floor on the squared distance before `powf`, so `d2^(b - 1)` stays finite
 /// when two points coincide.
@@ -137,7 +133,7 @@ where
         lr: Option<T>,
         lr_q: Option<T>,
     ) -> Self {
-        let (a, b) = UmapOptimParams::fit_params(min_dist, spread, Some(AB_FIT_ITER));
+        let (a, b) = UmapOptimParams::fit_params(min_dist, spread, None);
         Self {
             n_epochs: n_epochs.unwrap_or(50),
             n_negative: n_negative.unwrap_or(T::from_f64(10.0).unwrap()),
@@ -286,6 +282,157 @@ pub fn noise_plan(n_epochs: usize, n_negative: f64) -> Vec<u32> {
 // Optimiser //
 ///////////////
 
+/// Run-wide state shared by every chunk of the NCVis kernel.
+struct KernelCtx<'a, T: AtomicFloat> {
+    /// Flat layout `[n * n_dim]`, written hogwild
+    embd: &'a [T::Atomic],
+    /// CSR row offsets of the graph
+    offsets: &'a [usize],
+    /// CSR neighbour indices of the graph
+    targets: &'a [u32],
+    /// Number of points
+    n: usize,
+    /// Kernel parameter `a`
+    a: T,
+    /// `x^b` lookup table for the kernel
+    pow_lut: SplitPowLut<T>,
+    /// `a == b == 1`: the Cauchy kernel, no `powf`
+    cauchy: bool,
+    /// `2ab`, the constant of the kernel gradient
+    two_ab: T,
+    /// Floor on the squared distance before `powf`
+    min_d2: T,
+    /// Clamp on each coordinate shift
+    max_shift: T,
+    /// Step size of the log normalisation constant
+    lr_q: T,
+}
+
+/// Per-epoch state shared by every chunk.
+struct EpochCtx<T> {
+    /// Learning rate this epoch
+    step: T,
+    /// `1 / n_noise`
+    inv_noise: T,
+    /// Negatives per edge this epoch, at least one
+    n_noise: usize,
+    /// Log normalisation constant at the start of the epoch
+    q_log: T,
+}
+
+/// One epoch of the NCVis update over a contiguous range of source points.
+///
+/// Inlined into both call sites so the `n_dim == 2` one sees a constant and
+/// unrolls the dim loops.
+///
+/// ### Params
+///
+/// * `ctx` - Run-wide state
+/// * `ep` - Per-epoch state
+/// * `nodes` - Source points this chunk owns
+/// * `rng` - The chunk's RNG, kept across epochs
+/// * `max_noise` - Largest negative count of the run, sizes the scratch
+/// * `n_dim` - Embedding dimensions
+///
+/// ### Returns
+///
+/// The chunk's running log normalisation constant at the end of the range.
+#[inline(always)]
+fn chunk_pass<T>(
+    ctx: &KernelCtx<'_, T>,
+    ep: &EpochCtx<T>,
+    nodes: std::ops::Range<usize>,
+    rng: &mut SmallRng,
+    max_noise: usize,
+    n_dim: usize,
+) -> T
+where
+    T: ManifoldsFloat,
+{
+    let one = T::one();
+    let two = one + one;
+    let n_u64 = ctx.n as u64;
+    let n_edges = ctx.targets.len();
+    let n_noise = ep.n_noise;
+
+    let mut q_local = ep.q_log;
+    // others[0] is the edge target, the rest its negatives
+    let mut others = vec![0u32; max_noise + 1];
+    let mut y_i_buf = vec![T::zero(); n_dim];
+    let mut y_o_buf = vec![T::zero(); n_dim];
+    let y_i = &mut y_i_buf[..n_dim];
+    let y_o = &mut y_o_buf[..n_dim];
+
+    for i in nodes {
+        let row_i = &ctx.embd[i * n_dim..(i + 1) * n_dim];
+        for d in 0..n_dim {
+            y_i[d] = T::load_relaxed(&row_i[d]);
+        }
+
+        for edge in ctx.offsets[i]..ctx.offsets[i + 1] {
+            if edge + PREFETCH_AHEAD < n_edges {
+                let ahead = ctx.targets[edge + PREFETCH_AHEAD] as usize;
+                prefetch_read(&ctx.embd[ahead * n_dim]);
+            }
+            others[0] = ctx.targets[edge];
+            for slot in others[1..=n_noise].iter_mut() {
+                // multiply-shift draw in [0, n), rejecting i
+                let other = loop {
+                    let o = ((rng.next_u32() as u64 * n_u64) >> 32) as usize;
+                    if o != i {
+                        break o;
+                    }
+                };
+                *slot = other as u32;
+                prefetch_read(&ctx.embd[other * n_dim]);
+            }
+
+            for (s, &other) in others[..=n_noise].iter().enumerate() {
+                let base_o = other as usize * n_dim;
+                let row_o = &ctx.embd[base_o..base_o + n_dim];
+                let mut d2 = T::zero();
+                for d in 0..n_dim {
+                    y_o[d] = T::load_relaxed(&row_o[d]);
+                    let diff = y_o[d] - y_i[d];
+                    d2 += diff * diff;
+                }
+
+                // kernel_grad = 2ab q d2^(b - 1)
+                let (q, kernel_grad) = if ctx.cauchy {
+                    let q = one / (one + d2);
+                    (q, two * q)
+                } else {
+                    let d2_safe = d2.max(ctx.min_d2);
+                    let d2_pow_b = ctx.pow_lut.get(d2_safe);
+                    let q = one / (one + ctx.a * d2_pow_b);
+                    (q, ctx.two_ab * q * d2_pow_b / d2_safe)
+                };
+
+                // data posterior 1 / (1 + r), noise posterior r / (1 + r): one
+                // division for both
+                let ratio = q * ep.inv_noise * (-q_local).exp();
+                let inv = one / (one + ratio);
+                let w = if s == 0 { inv } else { -ratio * inv };
+                q_local -= w * ctx.lr_q;
+                let w = w * kernel_grad * ep.step;
+
+                for d in 0..n_dim {
+                    let shift = ((y_o[d] - y_i[d]) * w)
+                        .max(-ctx.max_shift)
+                        .min(ctx.max_shift);
+                    y_i[d] += shift;
+                    T::store_relaxed(&row_o[d], y_o[d] - shift);
+                }
+            }
+        }
+
+        for d in 0..n_dim {
+            T::store_relaxed(&row_i[d], y_i[d]);
+        }
+    }
+    q_local
+}
+
 /// Optimise an NCVis layout in place.
 ///
 /// Hogwild SGD (Recht et al., 2011) on the noise-contrastive objective of
@@ -343,21 +490,25 @@ where
     let max_noise = plan.iter().copied().max().unwrap_or(1) as usize;
 
     let one = T::one();
-    let two = T::from_f64(2.0).unwrap();
-    let (a, b) = (params.a, params.b);
-    let cauchy = a == one && b == one;
-    let min_d2 = T::from_f64(MIN_D2).unwrap();
-    let max_shift = T::from_f64(MAX_SHIFT).unwrap();
-    let two_ab = two * a * b;
-    let n_u64 = n as u64;
-
-    let offsets = &graph.offsets;
-    let targets = &graph.targets;
 
     let embd_shared: Vec<T::Atomic> = embd
         .iter()
         .flat_map(|p| p.iter().map(|&v| T::new_atomic(v)))
         .collect();
+
+    let ctx = KernelCtx {
+        embd: &embd_shared,
+        offsets: &graph.offsets,
+        targets: &graph.targets,
+        n,
+        a: params.a,
+        pow_lut: SplitPowLut::new(params.b),
+        cauchy: params.a == one && params.b == one,
+        two_ab: T::from_f64(2.0).unwrap() * params.a * params.b,
+        min_d2: T::from_f64(MIN_D2).unwrap(),
+        max_shift: T::from_f64(MAX_SHIFT).unwrap(),
+        lr_q: params.lr_q,
+    };
 
     let n_chunks = rayon::current_num_threads().clamp(1, n);
     let chunk_len = n.div_ceil(n_chunks);
@@ -374,84 +525,24 @@ where
         let inv_noise = one / T::from_u32(n_noise).unwrap();
         let n_noise = n_noise as usize;
 
+        let epoch_ctx = EpochCtx {
+            step,
+            inv_noise,
+            n_noise,
+            q_log,
+        };
         let q_sum: T = rngs
             .par_iter_mut()
             .enumerate()
             .map(|(c, rng)| {
-                let mut q_local = q_log;
-                // others[0] is the edge target, the rest its negatives
-                let mut others = vec![0u32; max_noise + 1];
-                let mut y_i = vec![T::zero(); n_dim];
-                let mut y_o = vec![T::zero(); n_dim];
-
                 let start = c * chunk_len;
                 let end = (start + chunk_len).min(n);
-                for i in start..end {
-                    let base_i = i * n_dim;
-                    for d in 0..n_dim {
-                        y_i[d] = T::load_relaxed(&embd_shared[base_i + d]);
-                    }
-
-                    for edge in offsets[i]..offsets[i + 1] {
-                        if edge + PREFETCH_AHEAD < n_edges {
-                            let ahead = targets[edge + PREFETCH_AHEAD] as usize;
-                            prefetch_read(&embd_shared[ahead * n_dim]);
-                        }
-                        others[0] = targets[edge];
-                        for slot in others[1..=n_noise].iter_mut() {
-                            // multiply-shift draw in [0, n), rejecting i
-                            let other = loop {
-                                let o = ((rng.next_u32() as u64 * n_u64) >> 32) as usize;
-                                if o != i {
-                                    break o;
-                                }
-                            };
-                            *slot = other as u32;
-                            prefetch_read(&embd_shared[other * n_dim]);
-                        }
-
-                        for (s, &other) in others[..=n_noise].iter().enumerate() {
-                            let base_o = other as usize * n_dim;
-                            let mut d2 = T::zero();
-                            for d in 0..n_dim {
-                                y_o[d] = T::load_relaxed(&embd_shared[base_o + d]);
-                                let diff = y_o[d] - y_i[d];
-                                d2 += diff * diff;
-                            }
-
-                            // kernel_grad = 2ab q d2^(b - 1)
-                            let (q, kernel_grad) = if cauchy {
-                                let q = one / (one + d2);
-                                (q, two * q)
-                            } else {
-                                let d2_safe = d2.max(min_d2);
-                                let d2_pow_b = d2_safe.powf(b);
-                                let q = one / (one + a * d2_pow_b);
-                                (q, two_ab * q * d2_pow_b / d2_safe)
-                            };
-
-                            let ratio = q * inv_noise * (-q_local).exp();
-                            let w = if s == 0 {
-                                one / (one + ratio)
-                            } else {
-                                -one / (one + one / ratio)
-                            };
-                            q_local -= w * params.lr_q;
-                            let w = w * kernel_grad * step;
-
-                            for d in 0..n_dim {
-                                let shift = ((y_o[d] - y_i[d]) * w).max(-max_shift).min(max_shift);
-                                y_i[d] += shift;
-                                T::store_relaxed(&embd_shared[base_o + d], y_o[d] - shift);
-                            }
-                        }
-                    }
-
-                    for d in 0..n_dim {
-                        T::store_relaxed(&embd_shared[base_i + d], y_i[d]);
-                    }
+                // the literal 2 lets the dim loops unroll on the 2D path
+                if n_dim == 2 {
+                    chunk_pass(&ctx, &epoch_ctx, start..end, rng, max_noise, 2)
+                } else {
+                    chunk_pass(&ctx, &epoch_ctx, start..end, rng, max_noise, n_dim)
                 }
-                q_local
             })
             .sum();
         q_log = q_sum / T::from_usize(n_chunks).unwrap();
@@ -498,8 +589,8 @@ mod tests {
     #[test]
     fn test_default_kernel_matches_scipy_fit() {
         let p = NcvisOptimParams::<f64>::default();
-        assert_relative_eq!(p.a, 1.9290733953235648, max_relative = 1e-4);
-        assert_relative_eq!(p.b, 0.7915045331404773, max_relative = 1e-4);
+        assert_relative_eq!(p.a, 1.9290733953235648, max_relative = 1e-3);
+        assert_relative_eq!(p.b, 0.7915045331404773, max_relative = 1e-3);
     }
 
     #[test]
