@@ -10,7 +10,7 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 - The fuzzy graph's bandwidth search targets `log2(k + 1)` as uwot and
   umap-learn do, not `ln(k)`. Different coordinates than 0.9.1 at the same seed:
   UMAP, densMAP, `umap_gpu`, `densmap_gpu`, parametric UMAP and ForceAtlas2.
-- ann-search-rs 0.13.0. IVF and KmKNN (CPU, wgpu, MLX) train their centroids
+- ann-search-rs 0.13.1. IVF and KmKNN (CPU, wgpu, MLX) train their centroids
   with e-means, and the NN-Descent graphs are built differently, so every
   embedding gets a different kNN graph at the same seed. Recall is the same or
   better.
@@ -21,11 +21,18 @@ own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
   `DiffusionMapsParams::new`, `PhateLandmarks::build`, `build_with_backend` and
   `DiffusionMapsLandmarks::build`. Struct literals of the four params need the
   new field or `..Default::default()`.
+- An `nnd_n_trees` argument on `NearestNeighbourParams::new` (after `delta`).
+  Struct literals need the new `nnd_n_trees` and `external_knn` fields or
+  `..Default::default()`.
 
 **New**
 
 - `k_means` on `NearestNeighbourParams` and `NearestNeighbourParamsGpu`:
   `"emeans"` (default) or `"lloyd"` for the IVF and KmKNN centroids.
+- `nnd_n_trees` on `NearestNeighbourParams`: the number of trees seeding the
+  NN-Descent graph. `None` keeps the default, so same results at the same seed.
+- `ExternalKnn` on `NearestNeighbourParams`: plug in a kNN backend from outside
+  the crate, picked by its `ann_type` name.
 - `k_means` on `PhateDiffusionParams` and `DiffusionMapsParams`: the same
   switch for the spectral landmark selection.
 - `optimiser = "adam_v06"`: the umap-learn 0.6 Adam for UMAP (CPU only, not with

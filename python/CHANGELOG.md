@@ -14,13 +14,18 @@ Requires `manifolds-rs` 0.10.0.
   `DensMAPGpu` and `ForceAtlas2`.
 - Different kNN graphs at the same seed from the IVF and NN-Descent backends
   (`"ivf"`, `"ivf_gpu"`, `"nndescent"`, `"nndescent_gpu"`), and so from every
-  estimator: ann-search-rs 0.13.0 trains IVF with e-means and builds NN-Descent
+  estimator: ann-search-rs 0.13.1 trains IVF with e-means and builds NN-Descent
   differently. Recall is the same or better.
 - `PHATE`, `PHATEGpu` and `DiffusionMaps` pick their spectral landmarks with
   e-means instead of Lloyd's. Different coordinates at the same seed.
 
 **New**
 
+- `ann="rinnd"`: rinnd's NN-Descent as a CPU kNN backend, built into the wheel
+  by default. Check with `rinnd_available()`.
+- `NeighbourParams(nnd_n_trees=...)`: trees seeding the `"nndescent"` and
+  `"rinnd"` graphs. `None` keeps each backend's default, so same results at the
+  same seed.
 - `NeighbourParams(k_means=...)` and `NeighbourParamsGpu(k_means=...)`:
   `"emeans"` (default) or `"lloyd"` for the IVF and KmKNN centroids.
 - `PhateDiffusion(landmark_k_means=...)` and `DiffusionMaps(landmark_k_means=...)`: the
