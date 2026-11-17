@@ -1,5 +1,5 @@
 # %% [markdown]
-# # UMAP, densMAP, PaCMAP, LocalMAP and ForceAtlas2
+# # UMAP, densMAP, PaCMAP, LocalMAP, ForceAtlas2 and NCVis
 #
 # *Python port of the R vignettes [UMAP](https://gregorlueg.github.io/manifoldsR/articles/umap.html), [densMAP and den-SNE](https://gregorlueg.github.io/manifoldsR/articles/density_preserving.html), [PaCMAP](https://gregorlueg.github.io/manifoldsR/articles/pacmap.html) and [ForceAtlas2](https://gregorlueg.github.io/manifoldsR/articles/fa2.html). Original author: Gregor Lueg.*
 #
@@ -7,8 +7,9 @@
 # density-preserving sibling
 # [densMAP](https://www.nature.com/articles/s41587-020-00801-7),
 # [PaCMAP](https://arxiv.org/abs/2012.04456) and its locally adjusted
-# successor [LocalMAP](https://arxiv.org/abs/2412.15426), and Gephi's
-# [ForceAtlas2](https://doi.org/10.1371/journal.pone.0098679). All of them
+# successor [LocalMAP](https://arxiv.org/abs/2412.15426), Gephi's
+# [ForceAtlas2](https://doi.org/10.1371/journal.pone.0098679) and
+# [NCVis](https://github.com/stat-ml/ncvis). All of them
 # start from a kNN graph and pull neighbours together while pushing everything
 # else apart. Where they differ is in what they push and when.
 
@@ -539,6 +540,80 @@ panels(
 # you're touching them.
 
 # %% [markdown]
+# ## NCVis
+#
+# [NCVis](https://github.com/stat-ml/ncvis) (Artemenkov & Panov, 2020) swaps
+# UMAP's cross-entropy for noise-contrastive estimation. The graph is the plain
+# kNN graph, made undirected, with no weights at all. Each edge pulls its two
+# points together and draws uniform negatives that push apart, each weighted by
+# how likely the pair is data rather than noise. The normalisation constant
+# that makes that a proper probability is learned on the side, as one more
+# parameter. The negatives ramp up with the cube of progress, so the early
+# epochs mostly attract and the late ones do most of the pushing.
+#
+# The defaults are Sean Pedersen's
+# [NCVis+](https://github.com/SeanPedersen/ncvis-plus), whose kernel this is a
+# port of: a PCA start scaled as a whole to std 10 on its first axis,
+# `min_dist` 0.001, learning rate 2, 50 epochs and on average 10 negatives per
+# edge. The PCA start is the one that matters for global structure, and like
+# for PaCMAP it is the default for that reason. The optimiser is hogwild, so
+# a fixed seed reproduces only on one thread (`mf.set_num_threads(1)`).
+#
+# Back to the hierarchical data, against UMAP and PaCMAP.
+
+# %%
+hier_ncvis = {
+    "UMAP": hier["UMAP"],
+    "PaCMAP": hier["PaCMAP"],
+    "NCVis": mf.NCVis().fit_transform(X_hier),
+    "NCVis, random init": mf.NCVis(init="random").fit_transform(X_hier),
+}
+panels(hier_ncvis, supergroup)
+
+# %%
+pl.DataFrame(
+    {
+        "method": list(hier_ncvis),
+        "global": [
+            global_preservation(X_hier, e, subgroup) for e in hier_ncvis.values()
+        ],
+        "local": [knn_preservation(X_hier, e) for e in hier_ncvis.values()],
+    }
+).with_columns(pl.exclude("method").round(3))
+
+# %% [markdown]
+# Global structure lands about where UMAP's does: the supergroups stay
+# together, the arrangement is a bit less faithful than PaCMAP's. Local
+# structure is the odd one out. NCVis keeps roughly twice the exact neighbours
+# of the other three, and the clusters come out visibly tighter. Drop the PCA start and the global score
+# collapses to nothing, with a ring of stray points that 50 epochs never pull
+# back in. Keep the PCA start.
+#
+# The swiss roll and the trajectory:
+
+# %%
+panels(
+    {
+        "NCVis": mf.NCVis(ann="exhaustive").fit_transform(X_swiss),
+        "NCVis, k = 30": mf.NCVis(ann="exhaustive", n_neighbors=30).fit_transform(
+            X_swiss
+        ),
+    },
+    t_swiss,
+    cmap="viridis",
+)
+
+# %%
+panels({"NCVis": mf.NCVis().fit_transform(X_traj)[order]}, y_traj[order])
+
+# %% [markdown]
+# The 1k swiss roll is NCVis' weak spot. With 15 neighbours on a sparse
+# sheet it tears the roll into strips, worse than LocalMAP. More epochs, more
+# negatives or a larger `min_dist` barely change that; a wider graph does. At
+# `n_neighbors=30` the sheet mostly holds together. The trajectory comes out
+# fine: the branches are there and in the right order.
+
+# %% [markdown]
 # ## Benchmarks
 #
 # Against [umap-learn](https://github.com/lmcinnes/umap) 0.6 and the reference
@@ -560,7 +635,7 @@ pacmap.LocalMAP().fit_transform(X_warm)
 
 
 def bench(x: np.ndarray) -> pl.DataFrame:
-    """Wall time of our UMAP, PaCMAP and LocalMAP and the references on `x`."""
+    """Wall time of our UMAP, PaCMAP, LocalMAP and NCVis and the references on `x`."""
     runs = {
         "manifolds-rs UMAP adam_parallel": lambda: mf.UMAP().fit_transform(x),
         "manifolds-rs UMAP adam_v06 + recursive": lambda: mf.UMAP(
@@ -577,6 +652,7 @@ def bench(x: np.ndarray) -> pl.DataFrame:
         "pacmap PaCMAP": lambda: pacmap.PaCMAP().fit_transform(x),
         "manifolds-rs LocalMAP": lambda: mf.LocalMAP().fit_transform(x),
         "pacmap LocalMAP": lambda: pacmap.LocalMAP().fit_transform(x),
+        "manifolds-rs NCVis": lambda: mf.NCVis().fit_transform(x),
     }
     return pl.DataFrame(
         [{"method": k, "seconds": timed(fn)} for k, fn in runs.items()]
@@ -590,3 +666,5 @@ bench(mf.datasets.clustered(50_000)[0])
 # of the same thing is several times faster, and our default parallel Adam a
 # little faster still. On the legacy SGD the gap is smaller, but still there.
 # PaCMAP and LocalMAP: a fraction of the reference package's time.
+# NCVis is the slowest of ours here. The kNN search and the PCA start are a
+# rounding error; the 50 epochs of hogwild SGD are the bill.
