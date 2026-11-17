@@ -8,6 +8,8 @@ to answer it.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -57,7 +59,26 @@ def cpu_estimators() -> list[tuple[str, type[BaseEmbedding]]]:
         ("LocalMAP", mf.LocalMAP),
         ("DiffusionMaps", mf.DiffusionMaps),
         ("ForceAtlas2", mf.ForceAtlas2),
+        ("NCVis", mf.NCVis),
     ]
+
+
+#: Estimators whose optimiser is hogwild: a fixed seed reproduces only on one
+#: thread.
+HOGWILD: frozenset[str] = frozenset({"NCVis"})
+
+
+@contextmanager
+def reproducible(name: str) -> Iterator[None]:
+    """Cap the pool at one thread for a hogwild estimator, a no-op otherwise."""
+    if name not in HOGWILD:
+        yield
+        return
+    mf.set_num_threads(1)
+    try:
+        yield
+    finally:
+        mf.set_num_threads(0)
 
 
 def fast(cls: type[BaseEmbedding], **kwargs: Any) -> BaseEmbedding:

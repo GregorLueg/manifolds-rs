@@ -65,6 +65,7 @@ impl From<ManErr> for PyErr {
             | ManifoldsError::NotEnoughNeighbours { .. }
             | ManifoldsError::DegenerateLocalRadii
             | ManifoldsError::Fa2InvalidParam { .. }
+            | ManifoldsError::NcvisInvalidParam { .. }
             | ManifoldsError::DreamsInvalidLambda { .. }
             | ManifoldsError::DreamsReferenceMismatch { .. }
             | ManifoldsError::DreamsDegenerateReference

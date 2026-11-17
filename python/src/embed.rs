@@ -438,3 +438,42 @@ pub fn forceatlas2<'py>(
         )
     )
 }
+
+/// NCVis on the unweighted, symmetrised kNN graph.
+///
+/// ### Params
+///
+/// * `x` - Samples by features, C-contiguous float32 or float64.
+/// * `params` - Parameters, as built by the Python layer. See
+///   [`crate::params::ncvis`].
+/// * `knn_indices` - Optional `(n, k)` precomputed neighbour indices.
+/// * `knn_distances` - Optional `(n, k)` distances, same dtype as `x`. NCVis
+///   ignores them.
+/// * `seed` - Fixes the initialisation and the negative sampling.
+/// * `verbose` - `0` silent, `1` normal, `2` detailed.
+///
+/// ### Returns
+///
+/// The embedding as an `(n_samples, n_components)` array of the input's float
+/// type.
+#[pyfunction]
+#[pyo3(signature = (x, params, *, knn_indices = None, knn_distances = None, seed = 42, verbose = 0))]
+pub fn ncvis<'py>(
+    py: Python<'py>,
+    x: &Bound<'py, PyAny>,
+    params: &Bound<'py, PyDict>,
+    knn_indices: Option<&Bound<'py, PyAny>>,
+    knn_distances: Option<&Bound<'py, PyAny>>,
+    seed: usize,
+    verbose: usize,
+) -> PyResult<Bound<'py, PyAny>> {
+    embed_dispatch!(
+        py,
+        x,
+        params,
+        knn_indices,
+        knn_distances,
+        ncvis,
+        |data, n, dim, p, knn| manifolds_rs::ncvis((data, n, dim), knn, p, seed, verbose)
+    )
+}

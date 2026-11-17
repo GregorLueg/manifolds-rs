@@ -26,6 +26,7 @@ from ._params import (
     LANDMARK_METHODS,
     MDS_METHODS,
     METRICS,
+    NCVIS_INITS,
     PACMAP_OPTIMISERS,
     PHATE_LANDMARK_METHODS,
     PHATE_METRICS,
@@ -36,6 +37,7 @@ from ._params import (
     V06_OPTIMISERS,
     DensParams,
     Fa2Optim,
+    NcvisOptim,
     NeighbourParams,
     PacmapOptim,
     PhateDiffusion,
@@ -922,5 +924,108 @@ class ForceAtlas2(BaseEmbedding):
                 scaling_ratio=self.scaling_ratio,
                 gravity=self.gravity,
                 lin_log=self.lin_log,
+            ),
+        }
+
+
+class NCVis(BaseEmbedding):
+    """NCVis: noise-contrastive estimation on the kNN graph.
+
+    The graph is the plain kNN graph made undirected, with no edge weights. Each
+    edge pulls its endpoints together and draws uniform negatives that push
+    apart, weighted by how likely the pair is data rather than noise under the
+    kernel ``1 / (1 + a d^(2b))`` and a normalisation constant learned along
+    the way. The negatives ramp up with the cube of progress, so most of them
+    land in the last epochs.
+
+    Defaults are NCVis+'s (Pedersen's fork of Artemenkov & Panov's NCVis): a
+    PCA start scaled to std 10 on its first axis, ``min_dist`` 0.001, a
+    learning rate of 2 and on average 10 negatives per edge. The PCA start is
+    what keeps the global structure; ``init="random"`` loses much of it.
+
+    The optimiser is lock-free (hogwild) over all threads, so a fixed seed
+    gives the same embedding only on one thread (`set_num_threads(1)`).
+
+    Args:
+        n_components: Output dimensionality.
+        n_neighbors: Neighbours per point. A wider precomputed graph is cut to
+            this, with a warning on stderr.
+        metric: ``"euclidean"``/``"l2"``, ``"cosine"`` or ``"manhattan"``/``"l1"``.
+        n_epochs: Optimisation epochs.
+        n_negative: Mean negative samples per edge over the run. The time
+            against local quality knob.
+        min_dist: Fits the kernel together with `spread`, as in UMAP.
+        spread: Scale of the embedding relative to `min_dist`.
+        learning_rate: Initial learning rate, decayed as
+            ``1 - (epoch / n_epochs)^2``.
+        init: ``"pca"`` or ``"random"`` (standard normal).
+        init_scale: Standard deviation of the first initial axis. The other
+            axes get the same factor, so the PCA ratios are kept.
+        ann: Neighbour backend.
+        randomised: Use randomised SVD for the PCA initialisation.
+        seed: Fixes the initialisation and the negative sampling.
+        verbose: ``0`` quiet, ``1`` normal, ``2`` detailed.
+        nn_params: See `NeighbourParams`.
+        optim_params: Remaining optimiser knobs. See `NcvisOptim`.
+    """
+
+    _FN: ClassVar[Callable[..., Any]] = _core.ncvis
+
+    @beartype
+    def __init__(
+        self,
+        n_components: int = 2,
+        n_neighbors: int = 15,
+        metric: str = "euclidean",
+        n_epochs: int = 50,
+        n_negative: float = 10.0,
+        min_dist: float = 0.001,
+        spread: float = 1.0,
+        learning_rate: float = 2.0,
+        init: str = "pca",
+        init_scale: float = 10.0,
+        ann: str = "nndescent",
+        randomised: bool = False,
+        seed: int = 42,
+        verbose: int = 0,
+        nn_params: NeighbourParams | None = None,
+        optim_params: NcvisOptim | None = None,
+    ) -> None:
+        self.n_components = n_components
+        self.n_neighbors = n_neighbors
+        self.metric = metric
+        self.n_epochs = n_epochs
+        self.n_negative = n_negative
+        self.min_dist = min_dist
+        self.spread = spread
+        self.learning_rate = learning_rate
+        self.init = init
+        self.init_scale = init_scale
+        self.ann = ann
+        self.randomised = randomised
+        self.seed = seed
+        self.verbose = verbose
+        self.nn_params = nn_params
+        self.optim_params = optim_params
+
+    def _params(self, n_samples: int) -> dict[str, Any]:
+        return {
+            "n_dim": self.n_components,
+            "k": self.n_neighbors,
+            "min_dist": self.min_dist,
+            "spread": self.spread,
+            "initialisation": check_choice(self.init, NCVIS_INITS, name="init"),
+            "init_scale": self.init_scale,
+            "ann_type": check_choice(self.ann, ANN_CPU, name="ann"),
+            "randomised": self.randomised,
+            "nn_params": merge(
+                self.nn_params,
+                dist_metric=check_choice(self.metric, METRICS, name="metric"),
+            ),
+            "optim_params": merge(
+                self.optim_params,
+                n_epochs=self.n_epochs,
+                n_negative=self.n_negative,
+                lr=self.learning_rate,
             ),
         }

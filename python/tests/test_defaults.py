@@ -15,6 +15,7 @@ from collections.abc import Callable
 
 import numpy as np
 import pytest
+from conftest import reproducible
 
 import manifolds_rs as mf
 from manifolds_rs import BaseEmbedding
@@ -31,6 +32,7 @@ CASES = [
     ("LocalMAP", mf.LocalMAP, core.localmap),
     ("DiffusionMaps", mf.DiffusionMaps, core.diffusion_maps),
     ("ForceAtlas2", mf.ForceAtlas2, core.forceatlas2),
+    ("NCVis", mf.NCVis, core.ncvis),
 ]
 
 
@@ -38,8 +40,9 @@ CASES = [
 def test_defaults_match_the_core(
     name: str, cls: type[BaseEmbedding], fn: Callable[..., np.ndarray], X: np.ndarray
 ) -> None:
-    estimator = cls().fit_transform(X)
-    bare = fn(X, {}, seed=42, verbose=0)
+    with reproducible(name):
+        estimator = cls().fit_transform(X)
+        bare = fn(X, {}, seed=42, verbose=0)
     assert np.array_equal(estimator, bare), (
         f"{name}: a constructor default has drifted from the crate's"
     )

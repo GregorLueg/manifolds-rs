@@ -158,6 +158,15 @@ def forceatlas2(
     seed: int = ...,
     verbose: int = ...,
 ) -> np.ndarray: ...
+def ncvis(
+    x: np.ndarray,
+    params: dict[str, Any],
+    *,
+    knn_indices: np.ndarray | None = ...,
+    knn_distances: np.ndarray | None = ...,
+    seed: int = ...,
+    verbose: int = ...,
+) -> np.ndarray: ...
 def umap_gpu(
     x: np.ndarray,
     params: dict[str, Any],

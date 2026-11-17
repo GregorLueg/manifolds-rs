@@ -16,7 +16,7 @@
 use manifolds_rs::prelude::*;
 use manifolds_rs::{
     DensmapParams, DensneParams, DiffusionMapsParams, DreamsParams, Fa2Params, LocalMapParams,
-    PacmapParams, PhateParams, TsneParams, UmapParams,
+    NcvisParams, PacmapParams, PhateParams, TsneParams, UmapParams,
 };
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
@@ -900,6 +900,78 @@ where
     nested(&mut r, "optim_params", &mut p.optim_params, fill_fa2_optim)?;
     r.finish()?;
     Ok(p)
+}
+
+/// Build [`NcvisParams`] from a dictionary.
+///
+/// `min_dist` and `spread` sit at the top level and seed the crate's curve fit,
+/// as for UMAP; `a` and `b` in `optim_params` override the fit.
+///
+/// ### Params
+///
+/// * `d` - The full parameter dictionary sent by the Python layer.
+///
+/// ### Returns
+///
+/// A fully specified parameter struct, or the first bad or unknown key.
+pub(crate) fn ncvis<T>(d: &Bound<'_, PyDict>) -> PyResult<NcvisParams<T>>
+where
+    T: ManifoldsFloat,
+{
+    let mut p = NcvisParams::<T>::default();
+    let mut r = Reader::new(d, "NcvisParams");
+    let min_dist = r.float::<T>("min_dist")?;
+    let spread = r.float::<T>("spread")?;
+    if min_dist.is_some() || spread.is_some() {
+        p.optim_params = NcvisOptimParams::from_min_dist_spread(
+            min_dist.unwrap_or(T::from_f64(NCVIS_MIN_DIST).unwrap()),
+            spread.unwrap_or(T::from_f64(NCVIS_SPREAD).unwrap()),
+            None,
+            None,
+            None,
+            None,
+        );
+    }
+    set(&mut p.n_dim, r.get::<usize>("n_dim")?);
+    set(&mut p.k, r.get::<usize>("k")?);
+    set(&mut p.ann_type, r.get::<String>("ann_type")?);
+    set(&mut p.initialisation, r.get::<String>("initialisation")?);
+    set(&mut p.init_scale, r.float::<T>("init_scale")?);
+    set(&mut p.randomised, r.get::<bool>("randomised")?);
+    nn_group(&mut r, &mut p.nn_params)?;
+    nested(
+        &mut r,
+        "optim_params",
+        &mut p.optim_params,
+        fill_ncvis_optim,
+    )?;
+    r.finish()?;
+    Ok(p)
+}
+
+/// Fill [`NcvisOptimParams`] from a dictionary.
+///
+/// ### Params
+///
+/// * `d` - The `optim_params` group.
+/// * `p` - Struct holding the fitted curve and the crate defaults, overwritten
+///   in place.
+///
+/// ### Returns
+///
+/// Nothing, or the first bad or unknown key.
+fn fill_ncvis_optim<T>(d: &Bound<'_, PyDict>, p: &mut NcvisOptimParams<T>) -> PyResult<()>
+where
+    T: ManifoldsFloat,
+{
+    let mut r = Reader::new(d, "optim_params");
+    set(&mut p.n_epochs, r.get::<usize>("n_epochs")?);
+    set(&mut p.n_negative, r.float::<T>("n_negative")?);
+    set(&mut p.a, r.float::<T>("a")?);
+    set(&mut p.b, r.float::<T>("b")?);
+    set(&mut p.lr, r.float::<T>("lr")?);
+    set(&mut p.lr_q, r.float::<T>("lr_q")?);
+    r.finish()
 }
 
 /////////////

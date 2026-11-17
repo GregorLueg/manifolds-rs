@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from conftest import cpu_estimators, fast
+from conftest import cpu_estimators, fast, reproducible
 
 import manifolds_rs as mf
 from manifolds_rs import BaseEmbedding
@@ -38,8 +38,9 @@ def test_float64_in_float64_out(
 def test_same_seed_gives_identical_embedding(
     name: str, cls: type[BaseEmbedding], X: np.ndarray
 ) -> None:
-    a = fast(cls, seed=3).fit_transform(X)
-    b = fast(cls, seed=3).fit_transform(X)
+    with reproducible(name):
+        a = fast(cls, seed=3).fit_transform(X)
+        b = fast(cls, seed=3).fit_transform(X)
     assert np.array_equal(a, b)
 
 

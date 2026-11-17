@@ -86,6 +86,10 @@ INITS: frozenset[str] = frozenset({"spectral", "pca", "random"})
 #: label propagation initialisation and needs the UMAP graph.
 UMAP_INITS: frozenset[str] = INITS | {"recursive"}
 
+#: NCVis initialisations: PCA or a standard normal draw, both scaled so the
+#: first axis has the requested standard deviation.
+NCVIS_INITS: frozenset[str] = frozenset({"pca", "random"})
+
 #: GPU UMAP optimisers, from `parse_umap_optimiser_gpu`. `"adam_gpu"` and
 #: `"adam_v06_gpu"` keep the update on the device; the CPU names still work and
 #: pull the embedding back each epoch.
@@ -372,6 +376,23 @@ class Fa2Optim:
     edge_weight_influence: float | None = None
     jitter_tolerance: float | None = None
     theta: float | None = None
+
+
+@dataclass(frozen=True)
+class NcvisOptim:
+    """NCVis optimiser knobs beyond the epochs, negatives and learning rate.
+
+    Attributes:
+        a: Kernel numerator of ``q(d) = 1 / (1 + a d^(2b))``. Fitted from
+            ``min_dist`` and ``spread`` unless you set it. ``a = b = 1`` is the
+            Cauchy kernel, which skips a ``powf`` per sample.
+        b: Kernel exponent. See `a`.
+        lr_q: Step size of the learned log normalisation constant.
+    """
+
+    a: float | None = None
+    b: float | None = None
+    lr_q: float | None = None
 
 
 @dataclass(frozen=True)

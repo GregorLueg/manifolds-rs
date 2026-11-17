@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from conftest import reproducible
 
 import manifolds_rs as mf
 
@@ -135,20 +136,21 @@ def test_empty_input_is_refused() -> None:
         mf.knn_graph(np.zeros((0, 5)), k=10)
 
 
-@pytest.mark.parametrize("cls", [mf.UMAP, mf.DensMAP, mf.ForceAtlas2])
+@pytest.mark.parametrize("cls", [mf.UMAP, mf.DensMAP, mf.ForceAtlas2, mf.NCVis])
 def test_wider_graph_is_cut_to_n_neighbors(
     cls: type, X: np.ndarray, knn: tuple[np.ndarray, np.ndarray]
 ) -> None:
     ind, dist = knn
-    wide = cls(n_neighbors=15, n_epochs=20).fit_transform(
-        X, knn_indices=ind, knn_distances=dist
-    )
-    cut = cls(n_neighbors=15, n_epochs=20).fit_transform(
-        X, knn_indices=ind[:, :15], knn_distances=dist[:, :15]
-    )
-    other = cls(n_neighbors=30, n_epochs=20).fit_transform(
-        X, knn_indices=ind, knn_distances=dist
-    )
+    with reproducible(cls.__name__):
+        wide = cls(n_neighbors=15, n_epochs=20).fit_transform(
+            X, knn_indices=ind, knn_distances=dist
+        )
+        cut = cls(n_neighbors=15, n_epochs=20).fit_transform(
+            X, knn_indices=ind[:, :15], knn_distances=dist[:, :15]
+        )
+        other = cls(n_neighbors=30, n_epochs=20).fit_transform(
+            X, knn_indices=ind, knn_distances=dist
+        )
     assert np.array_equal(wide, cut)
     assert not np.array_equal(wide, other)
 
