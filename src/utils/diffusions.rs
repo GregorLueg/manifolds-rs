@@ -110,7 +110,9 @@ pub struct PhateDiffusionParams<T> {
     /// k-means of the spectral landmark selection: `"emeans"` (default) or
     /// `"lloyd"`.
     pub k_means: String,
-    /// Enum describing how to power the matrix. Auto or user-defined.
+    /// Enum describing how to power the matrix. Auto or user-defined. With
+    /// landmarks the auto knee can move with the seed, so pin `t` when runs
+    /// need to agree.
     pub t: PhateTime,
     /// Gamma parameter to control the informational distance between data
     /// points. Between `[-1.0, 1.0]`

@@ -473,7 +473,9 @@ class PHATE(BaseEmbedding):
     survive this that t-SNE and UMAP tear apart.
 
     `t` defaults to the von Neumann entropy knee, which is the right answer more
-    often than a guess, and is worth pinning once you have looked at it.
+    often than a guess, and is worth pinning once you have looked at it. With
+    landmarks the knee can move with the seed, so pin `t` when runs need to
+    agree.
 
     Args:
         n_components: Output dimensionality.
