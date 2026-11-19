@@ -2,70 +2,70 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/anndata/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/choosing/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/guide/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/quickstart/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/api/anndata/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/api/base/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/api/datasets/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/api/embeddings/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/api/gpu/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/api/neighbours/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/api/params/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/vignettes/gpu/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/vignettes/knn_searches/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/vignettes/phate_diffusion/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/vignettes/tsne/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
     <url>
          <loc>https://gregorlueg.github.io/manifolds-rs/vignettes/umap_pacmap/</loc>
-         <lastmod>2026-11-17</lastmod>
+         <lastmod>2026-11-19</lastmod>
     </url>
 </urlset>
