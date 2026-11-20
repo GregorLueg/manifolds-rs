@@ -621,6 +621,7 @@ where
                 &umap_params.optim_params,
                 good_init,
                 seed as u64,
+                verbose,
             )?;
         }
         #[cfg(mlx_available)]
@@ -5799,6 +5800,7 @@ where
                     &umap_params.optim_params,
                     good_init,
                     seed as u64,
+                    verbose,
                 )?;
             } else {
                 let mut embd_f32: Vec<Vec<f32>> = embd
@@ -5821,6 +5823,7 @@ where
                     good_init,
                     device,
                     seed as u64,
+                    verbose,
                 )?;
                 for (point, src) in embd.iter_mut().zip(&embd_f32) {
                     for (coord, &x) in point.iter_mut().zip(src) {
