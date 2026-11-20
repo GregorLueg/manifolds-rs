@@ -17,7 +17,7 @@ use rand::{rngs::SmallRng, seq::SliceRandom, SeedableRng};
 
 use crate::prelude::*;
 use crate::training::umap_csr::UmapCsrGraph;
-use crate::training::umap_optimiser_gpu::umap_workgroup_size;
+use crate::training::umap_optimiser_gpu::{sync_client, umap_workgroup_size};
 use crate::training::umap_optimiser_v06::*;
 use crate::training::umap_optimisers::{SplitPowLut, UmapOptimParams};
 
@@ -397,6 +397,7 @@ fn v06_adam_update<F: Float + CubeElement + LaunchArg>(
 /// * `cfg` - Layout configuration
 /// * `device` - CubeCL device
 /// * `seed` - Seed for node orders, projections and the scale adaptation
+/// * `verbose` - `0` silent, `1` or `2` print the epoch every 50 epochs
 ///
 /// ### Returns
 ///
@@ -409,7 +410,9 @@ fn optimise_layout_v06_gpu(
     cfg: &V06Config<f32>,
     device: Device,
     seed: u64,
+    verbose: usize,
 ) -> Result<(), ManifoldsError> {
+    let verbosity = parse_verbosity_level(verbose);
     let n = csr.n;
     if embd.len() != n * n_dim {
         return Err(ManifoldsError::GraphSizeMismatch {
@@ -530,6 +533,12 @@ fn optimise_layout_v06_gpu(
             order.shuffle(&mut rng);
         }
         order_gpu = GpuTensor::from_slice(&order, vec![n], &client)?;
+
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == cfg.n_epochs) {
+            // launches are async; sync so the print tracks the device
+            sync_client(&client)?;
+            println!("  Epoch {}/{}", epoch + 1, cfg.n_epochs);
+        }
     }
 
     embd.copy_from_slice(&state.embd.read(&client)?);
@@ -550,6 +559,7 @@ fn optimise_layout_v06_gpu(
 /// * `good_init` - Use the short warm-up meant for a good initialisation
 /// * `device` - CubeCL device
 /// * `seed` - Random seed
+/// * `verbose` - `0` silent, `1` or `2` print the epoch every 50 epochs
 ///
 /// ### Returns
 ///
@@ -561,6 +571,7 @@ pub fn optimise_embedding_adam_v06_gpu(
     good_init: bool,
     device: Device,
     seed: u64,
+    verbose: usize,
 ) -> Result<(), ManifoldsError> {
     let n = embd.len();
     if n == 0 {
@@ -581,7 +592,7 @@ pub fn optimise_embedding_adam_v06_gpu(
         neg_selection_range: V06_DEFAULT_NEG_SELECTION_RANGE,
         good_init,
     };
-    optimise_layout_v06_gpu(&mut flat, n_dim, &csr, &cfg, device, seed)?;
+    optimise_layout_v06_gpu(&mut flat, n_dim, &csr, &cfg, device, seed, verbose)?;
 
     for (point, chunk) in embd.iter_mut().zip(flat.chunks_exact(n_dim)) {
         point.copy_from_slice(chunk);
@@ -650,8 +661,8 @@ mod tests {
         rescale_isotropic(&mut cpu, 2, 1.0);
         let mut gpu = cpu.clone();
 
-        optimise_layout_v06(&mut cpu, 2, &csr, &cfg, 11).unwrap();
-        optimise_layout_v06_gpu(&mut gpu, 2, &csr, &cfg, device.into(), 11).unwrap();
+        optimise_layout_v06(&mut cpu, 2, &csr, &cfg, 11, 0).unwrap();
+        optimise_layout_v06_gpu(&mut gpu, 2, &csr, &cfg, device.into(), 11, 0).unwrap();
 
         assert!(gpu.iter().all(|x| x.is_finite()));
         let span = cpu.iter().fold(0.0f32, |s, x| s.max(x.abs()));

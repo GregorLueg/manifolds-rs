@@ -558,6 +558,7 @@ where
 /// * `csr` - Graph in CSR form
 /// * `cfg` - Layout configuration
 /// * `seed` - Seed for node orders, projections and the scale adaptation
+/// * `verbose` - `0` silent, `1` or `2` print the epoch every 50 epochs
 ///
 /// ### Returns
 ///
@@ -574,10 +575,12 @@ pub(crate) fn optimise_layout_v06<T>(
     csr: &UmapCsrGraph<T>,
     cfg: &V06Config<T>,
     seed: u64,
+    verbose: usize,
 ) -> Result<(), ManifoldsError>
 where
     T: ManifoldsFloat,
 {
+    let verbosity = parse_verbosity_level(verbose);
     let n = csr.n;
     if embd.len() != n * n_dim {
         return Err(ManifoldsError::GraphSizeMismatch {
@@ -827,6 +830,10 @@ where
         } else {
             order.shuffle(&mut rng);
         }
+
+        if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == cfg.n_epochs) {
+            println!("  Epoch {}/{}", epoch + 1, cfg.n_epochs);
+        }
     }
 
     Ok(())
@@ -846,6 +853,7 @@ where
 /// * `good_init` - Use the short warm-up meant for a good initialisation
 ///   (the recursive initialisation)
 /// * `seed` - Random seed
+/// * `verbose` - `0` silent, `1` or `2` print the epoch every 50 epochs
 ///
 /// ### Returns
 ///
@@ -856,6 +864,7 @@ pub fn optimise_embedding_adam_v06<T>(
     params: &UmapOptimParams<T>,
     good_init: bool,
     seed: u64,
+    verbose: usize,
 ) -> Result<(), ManifoldsError>
 where
     T: ManifoldsFloat,
@@ -880,7 +889,7 @@ where
         neg_selection_range: V06_DEFAULT_NEG_SELECTION_RANGE,
         good_init,
     };
-    optimise_layout_v06(&mut flat, n_dim, &csr, &cfg, seed)?;
+    optimise_layout_v06(&mut flat, n_dim, &csr, &cfg, seed, verbose)?;
 
     for (point, chunk) in embd.iter_mut().zip(flat.chunks_exact(n_dim)) {
         point.copy_from_slice(chunk);
@@ -1050,8 +1059,8 @@ mod tests {
         let cfg = config(50, V06_DEFAULT_NEG_SELECTION_RANGE);
         let mut a = random_flat(200, 2, 3);
         let mut b = a.clone();
-        optimise_layout_v06(&mut a, 2, &csr, &cfg, 11).unwrap();
-        optimise_layout_v06(&mut b, 2, &csr, &cfg, 11).unwrap();
+        optimise_layout_v06(&mut a, 2, &csr, &cfg, 11, 0).unwrap();
+        optimise_layout_v06(&mut b, 2, &csr, &cfg, 11, 0).unwrap();
         assert_eq!(a, b);
     }
 
@@ -1067,6 +1076,7 @@ mod tests {
             &csr,
             &config(200, V06_DEFAULT_NEG_SELECTION_RANGE),
             1,
+            0,
         )
         .unwrap();
         assert!(embd.iter().all(|x| x.is_finite()));
@@ -1080,7 +1090,7 @@ mod tests {
         let csr = UmapCsrGraph::from_graph(&graph).unwrap();
         let mut embd = random_flat(3000, 2, 9);
         rescale_isotropic(&mut embd, 2, 1.0);
-        optimise_layout_v06(&mut embd, 2, &csr, &config(200, 500), 2).unwrap();
+        optimise_layout_v06(&mut embd, 2, &csr, &config(200, 500), 2, 0).unwrap();
         assert!(embd.iter().all(|x| x.is_finite()));
         assert!(edge_ratio(&embd, &graph) < 0.2);
     }
@@ -1090,6 +1100,6 @@ mod tests {
         let graph = two_rings(10, 2);
         let csr = UmapCsrGraph::from_graph(&graph).unwrap();
         let mut embd = vec![0.0; 10];
-        assert!(optimise_layout_v06(&mut embd, 2, &csr, &config(5, 100), 0).is_err());
+        assert!(optimise_layout_v06(&mut embd, 2, &csr, &config(5, 100), 0, 0).is_err());
     }
 }

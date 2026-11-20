@@ -108,6 +108,20 @@ pub fn umap_workgroup_size(limits: &GpuLimits) -> u32 {
     resolve_workgroup_size(UMAP_WORKGROUP_SIZE, limits)
 }
 
+/// Block until every queued launch on `client` has finished.
+///
+/// ### Params
+///
+/// * `client` - CubeCL compute client
+///
+/// ### Returns
+///
+/// `Ok(())`, or the device error wrapped in `ManifoldsError`.
+pub(crate) fn sync_client(client: &Client) -> Result<(), ManifoldsError> {
+    cubecl::future::block_on(client.sync())
+        .map_err(|e| ManifoldsError::from(CubeclUtilsErrors::from(e)))
+}
+
 /// Plan and validate the three dispatch geometries the epoch loop uses.
 ///
 /// All three are constant across a run, so they are resolved once at upload and
@@ -1196,6 +1210,9 @@ where
         launch_edge_schedule_update(&client, &state, epoch);
 
         if verbosity.normal_verbosity() && ((epoch + 1) % 50 == 0 || epoch + 1 == params.n_epochs) {
+            // launches are async; without the sync the host races ahead and
+            // prints every epoch before the device has run them
+            sync_client(&client)?;
             print!("  Epoch {}/{}", epoch + 1, params.n_epochs);
             // the norm needs a readback, so it stays out of the normal path
             if verbosity.detailed_verbosity() {
