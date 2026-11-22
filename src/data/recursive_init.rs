@@ -948,7 +948,7 @@ where
             neg_selection_range: range,
             good_init,
         };
-        optimise_layout_v06(&mut coarse_layout, n_dim, &csr, &cfg, level_seed)?;
+        optimise_layout_v06(&mut coarse_layout, n_dim, &csr, &cfg, level_seed, 0)?;
     }
 
     let mut result = expand_layout(graph, &labels, &coarse_layout, n_dim);

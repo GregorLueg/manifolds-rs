@@ -3,6 +3,16 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.7.1
+
+Requires `manifolds-rs` 0.10.1.
+
+- Fix: `UMAPGpu` and `DensMAPGpu` with `optimiser="adam_gpu"` printed every
+  epoch at once at `verbose=1` and only then ran them. Prints now track the
+  device. Same results at the same seed.
+- `optimiser="adam_v06"` and `"adam_v06_gpu"` print their epochs at `verbose=1`
+  and `2`.
+
 ## 0.7.0
 
 Requires `manifolds-rs` 0.10.0.

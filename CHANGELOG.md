@@ -3,6 +3,15 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.10.1
+
+- Fix: `umap_gpu` and `densmap_gpu` with the `"adam_gpu"` optimiser printed
+  every epoch at once at verbosity 1 and only then ran them. Prints now track
+  the device. Same results at the same seed.
+- The `"adam_v06"` and `"adam_v06_gpu"` optimisers print their epochs at
+  verbosity 1 and 2. `optimise_embedding_adam_v06` and
+  `optimise_embedding_adam_v06_gpu` take a trailing `verbose` argument.
+
 ## 0.10.0
 
 **Breaking changes**
