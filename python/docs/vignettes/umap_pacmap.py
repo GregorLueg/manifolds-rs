@@ -559,6 +559,11 @@ panels(
 # for PaCMAP it is the default for that reason. The optimiser is hogwild, so
 # a fixed seed reproduces only on one thread (`mf.set_num_threads(1)`).
 #
+# The original NCVis start is there too, as `init="ncvis"`: uniform noise,
+# then 20 passes that replace every point by the sum of its neighbours and
+# standardise each axis. A cheap graph smoothing, no eigensolver in sight. It
+# gets the same `init_scale` as the other starts.
+#
 # Back to the hierarchical data, against UMAP and PaCMAP.
 
 # %%
@@ -567,6 +572,7 @@ hier_ncvis = {
     "PaCMAP": hier["PaCMAP"],
     "NCVis": mf.NCVis().fit_transform(X_hier),
     "NCVis, random init": mf.NCVis(init="random").fit_transform(X_hier),
+    "NCVis, ncvis init": mf.NCVis(init="ncvis").fit_transform(X_hier),
 }
 panels(hier_ncvis, supergroup)
 
@@ -587,7 +593,13 @@ pl.DataFrame(
 # structure is the odd one out. NCVis keeps roughly twice the exact neighbours
 # of UMAP and PaCMAP, and the clusters come out visibly tighter. Drop the PCA
 # start and the global score collapses to nothing, with a ring of stray points
-# that 50 epochs never pull back in. Keep the PCA start.
+# that 50 epochs never pull back in.
+#
+# The original NCVis start lands in between: global 0.08, local unchanged. On
+# a graph that falls apart into clusters, 20 passes of neighbour sums let the
+# components with the largest leading eigenvalue soak up all the variance.
+# Everything else sits near the origin, and the odd straggler is flung far out
+# (the lone point top right). Keep the PCA start.
 #
 # The swiss roll and the trajectory:
 

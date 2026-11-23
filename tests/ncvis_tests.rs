@@ -158,3 +158,18 @@ fn ncvis_integration_07_invalid_params() {
         Err(ManifoldsError::NcvisInvalidParam { .. })
     ));
 }
+
+#[test]
+fn ncvis_integration_08_ncvis_initialisation() {
+    let (data, labels) = create_diagnostic_data(200, 20, 42);
+    let params = NcvisParams::<f64> {
+        initialisation: "ncvis".to_string(),
+        ..NcvisParams::default()
+    };
+    let a = single_thread(|| ncvis(data.as_ref(), None, &params, 42, 0).unwrap());
+    let b = single_thread(|| ncvis(data.as_ref(), None, &params, 42, 0).unwrap());
+    assert_eq!(a, b);
+    assert!(a.iter().flatten().all(|v| v.is_finite()));
+    let ratio = separation_ratio(&a, &labels);
+    assert!(ratio > 2.0, "clusters not separated, ratio = {ratio:.3}");
+}
