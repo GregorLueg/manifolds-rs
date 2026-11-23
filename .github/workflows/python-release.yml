@@ -62,6 +62,10 @@ jobs:
       # install has been shown to work.
       sdist: false
 
+      # manylinux aarch64 wheel, cross-compiled on an x86_64 runner. If it
+      # fails, the publish below is skipped for every platform.
+      linux-arm64: true
+
   # The upload lives here because it cannot live anywhere else. PyPI's trusted
   # publishing matches the OIDC token's `job_workflow_ref`, which for a reusable
   # workflow points at the *other* repository, and the publisher form cannot

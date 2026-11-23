@@ -49,7 +49,7 @@ Optimisers and approximations are picked by string:
 Distances: Euclidean and cosine. The `"nndescent"`, `"hnsw"` and `"exhaustive"` CPU
 searches also take Manhattan, which PHATE and landmark diffusion maps do not
 support. Initialisations: spectral (Lanczos), PCA,
-random (NCVis takes PCA or random only), and for UMAP and densMAP the umap-learn 0.6 recursive one. Synthetic datasets (swiss roll, clusters, branching trajectories) ship
+random (NCVis takes PCA, random or the original NCVis start), and for UMAP and densMAP the umap-learn 0.6 recursive one. Synthetic datasets (swiss roll, clusters, branching trajectories) ship
 with the crate for testing.
 
 ## Installation

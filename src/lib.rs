@@ -4075,8 +4075,9 @@ pub struct NcvisParams<T> {
     /// The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
     /// Defaults to `"nndescent"`.
     pub ann_type: String,
-    /// Initialisation: `"pca"` or `"random"` (standard normal). Defaults to
-    /// `"pca"`.
+    /// Initialisation: `"pca"`, `"random"` (standard normal) or `"ncvis"`
+    /// (the original NCVis start: uniform noise smoothed over the kNN graph in
+    /// [`NCVIS_INIT_ITER`] passes). Defaults to `"pca"`.
     pub initialisation: String,
     /// Standard deviation of the first axis of the initial layout; the other
     /// axes are scaled by the same factor. Defaults to [`NCVIS_INIT_SCALE`].
@@ -4121,7 +4122,7 @@ where
     ///   `"exhaustive"`, `"ivf"`, `"hnsw"`, `"nndescent"`, `"annoy"`,
     ///   `"kmknn"` or `"balltree"`.
     ///   The `mlx` feature adds `"exhaustive_mlx"`, `"ivf_mlx"` and `"nndescent_mlx"`.
-    /// * `initialisation` - `"pca"` or `"random"`.
+    /// * `initialisation` - `"pca"`, `"random"` or `"ncvis"`.
     /// * `init_scale` - Standard deviation of the first initial axis.
     /// * `randomised` - Whether randomised SVD is used for the PCA
     ///   initialisation.
@@ -4219,8 +4220,9 @@ where
 
 /// Run NCVis
 ///
-/// Symmetrises the unweighted kNN graph, starts from a PCA (or Gaussian)
-/// layout scaled to `init_scale` on its first axis, and optimises the NCVis
+/// Symmetrises the unweighted kNN graph, starts from a PCA (Gaussian, or the
+/// original NCVis graph-smoothed) layout scaled to `init_scale` on its first
+/// axis, and optimises the NCVis
 /// noise-contrastive objective with Hogwild SGD. Defaults are NCVis+'s:
 /// `min_dist` 0.001, learning rate 2, 50 epochs and on average 10 negatives
 /// per edge.
@@ -4295,17 +4297,14 @@ where
             "must be positive and finite",
         ));
     }
-    let use_pca = match params.initialisation.to_lowercase().as_str() {
-        "pca" => true,
-        "random" => false,
-        _ => {
-            return Err(invalid(
-                "initialisation",
-                f64::NAN,
-                "must be \"pca\" or \"random\"",
-            ))
-        }
-    };
+    let initialisation = params.initialisation.to_lowercase();
+    if !matches!(initialisation.as_str(), "pca" | "random" | "ncvis") {
+        return Err(invalid(
+            "initialisation",
+            f64::NAN,
+            "must be \"pca\", \"random\" or \"ncvis\"",
+        ));
+    }
 
     let verbosity = parse_verbosity_level(verbose);
     let start_run = Instant::now();
@@ -4347,17 +4346,19 @@ where
     drop(knn_indices);
 
     let start_init = Instant::now();
-    let mut embd = if use_pca {
-        pca_scores(data, params.n_dim, params.randomised, seed as u64)?
-    } else {
-        let mut rng = SmallRng::seed_from_u64(seed as u64);
-        (0..n)
-            .map(|_| {
-                (0..params.n_dim)
-                    .map(|_| StandardNormal.sample(&mut rng))
-                    .collect()
-            })
-            .collect()
+    let mut embd = match initialisation.as_str() {
+        "pca" => pca_scores(data, params.n_dim, params.randomised, seed as u64)?,
+        "ncvis" => ncvis_layout(&graph, params.n_dim, NCVIS_INIT_ITER, seed as u64),
+        _ => {
+            let mut rng = SmallRng::seed_from_u64(seed as u64);
+            (0..n)
+                .map(|_| {
+                    (0..params.n_dim)
+                        .map(|_| StandardNormal.sample(&mut rng))
+                        .collect()
+                })
+                .collect()
+        }
     };
     scale_first_axis(&mut embd, params.init_scale);
     if verbosity.normal_verbosity() {

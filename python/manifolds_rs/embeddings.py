@@ -958,7 +958,9 @@ class NCVis(BaseEmbedding):
         spread: Scale of the embedding relative to `min_dist`.
         learning_rate: Initial learning rate, decayed as
             ``1 - (epoch / n_epochs)^2``.
-        init: ``"pca"`` or ``"random"`` (standard normal).
+        init: ``"pca"``, ``"random"`` (standard normal) or ``"ncvis"``, the
+            original NCVis start: uniform noise smoothed over the kNN graph in
+            20 passes.
         init_scale: Standard deviation of the first initial axis. The other
             axes get the same factor, so the PCA ratios are kept.
         ann: Neighbour backend.

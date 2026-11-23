@@ -86,9 +86,10 @@ INITS: frozenset[str] = frozenset({"spectral", "pca", "random"})
 #: label propagation initialisation and needs the UMAP graph.
 UMAP_INITS: frozenset[str] = INITS | {"recursive"}
 
-#: NCVis initialisations: PCA or a standard normal draw, both scaled so the
-#: first axis has the requested standard deviation.
-NCVIS_INITS: frozenset[str] = frozenset({"pca", "random"})
+#: NCVis initialisations: PCA, a standard normal draw or the original NCVis
+#: start (uniform noise smoothed over the kNN graph), all scaled so the first
+#: axis has the requested standard deviation.
+NCVIS_INITS: frozenset[str] = frozenset({"pca", "random", "ncvis"})
 
 #: GPU UMAP optimisers, from `parse_umap_optimiser_gpu`. `"adam_gpu"` and
 #: `"adam_v06_gpu"` keep the update on the device; the CPU names still work and

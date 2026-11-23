@@ -1,5 +1,6 @@
 //! Module containing functions to initialise embeddings. This ranges from
-//! random initialisation, PCA-based initialisation and spectral initialisation.
+//! random initialisation, PCA-based initialisation and spectral initialisation
+//! to the original NCVis graph-smoothed start.
 
 use faer::{Mat, MatRef};
 use rand::{
@@ -12,6 +13,7 @@ use std::collections::VecDeque;
 
 use crate::data::structures::*;
 use crate::prelude::*;
+use crate::training::ncvis_optimiser::NcvisGraph;
 use crate::utils::math::*;
 
 /// Range for spectral-based initialisation (based on uwot UMAP)
@@ -1014,6 +1016,114 @@ where
     embedding
 }
 
+///////////
+// NCVis //
+///////////
+
+/// Number of neighbour-sum passes in the NCVis initialisation. The original's
+/// default `n_init_epochs`.
+pub const NCVIS_INIT_ITER: usize = 20;
+
+/// Centre every column of a row-major layout and scale it to unit standard
+/// deviation (population, as in NCVis). A constant column is only centred.
+///
+/// Moments accumulate sequentially in `f64`, so the result does not depend on
+/// the Rayon pool size.
+///
+/// ### Params
+///
+/// * `data` - Row-major layout, `n * n_dim` long, modified in place
+/// * `n_dim` - Number of columns
+fn standardise_columns<T>(data: &mut [T], n_dim: usize)
+where
+    T: ManifoldsFloat,
+{
+    let n = (data.len() / n_dim) as f64;
+    let mut mean = vec![0.0f64; n_dim];
+    for row in data.chunks_exact(n_dim) {
+        for (m, v) in mean.iter_mut().zip(row) {
+            *m += v.to_f64().unwrap();
+        }
+    }
+    mean.iter_mut().for_each(|m| *m /= n);
+
+    let mut var = vec![0.0f64; n_dim];
+    for row in data.chunks_exact(n_dim) {
+        for ((s, v), m) in var.iter_mut().zip(row).zip(&mean) {
+            let delta = v.to_f64().unwrap() - m;
+            *s += delta * delta;
+        }
+    }
+    let inv_sd: Vec<f64> = var
+        .iter()
+        .map(|&s| {
+            let sd = (s / n).sqrt();
+            if sd > 0.0 {
+                1.0 / sd
+            } else {
+                1.0
+            }
+        })
+        .collect();
+
+    data.par_chunks_mut(n_dim).for_each(|row| {
+        for ((v, m), f) in row.iter_mut().zip(&mean).zip(&inv_sd) {
+            *v = T::from_f64((v.to_f64().unwrap() - m) * f).unwrap();
+        }
+    });
+}
+
+/// Original NCVis initialisation: uniform `[0, 1)` noise smoothed over the
+/// graph.
+///
+/// Each pass replaces every point by the sum of its neighbours and then
+/// standardises every axis. The original also multiplies by `1 / k`, which the
+/// standardisation cancels, so it is left out. Each pass gathers per row, so it
+/// runs in parallel without atomics and is deterministic for a seed.
+///
+/// ### Params
+///
+/// * `graph` - Symmetrised, unweighted kNN graph without self loops
+/// * `n_dim` - Dimensionality of the embedding
+/// * `n_iter` - Number of passes, [`NCVIS_INIT_ITER`] in the original
+/// * `seed` - Random seed for the uniform start
+///
+/// ### Returns
+///
+/// Layout `[n_samples][n_dim]`. After at least one pass every axis has mean 0
+/// and standard deviation 1.
+///
+/// ### References
+///
+/// Artemenkov & Panov, WWW, 2020
+pub fn ncvis_layout<T>(graph: &NcvisGraph, n_dim: usize, n_iter: usize, seed: u64) -> Vec<Vec<T>>
+where
+    T: ManifoldsFloat,
+{
+    let n = graph.offsets.len() - 1;
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut cur: Vec<T> = (0..n * n_dim)
+        .map(|_| T::from_f64(rng.random::<f64>()).unwrap())
+        .collect();
+    let mut next = vec![T::zero(); n * n_dim];
+
+    for _ in 0..n_iter {
+        next.par_chunks_mut(n_dim).enumerate().for_each(|(i, row)| {
+            row.fill(T::zero());
+            for &j in &graph.targets[graph.offsets[i]..graph.offsets[i + 1]] {
+                let j = j as usize;
+                for (r, &s) in row.iter_mut().zip(&cur[j * n_dim..(j + 1) * n_dim]) {
+                    *r += s;
+                }
+            }
+        });
+        standardise_columns(&mut next, n_dim);
+        std::mem::swap(&mut cur, &mut next);
+    }
+
+    cur.chunks_exact(n_dim).map(|row| row.to_vec()).collect()
+}
+
 /////////
 // PCA //
 /////////
@@ -1728,5 +1838,31 @@ mod test_init {
         let mean1: f64 = c1.iter().sum::<f64>() / 5.0;
         let mean2: f64 = c2.iter().sum::<f64>() / 5.0;
         assert!((mean1 - mean2).abs() > 1e-3);
+    }
+
+    #[test]
+    fn test_ncvis_layout_standardised_and_reproducible() {
+        use crate::training::ncvis_optimiser::symmetrise_knn;
+
+        // ring of 50 points, two neighbours each side
+        let n = 50;
+        let knn: Vec<Vec<usize>> = (0..n)
+            .map(|i| vec![(i + 1) % n, (i + 2) % n, (i + n - 1) % n, (i + n - 2) % n])
+            .collect();
+        let graph = symmetrise_knn(&knn).unwrap();
+
+        let a = ncvis_layout::<f64>(&graph, 2, NCVIS_INIT_ITER, 42);
+        let b = ncvis_layout::<f64>(&graph, 2, NCVIS_INIT_ITER, 42);
+        let c = ncvis_layout::<f64>(&graph, 2, NCVIS_INIT_ITER, 43);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+
+        assert_eq!(a.len(), n);
+        for dim in 0..2 {
+            let mean = a.iter().map(|p| p[dim]).sum::<f64>() / n as f64;
+            let var = a.iter().map(|p| (p[dim] - mean).powi(2)).sum::<f64>() / n as f64;
+            assert_relative_eq!(mean, 0.0, epsilon = 1e-10);
+            assert_relative_eq!(var, 1.0, epsilon = 1e-10);
+        }
     }
 }

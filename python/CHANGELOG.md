@@ -3,6 +3,14 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.7.2
+
+Requires `manifolds-rs` 0.10.2.
+
+- `NCVis(init="ncvis")`: the original NCVis start. PCA stays the default, so
+  results at the same seed are unchanged.
+- Linux aarch64 wheels.
+
 ## 0.7.1
 
 Requires `manifolds-rs` 0.10.1.

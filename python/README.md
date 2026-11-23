@@ -27,7 +27,7 @@ the crate's are in
 uv pip install manifolds-rs
 ```
 
-Wheels are built for Linux x86_64 and macOS on both architectures, against
+Wheels are built for Linux and macOS, x86_64 and arm64 on both, against
 Python 3.10 and up.
 
 ## Thirty seconds
@@ -59,7 +59,7 @@ requirement.
 | `LocalMAP` | PaCMAP with a locally adjusted final phase, so clusters PaCMAP leaves touching come apart. |
 | `DiffusionMaps` | The spectral embedding PHATE is built on. |
 | `ForceAtlas2` | Gephi's force-directed layout on the kNN graph, as in scanpy's `draw_graph`. 2-D only. |
-| `NCVis` | Noise-contrastive layout on the unweighted kNN graph from a PCA start. t-SNE-like clusters, cheap, keeps the PCA arrangement. Hogwild, so reproducible only on one thread. |
+| `NCVis` | Noise-contrastive layout on the unweighted kNN graph from a PCA start (`init="ncvis"` for the original one). t-SNE-like clusters, cheap, keeps the PCA arrangement. Hogwild, so reproducible only on one thread. |
 | `UMAPGpu`, `DensMAPGpu`, `TSNEGpu`, `DREAMSGpu`, `PHATEGpu` | The same, with the neighbour search on the device. `TSNEGpu(approx="fft_3k_gpu")` runs the optimiser there too, `PHATEGpu` the spectral landmark selection. |
 
 ## AnnData
