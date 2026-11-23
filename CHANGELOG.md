@@ -3,6 +3,12 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.10.2
+
+- `ncvis` takes `initialisation = "ncvis"`, the original NCVis start: uniform
+  noise smoothed over the kNN graph in 20 passes. PCA stays the default, so
+  results at the same seed are unchanged.
+
 ## 0.10.1
 
 - Fix: `umap_gpu` and `densmap_gpu` with the `"adam_gpu"` optimiser printed
