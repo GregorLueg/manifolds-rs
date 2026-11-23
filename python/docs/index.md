@@ -15,7 +15,7 @@ ordinary wheel.
 uv pip install manifolds-rs
 ```
 
-Wheels are built for Linux x86_64 and macOS on both architectures, against
+Wheels are built for Linux and macOS, x86_64 and arm64 on both, against
 Python 3.10 and up. numpy and beartype are the only runtime dependencies.
 
 ## Thirty seconds
