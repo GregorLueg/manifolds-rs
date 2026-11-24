@@ -25,9 +25,23 @@ use crate::training::umap_optimisers::{SplitPowLut, UmapOptimParams};
 /// [`V06_GRAD_SOURCE`] for the layout.
 const N_V06_PARAMS: usize = 14;
 
+// The hash modulus is the window or the node count, never above the default
+// window, so the 10-bit limb split in [`V06_MULMOD_HEADER`] cannot overflow.
+const _: () = assert!(V06_DEFAULT_NEG_SELECTION_RANGE < 1 << 20);
+
 ////////////////////
 // Kernel sources //
 ////////////////////
+
+/// `(a * b) mod m` in 32-bit arithmetic for `a, b < m < 2^20`, as the cubecl
+/// `v06_mulmod`. Apple GPUs have no native 64-bit integer division, so a
+/// `ulong` product and modulo here costs more than the rest of the gradient.
+const V06_MULMOD_HEADER: &str = r#"
+inline uint v06_mulmod(uint a, uint b, uint m) {
+    uint hi = (a * (b >> 10)) % m;
+    return ((hi << 10) + a * (b & 1023u)) % m;
+}
+"#;
 
 /// Gradient of the 0.6 Adam, one thread per node over its CSR row.
 ///
@@ -42,8 +56,6 @@ const N_V06_PARAMS: usize = 14;
 /// [epoch_f, a, b, attr_coeff, two_gamma_b, gamma, clip, rep_eps, neg_scale,
 /// step, inv_bc2, beta1, beta2, eps]`, shared with the Adam kernel.
 ///
-/// The hash product goes through `ulong`, so it matches the cubecl limb split
-/// and the host exactly.
 const V06_GRAD_SOURCE: &str = r#"
     uint node = thread_position_in_grid.x;
     uint n = up[0];
@@ -108,9 +120,9 @@ const V06_GRAD_SOURCE: &str = r#"
         float epn = epochs_per_neg[e];
         float n_neg_f = floor((epoch_f - nn) / epn);
         uint n_neg = n_neg_f > 0.0f ? (uint)n_neg_f : 0u;
-        ulong p_mod = p % modulus;
+        uint p_mod = p % modulus;
         for (uint q = 0; q < n_neg; q++) {
-            uint hash = (uint)((p_mod * (ulong)((epoch + q + 1) % modulus)) % modulus);
+            uint hash = v06_mulmod(p_mod, (epoch + q + 1) % modulus, modulus);
             uint base_k = order[(win_start + hash) % n] * N_DIM;
             float dsq_k = 0.0f;
             for (int d = 0; d < N_DIM; d++) {
@@ -241,7 +253,7 @@ impl V06Kernels {
                 "fp",
             ],
             &["grad", "next_sample_out", "next_neg_out"],
-            "",
+            V06_MULMOD_HEADER,
             V06_GRAD_SOURCE,
         );
         let adam = MetalKernel::new(
