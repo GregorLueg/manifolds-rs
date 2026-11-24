@@ -10,7 +10,9 @@
 //! exhaustive result. The `knn_embedding_quality_*` tests embed from each
 //! graph and score the layouts by label purity and separation, next to a
 //! second exhaustive run as the noise floor. The `umap_optimiser_compare_*`
-//! tests time only the optimiser call, each backend `REPEATS` times. In the
+//! tests time only the optimiser call, each backend `REPEATS` times; the
+//! `umap_v06_optimiser_compare_*` tests do the same for the umap-learn 0.6
+//! Adam. In the
 //! timed tests the first run pays shader compilation and buffer-pool first
 //! touch, so the best run is reported.
 //!
@@ -29,8 +31,11 @@ use rand::{rngs::StdRng, Rng, SeedableRng};
 use manifolds_rs::construct_umap_graph_gpu;
 use manifolds_rs::data::graph::coo_to_adjacency_list;
 use manifolds_rs::mlx::umap_optimiser_mlx::optimise_embedding_adam_mlx;
+use manifolds_rs::mlx::umap_optimiser_v06_mlx::optimise_embedding_adam_v06_mlx;
 use manifolds_rs::prelude::*;
 use manifolds_rs::training::umap_optimiser_gpu::optimise_embedding_adam_gpu;
+use manifolds_rs::training::umap_optimiser_v06::optimise_embedding_adam_v06;
+use manifolds_rs::training::umap_optimiser_v06_gpu::optimise_embedding_adam_v06_gpu;
 use manifolds_rs::training::umap_optimisers::optimise_embedding_adam_parallel;
 
 use commons::{create_clustered_data_f32, create_diagnostic_data, mat_to_f32};
@@ -385,13 +390,17 @@ fn run_embedding_quality(n: usize, d: usize) {
 /// ### Params
 ///
 /// * `n_per_cluster` - Points per cluster; five clusters
-fn run_compare(n_per_cluster: usize) {
+/// * `v06` - Time the umap-learn 0.6 Adam instead of the uwot-style Adam
+fn run_compare(n_per_cluster: usize, v06: bool) {
     let device = WgpuDevice::default();
     let (data, labels) = create_diagnostic_data(n_per_cluster, N_FEATURES, 42);
     let data = mat_to_f32(data);
     let n = data.nrows();
 
-    println!("\n=== n = {n}, d = {N_FEATURES} ===");
+    println!(
+        "\n=== n = {n}, d = {N_FEATURES}, {} ===",
+        if v06 { "adam_v06" } else { "adam" }
+    );
 
     let start = Instant::now();
     let (graph, _, _) = construct_umap_graph_gpu::<f32>(
@@ -419,6 +428,33 @@ fn run_compare(n_per_cluster: usize) {
         ..Default::default()
     };
     let init = random_embedding(n, 7);
+
+    if v06 {
+        let cpu = time_backend("cpu", &init, &labels, |e| {
+            optimise_embedding_adam_v06(e, &graph_adj, &params, false, 42, 0).unwrap()
+        });
+        let wgpu = time_backend("wgpu", &init, &labels, |e| {
+            optimise_embedding_adam_v06_gpu(
+                e,
+                &graph_adj,
+                &params,
+                false,
+                device.clone().into(),
+                42,
+                0,
+            )
+            .unwrap()
+        });
+        let mlx = time_backend("mlx", &init, &labels, |e| {
+            optimise_embedding_adam_v06_mlx(e, &graph_adj, &params, false, 42, 0).unwrap()
+        });
+        println!(
+            "  speed-up of mlx: {:.1}x over cpu, {:.1}x over wgpu",
+            cpu.as_secs_f64() / mlx.as_secs_f64(),
+            wgpu.as_secs_f64() / mlx.as_secs_f64()
+        );
+        return;
+    }
 
     let cpu = time_backend("cpu", &init, &labels, |e| {
         optimise_embedding_adam_parallel(e, &graph_adj, &params, None, 42, 0).unwrap()
@@ -484,22 +520,38 @@ fn knn_embedding_quality_500k() {
 
 #[test]
 fn umap_optimiser_compare_10k() {
-    run_compare(2_000);
+    run_compare(2_000, false);
 }
 
 #[test]
 fn umap_optimiser_compare_100k() {
-    run_compare(20_000);
+    run_compare(20_000, false);
 }
 
 #[test]
 #[ignore = "takes a while; run with -- --ignored"]
 fn umap_optimiser_compare_500k() {
-    run_compare(100_000);
+    run_compare(100_000, false);
 }
 
 #[test]
 #[ignore = "takes a while; run with -- --ignored"]
 fn umap_optimiser_compare_1m() {
-    run_compare(200_000);
+    run_compare(200_000, false);
+}
+
+#[test]
+fn umap_v06_optimiser_compare_10k() {
+    run_compare(2_000, true);
+}
+
+#[test]
+fn umap_v06_optimiser_compare_100k() {
+    run_compare(20_000, true);
+}
+
+#[test]
+#[ignore = "takes a while; run with -- --ignored"]
+fn umap_v06_optimiser_compare_500k() {
+    run_compare(100_000, true);
 }
