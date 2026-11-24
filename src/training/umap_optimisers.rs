@@ -302,6 +302,9 @@ pub enum UmapOptimiser {
     /// Adam on the GPU via MLX (Apple Silicon, `mlx` feature)
     #[cfg(mlx_available)]
     AdamMlx,
+    /// The umap-learn 0.6 Adam on MLX (Apple Silicon, `mlx` feature)
+    #[cfg(mlx_available)]
+    AdamV06Mlx,
 }
 
 /// Parse the UMAP Optimiser to use
@@ -309,8 +312,8 @@ pub enum UmapOptimiser {
 /// ### Params
 ///
 /// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`,
-///   `"adam_v06"`, `"sgd"` or `"sgd_parallel"`, plus `"adam_mlx"` when the MLX
-///   backend is compiled in.
+///   `"adam_v06"`, `"sgd"` or `"sgd_parallel"`, plus `"adam_mlx"` and
+///   `"adam_v06_mlx"` when the MLX backend is compiled in.
 ///
 /// ### Return
 ///
@@ -324,6 +327,8 @@ pub fn parse_umap_optimiser(s: &str) -> Option<UmapOptimiser> {
         "adam_v06" => Some(UmapOptimiser::AdamV06),
         #[cfg(mlx_available)]
         "adam_mlx" => Some(UmapOptimiser::AdamMlx),
+        #[cfg(mlx_available)]
+        "adam_v06_mlx" => Some(UmapOptimiser::AdamV06Mlx),
         _ => None,
     }
 }

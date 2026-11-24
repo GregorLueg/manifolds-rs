@@ -8,3 +8,4 @@ mod ffi;
 pub mod sparse_svd_mlx;
 pub mod tsne_optimiser_mlx;
 pub mod umap_optimiser_mlx;
+pub mod umap_optimiser_v06_mlx;

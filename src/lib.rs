@@ -71,6 +71,8 @@ use crate::utils::sparse_ops::matrix_power;
 use crate::mlx::tsne_optimiser_mlx::*;
 #[cfg(mlx_available)]
 use crate::mlx::umap_optimiser_mlx::*;
+#[cfg(mlx_available)]
+use crate::mlx::umap_optimiser_v06_mlx::optimise_embedding_adam_v06_mlx;
 #[cfg(feature = "parametric")]
 use crate::parametric::model::*;
 #[cfg(feature = "parametric")]
@@ -138,7 +140,8 @@ pub struct UmapParams<T> {
     pub k: usize,
     /// Which optimiser to use: `"adam_parallel"` (default), `"adam"`,
     /// `"adam_v06"` (umap-learn 0.6 Adam, no densMAP), `"sgd"`,
-    /// `"sgd_parallel"`, or `"adam_mlx"` with the `mlx` feature.
+    /// `"sgd_parallel"`, or `"adam_mlx"` and `"adam_v06_mlx"` with the `mlx`
+    /// feature.
     /// `"sgd_parallel"` is lock-free (hogwild) and so not reproducible run to
     /// run with more than one thread.
     pub optimiser: String,
@@ -562,6 +565,8 @@ where
                 UmapOptimiser::AdamV06 => "Adam (umap-learn 0.6, multi-threaded)",
                 #[cfg(mlx_available)]
                 UmapOptimiser::AdamMlx => "Adam (MLX)",
+                #[cfg(mlx_available)]
+                UmapOptimiser::AdamV06Mlx => "Adam (umap-learn 0.6, MLX)",
             },
             umap_params.optim_params.n_epochs,
             n_edges.separate_with_underscores()
@@ -616,6 +621,24 @@ where
             }
             let good_init = umap_params.initialisation.eq_ignore_ascii_case("recursive");
             optimise_embedding_adam_v06(
+                &mut embd,
+                &graph_adj,
+                &umap_params.optim_params,
+                good_init,
+                seed as u64,
+                verbose,
+            )?;
+        }
+        #[cfg(mlx_available)]
+        UmapOptimiser::AdamV06Mlx => {
+            if dens_state.is_some() {
+                return Err(ManifoldsError::UnsupportedCombination {
+                    feature: "densMAP",
+                    context: "the \"adam_v06_mlx\" optimiser",
+                });
+            }
+            let good_init = umap_params.initialisation.eq_ignore_ascii_case("recursive");
+            optimise_embedding_adam_v06_mlx(
                 &mut embd,
                 &graph_adj,
                 &umap_params.optim_params,
@@ -1670,7 +1693,8 @@ where
 /// The density term touches only the attractive part of the gradient; negative
 /// sampling is untouched. Works with all four CPU optimisers (`"sgd"`,
 /// `"sgd_parallel"`, `"adam"`, `"adam_parallel"`). The umap-learn 0.6 Adam
-/// (`"adam_v06"`) returns [`ManifoldsError::UnsupportedCombination`].
+/// (`"adam_v06"`, `"adam_v06_mlx"`) returns
+/// [`ManifoldsError::UnsupportedCombination`].
 ///
 /// ### Params
 ///
@@ -5291,8 +5315,9 @@ pub struct UmapParamsGpu<T> {
     pub k: usize,
     /// Which optimiser to use: `"adam_gpu"` (default), `"adam"`, `"sgd"`,
     /// `"sgd_parallel"`, `"adam_parallel"`, `"adam_v06"` (umap-learn 0.6 Adam,
-    /// CPU), `"adam_v06_gpu"` (the same on the device), or `"adam_mlx"` with
-    /// the `mlx` feature. Both 0.6 optimisers are rejected for densMAP.
+    /// CPU), `"adam_v06_gpu"` (the same on the device), or `"adam_mlx"` and
+    /// `"adam_v06_mlx"` with the `mlx` feature. The 0.6 optimisers are
+    /// rejected for densMAP.
     pub optimiser: String,
     /// Which GPU nearest neighbour search to use. One of `"exhaustive_gpu"`,
     /// `"ivf_gpu"` or `"nndescent_gpu"`. Defaults to `"nndescent_gpu"`.
@@ -5730,6 +5755,8 @@ where
                 UmapOptimiserGpu::AdamV06Gpu => "Adam (umap-learn 0.6, GPU-accelerated)",
                 #[cfg(mlx_available)]
                 UmapOptimiserGpu::AdamMlx => "Adam (MLX)",
+                #[cfg(mlx_available)]
+                UmapOptimiserGpu::AdamV06Mlx => "Adam (umap-learn 0.6, MLX)",
             },
             umap_params.optim_params.n_epochs,
             n_edges.separate_with_underscores()
@@ -5782,6 +5809,24 @@ where
                 &graph_adj,
                 &umap_params.optim_params,
                 dens_state.as_ref(),
+                seed as u64,
+                verbose,
+            )?;
+        }
+        #[cfg(mlx_available)]
+        UmapOptimiserGpu::AdamV06Mlx => {
+            if dens_state.is_some() {
+                return Err(ManifoldsError::UnsupportedCombination {
+                    feature: "densMAP",
+                    context: "the \"adam_v06\" optimisers",
+                });
+            }
+            let good_init = umap_params.initialisation.eq_ignore_ascii_case("recursive");
+            optimise_embedding_adam_v06_mlx(
+                &mut embd,
+                &graph_adj,
+                &umap_params.optim_params,
+                good_init,
                 seed as u64,
                 verbose,
             )?;
@@ -5977,7 +6022,7 @@ where
 /// The other optimiser choices (`"sgd"`, `"sgd_parallel"`, `"adam"`,
 /// `"adam_parallel"`) run the CPU density path; only the kNN search is
 /// GPU-accelerated for those. The umap-learn 0.6 Adam (`"adam_v06"`,
-/// `"adam_v06_gpu"`) is not supported and returns
+/// `"adam_v06_gpu"`, `"adam_v06_mlx"`) is not supported and returns
 /// [`ManifoldsError::UnsupportedCombination`].
 ///
 /// ### Params

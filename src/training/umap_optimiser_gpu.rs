@@ -41,6 +41,9 @@ pub enum UmapOptimiserGpu {
     /// Adam on MLX (Apple Silicon); the kNN graph stays on wgpu
     #[cfg(mlx_available)]
     AdamMlx,
+    /// umap-learn 0.6 Adam on MLX (Apple Silicon); the kNN graph stays on wgpu
+    #[cfg(mlx_available)]
+    AdamV06Mlx,
 }
 
 /// Parse the UMAP Optimiser to use
@@ -50,7 +53,7 @@ pub enum UmapOptimiserGpu {
 /// * `s` - String defining the optimiser. Choice of `"adam"`, `"adam_parallel"`,
 ///   `"sgd"`, `"sgd_parallel"`, `"adam_v06"` (umap-learn 0.6 Adam, CPU),
 ///   `"adam_v06_gpu"` (the same on the GPU) or `"adam_gpu"` (default), plus
-///   `"adam_mlx"` when the MLX backend is compiled in.
+///   `"adam_mlx"` and `"adam_v06_mlx"` when the MLX backend is compiled in.
 ///
 /// ### Returns
 ///
@@ -66,6 +69,8 @@ pub fn parse_umap_optimiser_gpu(s: &str) -> Option<UmapOptimiserGpu> {
         "adam_v06_gpu" => Some(UmapOptimiserGpu::AdamV06Gpu),
         #[cfg(mlx_available)]
         "adam_mlx" => Some(UmapOptimiserGpu::AdamMlx),
+        #[cfg(mlx_available)]
+        "adam_v06_mlx" => Some(UmapOptimiserGpu::AdamV06Mlx),
         _ => None,
     }
 }

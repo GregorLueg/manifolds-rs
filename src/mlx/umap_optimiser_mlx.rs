@@ -30,7 +30,7 @@ const UMAP_MLX_THREADGROUP: i32 = 256;
 const N_EPOCH_PARAMS: usize = 13;
 
 /// Epochs between progress lines at normal verbosity.
-const LOG_EVERY: usize = 50;
+pub(super) const LOG_EVERY: usize = 50;
 
 ////////////////////
 // Kernel sources //
@@ -311,7 +311,7 @@ impl DensArrays {
 /// ### Returns
 ///
 /// `(grid, threadgroup)` for [`MetalKernel::apply`]
-fn launch_1d(total: usize) -> ([i32; 3], [i32; 3]) {
+pub(super) fn launch_1d(total: usize) -> ([i32; 3], [i32; 3]) {
     ([total as i32, 1, 1], [UMAP_MLX_THREADGROUP, 1, 1])
 }
 

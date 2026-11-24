@@ -104,15 +104,15 @@ UMAP_OPTIMISERS_GPU: frozenset[str] = frozenset(
         "adam_v06",
         "adam_v06_gpu",
     }
-) | (frozenset({"adam_mlx"}) if _MLX else frozenset())
+) | (frozenset({"adam_mlx", "adam_v06_mlx"}) if _MLX else frozenset())
 
 #: UMAP optimisers, from `parse_umap_optimiser`.
 UMAP_OPTIMISERS: frozenset[str] = frozenset(
     {"adam", "sgd", "sgd_parallel", "adam_parallel", "adam_v06"}
-) | (frozenset({"adam_mlx"}) if _MLX else frozenset())
+) | (frozenset({"adam_mlx", "adam_v06_mlx"}) if _MLX else frozenset())
 
 #: The umap-learn 0.6 Adam optimisers. densMAP rejects them in the core.
-V06_OPTIMISERS: frozenset[str] = frozenset({"adam_v06", "adam_v06_gpu"})
+V06_OPTIMISERS: frozenset[str] = frozenset({"adam_v06", "adam_v06_gpu", "adam_v06_mlx"})
 
 #: The SGD optimisers, which drop to `SGD_EPOCHS_LARGE` epochs on large data.
 SGD_OPTIMISERS: frozenset[str] = frozenset({"sgd", "sgd_parallel"})
