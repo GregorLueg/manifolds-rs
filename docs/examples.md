@@ -332,7 +332,7 @@ correlation statistics can be accumulated in `f64` on the host, since summing
 point, but it only happens over the final 30% of the epochs. Pick any of the
 other optimisers (`"sgd"`, `"sgd_parallel"`, `"adam"`, `"adam_parallel"`) and the density path
 falls back to CPU, with only the kNN search on the GPU. The umap-learn 0.6 Adam
-(`"adam_v06"`, `"adam_v06_gpu"`) has no density term and returns an
+(`"adam_v06"`, `"adam_v06_gpu"`, `"adam_v06_mlx"`) has no density term and returns an
 `UnsupportedCombination` error.
 
 The GPU entry points take a `cubecl::Device`, which picks the runtime at run
@@ -658,6 +658,7 @@ params.ann_type = "nndescent_mlx".into();
 let embedding = tsne(data.as_ref(), None, &params, "fft_3k_mlx", 42, 1).unwrap();
 ```
 
+`umap` also takes `"adam_v06_mlx"`, the umap-learn 0.6 Adam on MLX.
 `densmap` takes `"adam_mlx"` too, `dreams` takes `"fft_3k_mlx"`. den-SNE has
 no MLX path and returns `ManifoldsError::DensityNotSupported`.
 

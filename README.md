@@ -38,7 +38,7 @@ Optimisers and approximations are picked by string:
 
 | What | Options |
 |---|---|
-| UMAP optimiser | `"adam_parallel"` (default), `"adam"`, `"adam_v06"`, `"sgd"`, `"sgd_parallel"`, `"adam_gpu"`, `"adam_v06_gpu"`, `"adam_mlx"` |
+| UMAP optimiser | `"adam_parallel"` (default), `"adam"`, `"adam_v06"`, `"sgd"`, `"sgd_parallel"`, `"adam_gpu"`, `"adam_v06_gpu"`, `"adam_mlx"`, `"adam_v06_mlx"` |
 | t-SNE repulsion | `"bh"`, `"qd"`, `"fft"`, `"fft_3k"`, `"fft_3k_gpu"`, `"fft_3k_mlx"` |
 | PHATE landmarks | `"spectral"` (default), `"random"`, `"density"`, `"spectral_mlx"` |
 | kNN, CPU | `"nndescent"` (default), `"ivf"` (default for the t-SNE family), `"kmknn"`, `"exhaustive"`, `"hnsw"`, `"annoy"`, `"balltree"` |
@@ -154,7 +154,8 @@ let params = UmapParams {
 let embedding = umap(data.as_ref(), None, &params, 42, 0)?;
 ```
 
-`tsne` and `dreams` take `"fft_3k_mlx"`, as do `tsne_gpu` and `dreams_gpu`
+`umap` and `umap_gpu` also take `"adam_v06_mlx"`, the umap-learn 0.6 Adam on
+MLX. `tsne` and `dreams` take `"fft_3k_mlx"`, as do `tsne_gpu` and `dreams_gpu`
 (search on wgpu, optimiser on MLX). `phate` takes `landmark_method =
 "spectral_mlx"` for the SVD and k-means of the landmark selection, and so does
 `phate_gpu` (search on wgpu, landmark selection on MLX). den-SNE has no MLX path,

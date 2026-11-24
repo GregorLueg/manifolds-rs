@@ -67,7 +67,7 @@ mf.gpu_available()
 #   the CPU. densMAP's density term runs on the device with `"adam_gpu"`; the
 #   radii come back to the host in between so the correlation statistics can
 #   accumulate in float64. The 0.6 Adam has no density term, so `DensMAPGpu`
-#   refuses both `"adam_v06"` names.
+#   refuses every `"adam_v06"` name.
 # - `TSNEGpu` and `DREAMSGpu`: the neighbour search always. With
 #   `approx="fft_3k_gpu"` the whole optimisation stays on the device too: the
 #   three-kernel FFT repulsion, with the embedding resident between epochs. The
@@ -241,6 +241,7 @@ panels(
 #
 # ```python
 # mf.UMAP(ann="nndescent_mlx", optimiser="adam_mlx").fit_transform(X)
+# mf.UMAP(optimiser="adam_v06_mlx", init="recursive").fit_transform(X)
 # mf.DensMAP(optimiser="adam_mlx").fit_transform(X)
 # mf.TSNE(ann="nndescent_mlx", approx="fft_3k_mlx").fit_transform(X)
 # mf.DREAMS(approx="fft_3k_mlx").fit_transform(X)

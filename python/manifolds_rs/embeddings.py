@@ -84,7 +84,7 @@ class UMAP(BaseEmbedding):
             umap-learn 0.6 Adam, not with `DensMAP`; with ``init="recursive"``
             it takes the short warm-up umap-learn uses for a good start),
             ``"sgd"`` or ``"sgd_parallel"``. The last is not reproducible run
-            to run.
+            to run. An mlx build adds ``"adam_mlx"`` and ``"adam_v06_mlx"``.
         randomised: Use randomised SVD for the PCA initialisation. No effect
             under spectral or random init.
         init_range: Scale of the initial coordinates. ``None`` lets the core
@@ -179,8 +179,8 @@ class DensMAP(UMAP):
         lambda_: Weight on the density term. ``0`` recovers plain UMAP.
         dens_params: Remaining density knobs. See `DensParams`.
 
-    Everything else is as `UMAP`, bar ``optimiser="adam_v06"``: the umap-learn
-    0.6 Adam has no density term.
+    Everything else is as `UMAP`, bar ``optimiser="adam_v06"`` and
+    ``"adam_v06_mlx"``: the umap-learn 0.6 Adam has no density term.
     """
 
     _FN: ClassVar[Callable[..., Any]] = _core.densmap

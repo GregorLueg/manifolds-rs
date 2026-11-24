@@ -96,7 +96,8 @@ class UMAPGpu(BaseEmbedding):
             ``"adam_v06_gpu"`` (the umap-learn 0.6 Adam). The CPU names
             (``"adam_parallel"``, ``"adam"``, ``"adam_v06"``, ``"sgd"``,
             ``"sgd_parallel"``) still work and run the optimisation on the CPU
-            after the GPU neighbour search.
+            after the GPU neighbour search. An mlx build adds ``"adam_mlx"``
+            and ``"adam_v06_mlx"`` (search on wgpu, optimiser on MLX).
         randomised: Use randomised SVD for the PCA initialisation.
         init_range: Scale of the initial coordinates.
         seed: Fixes the initialisation and the negative sampling.
@@ -185,7 +186,7 @@ class DensMAPGpu(UMAPGpu):
         lambda_: Weight on the density term. ``0`` recovers plain UMAP.
         dens_params: Remaining density knobs. See `DensParams`.
 
-    Everything else is as `UMAPGpu`, bar ``"adam_v06"`` and ``"adam_v06_gpu"``:
+    Everything else is as `UMAPGpu`, bar the ``"adam_v06"`` optimisers:
     the umap-learn 0.6 Adam has no density term.
     """
 
