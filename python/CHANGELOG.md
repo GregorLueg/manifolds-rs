@@ -3,6 +3,13 @@
 Changes to the `manifolds-rs` Python package. The Rust crate it wraps,
 `manifolds-rs`, has its own changelog at [`../CHANGELOG.md`](../CHANGELOG.md).
 
+## 0.7.3
+
+Requires `manifolds-rs` 0.10.3.
+
+- `optimiser="adam_v06_mlx"`: the umap-learn 0.6 Adam on MLX. Existing
+  optimisers are unchanged.
+
 ## 0.7.2
 
 Requires `manifolds-rs` 0.10.2.

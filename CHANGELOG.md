@@ -3,6 +3,11 @@
 Changes to the `manifolds-rs` crate. The Python package `manifolds-rs` has its
 own changelog at [`python/CHANGELOG.md`](python/CHANGELOG.md).
 
+## 0.10.3
+
+- New optimiser `"adam_v06_mlx"`: the umap-learn 0.6 Adam on MLX (Apple
+  Silicon, `f32`). Existing optimisers are unchanged.
+
 ## 0.10.2
 
 - `ncvis` takes `initialisation = "ncvis"`, the original NCVis start: uniform
